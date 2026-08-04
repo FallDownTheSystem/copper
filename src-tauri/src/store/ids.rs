@@ -61,9 +61,20 @@ mod tests {
 		assert_eq!(generated.len(), "spc_".len() + 32);
 	}
 
+	/// The guarantee `unique_id` actually makes.
+	///
+	/// Asserting that a thousand raw `new_id` draws never collide would be
+	/// asserting something else — 8 hex characters is 32 bits, so by the birthday
+	/// bound that fails about once in 8,600 runs, and a test that fails one build
+	/// in 8,600 for no reason is worse than no test. Uniqueness within a document
+	/// comes from the `exists` predicate, not from the entropy, so that is what
+	/// gets tested.
 	#[test]
-	fn ids_do_not_repeat() {
-		let generated: std::collections::HashSet<_> = (0..1000).map(|_| new_id(NOTE)).collect();
-		assert_eq!(generated.len(), 1000);
+	fn unique_id_never_returns_an_id_the_document_already_holds() {
+		let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
+		for _ in 0..1000 {
+			let id = unique_id(NOTE, |candidate| taken.contains(candidate));
+			assert!(taken.insert(id), "unique_id handed out an id already in use");
+		}
 	}
 }

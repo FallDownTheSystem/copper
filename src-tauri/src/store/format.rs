@@ -438,11 +438,14 @@ mod tests {
 	/// necessarily gains a comma.
 	#[test]
 	fn appending_a_note_produces_a_minimal_diff() {
-		let before_doc = space();
+		let before_doc = normalised(space());
 		let mut after_doc = before_doc.clone();
-		after_doc
-			.notes
-			.push(note("nte_99000099", "sec_b2000002", 1, "2026-07-30T15:00:00Z"));
+		// The real operation rather than a hand-built `Note`, so this measures the
+		// diff a capture actually produces — including whatever `add_note` and
+		// `normalise` do to the rest of the document on the way.
+		let added_id =
+			crate::store::ops::add_note(&mut after_doc, "a captured note", Some("sec_b2000002"))
+				.unwrap();
 
 		let before = to_git_json(&before_doc).unwrap();
 		let after = to_git_json(&after_doc).unwrap();
@@ -459,7 +462,7 @@ mod tests {
 		assert_eq!(added.len(), 9, "the added region is not exactly one note object");
 		assert_eq!(added[0].trim(), "{");
 		assert_eq!(added[8].trim(), "}");
-		assert!(added.iter().any(|line| line.contains("nte_99000099")));
+		assert!(added.iter().any(|line| line.contains(&added_id)));
 
 		let mut expected = before_lines.clone();
 		// The one unavoidable change to an existing line, and the reason A9.4 has
@@ -476,10 +479,9 @@ mod tests {
 	fn appending_to_an_empty_notes_array_touches_only_that_array() {
 		let mut before_doc = space();
 		before_doc.notes.clear();
+		let before_doc = normalised(before_doc);
 		let mut after_doc = before_doc.clone();
-		after_doc
-			.notes
-			.push(note("nte_99000099", "sec_a1000001", 0, "2026-07-30T15:00:00Z"));
+		crate::store::ops::add_note(&mut after_doc, "the first note", None).unwrap();
 
 		let before = to_git_json(&before_doc).unwrap();
 		let after = to_git_json(&after_doc).unwrap();

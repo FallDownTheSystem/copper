@@ -654,6 +654,53 @@ mod tests {
 	}
 
 	#[test]
+	fn move_notes_rejects_every_bad_argument_without_moving_anything() {
+		let mut space = space();
+		let id = space.notes[0].id.clone();
+		let before = space.clone();
+
+		assert_eq!(
+			move_notes(&mut space, &[], "sec_bbbbbbbb").unwrap_err().kind(),
+			"invalid"
+		);
+		assert_eq!(
+			move_notes(&mut space, &strings(&[&id, "nte_nope"]), "sec_bbbbbbbb")
+				.unwrap_err()
+				.kind(),
+			"not-found"
+		);
+		assert_eq!(
+			move_notes(&mut space, &strings(&[&id]), "sec_nope").unwrap_err().kind(),
+			"not-found"
+		);
+		assert_eq!(space, before, "a rejected move still changed the document");
+	}
+
+	#[test]
+	fn merge_notes_rejects_an_unknown_id_without_merging() {
+		let mut space = space();
+		let id = space.notes[0].id.clone();
+		let before = space.clone();
+
+		let err = merge_notes(&mut space, &strings(&[&id, "nte_nope"])).unwrap_err();
+
+		assert_eq!(err.kind(), "not-found");
+		assert_eq!(space, before, "a rejected merge still changed the document");
+	}
+
+	#[test]
+	fn delete_notes_rejects_an_unknown_id_without_deleting() {
+		let mut space = space();
+		let id = space.notes[0].id.clone();
+		let before = space.clone();
+
+		let err = delete_notes(&mut space, &strings(&[&id, "nte_nope"])).unwrap_err();
+
+		assert_eq!(err.kind(), "not-found");
+		assert_eq!(space, before, "a rejected delete still removed a note");
+	}
+
+	#[test]
 	fn move_notes_does_not_bump_updated() {
 		let mut space = space();
 		let id = space.notes[0].id.clone();
