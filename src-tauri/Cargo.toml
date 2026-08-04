@@ -45,6 +45,21 @@ tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-autostart = "2.5.1"
 tauri-plugin-opener = "2.5.4"
 
+# --- store (task-003) ---
+# notify 8.2 is the current stable line; 9.x is still an unpromoted release
+# candidate. notify-debouncer-full 0.7.0 is the release that pairs with it, and
+# it is what moved this crate's rust-version to 1.85.
+notify = "8.2.0"
+notify-debouncer-full = "0.7.0"
+# NamedTempFile::new_in + persist/persist_noclobber. The temp file must live in
+# the destination's own directory: persist is a rename and cannot cross volumes.
+tempfile = "3.27"
+# No serde feature on purpose — timestamps are opaque `String` in the model
+# (spec 1.2), so a hand-edited one cannot make a document unloadable.
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+uuid = { version = "1", features = ["v4"] }
+thiserror = "2"
+
 [profile.release]
 # The no-unwrap()-in-setup() reasoning in lib.rs is about release behaviour, so
 # the release profile has to actually be the one described. Panic hooks still run

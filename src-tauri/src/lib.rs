@@ -1,8 +1,11 @@
 mod diagnostics;
 mod panel;
+pub mod store;
 mod tray;
 
 pub use diagnostics::install_panic_dialog;
+
+use std::sync::{Arc, Mutex};
 
 use tauri::{Manager, WindowEvent};
 
@@ -69,9 +72,35 @@ pub fn run() {
 			panel::apply_effects(&window)?;
 			tray::build(app.handle())?;
 
+			// Store startup is two-stage, and the order is not negotiable (spec 7.5).
+			// The watcher's callback resolves the store through the shared handle,
+			// and that handle does not exist until bootstrap has returned the Store
+			// to put inside it — so a watch registered during bootstrap would have a
+			// live callback with nothing to resolve.
+			//
+			// Nothing here emits. The webview has not registered its listeners yet
+			// and Tauri events have no replay, so an emit at this point would be an
+			// invisible failure rather than merely a useless one (spec 8A.2). First-
+			// run space creation, the recents fallback and a corrupt settings file
+			// all change store state and nothing else; the panel learns about them
+			// from its mount-time get_status pull.
+			let config_dir = app.path().app_config_dir()?;
+			let sink = Arc::new(store::events::AppSink::new(app.handle().clone()));
+			let shared: store::SharedStore =
+				Arc::new(Mutex::new(store::bootstrap_store(&config_dir, sink)?));
+			app.manage(Arc::clone(&shared));
+
+			// A watch that will not register leaves the space open and fully
+			// writable; it only means external edits go unnoticed. get_status
+			// reports it as watching: false.
+			if let Some(failure) = store::attach_watcher(&shared) {
+				diagnostics::log_error(&format!("[copper] store watch: {failure:?}"));
+			}
+
 			// The window is not shown here. It stays hidden until the tray reveals it.
 			Ok(())
 		})
+		.invoke_handler(store::commands::handler())
 		.run(tauri::generate_context!())
 		.expect("error while running tauri application");
 }
