@@ -10,7 +10,7 @@ use tauri::{
 	AppHandle, Manager,
 };
 
-use crate::panel;
+use crate::{diagnostics, panel};
 
 const MENU_SHOW: &str = "show";
 const MENU_QUIT: &str = "quit";
@@ -56,7 +56,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
 							panel::reveal_or_log(app);
 						}
 					}
-					None => eprintln!("[copper] panel window not found on tray click"),
+					None => diagnostics::log_error("[copper] panel window not found on tray click"),
 				}
 			}
 		})

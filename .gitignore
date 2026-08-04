@@ -23,6 +23,10 @@ src-tauri/gen/
 # Project management artifacts
 backlog/
 
+# Claude Code per-user settings. The shared .claude/settings.json may be
+# committed; the .local. one is personal and must not be.
+.claude/settings.local.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

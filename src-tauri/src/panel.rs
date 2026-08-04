@@ -3,6 +3,7 @@
 //!
 //! This is the only module in the app that handles an `HWND`.
 
+use crate::diagnostics;
 use tauri::{Manager, WebviewWindow};
 use windows::Win32::Graphics::Dwm::{
 	DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
@@ -29,11 +30,13 @@ pub fn apply_effects(window: &WebviewWindow) -> Result<(), Box<dyn std::error::E
 	// entirely, so that same test "fails" on a perfectly working Mica panel.
 	// Without this log there is no way to tell those two cases apart.
 	match window_vibrancy::apply_mica(window, None) {
-		Ok(()) => println!("[copper] backdrop: Mica applied"),
+		Ok(()) => diagnostics::log("[copper] backdrop: Mica applied"),
 		Err(mica_err) => {
-			println!("[copper] backdrop: Mica failed ({mica_err}), falling back to Acrylic");
+			diagnostics::log(&format!(
+				"[copper] backdrop: Mica failed ({mica_err}), falling back to Acrylic"
+			));
 			window_vibrancy::apply_acrylic(window, None)?;
-			println!("[copper] backdrop: Acrylic applied");
+			diagnostics::log("[copper] backdrop: Acrylic applied");
 		}
 	}
 
@@ -84,10 +87,10 @@ pub fn reveal_or_log<M: Manager<tauri::Wry>>(app: &M) {
 	match app.get_webview_window(PANEL_LABEL) {
 		Some(window) => {
 			if let Err(err) = reveal(&window) {
-				eprintln!("[copper] failed to reveal the panel: {err}");
+				diagnostics::log_error(&format!("[copper] failed to reveal the panel: {err}"));
 			}
 		}
-		None => eprintln!("[copper] panel window '{PANEL_LABEL}' not found"),
+		None => diagnostics::log_error(&format!("[copper] panel window '{PANEL_LABEL}' not found")),
 	}
 }
 
@@ -96,10 +99,10 @@ pub fn hide_or_log<M: Manager<tauri::Wry>>(app: &M) {
 	match app.get_webview_window(PANEL_LABEL) {
 		Some(window) => {
 			if let Err(err) = hide(&window) {
-				eprintln!("[copper] failed to hide the panel: {err}");
+				diagnostics::log_error(&format!("[copper] failed to hide the panel: {err}"));
 			}
 		}
-		None => eprintln!("[copper] panel window '{PANEL_LABEL}' not found"),
+		None => diagnostics::log_error(&format!("[copper] panel window '{PANEL_LABEL}' not found")),
 	}
 }
 

@@ -15,9 +15,11 @@ export default defineConfig({
 		semi: false,
 		singleQuote: true,
 		useTabs: true,
-		// unplugin regenerates these on every dev/build run in its own style, so
-		// formatting them just makes `vp check` fail again after the next build.
-		ignorePatterns: ['src/auto-imports.d.ts', 'src/components.d.ts'],
+		// unplugin regenerates the d.ts files on every dev/build run in its own
+		// style, so formatting them just makes `vp check` fail again after the next
+		// build. `.claude/` is tool-owned config that any Claude Code user in this
+		// repo will have; without it `vp check` fails on a file nobody edited.
+		ignorePatterns: ['src/auto-imports.d.ts', 'src/components.d.ts', '.claude/'],
 	},
 	lint: {
 		jsPlugins: [{ name: 'vite-plus', specifier: 'vite-plus/oxlint-plugin' }],

@@ -2,7 +2,9 @@
 name = "copper"
 version = "0.1.0"
 description = "Copper — a Windows note-capture panel"
-authors = ["you"]
+authors = ["FallDownTheSystem"]
+# license and repository are intentionally left empty: task-009 (Phase 8) owns
+# distribution metadata and will set them alongside the bundle configuration.
 license = ""
 repository = ""
 edition = "2021"
@@ -33,9 +35,16 @@ window-vibrancy = "0.8"
 windows = { version = "=0.61.3", features = [
 	"Win32_Foundation",
 	"Win32_Graphics_Dwm",
+	"Win32_System_Diagnostics_Debug",
 	"Win32_UI_WindowsAndMessaging",
 ] }
 tauri-plugin-single-instance = "2.4.3"
 tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-autostart = "2.5.1"
 tauri-plugin-opener = "2.5.4"
+
+[profile.release]
+# The no-unwrap()-in-setup() reasoning in lib.rs is about release behaviour, so
+# the release profile has to actually be the one described. Panic hooks still run
+# before the abort, which is what keeps diagnostics::install_panic_dialog useful.
+panic = "abort"

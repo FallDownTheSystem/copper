@@ -1,5 +1,8 @@
+mod diagnostics;
 mod panel;
 mod tray;
+
+pub use diagnostics::install_panic_dialog;
 
 use tauri::{Manager, WindowEvent};
 
@@ -48,11 +51,16 @@ pub fn run() {
 			}
 		})
 		// setup() runs once on the main thread before the event loop, and the
-		// release profile sets panic = "abort", so a panic here exits the process
-		// instantly with no window and no tray. For an app that deliberately starts
-		// hidden that is indistinguishable from a successful silent launch — the
-		// worst possible failure to debug. Hence no unwrap()/expect() below: every
-		// fallible call propagates with ?.
+		// release profile sets panic = "abort" (see Cargo.toml), so a panic here
+		// exits the process instantly with no window and no tray. For an app that
+		// deliberately starts hidden that is indistinguishable from a successful
+		// silent launch — the worst possible failure to debug. Hence no
+		// unwrap()/expect() below: every fallible call propagates with ?.
+		//
+		// Propagating is necessary but not sufficient. Tauri turns a returned
+		// setup error into a panic of its own (tauri-2.11.5/src/app.rs:1424-1425,
+		// 1476-1477), so `?` buys a useful message rather than a silent exit only
+		// because install_panic_dialog() is in place to surface it.
 		.setup(|app| {
 			let window = app
 				.get_webview_window(panel::PANEL_LABEL)
