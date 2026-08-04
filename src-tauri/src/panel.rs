@@ -78,36 +78,52 @@ pub fn hide(window: &WebviewWindow) -> tauri::Result<()> {
 	window.hide()
 }
 
-/// Reveals the panel, or logs why it could not be reached.
+/// Looks the panel up and runs `op` against it, logging rather than returning
+/// any failure. `verb` names the action in that log line, e.g. "reveal".
 ///
 /// For the call sites that return `()` and so cannot use `?` — the tray handler
 /// and the single-instance callback. Swallowing the error there with `let _ =`
 /// would make a dead tray icon indistinguishable from a working one.
-pub fn reveal_or_log<M: Manager<tauri::Wry>>(app: &M) {
+fn with_panel<M: Manager<tauri::Wry>>(
+	app: &M,
+	verb: &str,
+	op: impl FnOnce(&WebviewWindow) -> tauri::Result<()>,
+) {
 	match app.get_webview_window(PANEL_LABEL) {
 		Some(window) => {
-			if let Err(err) = reveal(&window) {
-				diagnostics::log_error(&format!("[copper] failed to reveal the panel: {err}"));
+			if let Err(err) = op(&window) {
+				diagnostics::log_error(&format!("[copper] failed to {verb} the panel: {err}"));
 			}
 		}
 		None => diagnostics::log_error(&format!("[copper] panel window '{PANEL_LABEL}' not found")),
 	}
+}
+
+/// Reveals the panel, or logs why it could not be reached.
+pub fn reveal_or_log<M: Manager<tauri::Wry>>(app: &M) {
+	with_panel(app, "reveal", reveal);
 }
 
 /// Hides the panel, or logs why it could not be reached.
 pub fn hide_or_log<M: Manager<tauri::Wry>>(app: &M) {
-	match app.get_webview_window(PANEL_LABEL) {
-		Some(window) => {
-			if let Err(err) = hide(&window) {
-				diagnostics::log_error(&format!("[copper] failed to hide the panel: {err}"));
-			}
+	with_panel(app, "hide", hide);
+}
+
+/// Hides the panel if it is visible and reveals it otherwise, or logs why it
+/// could not be reached. This is the tray's left-click behaviour, kept here so
+/// that the window lookup stays in the module that owns the window.
+pub fn toggle_or_log<M: Manager<tauri::Wry>>(app: &M) {
+	with_panel(app, "toggle", |window| {
+		if is_visible(window) {
+			hide(window)
+		} else {
+			reveal(window)
 		}
-		None => diagnostics::log_error(&format!("[copper] panel window '{PANEL_LABEL}' not found")),
-	}
+	});
 }
 
 /// Whether the panel is currently visible, defaulting to `false` if it cannot be
 /// determined — a failed query should not leave the tray toggle stuck.
-pub fn is_visible(window: &WebviewWindow) -> bool {
+fn is_visible(window: &WebviewWindow) -> bool {
 	window.is_visible().unwrap_or(false)
 }

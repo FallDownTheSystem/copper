@@ -7,10 +7,10 @@
 use tauri::{
 	menu::{Menu, MenuItem},
 	tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-	AppHandle, Manager,
+	AppHandle,
 };
 
-use crate::{diagnostics, panel};
+use crate::panel;
 
 const MENU_SHOW: &str = "show";
 const MENU_QUIT: &str = "quit";
@@ -47,17 +47,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
 				..
 			} = event
 			{
-				let app = tray.app_handle();
-				match app.get_webview_window(panel::PANEL_LABEL) {
-					Some(window) => {
-						if panel::is_visible(&window) {
-							panel::hide_or_log(app);
-						} else {
-							panel::reveal_or_log(app);
-						}
-					}
-					None => diagnostics::log_error("[copper] panel window not found on tray click"),
-				}
+				panel::toggle_or_log(tray.app_handle());
 			}
 		})
 		.build(app)?;

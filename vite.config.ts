@@ -9,7 +9,6 @@ import Icons from 'unplugin-icons/vite'
 import IconsResolver from 'unplugin-icons/resolver'
 import Unfonts from 'unplugin-fonts/vite'
 
-// https://vite.dev/config/
 export default defineConfig({
 	fmt: {
 		semi: false,
