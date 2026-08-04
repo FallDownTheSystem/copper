@@ -233,6 +233,20 @@ impl Store {
 
 	// --- the pipeline --------------------------------------------------------
 
+	/// The open space, refused when there is none or its file is unreadable.
+	///
+	/// A failed *watch* deliberately does not land here: the space stays fully
+	/// writable, it simply will not notice external edits.
+	fn writable(&mut self) -> Result<&mut OpenSpace> {
+		let open = self.open.as_mut().ok_or_else(no_space)?;
+		if let Some(reason) = &open.doc_error {
+			return Err(StoreError::Unavailable(format!(
+				"this space cannot be written while its file is unreadable: {reason}"
+			)));
+		}
+		Ok(open)
+	}
+
 	/// Applies `op`, writes the result, and records an undo snapshot.
 	///
 	/// `op` must be `Fn`, not `FnOnce`: an `FnOnce` is consumed by its first call
@@ -257,17 +271,10 @@ impl Store {
 		op: impl Fn(&mut Space) -> Result<T>,
 		snapshot: bool,
 	) -> Result<(T, Space)> {
-		let open = self.open.as_mut().ok_or_else(no_space)?;
-		// A failed *watch* deliberately does not land here: the space stays fully
-		// writable, it simply will not notice external edits.
-		if let Some(reason) = &open.doc_error {
-			return Err(StoreError::Unavailable(format!(
-				"this space cannot be written while its file is unreadable: {reason}"
-			)));
-		}
+		let open = self.writable()?;
 
 		let path = open.path.clone();
-		let dir = atomic::parent_dir(&path)?.to_path_buf();
+		let dir = atomic::parent_dir(&path)?;
 		let mut base = open.doc.clone();
 		let mut expected = open.on_disk_text.clone();
 		let mut rebased = false;
@@ -275,15 +282,18 @@ impl Store {
 		for _ in 0..MAX_CONFLICT_ATTEMPTS {
 			// The pre-operation state for undo, captured per attempt so that after a
 			// conflict it is the external document rather than the stale local one.
-			let pre_op = base.clone();
-			let mut working = base.clone();
+			// Cloned only where a snapshot will actually be pushed; `base` itself
+			// moves into `working`, because a conflict replaces it wholesale rather
+			// than reusing it.
+			let pre_op = snapshot.then(|| base.clone());
+			let mut working = base;
 			// Validate-then-mutate: an `op` that fails has changed nothing but its
 			// own scratch copy, so nothing reaches disk and no snapshot is pushed.
 			let value = op(&mut working)?;
 			format::normalise(&mut working);
 			let text = format::to_git_json(&working)?;
 
-			match commit_against(&path, &dir, &text, &expected)? {
+			match commit_against(&path, dir, &text, &expected)? {
 				Commit::Done => {
 					open.doc = working;
 					open.on_disk_text = text;
@@ -305,7 +315,7 @@ impl Store {
 					if rebased {
 						open.undo.clear();
 					}
-					if snapshot {
+					if let Some(pre_op) = pre_op {
 						open.undo.push(pre_op);
 					}
 					return Ok((value, open.doc.clone()));
@@ -345,12 +355,7 @@ impl Store {
 	/// The stacks move only after the write has committed (spec 4.7), so a failed
 	/// undo leaves both stacks, the document and the file exactly as they were.
 	fn restore(&mut self, undoing: bool) -> Result<Option<Space>> {
-		let open = self.open.as_mut().ok_or_else(no_space)?;
-		if let Some(reason) = &open.doc_error {
-			return Err(StoreError::Unavailable(format!(
-				"this space cannot be written while its file is unreadable: {reason}"
-			)));
-		}
+		let open = self.writable()?;
 
 		let peeked = if undoing {
 			open.undo.peek_undo()
@@ -366,9 +371,9 @@ impl Store {
 		format::normalise(&mut restored);
 		let text = format::to_git_json(&restored)?;
 		let path = open.path.clone();
-		let dir = atomic::parent_dir(&path)?.to_path_buf();
+		let dir = atomic::parent_dir(&path)?;
 
-		match commit_against(&path, &dir, &text, &open.on_disk_text)? {
+		match commit_against(&path, dir, &text, &open.on_disk_text)? {
 			Commit::Done => {}
 			Commit::Conflicted { .. } => {
 				let verb = if undoing { "undoing" } else { "redoing" };
@@ -490,12 +495,6 @@ impl Store {
 		self.open_space_locked(path, weak)
 	}
 
-	/// Registers the watch for the already-open space.
-	///
-	/// Returns a `store-error` payload on failure rather than emitting it; the
-	/// startup caller discards it (nothing is listening yet, spec 8A.2) while
-	/// `open_space` passes it on. The space stays open and fully writable either
-	/// way (spec 3.7).
 	/// Registers the watch, then closes the gap it left behind.
 	///
 	/// Reading the document and registering the watch cannot be one atomic step,
@@ -510,6 +509,12 @@ impl Store {
 		produced
 	}
 
+	/// Registers the watch for the already-open space.
+	///
+	/// Returns a `store-error` payload on failure rather than emitting it; the
+	/// startup caller discards it (nothing is listening yet, spec 8A.2) while
+	/// `open_space` passes it on. The space stays open and fully writable either
+	/// way (spec 3.7).
 	fn attach_watcher_locked(&mut self, weak: Weak<Mutex<Store>>) -> Option<StoreEvent> {
 		let open = self.open.as_mut()?;
 		open.watcher = None;
@@ -663,9 +668,8 @@ pub fn create_space(shared: &SharedStore, path: &Path, name: &str) -> Result<Spa
 /// durable write as failed would send Phase 4's user-visible failure path into a
 /// retry that duplicates the note.
 pub fn append_capture(shared: &SharedStore, body: &str) -> Result<String> {
-	let body = body.to_string();
 	let mut guard = lock(shared);
-	let (id, doc) = guard.mutate(|space| ops::add_note(space, &body, None))?;
+	let (id, doc) = guard.mutate(|space| ops::add_note(space, body, None))?;
 	let path = guard.active_path().map(path_string).unwrap_or_default();
 	let produced = vec![StoreEvent::SpaceChanged(SpaceChanged {
 		id: doc.id,
@@ -748,16 +752,7 @@ fn commit_against(path: &Path, dir: &Path, text: &str, expected: &str) -> Result
 
 		match prepared.commit(path) {
 			Ok(()) => Attempt::Done(Commit::Done),
-			Err(failure) => {
-				let transient = atomic::is_transient_commit_failure(&failure.error);
-				let err = io_err(path, "write", &failure.error);
-				if transient {
-					held = Some(failure.prepared);
-					Attempt::Transient(err)
-				} else {
-					Attempt::Failed(err)
-				}
-			}
+			Err(failure) => atomic::classify_commit_failure(path, failure, &mut held),
 		}
 	})
 }

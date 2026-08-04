@@ -13,7 +13,7 @@
 //! So identity is checked once at load and the document is refused (spec 1.5a),
 //! which is recoverable by hand-editing the file — a silent repair is not.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
@@ -65,7 +65,7 @@ pub fn from_json(text: &str) -> Result<Space> {
 }
 
 /// Rejects duplicate section ids and duplicate note ids, naming the offenders.
-pub fn validate_identity(space: &Space) -> Result<()> {
+fn validate_identity(space: &Space) -> Result<()> {
 	let duplicate_sections = duplicates(space.sections.iter().map(|section| section.id.as_str()));
 	if !duplicate_sections.is_empty() {
 		return Err(StoreError::Parse(format!(
@@ -134,17 +134,20 @@ pub fn normalise(space: &mut Space) {
 		space.active_section = space.sections[0].id.clone();
 	}
 
-	// 4. Repaired, never dropped.
-	let known: HashSet<&str> = space
+	// 4. Repaired, never dropped. A map rather than the set this step alone would
+	//    need, because step 5 wants the position and would otherwise rescan
+	//    `sections` once per note.
+	let index_of: HashMap<&str, usize> = space
 		.sections
 		.iter()
-		.map(|section| section.id.as_str())
+		.enumerate()
+		.map(|(index, section)| (section.id.as_str(), index))
 		.collect();
 	let reassign: Vec<usize> = space
 		.notes
 		.iter()
 		.enumerate()
-		.filter(|(_, note)| !known.contains(note.section.as_str()))
+		.filter(|(_, note)| !index_of.contains_key(note.section.as_str()))
 		.map(|(index, _)| index)
 		.collect();
 	for index in reassign {
@@ -155,10 +158,8 @@ pub fn normalise(space: &mut Space) {
 	//    the group. Every note reaches a group because step 4 has run.
 	let mut grouped: BTreeMap<usize, Vec<Note>> = BTreeMap::new();
 	for note in space.notes.drain(..) {
-		let position = space
-			.sections
-			.iter()
-			.position(|section| section.id == note.section)
+		let position = *index_of
+			.get(note.section.as_str())
 			.expect("step 4 gave every note an existing section");
 		grouped.entry(position).or_default().push(note);
 	}

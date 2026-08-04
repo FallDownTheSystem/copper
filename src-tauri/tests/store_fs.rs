@@ -93,10 +93,6 @@ impl Harness {
 			.mutate(|doc| ops::add_note(doc, &body, None))
 			.map(|(id, _)| id)
 	}
-
-	fn undo_depth(&self) -> usize {
-		usize::from(self.status().can_undo)
-	}
 }
 
 fn wait_until(mut ready: impl FnMut() -> bool) -> bool {
@@ -548,14 +544,14 @@ fn a_failed_operation_writes_nothing_and_pushes_no_snapshot() {
 	harness.add("alpha").unwrap();
 	let before = harness.doc();
 	let before_text = harness.text();
-	let depth = harness.undo_depth();
+	let can_undo = harness.status().can_undo;
 
 	let err = harness.add("   ").unwrap_err();
 	assert_eq!(err.kind(), "invalid");
 
 	assert_eq!(harness.doc(), before);
 	assert_eq!(harness.text(), before_text);
-	assert_eq!(harness.undo_depth(), depth);
+	assert_eq!(harness.status().can_undo, can_undo);
 	assert!(harness.sink.events().is_empty(), "a failed mutation emitted");
 }
 
@@ -848,7 +844,11 @@ fn a_mutation_against_unparseable_content_fails_without_writing() {
 	let err = harness.add("should not land").unwrap_err();
 
 	assert_eq!(err.kind(), "parse", "{}", err.message());
-	assert_eq!(std::fs::read_to_string(&path).unwrap(), poison, "the store overwrote a file it could not parse");
+	assert_eq!(
+		std::fs::read_to_string(&path).unwrap(),
+		poison,
+		"the store overwrote a file it could not parse"
+	);
 	assert_eq!(harness.doc(), before, "the in-memory document was discarded");
 	// It retried rather than failing on first sight (spec 2.3b).
 	assert!(started.elapsed() >= Duration::from_millis(400), "the read was not retried");
@@ -1083,10 +1083,7 @@ fn a_space_whose_watch_failed_is_still_writable() {
 	assert!(!status.errored, "a failed watch was reported as an unreadable document");
 
 	// Outside startup the failure is reported, alongside the usual recents change.
-	assert_eq!(
-		harness.sink.take().names_of(),
-		["settings-changed", "store-error"]
-	);
+	assert_eq!(harness.sink.take_names(), ["settings-changed", "store-error"]);
 
 	drop(blocked);
 	// The obstruction is gone; the recorded failure is not. `watching` reports the
@@ -1241,11 +1238,11 @@ fn the_emit_matrix_holds_for_every_command_path() {
 	// Both recents-touching commands emit exactly one settings-changed.
 	let other = harness.config.join("spaces").join("other.copper");
 	store::create_space(&harness.shared, &other, "other").unwrap();
-	assert_eq!(harness.sink.take().names_of(), ["settings-changed"]);
+	assert_eq!(harness.sink.take_names(), ["settings-changed"]);
 
 	store::open_space(&harness.shared, &harness.config.join("spaces").join("personal.copper"))
 		.unwrap();
-	assert_eq!(harness.sink.take().names_of(), ["settings-changed"]);
+	assert_eq!(harness.sink.take_names(), ["settings-changed"]);
 
 	// Failures emit nothing.
 	store::open_space(&harness.shared, Path::new("D:\\nope\\missing.copper")).unwrap_err();
@@ -1258,17 +1255,6 @@ fn the_emit_matrix_holds_for_every_command_path() {
 		"a failed command emitted: {:?}",
 		harness.sink.names()
 	);
-}
-
-/// Small extension trait so the emit matrix reads as a list of names.
-trait Names {
-	fn names_of(&self) -> Vec<&'static str>;
-}
-
-impl Names for Vec<StoreEvent> {
-	fn names_of(&self) -> Vec<&'static str> {
-		self.iter().map(StoreEvent::name).collect()
-	}
 }
 
 #[test]

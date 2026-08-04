@@ -157,6 +157,28 @@ impl Prepared {
 	}
 }
 
+/// Classifies a failed rename, parking the prepared file when another attempt is
+/// worth making so a retry does not serialise and fsync the same bytes again.
+///
+/// Shared by `write_atomic` and by `mutate`'s `commit_against`: they reach the
+/// rename by different routes but must classify its failure identically, and this
+/// is where error 5's transient-at-the-rename-step reading lives.
+pub fn classify_commit_failure<T>(
+	path: &Path,
+	failure: CommitFailure,
+	held: &mut Option<Prepared>,
+) -> Attempt<T> {
+	// Read before `failure.prepared` moves out of the failure.
+	let transient = is_transient_commit_failure(&failure.error);
+	let err = io_err(path, "write", &failure.error);
+	if transient {
+		*held = Some(failure.prepared);
+		Attempt::Transient(err)
+	} else {
+		Attempt::Failed(err)
+	}
+}
+
 /// prepare + commit in one call, retrying transient sharing violations.
 ///
 /// For single-writer destinations only — `settings.json` and the initial
@@ -178,16 +200,7 @@ pub fn write_atomic(path: &Path, text: &str) -> Result<()> {
 		};
 		match prepared.commit(path) {
 			Ok(()) => Attempt::Done(()),
-			Err(failure) => {
-				let transient = is_transient_commit_failure(&failure.error);
-				let err = io_err(path, "write", &failure.error);
-				if transient {
-					held = Some(failure.prepared);
-					Attempt::Transient(err)
-				} else {
-					Attempt::Failed(err)
-				}
-			}
+			Err(failure) => classify_commit_failure(path, failure, &mut held),
 		}
 	})
 }

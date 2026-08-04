@@ -15,7 +15,7 @@
 //! listener that touches store state would deadlock against a non-reentrant
 //! `std::sync::Mutex`.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
 
@@ -132,27 +132,37 @@ impl RecordingSink {
 		Self::default()
 	}
 
+	/// Tolerates a poisoned mutex for the same reason `store::lock` does: one
+	/// panicking test must not turn every later assertion into a second failure.
+	fn recorded(&self) -> MutexGuard<'_, Vec<StoreEvent>> {
+		self.events.lock().unwrap_or_else(|err| err.into_inner())
+	}
+
 	pub fn events(&self) -> Vec<StoreEvent> {
-		self.events.lock().unwrap_or_else(|err| err.into_inner()).clone()
+		self.recorded().clone()
 	}
 
 	pub fn take(&self) -> Vec<StoreEvent> {
-		std::mem::take(&mut *self.events.lock().unwrap_or_else(|err| err.into_inner()))
+		std::mem::take(&mut *self.recorded())
 	}
 
 	/// The names of the events recorded so far, in order — the form most emit
-	/// assertions actually want.
+	/// assertions actually want. Read under the guard: cloning the events only
+	/// to borrow their static names would copy every payload string.
 	pub fn names(&self) -> Vec<&'static str> {
-		self.events().iter().map(StoreEvent::name).collect()
+		self.recorded().iter().map(StoreEvent::name).collect()
+	}
+
+	/// `take` and `names` in one call. An emit assertion almost always wants both:
+	/// the names one step produced, and a cleared recording for the next.
+	pub fn take_names(&self) -> Vec<&'static str> {
+		self.take().iter().map(StoreEvent::name).collect()
 	}
 }
 
 impl EventSink for RecordingSink {
 	fn emit(&self, event: &StoreEvent) {
-		self.events
-			.lock()
-			.unwrap_or_else(|err| err.into_inner())
-			.push(event.clone());
+		self.recorded().push(event.clone());
 	}
 }
 

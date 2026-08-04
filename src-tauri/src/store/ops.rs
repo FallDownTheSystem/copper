@@ -50,7 +50,7 @@ fn clean_name(name: &str) -> Result<String> {
 /// no-op (spec 5.5) — the frontend has no legitimate empty-selection call, and
 /// returning an unchanged document from an apparently successful mutation would
 /// mislead the caller into thinking something happened.
-pub fn dedupe_ids(ids: &[String]) -> Result<Vec<String>> {
+fn dedupe_ids(ids: &[String]) -> Result<Vec<String>> {
 	let mut seen = HashSet::new();
 	let mut unique = Vec::with_capacity(ids.len());
 	for id in ids {
@@ -62,6 +62,16 @@ pub fn dedupe_ids(ids: &[String]) -> Result<Vec<String>> {
 		return Err(StoreError::Invalid("no notes were selected".into()));
 	}
 	Ok(unique)
+}
+
+/// The one spelling of each. Four call sites raise the section message and two
+/// raise the note one, and they have to stay the same sentence.
+fn no_such_note(id: &str) -> StoreError {
+	StoreError::NotFound(format!("no such note: {id}"))
+}
+
+fn no_such_section(id: &str) -> StoreError {
+	StoreError::NotFound(format!("no such section: {id}"))
 }
 
 fn require_notes(space: &Space, ids: &[String]) -> Result<()> {
@@ -84,7 +94,7 @@ fn require_section(space: &Space, id: &str) -> Result<()> {
 	if space.has_section(id) {
 		Ok(())
 	} else {
-		Err(StoreError::NotFound(format!("no such section: {id}")))
+		Err(no_such_section(id))
 	}
 }
 
@@ -139,7 +149,7 @@ pub fn edit_note(space: &mut Space, id: &str, body: &str) -> Result<()> {
 	let now = now_rfc3339();
 	let note = space
 		.note_mut(id)
-		.ok_or_else(|| StoreError::NotFound(format!("no such note: {id}")))?;
+		.ok_or_else(|| no_such_note(id))?;
 	note.body = body;
 	note.updated = now;
 	normalise(space);
@@ -187,7 +197,7 @@ pub fn reorder_note(space: &mut Space, id: &str, section: &str, index: i64) -> R
 		.notes
 		.iter()
 		.position(|note| note.id == id)
-		.ok_or_else(|| StoreError::NotFound(format!("no such note: {id}")))?;
+		.ok_or_else(|| no_such_note(id))?;
 	require_section(space, section)?;
 
 	let mut moved = space.notes.remove(position);
@@ -323,7 +333,7 @@ pub fn rename_section(space: &mut Space, id: &str, name: &str) -> Result<()> {
 		.sections
 		.iter_mut()
 		.find(|section| section.id == id)
-		.ok_or_else(|| StoreError::NotFound(format!("no such section: {id}")))?;
+		.ok_or_else(|| no_such_section(id))?;
 	section.name = name;
 	normalise(space);
 	Ok(())
@@ -334,7 +344,7 @@ pub fn rename_section(space: &mut Space, id: &str, name: &str) -> Result<()> {
 pub fn reorder_section(space: &mut Space, id: &str, index: i64) -> Result<()> {
 	let position = space
 		.section_index(id)
-		.ok_or_else(|| StoreError::NotFound(format!("no such section: {id}")))?;
+		.ok_or_else(|| no_such_section(id))?;
 
 	let section = space.sections.remove(position);
 	let target = clamp_index(index, space.sections.len());
@@ -363,7 +373,7 @@ pub fn set_active_section(space: &mut Space, id: &str) -> Result<()> {
 pub fn delete_section(space: &mut Space, id: &str) -> Result<()> {
 	let position = space
 		.section_index(id)
-		.ok_or_else(|| StoreError::NotFound(format!("no such section: {id}")))?;
+		.ok_or_else(|| no_such_section(id))?;
 	if space.sections.len() == 1 {
 		return Err(StoreError::Invalid(
 			"the last section cannot be deleted — a space always needs somewhere to capture into"
