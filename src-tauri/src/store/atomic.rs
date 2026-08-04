@@ -77,6 +77,16 @@ pub fn with_backoff<T>(mut attempt: impl FnMut() -> Attempt<T>) -> Result<T> {
 	}
 }
 
+/// Whether a failed *open* is worth another try shortly.
+///
+/// Only error 32 here. On the read side error 5 keeps its ordinary meaning —
+/// the file is not ours to read — and the reasoning that makes it retryable at
+/// the rename step (a temp file was already written in that directory, so
+/// permissions are not the problem) does not apply.
+pub fn is_sharing_violation(err: &std::io::Error) -> bool {
+	err.raw_os_error() == Some(ERROR_SHARING_VIOLATION)
+}
+
 /// Whether a failed rename is worth another try shortly.
 pub fn is_transient_commit_failure(err: &std::io::Error) -> bool {
 	matches!(

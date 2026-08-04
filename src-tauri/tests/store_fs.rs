@@ -48,8 +48,8 @@ impl Harness {
 		let store = store::bootstrap_store(&config, sink.clone()).unwrap();
 		let shared: SharedStore = Arc::new(Mutex::new(store));
 		assert!(
-			store::attach_watcher(&shared).is_none(),
-			"the watch should register in a temp directory"
+			store::attach_watcher(&shared).is_empty(),
+			"the watch should register cleanly in a temp directory, with nothing to reconcile"
 		);
 		assert!(sink.take().is_empty(), "startup emitted an event (spec 8A.2)");
 		Self {
@@ -608,6 +608,104 @@ fn undo_after_a_conflict_restores_the_external_document() {
 	assert_eq!(harness.text(), external_text);
 }
 
+/// The second half of A9.20, and the one that was missing.
+///
+/// One undo after a conflict correctly reverts only our own change. The *second*
+/// undo used to reach a snapshot taken before the external write and restore it,
+/// destroying somebody else's note — and the watcher could not rescue it,
+/// because the merged document is what we just wrote and the reload is
+/// suppressed as a self-write, so spec 4.6's clear never ran.
+#[test]
+fn undoing_past_a_conflict_cannot_reach_a_pre_external_document() {
+	let harness = Harness::new();
+	harness.add("ours, first").unwrap();
+	harness.add("ours, second").unwrap();
+	external_note(&harness, "theirs");
+
+	harness.add("ours, third").unwrap();
+
+	// One undo: our own change goes, the external one stays.
+	let restored = store::lock(&harness.shared).undo().unwrap().unwrap();
+	assert_eq!(
+		body_set(&restored),
+		["ours, first", "ours, second", "theirs"],
+		"the first undo did not revert exactly our own change"
+	);
+
+	// There is nothing left to undo into: every older snapshot predates the
+	// external change.
+	assert!(
+		!harness.status().can_undo,
+		"a pre-external snapshot survived the rebase and can still be undone into"
+	);
+	assert!(store::lock(&harness.shared).undo().unwrap().is_none());
+
+	let on_disk = format::from_json(&harness.text()).unwrap();
+	assert!(
+		on_disk.notes.iter().any(|note| note.body == "theirs"),
+		"undoing past the conflict destroyed the external change"
+	);
+}
+
+/// The same defect one step worse: a no-snapshot mutation pushes nothing, so
+/// after a conflict the *first* undo reached a pre-external document.
+#[test]
+fn undoing_after_a_conflicting_no_snapshot_mutation_cannot_destroy_it() {
+	let harness = Harness::new();
+	let id = harness.add("ours, first").unwrap();
+	harness.add("ours, second").unwrap();
+	external_note(&harness, "theirs");
+
+	// `edit_note` takes no snapshot, so nothing is pushed to offset the rebase.
+	store::lock(&harness.shared)
+		.mutate_no_snapshot(|doc| ops::edit_note(doc, &id, "ours, first, revised"))
+		.unwrap();
+
+	assert!(
+		!harness.status().can_undo,
+		"a pre-external snapshot survived a no-snapshot rebase"
+	);
+	assert!(store::lock(&harness.shared).undo().unwrap().is_none());
+
+	let on_disk = format::from_json(&harness.text()).unwrap();
+	assert_eq!(
+		body_set(&on_disk),
+		["ours, first, revised", "ours, second", "theirs"],
+		"the edit did not merge with the external change"
+	);
+}
+
+/// The gap between reading a document and the watch going live produces no
+/// event, so a write landing in it would sit unnoticed until the next change —
+/// which, for a file nobody touches again, is forever.
+#[test]
+fn a_write_landing_before_the_watch_registers_is_reconciled() {
+	let dir = tempfile::tempdir().unwrap();
+	let config = dir.path().join("Copper");
+	let sink = Arc::new(RecordingSink::new());
+	let store = store::bootstrap_store(&config, sink.clone()).unwrap();
+	let shared: SharedStore = Arc::new(Mutex::new(store));
+
+	// Exactly the bootstrap-to-attach window: the document has been read, and
+	// nothing is watching yet.
+	let path = store::lock(&shared).active_path().unwrap().to_path_buf();
+	let mut doc = format::from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
+	let section = doc.active_section.clone();
+	ops::add_note(&mut doc, "written into the gap", Some(&section)).unwrap();
+	external_write(&path, &format::to_git_json(&doc).unwrap());
+
+	let produced = store::attach_watcher(&shared);
+
+	let held = store::lock(&shared).active_space().unwrap();
+	assert_eq!(
+		body_set(&held),
+		["written into the gap"],
+		"the write that landed before the watch went live was never noticed"
+	);
+	assert_eq!(reasons(&produced), [ChangeReason::External]);
+	assert!(store::lock(&shared).status().watching);
+}
+
 #[test]
 fn a_conflict_against_a_non_canonical_document_re_applies_correctly() {
 	let harness = Harness::new();
@@ -864,10 +962,13 @@ fn recovery_from_a_byte_identical_restore_clears_the_error() {
 
 	external_write(&path, "{ not a document");
 	assert!(wait_until(|| harness.status().errored), "the space never went errored");
-	assert!(matches!(
-		harness.sink.events().last(),
-		Some(StoreEvent::StoreError(_))
-	));
+	// Invalidation announces itself once and says nothing else.
+	let names = harness.sink.names();
+	assert!(!names.is_empty(), "going errored emitted nothing");
+	assert!(
+		names.iter().all(|name| *name == "store-error"),
+		"invalidation emitted more than a store-error: {names:?}"
+	);
 	// The in-memory document survives, and mutations are refused.
 	assert_eq!(harness.doc().notes.len(), 1);
 	assert_eq!(harness.add("blocked").unwrap_err().kind(), "unavailable");
@@ -1075,21 +1176,62 @@ fn append_capture_emits_exactly_one_space_changed_with_reason_capture() {
 fn the_emit_matrix_holds_for_every_command_path() {
 	let harness = Harness::new();
 	let id = harness.add("alpha").unwrap();
+	harness.add("beta").unwrap();
 	let section = harness.doc().active_section.clone();
 	harness.sink.take();
 
-	// Every frontend-invoked mutation: nothing emits, because the return value
-	// already describes the change (spec 8.4).
-	let mut store_guard = store::lock(&harness.shared);
-	store_guard.mutate(|doc| ops::set_notes_done(doc, &[id.clone()], true)).unwrap();
-	store_guard.mutate_no_snapshot(|doc| ops::edit_note(doc, &id, "alpha, revised")).unwrap();
-	store_guard.mutate(|doc| ops::add_section(doc, "Later")).unwrap();
-	store_guard.mutate_no_snapshot(|doc| ops::set_active_section(doc, &section)).unwrap();
-	store_guard.mutate(|doc| ops::delete_notes(doc, &[id.clone()])).unwrap();
-	store_guard.undo().unwrap();
-	store_guard.redo().unwrap();
-	store_guard.update_settings(serde_json::from_str(r#"{"theme":"dark"}"#).unwrap()).unwrap();
-	drop(store_guard);
+	// Every frontend-invoked mutation, all eighteen of them: nothing emits,
+	// because the return value already describes the change (spec 8.4). Closures
+	// resolve section ids from the document so the whole matrix runs under one
+	// guard.
+	let other_section = |doc: &Space| {
+		doc.sections
+			.iter()
+			.find(|candidate| candidate.id != section)
+			.expect("a second section")
+			.id
+			.clone()
+	};
+	let all_notes = |doc: &Space| -> Vec<String> {
+		doc.notes.iter().map(|note| note.id.clone()).collect()
+	};
+
+	let mut guard = store::lock(&harness.shared);
+	guard.mutate(|doc| ops::set_notes_done(doc, &[id.clone()], true)).unwrap();
+	guard.mutate_no_snapshot(|doc| ops::edit_note(doc, &id, "alpha, revised")).unwrap();
+	guard.mutate(|doc| ops::add_section(doc, "Later")).unwrap();
+	guard
+		.mutate(|doc| {
+			let target = other_section(doc);
+			ops::rename_section(doc, &target, "Renamed")
+		})
+		.unwrap();
+	guard
+		.mutate(|doc| {
+			let target = other_section(doc);
+			ops::reorder_section(doc, &target, 0)
+		})
+		.unwrap();
+	guard.mutate(|doc| ops::reorder_note(doc, &id, &section, 0)).unwrap();
+	guard
+		.mutate(|doc| {
+			let target = other_section(doc);
+			ops::move_notes(doc, &[id.clone()], &target)
+		})
+		.unwrap();
+	guard.mutate(|doc| ops::merge_notes(doc, &all_notes(doc))).unwrap();
+	guard.mutate_no_snapshot(|doc| ops::set_active_section(doc, &section)).unwrap();
+	guard.mutate(|doc| ops::delete_notes(doc, &all_notes(doc))).unwrap();
+	guard
+		.mutate(|doc| {
+			let target = other_section(doc);
+			ops::delete_section(doc, &target)
+		})
+		.unwrap();
+	guard.undo().unwrap();
+	guard.redo().unwrap();
+	guard.update_settings(serde_json::from_str(r#"{"theme":"dark"}"#).unwrap()).unwrap();
+	drop(guard);
 	assert!(
 		harness.sink.events().is_empty(),
 		"a mutating command emitted: {:?}",
@@ -1241,10 +1383,10 @@ fn update_settings_persists_and_returns_the_new_settings() {
 	assert_eq!(updated.theme, "dark");
 	assert_eq!(updated.panel_position.unwrap().x, 2140);
 
-	let (reloaded, notice) = settings::load(&harness.config.join("settings.json"));
-	assert!(notice.is_none());
-	assert_eq!(reloaded.theme, "dark");
-	assert_eq!(reloaded.panel_position, updated.panel_position);
+	let reloaded = settings::load(&harness.config.join("settings.json"));
+	assert!(reloaded.notice.is_none());
+	assert_eq!(reloaded.settings.theme, "dark");
+	assert_eq!(reloaded.settings.panel_position, updated.panel_position);
 	// Opening a space is still the only thing that touches recents.
-	assert_eq!(reloaded.recents, harness.settings().recents);
+	assert_eq!(reloaded.settings.recents, harness.settings().recents);
 }

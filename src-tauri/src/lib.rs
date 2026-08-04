@@ -93,8 +93,13 @@ pub fn run() {
 			// A watch that will not register leaves the space open and fully
 			// writable; it only means external edits go unnoticed. get_status
 			// reports it as watching: false.
-			if let Some(failure) = store::attach_watcher(&shared) {
-				diagnostics::log_error(&format!("[copper] store watch: {failure:?}"));
+			//
+			// This also reconciles anything written to the space file between
+			// bootstrap reading it and the watch going live. The events are logged
+			// rather than emitted — nothing is listening — and the state they
+			// describe is already in the store for the mount-time pull to read.
+			for event in store::attach_watcher(&shared) {
+				diagnostics::log_error(&format!("[copper] store startup: {event:?}"));
 			}
 
 			// The window is not shown here. It stays hidden until the tray reveals it.

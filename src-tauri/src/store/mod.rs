@@ -270,6 +270,7 @@ impl Store {
 		let dir = atomic::parent_dir(&path)?.to_path_buf();
 		let mut base = open.doc.clone();
 		let mut expected = open.on_disk_text.clone();
+		let mut rebased = false;
 
 		for _ in 0..MAX_CONFLICT_ATTEMPTS {
 			// The pre-operation state for undo, captured per attempt so that after a
@@ -286,6 +287,24 @@ impl Store {
 				Commit::Done => {
 					open.doc = working;
 					open.on_disk_text = text;
+					// This is the second route by which an external change lands, and
+					// it needs the same treatment as the first. Spec 4.6 clears both
+					// stacks on a watcher reload because their entries describe a
+					// document that is no longer on disk — which is exactly as true
+					// here: every snapshot underneath predates the external change, so
+					// undoing past our own operation would silently destroy it. The
+					// watcher cannot rescue this, either: the merged document *is*
+					// what we just wrote, so the reload is suppressed as a self-write
+					// and 4.6 never runs.
+					//
+					// Clearing first and pushing after leaves exactly one undo — the
+					// one that reverts our own operation and stops (A9.20). A
+					// no-snapshot mutation pushes nothing and so leaves no undo at
+					// all, which is right: it has nothing of its own to revert, and
+					// every older entry would take the external change with it.
+					if rebased {
+						open.undo.clear();
+					}
 					if snapshot {
 						open.undo.push(pre_op);
 					}
@@ -294,6 +313,7 @@ impl Store {
 				Commit::Conflicted { text, doc } => {
 					base = doc;
 					expected = text;
+					rebased = true;
 				}
 			}
 		}
@@ -351,10 +371,11 @@ impl Store {
 		match commit_against(&path, &dir, &text, &open.on_disk_text)? {
 			Commit::Done => {}
 			Commit::Conflicted { .. } => {
+				let verb = if undoing { "undoing" } else { "redoing" };
 				return Err(StoreError::Conflict(format!(
-					"{} changed outside Copper; reload before undoing",
+					"{} changed outside Copper; reload before {verb}",
 					path.display()
-				)))
+				)));
 			}
 		}
 
@@ -430,11 +451,11 @@ impl Store {
 		// Dropping the previous `OpenSpace` drops its debouncer, which unwatches
 		// the old directory (spec 3.8).
 		self.open = Some(opened);
-		let watch_event = self.attach_watcher_locked(weak);
+
+		let mut produced = vec![StoreEvent::settings_changed()];
+		produced.extend(self.attach_and_reconcile(weak));
 
 		let doc = self.open.as_ref().expect("just assigned").doc.clone();
-		let mut produced = vec![StoreEvent::settings_changed()];
-		produced.extend(watch_event);
 		Ok((doc, produced))
 	}
 
@@ -475,6 +496,20 @@ impl Store {
 	/// startup caller discards it (nothing is listening yet, spec 8A.2) while
 	/// `open_space` passes it on. The space stays open and fully writable either
 	/// way (spec 3.7).
+	/// Registers the watch, then closes the gap it left behind.
+	///
+	/// Reading the document and registering the watch cannot be one atomic step,
+	/// so an external write landing between them produces no event and would
+	/// otherwise sit unnoticed until the *next* change — which for a file nobody
+	/// touches again is forever. One re-read after registration reconciles it,
+	/// and costs nothing in the ordinary case: `reload_from_disk` compares against
+	/// `on_disk_text` and returns no events when they match.
+	fn attach_and_reconcile(&mut self, weak: Weak<Mutex<Store>>) -> Vec<StoreEvent> {
+		let mut produced: Vec<StoreEvent> = self.attach_watcher_locked(weak).into_iter().collect();
+		produced.extend(self.reload_from_disk());
+		produced
+	}
+
 	fn attach_watcher_locked(&mut self, weak: Weak<Mutex<Store>>) -> Option<StoreEvent> {
 		let open = self.open.as_mut()?;
 		open.watcher = None;
@@ -595,9 +630,13 @@ pub fn bootstrap_store(config_dir: &Path, sink: Arc<dyn EventSink>) -> Result<St
 /// resolves the store through the handle that `init` is still in the middle of
 /// producing — a watch registered there would have a live callback with nothing
 /// to resolve.
-pub fn attach_watcher(shared: &SharedStore) -> Option<StoreEvent> {
+/// Returns whatever the registration and the reconciliation produced. Startup
+/// discards it — nothing is listening yet (spec 8A.2), and the reconciliation's
+/// value there is the *state* it fixes, which the frontend's mount-time pull
+/// then reads.
+pub fn attach_watcher(shared: &SharedStore) -> Vec<StoreEvent> {
 	let weak = Arc::downgrade(shared);
-	lock(shared).attach_watcher_locked(weak)
+	lock(shared).attach_and_reconcile(weak)
 }
 
 pub fn open_space(shared: &SharedStore, path: &Path) -> Result<Space> {

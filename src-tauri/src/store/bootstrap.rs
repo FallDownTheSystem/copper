@@ -42,16 +42,25 @@ pub fn init(config_dir: &Path) -> Result<Bootstrapped> {
 	std::fs::create_dir_all(&spaces_dir).map_err(|err| io_err(&spaces_dir, "create", &err))?;
 
 	let settings_path = config_dir.join(settings::FILE_NAME);
-	let had_settings = settings_path.exists();
-	let (mut settings, startup_notice) = settings::load(&settings_path);
+	let loaded = settings::load(&settings_path);
+	let mut settings = loaded.settings;
+	let mut notices: Vec<String> = loaded.notice.into_iter().collect();
 
-	let open = resolve_space(&settings, &spaces_dir)?;
+	let (open, unopenable) = resolve_space(&settings, &spaces_dir)?;
+	notices.extend(unopenable);
 
 	let before = settings.clone();
 	settings.touch_recent(&path_string(&open.path));
-	// Writing only when something actually changed keeps a plain relaunch from
-	// touching the file at all.
-	if !had_settings || startup_notice.is_some() || settings != before {
+
+	// Two conditions, and the first one is not an optimisation. `may_overwrite`
+	// is false exactly when the existing file could not be read or parsed *and*
+	// could not be moved out of the way — in which case saving would replace the
+	// user's recents list with the defaults we fell back to, destroying the file
+	// this function just warned them about. The second condition keeps a plain
+	// relaunch from touching the file at all.
+	if loaded.origin.may_overwrite()
+		&& (loaded.origin.needs_a_file() || !notices.is_empty() || settings != before)
+	{
 		settings::save(&settings_path, &settings)?;
 	}
 
@@ -60,7 +69,7 @@ pub fn init(config_dir: &Path) -> Result<Bootstrapped> {
 		settings_path,
 		spaces_dir,
 		open: Some(open),
-		startup_notice,
+		startup_notice: (!notices.is_empty()).then(|| notices.join("\n")),
 	})
 }
 
@@ -69,7 +78,13 @@ pub fn init(config_dir: &Path) -> Result<Bootstrapped> {
 /// **Unavailable entries are never removed from `recents`** (spec 7.3): a path
 /// in a repository that simply is not checked out right now must come back when
 /// it is.
-fn resolve_space(settings: &Settings, spaces_dir: &Path) -> Result<OpenSpace> {
+///
+/// Also returns a notice for every candidate that was *there* and still would
+/// not open. Skipping those silently is the bad case: the fallback then becomes
+/// sticky, because `touch_recent` promotes it to the front of `recents`, and the
+/// user is left looking at the wrong space with no indication that their real
+/// one is sitting on disk with a syntax error in it.
+fn resolve_space(settings: &Settings, spaces_dir: &Path) -> Result<(OpenSpace, Vec<String>)> {
 	let mut candidates: Vec<&str> = Vec::new();
 	if let Some(active) = settings.active_recent() {
 		candidates.push(active);
@@ -80,9 +95,15 @@ fn resolve_space(settings: &Settings, spaces_dir: &Path) -> Result<OpenSpace> {
 		}
 	}
 
+	let mut notices = Vec::new();
 	for candidate in candidates {
-		if let Ok(open) = open_at(Path::new(candidate)) {
-			return Ok(open);
+		match open_at(Path::new(candidate)) {
+			Ok(open) => return Ok((open, notices)),
+			// A missing file is the ordinary case spec 7.3 is about — a drive that
+			// is not connected, a repository that is not checked out — and saying so
+			// on every launch would be noise. Anything else is a real failure.
+			Err(err) if err.kind() == "not-found" => {}
+			Err(err) => notices.push(format!("{candidate} could not be opened: {err}")),
 		}
 	}
 
@@ -93,9 +114,9 @@ fn resolve_space(settings: &Settings, spaces_dir: &Path) -> Result<OpenSpace> {
 		// authoritative and fail with its own error rather than writing beside it.
 		// Silently creating `personal-2.copper` would strand the user's real notes
 		// in a file the app has stopped opening.
-		return open_at(&default_path);
+		return open_at(&default_path).map(|open| (open, notices));
 	}
-	create_default(&default_path)
+	create_default(&default_path).map(|open| (open, notices))
 }
 
 fn open_at(path: &Path) -> Result<OpenSpace> {
@@ -174,12 +195,81 @@ mod tests {
 		let reopened = init(&config).unwrap();
 
 		assert_eq!(path_string(&reopened.open.unwrap().path), real);
+		// A merely absent entry is the ordinary case spec 7.3 describes — a drive
+		// that is not connected — and saying so on every launch would be noise.
+		assert!(
+			reopened.startup_notice.is_none(),
+			"a missing recents entry produced a notice: {:?}",
+			reopened.startup_notice
+		);
 		assert!(
 			reopened.settings.recents.iter().any(|entry| entry == &missing),
 			"an unavailable entry was pruned: {:?}",
 			reopened.settings.recents
 		);
 		assert_eq!(reopened.settings.recents[0], real);
+	}
+
+	/// The failure this pairing exists to prevent: a notice used to be enough on
+	/// its own to trigger a save, so an unreadable `settings.json` was reported
+	/// to the user and then replaced with the defaults Copper fell back to.
+	#[test]
+	fn an_unreadable_settings_file_is_never_overwritten() {
+		use std::os::windows::fs::OpenOptionsExt;
+
+		let dir = tempfile::tempdir().unwrap();
+		let config = dir.path().join("Copper");
+		let first = init(&config).unwrap();
+		let settings_path = config.join(settings::FILE_NAME);
+		let original = std::fs::read(&settings_path).unwrap();
+		assert!(!first.settings.recents.is_empty());
+
+		// Held with no sharing, so it cannot be read and cannot be renamed away.
+		let held = std::fs::OpenOptions::new()
+			.read(true)
+			.share_mode(0)
+			.open(&settings_path)
+			.unwrap();
+
+		let second = init(&config).unwrap();
+
+		assert!(second.startup_notice.is_some(), "an unreadable file went unreported");
+		assert!(second.open.is_some(), "startup did not continue");
+
+		// The test cannot read it either while the handle is held.
+		drop(held);
+		assert_eq!(
+			std::fs::read(&settings_path).unwrap(),
+			original,
+			"startup destroyed the settings file it could not read"
+		);
+	}
+
+	/// Spec 6.6a. Skipping this silently is the bad case: `touch_recent` promotes
+	/// the fallback to the front of `recents`, so the wrong space becomes sticky
+	/// while the user's real one sits on disk with a syntax error in it.
+	#[test]
+	fn a_recents_entry_that_exists_but_will_not_open_is_reported() {
+		let dir = tempfile::tempdir().unwrap();
+		let config = dir.path().join("Copper");
+		let first = init(&config).unwrap();
+		let fallback = path_string(&first.open.unwrap().path);
+
+		let broken = dir.path().join("broken.copper");
+		std::fs::write(&broken, "<<<<<<< HEAD\n{ }\n").unwrap();
+
+		let mut settings = first.settings;
+		settings.recents = vec![path_string(&broken), fallback.clone()];
+		settings.active_space = 0;
+		settings::save(&config.join(settings::FILE_NAME), &settings).unwrap();
+
+		let second = init(&config).unwrap();
+
+		assert_eq!(path_string(&second.open.unwrap().path), fallback);
+		let notice = second
+			.startup_notice
+			.expect("a space that exists and will not open must be reported");
+		assert!(notice.contains("broken.copper"), "{notice}");
 	}
 
 	#[test]

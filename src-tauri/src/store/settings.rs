@@ -18,8 +18,9 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
-use super::atomic::write_atomic;
+use super::atomic::{self, write_atomic, Attempt};
 use super::error::{io_err, Result};
 use super::format::{now_rfc3339, to_git_json};
 
@@ -28,11 +29,12 @@ const MAX_RECENTS: usize = 20;
 
 pub const FILE_NAME: &str = "settings.json";
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", default)]
+/// Serialize only. Reading goes through [`RawSettings`], which repairs field by
+/// field rather than failing the whole file over one bad value.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Settings {
 	pub recents: Vec<String>,
-	#[serde(deserialize_with = "deserialise_active_space")]
 	pub active_space: usize,
 	pub panel_position: Option<PanelPosition>,
 	pub shortcuts: Shortcuts,
@@ -72,12 +74,143 @@ impl Default for Shortcuts {
 	}
 }
 
-/// Signed on the wire, clamped in memory (spec 6.1a).
-fn deserialise_active_space<'de, D: Deserializer<'de>>(
-	deserializer: D,
-) -> std::result::Result<usize, D::Error> {
-	let raw = i64::deserialize(deserializer)?;
-	Ok(if raw < 0 { 0 } else { raw as usize })
+/// Every field as raw JSON, so no single bad value can fail the parse.
+///
+/// Spec 6.1a's principle — a field the store can repair locally must never be
+/// able to make the surrounding document unloadable — was written about
+/// `activeSpace`, but nothing in the reasoning is specific to that field. A
+/// wrong-typed `theme`, a `panelPosition` missing its `y`, or one non-string
+/// entry in `recents` would otherwise send the whole file to the quarantine
+/// path and cost the user their entire recents list. Only JSON that is not JSON
+/// at all reaches quarantine now.
+///
+/// `shortcuts` is the case that will bite in Phase 7, when the settings view
+/// starts writing chords the user typed.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct RawSettings {
+	recents: Value,
+	active_space: Value,
+	panel_position: Value,
+	shortcuts: Value,
+	theme: Value,
+}
+
+impl RawSettings {
+	/// Returns the repaired settings and one notice per field that needed it.
+	fn repair(self) -> (Settings, Vec<String>) {
+		let defaults = Settings::default();
+		let mut notices = Vec::new();
+
+		let recents = match self.recents {
+			Value::Null => defaults.recents,
+			Value::Array(entries) => {
+				let found = entries.len();
+				let paths: Vec<String> = entries
+					.into_iter()
+					.filter_map(|entry| match entry {
+						Value::String(path) => Some(path),
+						_ => None,
+					})
+					.collect();
+				if paths.len() != found {
+					notices.push(format!(
+						"{} of the {found} entries in \"recents\" were not paths and have been \
+						 dropped.",
+						found - paths.len()
+					));
+				}
+				paths
+			}
+			_ => {
+				notices.push("\"recents\" was not a list of paths and has been emptied.".into());
+				defaults.recents
+			}
+		};
+
+		// Out of range clamps silently, per spec 6.1a — the value is the right
+		// kind of thing and just points nowhere. Only a value that is not a number
+		// at all is worth telling the user about.
+		let active_space = match &self.active_space {
+			Value::Null => 0,
+			Value::Number(number) => number
+				.as_i64()
+				.map_or(0, |index| if index < 0 { 0 } else { index as usize }),
+			_ => {
+				notices.push(
+					"\"activeSpace\" was not a number; the first space has been made active."
+						.into(),
+				);
+				0
+			}
+		};
+
+		let panel_position = match self.panel_position {
+			Value::Null => None,
+			raw => match serde_json::from_value::<PanelPosition>(raw) {
+				Ok(position) => Some(position),
+				Err(_) => {
+					notices.push(
+						"\"panelPosition\" was not a point; the panel will open in its default \
+						 position."
+							.into(),
+					);
+					None
+				}
+			},
+		};
+
+		let shortcuts = repair_shortcuts(self.shortcuts, &mut notices);
+
+		let theme = match self.theme {
+			Value::Null => defaults.theme,
+			Value::String(theme) => theme,
+			_ => {
+				notices.push("\"theme\" was not a name and has been reset to \"system\".".into());
+				defaults.theme
+			}
+		};
+
+		let mut settings = Settings {
+			recents,
+			active_space,
+			panel_position,
+			shortcuts,
+			theme,
+		};
+		settings.clamp();
+		(settings, notices)
+	}
+}
+
+/// Repaired one chord at a time, so a bad `capture` does not also cost the user
+/// their `summon`.
+fn repair_shortcuts(raw: Value, notices: &mut Vec<String>) -> Shortcuts {
+	let mut shortcuts = Shortcuts::default();
+	let map = match raw {
+		Value::Null => return shortcuts,
+		Value::Object(map) => map,
+		_ => {
+			notices
+				.push("\"shortcuts\" was not a pair of chords; the defaults have been restored."
+					.into());
+			return shortcuts;
+		}
+	};
+
+	for (key, slot) in [
+		("capture", &mut shortcuts.capture),
+		("summon", &mut shortcuts.summon),
+	] {
+		match map.get(key) {
+			None | Some(Value::Null) => {}
+			Some(Value::String(chord)) => slot.clone_from(chord),
+			Some(_) => notices.push(format!(
+				"\"shortcuts.{key}\" was not a chord; the default has been restored."
+			)),
+		}
+	}
+	shortcuts
 }
 
 impl Settings {
@@ -179,47 +312,145 @@ fn same_path(a: &str, b: &str) -> bool {
 	a.eq_ignore_ascii_case(b)
 }
 
-/// Reads `settings.json`, recovering rather than failing.
+/// What state the file was left in — and therefore whether writing the returned
+/// settings back over it is safe.
 ///
-/// Returns the settings plus an optional notice for `get_status` to surface.
+/// This distinction is the whole point of the type. "Recovered from a corrupt
+/// file" and "gave up on an unreadable file" produce identical settings and an
+/// equally alarming notice, but only the first has moved the original out of
+/// harm's way. Without a way to tell them apart, a caller that saves after a
+/// notice destroys the very file it was warning about — which is exactly what
+/// happened here before this type existed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+	/// Read and understood. Saving overwrites data Copper produced itself.
+	Loaded,
+	/// There was no file. Saving creates it.
+	Absent,
+	/// The file was unusable and has been renamed out of the way.
+	Quarantined,
+	/// The file is unusable and is **still there**. Saving would destroy it.
+	Retained,
+}
+
+impl Origin {
+	/// Whether the returned settings may be written back to the same path.
+	pub fn may_overwrite(self) -> bool {
+		!matches!(self, Self::Retained)
+	}
+
+	/// Whether a file has to be written even if nothing has changed.
+	pub fn needs_a_file(self) -> bool {
+		matches!(self, Self::Absent | Self::Quarantined)
+	}
+}
+
+pub struct LoadedSettings {
+	pub settings: Settings,
+	/// For `get_status` to surface on the frontend's mount-time pull.
+	pub notice: Option<String>,
+	pub origin: Origin,
+}
+
+impl LoadedSettings {
+	fn defaults(origin: Origin, notice: Option<String>) -> Self {
+		Self {
+			settings: Settings::default(),
+			notice,
+			origin,
+		}
+	}
+}
+
+/// Reads `settings.json`, recovering rather than failing — but never at the cost
+/// of the file it is recovering from.
+///
 /// It never emits: this runs during startup, where nothing is listening yet
 /// (spec 8A.2), so the reason has to be *recorded* to reach the user at all.
-pub fn load(path: &Path) -> (Settings, Option<String>) {
-	let text = match std::fs::read_to_string(path) {
-		Ok(text) => text,
-		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return (Settings::default(), None),
+pub fn load(path: &Path) -> LoadedSettings {
+	let bytes = match read_with_retry(path) {
+		Ok(Some(bytes)) => bytes,
+		Ok(None) => return LoadedSettings::defaults(Origin::Absent, None),
 		Err(err) => {
-			return (
-				Settings::default(),
+			// Present but unreadable. Defaults let Copper start; leaving the file
+			// alone lets the user get their recents list back once whatever is
+			// holding it lets go.
+			return LoadedSettings::defaults(
+				Origin::Retained,
 				Some(format!(
-					"{} could not be read ({err}). Copper started from default settings.",
+					"{} could not be read ({err}). Copper started from default settings and left \
+					 the file untouched.",
 					path.display()
 				)),
-			)
+			);
 		}
 	};
 
-	match serde_json::from_str::<Settings>(&text) {
-		Ok(mut settings) => {
-			settings.clamp();
-			(settings, None)
-		}
-		Err(err) => {
-			let notice = match quarantine(path) {
-				Ok(kept) => format!(
-					"{} was not valid ({err}). It has been kept as {} and Copper started from \
-					 default settings.",
+	// Read as bytes and decoded here rather than through `read_to_string`, so
+	// invalid UTF-8 lands on the quarantine path with every other unusable file
+	// instead of being mistaken for an I/O failure.
+	let text = match String::from_utf8(bytes) {
+		Ok(text) => text,
+		Err(err) => return set_aside(path, &format!("it is not valid UTF-8 ({err})")),
+	};
+
+	match serde_json::from_str::<RawSettings>(&text) {
+		Ok(raw) => {
+			let (settings, notices) = raw.repair();
+			let notice = (!notices.is_empty()).then(|| {
+				format!(
+					"{} held values Copper could not use:\n{}",
 					path.display(),
-					kept.display()
-				),
-				Err(move_err) => format!(
-					"{} was not valid ({err}) and could not be set aside ({move_err}). Copper \
-					 started from default settings.",
-					path.display()
-				),
-			};
-			(Settings::default(), Some(notice))
+					notices.join("\n")
+				)
+			});
+			LoadedSettings {
+				settings,
+				notice,
+				origin: Origin::Loaded,
+			}
 		}
+		Err(err) => set_aside(path, &format!("it is not valid JSON ({err})")),
+	}
+}
+
+/// Reads the file, retrying a sharing violation.
+///
+/// `Ok(None)` means there is no file, which is the ordinary first-run case and
+/// not a failure. The retry matters because startup is exactly when a transient
+/// lock is likeliest — antivirus, the search indexer and OneDrive all wake with
+/// everything else — and without it a file held for 50 ms would be reported to
+/// the user as unreadable settings.
+fn read_with_retry(path: &Path) -> Result<Option<Vec<u8>>> {
+	atomic::with_backoff(|| match std::fs::read(path) {
+		Ok(bytes) => Attempt::Done(Some(bytes)),
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => Attempt::Done(None),
+		Err(err) if atomic::is_sharing_violation(&err) => {
+			Attempt::Transient(io_err(path, "read", &err))
+		}
+		Err(err) => Attempt::Failed(io_err(path, "read", &err)),
+	})
+}
+
+fn set_aside(path: &Path, why: &str) -> LoadedSettings {
+	match quarantine(path) {
+		Ok(kept) => LoadedSettings::defaults(
+			Origin::Quarantined,
+			Some(format!(
+				"{} could not be used because {why}. It has been kept as {} and Copper started \
+				 from default settings.",
+				path.display(),
+				kept.display()
+			)),
+		),
+		Err(err) => LoadedSettings::defaults(
+			Origin::Retained,
+			Some(format!(
+				"{} could not be used because {why}, and it could not be set aside ({err}). \
+				 Copper started from default settings and left the file untouched.",
+				path.display()
+			)),
+		),
 	}
 }
 
@@ -271,9 +502,10 @@ mod tests {
 	#[test]
 	fn a_missing_file_yields_defaults_with_no_notice() {
 		let dir = tempfile::tempdir().unwrap();
-		let (settings, notice) = load(&dir.path().join(FILE_NAME));
-		assert_eq!(settings, Settings::default());
-		assert!(notice.is_none());
+		let loaded = load(&dir.path().join(FILE_NAME));
+		assert_eq!(loaded.settings, Settings::default());
+		assert!(loaded.notice.is_none());
+		assert_eq!(loaded.origin, Origin::Absent);
 	}
 
 	#[test]
@@ -281,10 +513,11 @@ mod tests {
 		let dir = tempfile::tempdir().unwrap();
 		let path = write(dir.path(), "{ this is not json");
 
-		let (settings, notice) = load(&path);
+		let loaded = load(&path);
 
-		assert_eq!(settings, Settings::default());
-		let notice = notice.expect("a corrupt file must produce a notice");
+		assert_eq!(loaded.settings, Settings::default());
+		assert_eq!(loaded.origin, Origin::Quarantined);
+		let notice = loaded.notice.expect("a corrupt file must produce a notice");
 		assert!(notice.contains("corrupt-"), "{notice}");
 		assert!(!path.exists(), "the corrupt file was left in place");
 		let kept = siblings(dir.path());
@@ -303,11 +536,12 @@ mod tests {
 			   "shortcuts":{"capture":"Shift Shift","summon":"Ctrl+Shift+Space"},"theme":"system"}"#,
 		);
 
-		let (settings, notice) = load(&path);
+		let loaded = load(&path);
 
-		assert!(notice.is_none(), "the file was treated as corrupt: {notice:?}");
-		assert_eq!(settings.recents.len(), 2);
-		assert_eq!(settings.active_space, 0);
+		assert!(loaded.notice.is_none(), "the file was treated as corrupt: {:?}", loaded.notice);
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert_eq!(loaded.settings.recents.len(), 2);
+		assert_eq!(loaded.settings.active_space, 0);
 		assert_eq!(siblings(dir.path()), [FILE_NAME]);
 	}
 
@@ -320,11 +554,137 @@ mod tests {
 			   "shortcuts":{"capture":"Shift Shift","summon":"Ctrl+Shift+Space"},"theme":"system"}"#,
 		);
 
-		let (settings, notice) = load(&path);
+		let loaded = load(&path);
 
-		assert!(notice.is_none());
-		assert_eq!(settings.recents.len(), 1);
-		assert_eq!(settings.active_space, 0);
+		assert!(loaded.notice.is_none());
+		assert_eq!(loaded.settings.recents.len(), 1);
+		assert_eq!(loaded.settings.active_space, 0);
+	}
+
+	/// Invalid UTF-8 is an unusable *file*, not an I/O failure, and has to reach
+	/// the same quarantine path as invalid JSON. Reading through
+	/// `read_to_string` classified it as a read error instead, which left the
+	/// original in place while reporting a notice — and the caller then wrote
+	/// defaults over it.
+	#[test]
+	fn invalid_utf8_is_quarantined_like_invalid_json() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join(FILE_NAME);
+		std::fs::write(&path, [0x7b, 0x22, 0xff, 0xfe, 0x22, 0x7d]).unwrap();
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Quarantined);
+		assert!(loaded.origin.may_overwrite());
+		assert!(!path.exists(), "the unusable file was left in place");
+		let notice = loaded.notice.unwrap();
+		assert!(notice.contains("UTF-8"), "{notice}");
+		assert!(notice.contains("corrupt-"), "{notice}");
+	}
+
+	/// The other half of the same defect: when the original could *not* be moved
+	/// out of the way, the caller must be told not to write over it.
+	#[test]
+	fn a_file_that_cannot_be_set_aside_is_reported_as_retained() {
+		use std::os::windows::fs::OpenOptionsExt;
+
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), "{ not json");
+		// Readable but not renameable, so the parse fails and the quarantine does
+		// too.
+		let _held = std::fs::OpenOptions::new()
+			.read(true)
+			.share_mode(0x0000_0001) // FILE_SHARE_READ
+			.open(&path)
+			.unwrap();
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Retained);
+		assert!(
+			!loaded.origin.may_overwrite(),
+			"a file that could not be set aside must not be overwritten"
+		);
+		assert!(path.exists());
+		assert!(loaded.notice.unwrap().contains("left the file untouched"));
+	}
+
+	#[test]
+	fn a_file_that_cannot_be_read_is_reported_as_retained() {
+		use std::os::windows::fs::OpenOptionsExt;
+
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"theme":"dark"}"#);
+		// No sharing at all, so even opening it fails with a sharing violation.
+		let _held = std::fs::OpenOptions::new()
+			.read(true)
+			.share_mode(0)
+			.open(&path)
+			.unwrap();
+
+		let started = std::time::Instant::now();
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Retained);
+		assert!(!loaded.origin.may_overwrite());
+		assert_eq!(loaded.settings, Settings::default());
+		assert!(path.exists());
+		// It retried rather than giving up on first sight: a lock at startup is
+		// most likely an indexer or a scanner that will let go shortly.
+		assert!(
+			started.elapsed() >= std::time::Duration::from_millis(400),
+			"the read was not retried: took {:?}",
+			started.elapsed()
+		);
+	}
+
+	// --- per-field repair (spec 6.1a generalised) ---
+
+	/// The four cases that previously cost the user their whole recents list
+	/// because one value had the wrong type.
+	#[test]
+	fn one_bad_field_is_repaired_rather_than_quarantining_the_file() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(
+			dir.path(),
+			r#"{"recents":["C:\\a.copper", 7, "C:\\b.copper"],
+			   "activeSpace":1,
+			   "panelPosition":{"x":10},
+			   "shortcuts":{"capture":false,"summon":"Alt+Space"},
+			   "theme":42}"#,
+		);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded, "a repairable file was quarantined");
+		assert_eq!(siblings(dir.path()), [FILE_NAME]);
+
+		// The two real paths survived; the number did not.
+		assert_eq!(loaded.settings.recents, ["C:\\a.copper", "C:\\b.copper"]);
+		assert_eq!(loaded.settings.active_space, 1);
+		// A half-written point is not a point.
+		assert_eq!(loaded.settings.panel_position, None);
+		// The bad chord reverted; the good one beside it did not.
+		assert_eq!(loaded.settings.shortcuts.capture, Shortcuts::default().capture);
+		assert_eq!(loaded.settings.shortcuts.summon, "Alt+Space");
+		assert_eq!(loaded.settings.theme, "system");
+
+		let notice = loaded.notice.expect("repairs must be reported");
+		for expected in ["recents", "panelPosition", "shortcuts.capture", "theme"] {
+			assert!(notice.contains(expected), "{expected} unreported in: {notice}");
+		}
+	}
+
+	#[test]
+	fn a_wholly_wrong_shortcuts_value_restores_both_defaults() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"shortcuts":"Ctrl+K"}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert_eq!(loaded.settings.shortcuts, Shortcuts::default());
+		assert!(loaded.notice.unwrap().contains("shortcuts"));
 	}
 
 	#[test]
@@ -332,11 +692,11 @@ mod tests {
 		let dir = tempfile::tempdir().unwrap();
 		let path = write(dir.path(), r#"{"theme":"dark"}"#);
 
-		let (settings, notice) = load(&path);
+		let loaded = load(&path);
 
-		assert!(notice.is_none());
-		assert_eq!(settings.theme, "dark");
-		assert_eq!(settings.shortcuts, Shortcuts::default());
+		assert!(loaded.notice.is_none());
+		assert_eq!(loaded.settings.theme, "dark");
+		assert_eq!(loaded.settings.shortcuts, Shortcuts::default());
 	}
 
 	#[test]
@@ -350,10 +710,10 @@ mod tests {
 		settings.touch_recent("C:\\notes.copper");
 
 		save(&path, &settings).unwrap();
-		let (loaded, notice) = load(&path);
+		let loaded = load(&path);
 
-		assert!(notice.is_none());
-		assert_eq!(loaded, settings);
+		assert!(loaded.notice.is_none());
+		assert_eq!(loaded.settings, settings);
 	}
 
 	#[test]
