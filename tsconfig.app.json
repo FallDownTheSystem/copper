@@ -1,0 +1,24 @@
+{
+	"extends": "@vue/tsconfig/tsconfig.dom.json",
+	"compilerOptions": {
+		"tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+		"types": ["vite/client"],
+		"allowArbitraryExtensions": true,
+
+		/* Mirrors the Vite resolve.alias so vue-tsc can resolve the generated
+       src/auto-imports.d.ts, which references @/lib/utils. Without this the
+       dev server and build are both fine and only `vp check` fails.
+       No "baseUrl": TypeScript 6 errors on it as deprecated (TS5101), and since
+       TS 5 "paths" resolves relative to this file, so it is not needed. */
+		"paths": {
+			"@/*": ["./src/*"]
+		},
+
+		/* Linting */
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"erasableSyntaxOnly": true,
+		"noFallthroughCasesInSwitch": true
+	},
+	"include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.vue"]
+}

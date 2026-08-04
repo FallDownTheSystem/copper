@@ -1,0 +1,49 @@
+{
+	"name": "copper",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "vp dev",
+		"build": "vue-tsc -b && vp build",
+		"preview": "vp preview",
+		"tauri": "tauri"
+	},
+	"dependencies": {
+		"@tailwindcss/vite": "^4.3.3",
+		"@tauri-apps/api": "^2.11.1",
+		"@tauri-apps/plugin-autostart": "^2.5.1",
+		"@tauri-apps/plugin-global-shortcut": "^2.3.2",
+		"@tauri-apps/plugin-opener": "^2.5.4",
+		"@vueuse/core": "^14.4.0",
+		"clsx": "^2.1.1",
+		"tailwind-merge": "^3.6.0",
+		"tailwindcss": "^4.3.3",
+		"tw-animate-css": "^1.4.0",
+		"vue": "rc"
+	},
+	"devDependencies": {
+		"@fontsource-variable/inter": "^5.3.0",
+		"@iconify-json/lucide": "^1.2.121",
+		"@tauri-apps/cli": "^2.11.4",
+		"@types/node": "^24.13.3",
+		"@vitejs/plugin-vue": "^6.0.8",
+		"@vue/tsconfig": "^0.9.1",
+		"typescript": "~6.0.2",
+		"unplugin-auto-import": "^21.1.0",
+		"unplugin-fonts": "^2.0.0",
+		"unplugin-icons": "^23.0.1",
+		"unplugin-vue-components": "^32.1.0",
+		"vite": "catalog:",
+		"vite-plugin-vue-devtools": "^8.2.1",
+		"vite-plus": "catalog:",
+		"vue-tsc": "^3.3.8"
+	},
+	"devEngines": {
+		"packageManager": {
+			"name": "pnpm",
+			"version": "11.20.0",
+			"onFail": "download"
+		}
+	}
+}

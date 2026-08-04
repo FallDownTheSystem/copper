@@ -1,0 +1,47 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+	--font-sans: 'Inter Variable', system-ui, sans-serif;
+}
+
+/* Minimal placeholder token set, only enough to satisfy the bg-background-style
+   utilities the component layer will reference. task-004 runs `shadcn-vue init`,
+   which generates the real new-york/neutral variables — do not hand-author those
+   names here or they will have to be merged by hand later. */
+:root {
+	--background: oklch(1 0 0);
+	--foreground: oklch(0.145 0 0);
+	--muted: oklch(0.97 0 0);
+	--muted-foreground: oklch(0.556 0 0);
+	--border: oklch(0.922 0 0);
+}
+
+.dark {
+	--background: oklch(0.145 0 0);
+	--foreground: oklch(0.985 0 0);
+	--muted: oklch(0.269 0 0);
+	--muted-foreground: oklch(0.708 0 0);
+	--border: oklch(1 0 0 / 10%);
+}
+
+@theme inline {
+	--color-background: var(--background);
+	--color-foreground: var(--foreground);
+	--color-muted: var(--muted);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-border: var(--border);
+}
+
+/* Load-bearing, not decoration. window-vibrancy composites the Acrylic/Mica
+   material through the transparent webview surface; without this the window
+   renders opaque white and the backdrop is invisible. The scaffold's
+   src/style.css was deleted for the same reason — its opaque `:root` background
+   outranks this rule. */
+html,
+body,
+#app {
+	background: transparent;
+}
