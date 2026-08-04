@@ -1,0 +1,13 @@
+target/
+# uiaccess-test is built twice: with the manifest (default) and without it
+# (--no-default-features), into a separate target dir so the two do not thrash
+# each other's cache. See FINDINGS.md correction 3.
+target-nomanifest/
+findings.jsonl
+node_modules/
+dist/
+
+# uiAccess validation artefacts — never commit a private key, even a throwaway one.
+*.pfx
+*.cer
+uiaccess-out/

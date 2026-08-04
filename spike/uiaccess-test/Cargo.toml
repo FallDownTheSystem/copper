@@ -1,0 +1,34 @@
+[package]
+name = "uiaccess-test"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+description = "Validates that a signed uiAccess binary can read UI Automation text from an elevated window."
+
+[[bin]]
+name = "uiaccess-test"
+path = "src/main.rs"
+
+[features]
+# On by default. Turn it OFF (`cargo build --no-default-features`) to produce a
+# binary with no uiAccess manifest at all.
+#
+# That is not a convenience: an UNSIGNED binary carrying uiAccess="true" cannot
+# be launched by CreateProcess — Windows fails it with ERROR_ELEVATION_REQUIRED
+# (740). So the manifest has to be conditional, and dsgn-001's phrasing that
+# "dev builds run unsigned from the dev tree, so uiAccess is inactive in dev" is
+# only achievable if the dev build omits the manifest rather than merely going
+# unsigned. See FINDINGS.md.
+default = ["uiaccess"]
+uiaccess = []
+
+[dependencies]
+capture = { path = "../capture" }
+windows = { version = "=0.61.3", features = [
+	"Win32_Foundation",
+	"Win32_Security",
+	"Win32_System_Threading",
+	"Win32_UI_WindowsAndMessaging",
+] }
+tracing-subscriber = { version = "0.3", features = ["fmt"] }

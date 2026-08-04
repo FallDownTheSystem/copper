@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Copper hook probe</title>
+		<link rel="stylesheet" href="/styles.css" />
+		<script type="module" src="/main.js" defer></script>
+	</head>
+
+	<body>
+		<main class="container">
+			<h1>Copper hook probe</h1>
+			<p class="sub">
+				Does <code>WH_KEYBOARD_LL</code> still fire alongside Tauri's event loop? Installed
+				in-process, exactly as <code>tauri-apps/tauri#13919</code> did.
+			</p>
+
+			<p class="setting">
+				<code>device_event_filter</code> = <strong id="filter">…</strong><br />
+				Restart with <code>COPPER_DEVICE_EVENT_FILTER=never</code> (or <code>always</code>) to
+				compare.
+			</p>
+
+			<ol class="steps">
+				<li><strong>Probe focused</strong> — click this window, then double-tap Shift.</li>
+				<li><strong>Another app focused</strong> — click another window, then double-tap Shift.</li>
+				<li>
+					<strong>Probe hidden</strong> — press the button below, then double-tap Shift while it is
+					gone.
+				</li>
+			</ol>
+			<p>
+				All three must register for the architecture to hold. As a control, also press
+				<kbd>Win</kbd>, <kbd>Alt</kbd>+<kbd>Tab</kbd> and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd
+					>Esc</kbd
+				>
+				with this window focused — those are the OS-reserved combinations the upstream issue was
+				actually about.
+			</p>
+
+			<button id="hide">Hide for 12 seconds</button>
+			<button id="clear">Clear log</button>
+
+			<table id="log">
+				<thead>
+					<tr>
+						<th>time</th>
+						<th>kind</th>
+						<th>detail</th>
+						<th>foreground</th>
+						<th>probe focused</th>
+						<th>injected</th>
+					</tr>
+				</thead>
+				<tbody></tbody>
+			</table>
+			<p class="empty">Nothing yet. Double-tap Shift.</p>
+		</main>
+	</body>
+</html>

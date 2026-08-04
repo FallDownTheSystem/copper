@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="copper.uiaccess.test" version="1.0.0.0" processorArchitecture="amd64" />
+
+  <!--
+    uiAccess="true" is the whole point of this binary. Windows grants the
+    UIAccess token flag - which bypasses UIPI and allows reading UI Automation
+    from, and sending input to, a higher-integrity process - only when ALL of
+    the following hold:
+
+      1. the executable is Authenticode-signed by a certificate the machine
+         trusts (Trusted Root + Trusted Publishers),
+      2. it lives in a secure location: %ProgramFiles%, %ProgramFiles(x86)% or
+         %SystemRoot%\System32, including subdirectories, and
+      3. UAC is enabled.
+
+    Note that level is asInvoker, NOT requireAdministrator. uiAccess exists
+    precisely so the process does not need elevation; running it elevated would
+    grant high integrity for a different reason and would not test uiAccess at
+    all. See spike/scripts/uiaccess-setup.ps1.
+  -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="true" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+</assembly>
