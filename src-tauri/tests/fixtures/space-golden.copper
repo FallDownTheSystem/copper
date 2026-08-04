@@ -1,0 +1,37 @@
+{
+  "id": "spc_7f3aa001",
+  "name": "development",
+  "activeSection": "sec_a1000001",
+  "sections": [
+    {
+      "id": "sec_a1000001",
+      "name": "Research",
+      "order": 0
+    },
+    {
+      "id": "sec_b2000002",
+      "name": "Configuration Formats",
+      "order": 1
+    }
+  ],
+  "notes": [
+    {
+      "id": "nte_01000001",
+      "section": "sec_a1000001",
+      "order": 0,
+      "done": false,
+      "body": "**Negation in inherited configs.** The moment a config can extend a base, every list-valued option needs a way to say \"not this one\".",
+      "created": "2026-07-30T14:02:11Z",
+      "updated": "2026-07-30T14:02:11Z"
+    },
+    {
+      "id": "nte_02000002",
+      "section": "sec_b2000002",
+      "order": 0,
+      "done": true,
+      "body": "Line one.\n\nLine two, indented:\n\tvalue = 1",
+      "created": "2026-07-30T14:05:00Z",
+      "updated": "2026-07-30T14:08:12Z"
+    }
+  ]
+}
