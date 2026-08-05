@@ -5,18 +5,27 @@ defineProps<{
 }>()
 
 /**
- * The field is real, labelled and focusable, and nothing consumes `query` yet —
- * filtering is Phase 5. That is the intended interim state: the layout needs the
- * region, and a fake field would have to be replaced rather than wired up. The
- * clear button belongs with filtering.
+ * The query lives in `useNoteSearch` at module scope, not here. A ref held
+ * inside this component cannot be read by `NoteList` — the same private-copy
+ * trap task-004 warns about, one level up.
  */
-const query = ref('')
+const { query, hasQuery, clearQuery } = useNoteSearch()
 
 const input = useTemplateRef<HTMLInputElement>('input')
 
 function focusSearch() {
 	input.value?.focus()
 	input.value?.select()
+}
+
+/** One rung of the Escape ladder, handled where the focus is. The press is
+ *  consumed only when there is a query to clear, so Escape in an empty field
+ *  still falls through to the levels below it. */
+function onKeydown(event: KeyboardEvent) {
+	if (event.key !== 'Escape' || !hasQuery.value) return
+	event.preventDefault()
+	event.stopPropagation()
+	clearQuery()
 }
 
 defineExpose({ focusSearch, query })
@@ -40,11 +49,13 @@ defineExpose({ focusSearch, query })
 				id="panel-search"
 				ref="input"
 				v-model="query"
+				data-search
 				type="search"
 				name="search"
 				autocomplete="off"
 				placeholder="Search notes…"
 				class="border-separator bg-surface-hover text-text-primary placeholder:text-text-disabled outline-focus-ring h-8 w-full min-w-0 select-text rounded-md border pr-2 pl-8 text-body focus-visible:outline-2 focus-visible:-outline-offset-1"
+				@keydown="onKeydown"
 			/>
 		</div>
 

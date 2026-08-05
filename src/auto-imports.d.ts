@@ -40,6 +40,7 @@ declare global {
   const emptySnapshot: typeof import('./composables/useSelection').emptySnapshot
   const extendRef: typeof import('@vueuse/core').extendRef
   const focusRowSoon: typeof import('./composables/useSelection').focusRowSoon
+  const focusableIn: typeof import('./composables/useInteractionMode').focusableIn
   const getCurrentInstance: typeof import('vue').getCurrentInstance
   const getCurrentScope: typeof import('vue').getCurrentScope
   const getCurrentWatcher: typeof import('vue').getCurrentWatcher
@@ -56,6 +57,7 @@ declare global {
   const makeDestructurable: typeof import('@vueuse/core').makeDestructurable
   const markRaw: typeof import('vue').markRaw
   const nextTick: typeof import('vue').nextTick
+  const noteCountLabel: typeof import('./composables/useStatusMessage').noteCountLabel
   const noteRow: typeof import('./composables/useSelection').noteRow
   const onActivated: typeof import('vue').onActivated
   const onBeforeMount: typeof import('vue').onBeforeMount
@@ -172,6 +174,7 @@ declare global {
   const useDocumentVisibility: typeof import('@vueuse/core').useDocumentVisibility
   const useDraggable: typeof import('@vueuse/core').useDraggable
   const useDropZone: typeof import('@vueuse/core').useDropZone
+  const useEditorHandoff: typeof import('./composables/useEditorHandoff').useEditorHandoff
   const useElementBounding: typeof import('@vueuse/core').useElementBounding
   const useElementByPoint: typeof import('@vueuse/core').useElementByPoint
   const useElementHover: typeof import('@vueuse/core').useElementHover
@@ -196,6 +199,7 @@ declare global {
   const useIdle: typeof import('@vueuse/core').useIdle
   const useImage: typeof import('@vueuse/core').useImage
   const useInfiniteScroll: typeof import('@vueuse/core').useInfiniteScroll
+  const useInteractionMode: typeof import('./composables/useInteractionMode').useInteractionMode
   const useIntersectionObserver: typeof import('@vueuse/core').useIntersectionObserver
   const useInterval: typeof import('@vueuse/core').useInterval
   const useIntervalFn: typeof import('@vueuse/core').useIntervalFn
@@ -217,12 +221,15 @@ declare global {
   const useMutationObserver: typeof import('@vueuse/core').useMutationObserver
   const useNavigatorLanguage: typeof import('@vueuse/core').useNavigatorLanguage
   const useNetwork: typeof import('@vueuse/core').useNetwork
+  const useNoteActions: typeof import('./composables/useNoteActions').useNoteActions
   const useNoteDisclosure: typeof import('./composables/useNoteDisclosure').useNoteDisclosure
   const useNoteEditor: typeof import('./composables/useNoteEditor').useNoteEditor
+  const useNoteSearch: typeof import('./composables/useNoteSearch').useNoteSearch
   const useNow: typeof import('@vueuse/core').useNow
   const useObjectUrl: typeof import('@vueuse/core').useObjectUrl
   const useOffsetPagination: typeof import('@vueuse/core').useOffsetPagination
   const useOnline: typeof import('@vueuse/core').useOnline
+  const useOverlayHost: typeof import('./composables/useOverlayHost').useOverlayHost
   const usePageLeave: typeof import('@vueuse/core').usePageLeave
   const useParallax: typeof import('@vueuse/core').useParallax
   const useParentElement: typeof import('@vueuse/core').useParentElement
@@ -247,6 +254,7 @@ declare global {
   const useScriptTag: typeof import('@vueuse/core').useScriptTag
   const useScroll: typeof import('@vueuse/core').useScroll
   const useScrollLock: typeof import('@vueuse/core').useScrollLock
+  const useSectionEditor: typeof import('./composables/useSectionEditor').useSectionEditor
   const useSelection: typeof import('./composables/useSelection').useSelection
   const useSessionStorage: typeof import('@vueuse/core').useSessionStorage
   const useShare: typeof import('@vueuse/core').useShare
@@ -255,12 +263,14 @@ declare global {
   const useSpace: typeof import('./composables/useSpace').useSpace
   const useSpeechRecognition: typeof import('@vueuse/core').useSpeechRecognition
   const useSpeechSynthesis: typeof import('@vueuse/core').useSpeechSynthesis
+  const useStatusMessage: typeof import('./composables/useStatusMessage').useStatusMessage
   const useStepper: typeof import('@vueuse/core').useStepper
   const useStorage: typeof import('@vueuse/core').useStorage
   const useStorageAsync: typeof import('@vueuse/core').useStorageAsync
   const useStyleTag: typeof import('@vueuse/core').useStyleTag
   const useSupported: typeof import('@vueuse/core').useSupported
   const useSwipe: typeof import('@vueuse/core').useSwipe
+  const useSystemClipboard: typeof import('./composables/useSystemClipboard').useSystemClipboard
   const useTemplateRef: typeof import('vue').useTemplateRef
   const useTemplateRefsList: typeof import('@vueuse/core').useTemplateRefsList
   const useTextDirection: typeof import('@vueuse/core').useTextDirection
@@ -321,6 +331,9 @@ declare global {
   export type { CaptureNotice } from './composables/useCaptureNotice'
   import('./composables/useCaptureNotice')
   // @ts-ignore
+  export type { HandoffState, OpenOutcome } from './composables/useEditorHandoff'
+  import('./composables/useEditorHandoff')
+  // @ts-ignore
   export type { EditSession } from './composables/useNoteEditor'
   import('./composables/useNoteEditor')
   // @ts-ignore
@@ -368,6 +381,7 @@ declare module 'vue' {
     readonly emptySnapshot: UnwrapRef<typeof import('./composables/useSelection')['emptySnapshot']>
     readonly extendRef: UnwrapRef<typeof import('@vueuse/core')['extendRef']>
     readonly focusRowSoon: UnwrapRef<typeof import('./composables/useSelection')['focusRowSoon']>
+    readonly focusableIn: UnwrapRef<typeof import('./composables/useInteractionMode')['focusableIn']>
     readonly getCurrentInstance: UnwrapRef<typeof import('vue')['getCurrentInstance']>
     readonly getCurrentScope: UnwrapRef<typeof import('vue')['getCurrentScope']>
     readonly getCurrentWatcher: UnwrapRef<typeof import('vue')['getCurrentWatcher']>
@@ -384,6 +398,7 @@ declare module 'vue' {
     readonly makeDestructurable: UnwrapRef<typeof import('@vueuse/core')['makeDestructurable']>
     readonly markRaw: UnwrapRef<typeof import('vue')['markRaw']>
     readonly nextTick: UnwrapRef<typeof import('vue')['nextTick']>
+    readonly noteCountLabel: UnwrapRef<typeof import('./composables/useStatusMessage')['noteCountLabel']>
     readonly noteRow: UnwrapRef<typeof import('./composables/useSelection')['noteRow']>
     readonly onActivated: UnwrapRef<typeof import('vue')['onActivated']>
     readonly onBeforeMount: UnwrapRef<typeof import('vue')['onBeforeMount']>
@@ -500,6 +515,7 @@ declare module 'vue' {
     readonly useDocumentVisibility: UnwrapRef<typeof import('@vueuse/core')['useDocumentVisibility']>
     readonly useDraggable: UnwrapRef<typeof import('@vueuse/core')['useDraggable']>
     readonly useDropZone: UnwrapRef<typeof import('@vueuse/core')['useDropZone']>
+    readonly useEditorHandoff: UnwrapRef<typeof import('./composables/useEditorHandoff')['useEditorHandoff']>
     readonly useElementBounding: UnwrapRef<typeof import('@vueuse/core')['useElementBounding']>
     readonly useElementByPoint: UnwrapRef<typeof import('@vueuse/core')['useElementByPoint']>
     readonly useElementHover: UnwrapRef<typeof import('@vueuse/core')['useElementHover']>
@@ -524,6 +540,7 @@ declare module 'vue' {
     readonly useIdle: UnwrapRef<typeof import('@vueuse/core')['useIdle']>
     readonly useImage: UnwrapRef<typeof import('@vueuse/core')['useImage']>
     readonly useInfiniteScroll: UnwrapRef<typeof import('@vueuse/core')['useInfiniteScroll']>
+    readonly useInteractionMode: UnwrapRef<typeof import('./composables/useInteractionMode')['useInteractionMode']>
     readonly useIntersectionObserver: UnwrapRef<typeof import('@vueuse/core')['useIntersectionObserver']>
     readonly useInterval: UnwrapRef<typeof import('@vueuse/core')['useInterval']>
     readonly useIntervalFn: UnwrapRef<typeof import('@vueuse/core')['useIntervalFn']>
@@ -545,12 +562,15 @@ declare module 'vue' {
     readonly useMutationObserver: UnwrapRef<typeof import('@vueuse/core')['useMutationObserver']>
     readonly useNavigatorLanguage: UnwrapRef<typeof import('@vueuse/core')['useNavigatorLanguage']>
     readonly useNetwork: UnwrapRef<typeof import('@vueuse/core')['useNetwork']>
+    readonly useNoteActions: UnwrapRef<typeof import('./composables/useNoteActions')['useNoteActions']>
     readonly useNoteDisclosure: UnwrapRef<typeof import('./composables/useNoteDisclosure')['useNoteDisclosure']>
     readonly useNoteEditor: UnwrapRef<typeof import('./composables/useNoteEditor')['useNoteEditor']>
+    readonly useNoteSearch: UnwrapRef<typeof import('./composables/useNoteSearch')['useNoteSearch']>
     readonly useNow: UnwrapRef<typeof import('@vueuse/core')['useNow']>
     readonly useObjectUrl: UnwrapRef<typeof import('@vueuse/core')['useObjectUrl']>
     readonly useOffsetPagination: UnwrapRef<typeof import('@vueuse/core')['useOffsetPagination']>
     readonly useOnline: UnwrapRef<typeof import('@vueuse/core')['useOnline']>
+    readonly useOverlayHost: UnwrapRef<typeof import('./composables/useOverlayHost')['useOverlayHost']>
     readonly usePageLeave: UnwrapRef<typeof import('@vueuse/core')['usePageLeave']>
     readonly useParallax: UnwrapRef<typeof import('@vueuse/core')['useParallax']>
     readonly useParentElement: UnwrapRef<typeof import('@vueuse/core')['useParentElement']>
@@ -575,6 +595,7 @@ declare module 'vue' {
     readonly useScriptTag: UnwrapRef<typeof import('@vueuse/core')['useScriptTag']>
     readonly useScroll: UnwrapRef<typeof import('@vueuse/core')['useScroll']>
     readonly useScrollLock: UnwrapRef<typeof import('@vueuse/core')['useScrollLock']>
+    readonly useSectionEditor: UnwrapRef<typeof import('./composables/useSectionEditor')['useSectionEditor']>
     readonly useSelection: UnwrapRef<typeof import('./composables/useSelection')['useSelection']>
     readonly useSessionStorage: UnwrapRef<typeof import('@vueuse/core')['useSessionStorage']>
     readonly useShare: UnwrapRef<typeof import('@vueuse/core')['useShare']>
@@ -583,12 +604,14 @@ declare module 'vue' {
     readonly useSpace: UnwrapRef<typeof import('./composables/useSpace')['useSpace']>
     readonly useSpeechRecognition: UnwrapRef<typeof import('@vueuse/core')['useSpeechRecognition']>
     readonly useSpeechSynthesis: UnwrapRef<typeof import('@vueuse/core')['useSpeechSynthesis']>
+    readonly useStatusMessage: UnwrapRef<typeof import('./composables/useStatusMessage')['useStatusMessage']>
     readonly useStepper: UnwrapRef<typeof import('@vueuse/core')['useStepper']>
     readonly useStorage: UnwrapRef<typeof import('@vueuse/core')['useStorage']>
     readonly useStorageAsync: UnwrapRef<typeof import('@vueuse/core')['useStorageAsync']>
     readonly useStyleTag: UnwrapRef<typeof import('@vueuse/core')['useStyleTag']>
     readonly useSupported: UnwrapRef<typeof import('@vueuse/core')['useSupported']>
     readonly useSwipe: UnwrapRef<typeof import('@vueuse/core')['useSwipe']>
+    readonly useSystemClipboard: UnwrapRef<typeof import('./composables/useSystemClipboard')['useSystemClipboard']>
     readonly useTemplateRef: UnwrapRef<typeof import('vue')['useTemplateRef']>
     readonly useTemplateRefsList: UnwrapRef<typeof import('@vueuse/core')['useTemplateRefsList']>
     readonly useTextDirection: UnwrapRef<typeof import('@vueuse/core')['useTextDirection']>

@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { openUrl } from '@tauri-apps/plugin-opener'
+import { applyHighlight, releaseHighlight } from '@/lib/searchHighlight'
 import type { Note } from '@/composables/useSpace'
 
 const props = defineProps<{ note: Note }>()
 
 const { renderNote } = useMarkdown()
 const { canExpand, isExpanded, measure, toggle, clampHeight } = useNoteDisclosure()
+const { matchTerms } = useNoteSearch()
 
 const html = computed(() => renderNote(props.note))
 const bodyId = computed(() => `note-body-${props.note.id}`)
@@ -33,6 +35,20 @@ useResizeObserver(contentRef, remeasure)
 // The probe resolves after the first paint, and the rendered HTML changes when
 // the highlighter swaps in — both change the answer.
 watch([clampHeight, html], () => void nextTick(remeasure))
+
+/**
+ * Search matches are painted as ranges over the live DOM rather than as `<mark>`
+ * elements, so the cached HTML string this body was rendered from stays
+ * byte-identical across a search. It runs after the patch because the ranges
+ * address text nodes the render has just replaced.
+ */
+watch(
+	[html, matchTerms],
+	() => void nextTick(() => applyHighlight(contentRef.value, matchTerms.value)),
+	{ immediate: true },
+)
+
+onBeforeUnmount(() => releaseHighlight(contentRef.value))
 
 /**
  * Defence in depth only. The scheme allowlist is enforced at render time, so an

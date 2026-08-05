@@ -10,12 +10,10 @@ onMounted(() => {
 </script>
 
 <template>
-	<!-- Placed in the shell's middle grid cell rather than added as a fourth row,
-	     and `self-end` so it sits at the bottom of the scroll region — directly
-	     above the pinned composer. Two grid items in one cell overlap, so the
-	     notice cannot displace the composer of a fixed-size panel, and it needs
-	     no measurement and no positioning context to find where the composer
-	     starts.
+	<!-- Placement belongs to the shell, which stacks this and the status line in
+	     one cell of the middle grid row rather than adding a fourth row: the
+	     notice must not displace the pinned composer of a fixed-size panel, and
+	     stacking is what keeps the two bands from overlapping each other.
 
 	     `pointer-events-none` because the panel is revealed *without* focus and
 	     the user is still typing into another application — a band that could
@@ -29,7 +27,7 @@ onMounted(() => {
 	     No enter or exit transition. The notice lives for 1500 ms and the user's
 	     attention is by definition elsewhere; a fade would spend a meaningful
 	     fraction of that lifetime arriving. -->
-	<div class="pointer-events-none col-start-1 row-start-2 z-20 self-end px-3 pb-2" role="status">
+	<div class="pointer-events-none" role="status">
 		<p
 			v-if="notice"
 			:data-cause="notice.cause"

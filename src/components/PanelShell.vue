@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { CHORDS, inOverlay, inTextSurface } from '@/lib/chords'
+
 const {
 	loadState,
 	refreshing,
@@ -10,6 +12,23 @@ const {
 } = useSpace()
 const { setClampHeight } = useNoteDisclosure()
 const { ensureHighlighter } = useMarkdown()
+const { setOverlayHost } = useOverlayHost()
+const { hasQuery, clearQuery, resultCount } = useNoteSearch()
+const { selectedIds, clear } = useSelection()
+const { editingNoteId, cancel } = useNoteEditor()
+const { interactionRowId, exit } = useInteractionMode()
+const { initialize: initializeHandoffs } = useEditorHandoff()
+const {
+	copyNotes,
+	copyAsList,
+	merge,
+	openInEditor,
+	deleteNotes,
+	moveFocusedBy,
+	undo,
+	redo,
+	announceResults,
+} = useNoteActions()
 
 const root = useTemplateRef<HTMLElement>('root')
 const portalHost = useTemplateRef<HTMLElement>('portalHost')
@@ -36,10 +55,12 @@ useResizeObserver(clampProbe, measureClamp)
 onMounted(() => {
 	boundary.value = root.value
 	portalTo.value = portalHost.value
+	setOverlayHost(root.value, portalHost.value)
 
 	measureClamp()
 
 	void initialize()
+	void initializeHandoffs()
 	// Fire and forget: until it resolves, fences render unhighlighted and the
 	// panel is fully usable.
 	void ensureHighlighter()
@@ -51,23 +72,139 @@ watch(empty, (isEmpty) => {
 	if (isEmpty) void nextTick(() => composer.value?.focus())
 })
 
+// The result count is announced, not rendered next to the field: the panel has
+// one status region and a second count elsewhere would be a second thing to
+// read. Keyed on both, so a capture landing mid-search re-announces the number
+// it changed.
+watch([hasQuery, resultCount], announceResults)
+
+/**
+ * **The `Escape` ladder — one ordered handler, not several competing listeners.**
+ *
+ * Two rungs resolve above this and never reach it, which is why they are not
+ * `if` branches: the inline editor and the section-rename field stop
+ * propagation, and reka calls `preventDefault` for an open menu. A level with
+ * nothing to do is skipped rather than consuming the press, so `Escape` in an
+ * empty search field with notes selected clears the selection. With every level
+ * exhausted the press is simply not consumed — Phase 7's panel-hide rung appends
+ * here.
+ */
+function onEscape(event: KeyboardEvent) {
+	if (editingNoteId.value) {
+		event.preventDefault()
+		cancel()
+	} else if (interactionRowId.value) {
+		event.preventDefault()
+		exit()
+	} else if (hasQuery.value) {
+		event.preventDefault()
+		clearQuery()
+	} else if (selectedIds.value.length > 0) {
+		event.preventDefault()
+		clear()
+	}
+}
+
+/**
+ * The chord layer. It sits on the shell rather than on the grid because these
+ * are panel-scoped bindings — the target set comes from `focusedId`, not from
+ * where DOM focus happens to be — and because the ladder above has to be
+ * reachable from the search field as well as from the list.
+ */
 function onShellKeydown(event: KeyboardEvent) {
+	if (event.defaultPrevented) return
+
+	if (event.key === 'Escape') {
+		onEscape(event)
+		return
+	}
+
 	if (event.key === 'f' && (event.ctrlKey || event.metaKey)) {
 		event.preventDefault()
 		header.value?.focusSearch()
+		return
+	}
+
+	// No in-panel chord fires while a text-editing surface has focus. That is
+	// three surfaces, not two: the composer, the inline editor **and the search
+	// input**. Leaving the search field off would let Ctrl+Z undo a note
+	// operation while the user is editing their query.
+	if (inTextSurface(event.target) || inOverlay(event.target)) return
+
+	if (CHORDS.copy.matches(event)) {
+		// A live text selection means the user is copying text, not notes. Not
+		// preventing default is what lets the native copy run.
+		if ((window.getSelection()?.toString() ?? '').length > 0) return
+		event.preventDefault()
+		void copyNotes()
+		return
+	}
+
+	// preventDefault on both of these because they are Chromium DevTools chords
+	// (inspect element, device toolbar) in a dev build.
+	if (CHORDS.copyAsList.matches(event)) {
+		event.preventDefault()
+		void copyAsList()
+		return
+	}
+
+	if (CHORDS.merge.matches(event)) {
+		event.preventDefault()
+		void merge()
+		return
+	}
+
+	if (CHORDS.openInEditor.matches(event)) {
+		event.preventDefault()
+		void openInEditor()
+		return
+	}
+
+	if (CHORDS.remove.matches(event)) {
+		event.preventDefault()
+		void deleteNotes()
+		return
+	}
+
+	// Checked before undo: Ctrl+Shift+Z is a redo alias and would otherwise be
+	// swallowed by the undo matcher's own Ctrl+Z.
+	if (CHORDS.redo.matches(event)) {
+		event.preventDefault()
+		void redo()
+		return
+	}
+
+	if (CHORDS.undo.matches(event)) {
+		event.preventDefault()
+		void undo()
+		return
+	}
+
+	// The keyboard equivalent of a drag, so reordering is not pointer-only.
+	if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+		event.preventDefault()
+		void moveFocusedBy(event.key === 'ArrowDown' ? 1 : -1)
 	}
 }
 
 /**
  * The default WebView context menu is suppressed everywhere except the two text
- * fields and rendered note bodies, where Copy/Paste is genuinely useful.
+ * fields, where Copy/Paste is genuinely useful. Task-004's `.note-prose`
+ * exemption is narrowed away here: note bodies are the bulk of a card, so under
+ * that policy right-clicking a note would open the WebView's menu instead of
+ * Copper's. Copying text out of a body survives through the `Ctrl+C`
+ * text-selection guard above.
  *
- * Task-006 narrows the `.note-prose` exemption when it adds its own context
- * menu; that is its change to make.
+ * A row that owns a menu is skipped rather than prevented, and the ordering is
+ * the reason: reka's trigger defers to a `nextTick` and then checks
+ * `defaultPrevented`, so a `preventDefault` from this ancestor handler — which
+ * runs first, as the event bubbles outward — would tell it somebody else had
+ * already handled the press, and no menu would ever open.
  */
 function onContextMenu(event: MouseEvent) {
 	const target = event.target as HTMLElement | null
-	if (target?.closest('textarea, input, .note-prose')) return
+	if (target?.closest('textarea, input')) return
+	if (target?.closest('[data-note-row], [data-section-row]')) return
 	event.preventDefault()
 }
 </script>
@@ -116,11 +253,11 @@ function onContextMenu(event: MouseEvent) {
 
 		<Composer ref="composer" />
 
-		<!-- Inside the panel root, so teleported dropdown content stays inside the
-		     clip, the rounded rect and the contextmenu policy above. -->
-		<div ref="portalHost" class="pointer-events-none absolute inset-0 z-30 empty:hidden">
-			<div class="pointer-events-auto contents" />
-		</div>
+		<!-- Inside the panel root, so teleported menu content stays inside the clip,
+		     the rounded rect and the contextmenu policy above. `pointer-events-none`
+		     is safe for the content itself: reka's dismissable layer sets
+		     `pointer-events: auto` inline on the open menu. -->
+		<div ref="portalHost" class="pointer-events-none absolute inset-0 z-30 empty:hidden" />
 
 		<!-- Measured, never shown. -->
 		<div
@@ -129,9 +266,15 @@ function onContextMenu(event: MouseEvent) {
 			class="pointer-events-none absolute h-(--note-clamp) w-0"
 		/>
 
-		<!-- The capture failure notice. Last child, inside the isolate stacking
-		     context, and it places itself in the scroll region's grid cell. -->
-		<CaptureNotice />
+		<!-- Both bands share one cell in the shell's middle row and stack inside it,
+		     so neither can displace the pinned composer of a window that cannot
+		     grow, and the two can never overlap each other. -->
+		<div
+			class="pointer-events-none col-start-1 row-start-2 z-20 flex flex-col gap-1 self-end px-3 pb-2"
+		>
+			<StatusLine />
+			<CaptureNotice />
+		</div>
 
 		<!-- Pre-rendered and empty. Injecting the element and its text together
 		     does not announce; only a text change inside a live region already in

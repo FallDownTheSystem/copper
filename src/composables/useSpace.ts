@@ -38,6 +38,9 @@ import { emptySnapshot, noteRow, useSelection } from './useSelection'
 import { useMarkdown } from './useMarkdown'
 import { useNoteDisclosure } from './useNoteDisclosure'
 import { useNoteEditor } from './useNoteEditor'
+import { useEditorHandoff } from './useEditorHandoff'
+import { useNoteSearch } from './useNoteSearch'
+import { useSectionEditor } from './useSectionEditor'
 
 // --- the document, mirroring task-003 exactly --------------------------------
 
@@ -92,7 +95,7 @@ export type Settings = {
 export type SpaceView = DeepReadonly<Space>
 export type NoteView = DeepReadonly<Note>
 
-export type ChangeReason = 'external' | 'capture' | 'reload'
+export type ChangeReason = 'external' | 'capture' | 'reload' | 'editor'
 export type SpaceChangedPayload = { id: string; path: string; reason: ChangeReason }
 export type StoreErrorPayload = { kind: string; message: string }
 export type AddNoteResult = { space: Space; noteId: string }
@@ -157,6 +160,9 @@ const selection = useSelection()
 const markdown = useMarkdown()
 const disclosure = useNoteDisclosure()
 const editor = useNoteEditor()
+const search = useNoteSearch()
+const sectionEditor = useSectionEditor()
+const handoff = useEditorHandoff()
 
 function errorMessage(error: unknown): string {
 	if (error && typeof error === 'object' && 'message' in error) {
@@ -203,10 +209,23 @@ function applyDocument(
 	space.value = next
 	generation++
 
+	// Before `syncDocument`, because the orders it feeds are filtered by the
+	// index's own result set: rebuilding afterwards would leave one frame in which
+	// the new document is grouped against the previous document's matches.
+	search.rebuild(next)
 	selection.syncDocument(next)
 	selection.reconcile(snapshot)
 	markdown.pruneCache(next.notes.map((note) => note.id))
 	editor.reconcile(next, identityChanged)
+	sectionEditor.reconcile(next)
+
+	// Rust owns handoff reconciliation — it is the only side that knows the temp
+	// path and the baseline bytes — but it has no signal that covers every writer:
+	// task-003 §8.4 emits nothing for a command the frontend invoked, so a
+	// Rust-side hook on `space-changed` would miss precisely the undo, merge and
+	// mark-done cases the reconciliation exists for. This path sees all of them.
+	// Skipped entirely when nothing is handed off, which is the ordinary case.
+	if (handoff.activeHandoffIds.value.size > 0) void handoff.reconcile()
 
 	void nextTick().then(() => {
 		selection.restoreDom(snapshot)
@@ -509,6 +528,114 @@ async function setActiveSection(id: string) {
 	)
 }
 
+/**
+ * The batch mutations, each **one** store command and therefore one undo
+ * snapshot. Looping a singular command over a selection would push one snapshot
+ * per note and make undoing a five-note operation take five presses.
+ */
+async function moveNotes(ids: string[], section: string) {
+	return mutate(
+		() => invoke<Space>('move_notes', { ids, section }),
+		(value) => value,
+		{ scope: 'list' },
+	)
+}
+
+async function mergeNotes(ids: string[]) {
+	return mutate(
+		() => invoke<Space>('merge_notes', { ids }),
+		(value) => value,
+		{ scope: 'list' },
+	)
+}
+
+async function deleteNotes(ids: string[]) {
+	return mutate(
+		() => invoke<Space>('delete_notes', { ids }),
+		(value) => value,
+		{ scope: 'list' },
+	)
+}
+
+/** `index` is interpreted against the target list **after** the note has been
+ *  removed from it, and clamped by the store. */
+async function reorderNote(id: string, section: string, index: number) {
+	return mutate(
+		() => invoke<Space>('reorder_note', { id, section, index }),
+		(value) => value,
+		{ scope: 'list' },
+	)
+}
+
+async function renameSection(id: string, name: string) {
+	return mutate(
+		() => invoke<Space>('rename_section', { id, name }),
+		(value) => value,
+		{ scope: 'list' },
+	)
+}
+
+/** Deletes the section **and the notes in it** — undo covers both. Refused by
+ *  the store for the last remaining section, so a capture target always exists. */
+async function deleteSection(id: string) {
+	return mutate(
+		() => invoke<Space>('delete_section', { id }),
+		(value) => value,
+		{ scope: 'list' },
+	)
+}
+
+async function reorderSection(id: string, index: number) {
+	return mutate(
+		() => invoke<Space>('reorder_section', { id, index }),
+		(value) => value,
+		{ scope: 'list' },
+	)
+}
+
+/**
+ * `undo`/`redo` return `Space | null`, and `null` — an empty stack — is not an
+ * error. So they cannot go through `mutate`, whose contract is that a resolved
+ * command carries a document.
+ *
+ * The status re-pull is unconditional (task-003 §8.1a): both commands can clear
+ * or refill the stacks in ways no `Space` payload describes, and a `conflict`
+ * failure leaves them exactly as they were.
+ */
+async function restore(command: 'undo' | 'redo'): Promise<'applied' | 'empty' | 'error'> {
+	if (actionError.value?.scope === 'list') actionError.value = null
+	const issued = { generation, epoch: epoch.value }
+
+	let result: Space | null
+	try {
+		result = await invoke<Space | null>(command)
+	} catch (error) {
+		actionError.value = { scope: 'list', message: errorMessage(error) }
+		return 'error'
+	}
+
+	if (result === null) {
+		await pullStatus()
+		return 'empty'
+	}
+
+	// Routed through the ordinary applied-document path, so task-004's selection
+	// reconciliation runs and prunes ids the restored document no longer has.
+	// There is deliberately no second pruning mechanism.
+	const applied = applyDocument(result, issued, { animate: true })
+	await pullStatus()
+	if (!applied) void refresh()
+	return 'applied'
+}
+
+function undo() {
+	return restore('undo')
+}
+
+function redo() {
+	return restore('redo')
+}
+
 /** Scoped, so dismissing the composer's message does not silently drop the
  *  editor's. */
 function clearActionError(scope?: ActionErrorScope) {
@@ -536,6 +663,24 @@ const notesBySection = computed(() => {
 
 function notesInSection(sectionId: string): Note[] {
 	return notesBySection.value.get(sectionId) ?? []
+}
+
+/** Id lookup for the action layer, which resolves a selection into note objects
+ *  on every menu open. A linear `find` per id is quadratic over a selection. */
+const notesById = computed(() => new Map((space.value?.notes ?? []).map((note) => [note.id, note])))
+
+function noteById(id: string): Note | null {
+	return notesById.value.get(id) ?? null
+}
+
+/** The targeted notes as objects, in the order the ids were given. Ids that no
+ *  longer exist are dropped rather than yielding holes. */
+function notesByIds(ids: readonly string[]): Note[] {
+	const lookup = notesById.value
+	return ids.flatMap((id) => {
+		const note = lookup.get(id)
+		return note ? [note] : []
+	})
 }
 
 const activeSection = computed(() => space.value?.activeSection ?? null)
@@ -570,6 +715,8 @@ export function useSpace() {
 	return {
 		...readonlyViews,
 		notesInSection,
+		noteById,
+		notesByIds,
 		errorFor,
 		initialize,
 		dispose,
@@ -580,6 +727,15 @@ export function useSpace() {
 		updateNoteBody,
 		setNotesDone,
 		setActiveSection,
+		moveNotes,
+		mergeNotes,
+		deleteNotes,
+		reorderNote,
+		renameSection,
+		deleteSection,
+		reorderSection,
+		undo,
+		redo,
 		clearActionError,
 	}
 }

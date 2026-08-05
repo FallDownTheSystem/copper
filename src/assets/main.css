@@ -505,6 +505,25 @@
 	color: var(--text-secondary);
 }
 
+/* Search matches, painted over the live DOM by the CSS Custom Highlight API —
+   no markup change, so the per-note render cache stays byte-identical across a
+   search. `::highlight()` accepts only colour, background-color,
+   text-decoration, text-shadow and -webkit-text-stroke, so the treatment cannot
+   be a border, a radius or padding.
+
+   The explicit foreground is not decoration: a highlighted code span already
+   carries its own Shiki colour, and without this the two would combine into a
+   pair with no guaranteed contrast. */
+::highlight(copper-search-match) {
+	background-color: oklch(0.86 0.15 95);
+	color: oklch(0.2 0.02 95);
+}
+
+.dark ::highlight(copper-search-match) {
+	background-color: oklch(0.62 0.13 85);
+	color: oklch(0.98 0.005 95);
+}
+
 /* Shiki's dual-theme output carries the light colour inline and the dark one as
    a custom property, so a theme switch is pure CSS and the render cache stays
    valid — the generated HTML is byte-identical across the toggle. */

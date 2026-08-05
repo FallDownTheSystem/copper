@@ -14,6 +14,7 @@
  * section boundary.
  */
 
+import { useNoteSearch } from './useNoteSearch'
 import type { SpaceView } from './useSpace'
 
 /** Row keys are prefixed rather than raw ids: note ids and section ids are only
@@ -41,8 +42,50 @@ export function rowSectionId(key: string | null): string | null {
 const selectedIds = ref<string[]>([])
 const focusedId = ref<string | null>(null)
 const anchorId = ref<string | null>(null)
-const rowIds = ref<string[]>([])
-const visibleNoteIds = ref<string[]>([])
+
+/** The document's own grouping, before the search filter. Both traversal orders
+ *  are derived from it, so they can never disagree about which notes a section
+ *  holds. */
+const documentGroups = ref<{ sectionId: string; noteIds: string[] }[]>([])
+
+const { matchedIds } = useNoteSearch()
+
+/**
+ * Both orders are filtered, and filtering only one of them is the single easiest
+ * thing here to get half-right. `visibleNoteIds` drives selection, ranges and
+ * Ctrl+A; `rowIds` drives the arrow keys and includes section header rows. Filter
+ * only the first and `ArrowDown` still stops on the header rows of sections the
+ * list has removed from the DOM, and on notes that no longer match.
+ *
+ * A section with no surviving note is dropped entirely, header included, which is
+ * what makes a result's origin visible without a dozen empty headings.
+ */
+const orders = computed(() => {
+	const matched = matchedIds.value
+	const groups: { sectionId: string; noteIds: string[] }[] = []
+	const rows: string[] = []
+	const notes: string[] = []
+
+	for (const group of documentGroups.value) {
+		const members = matched ? group.noteIds.filter((id) => matched.has(id)) : group.noteIds
+		if (matched && members.length === 0) continue
+
+		groups.push({ sectionId: group.sectionId, noteIds: members })
+		rows.push(sectionRow(group.sectionId))
+		for (const id of members) {
+			rows.push(noteRow(id))
+			notes.push(id)
+		}
+	}
+
+	return { groups, rows, notes }
+})
+
+/** What the list renders, derived from the same walk as the traversal orders —
+ *  so what is on screen and what the arrow keys reach can never disagree. */
+const visibleGroups = computed(() => orders.value.groups)
+const rowIds = computed(() => orders.value.rows)
+const visibleNoteIds = computed(() => orders.value.notes)
 
 const selectedSet = computed(() => new Set(selectedIds.value))
 const focusedNoteId = computed(() => rowNoteId(focusedId.value))
@@ -212,32 +255,24 @@ function adjacentNoteFromRow(rowKey: string | null, delta: number): string | nul
 
 // --- document lifecycle ------------------------------------------------------
 
-/** Rebuilds both orders from a document. Called by `useSpace` on every apply. */
+/** Rebuilds the grouping both orders derive from. Called by `useSpace` on every
+ *  apply. */
 function syncDocument(space: SpaceView | null) {
 	if (!space) {
-		rowIds.value = []
-		visibleNoteIds.value = []
+		documentGroups.value = []
 		return
 	}
 
-	// Grouped in one pass rather than re-walking every note per section. Same two
-	// orders out, but the cost stops being notes × sections.
+	// Grouped in one pass rather than re-walking every note per section. Same
+	// result, but the cost stops being notes × sections.
 	const bySection = new Map<string, string[]>()
 	for (const section of space.sections) bySection.set(section.id, [])
 	for (const note of space.notes) bySection.get(note.section)?.push(note.id)
 
-	const rows: string[] = []
-	const notes: string[] = []
-	for (const section of space.sections) {
-		rows.push(sectionRow(section.id))
-		for (const id of bySection.get(section.id) ?? []) {
-			rows.push(noteRow(id))
-			notes.push(id)
-		}
-	}
-
-	rowIds.value = rows
-	visibleNoteIds.value = notes
+	documentGroups.value = space.sections.map((section) => ({
+		sectionId: section.id,
+		noteIds: bySection.get(section.id) ?? [],
+	}))
 }
 
 function scrollRegion() {
@@ -408,14 +443,68 @@ function resetForNewSpace() {
 	anchorId.value = null
 }
 
+/**
+ * The search filter can unmount the row holding the roving `tabindex="0"`.
+ *
+ * Saying focus never moves would be unsatisfiable — the element is gone — and
+ * every row is `tabindex="-1"` except the roving one, so a grid with no target
+ * cannot be reached by Tab at all. It moves to the nearest remaining match by
+ * the *former* row order, or out to the search field when nothing matches.
+ *
+ * A document change never reaches the relocation below: `reconcile` runs
+ * synchronously inside `applyDocument`, so by the time this watcher flushes the
+ * focused row is already one that exists.
+ */
+watch(rowIds, (rows, previous) => {
+	const current = focusedId.value
+	if (current && rows.includes(current)) return
+
+	const held =
+		typeof document !== 'undefined' &&
+		document.activeElement instanceof HTMLElement &&
+		document.activeElement.closest('[data-row-id]') !== null
+
+	focusedId.value = current ? nearestRow(previous, current, rows) : (rows[0] ?? null)
+
+	// Only chase DOM focus that was actually inside the list. Pulling it out of
+	// the search field on every keystroke would make the field unusable.
+	if (!held) return
+	void nextTick(() => {
+		const key = focusedId.value
+		const target = key ? rowElement(key) : null
+		if (target) target.focus()
+		else document.querySelector<HTMLElement>('[data-search]')?.focus()
+	})
+})
+
+/** Nearest survivor over the *row* order — forward first, then backward — so a
+ *  filtered-out note hands focus to its neighbour rather than to the top. */
+function nearestRow(formerRows: string[], formerKey: string, rows: string[]): string | null {
+	const live = new Set(rows)
+	const index = formerRows.indexOf(formerKey)
+
+	if (index !== -1) {
+		for (let i = index + 1; i < formerRows.length; i++) {
+			const key = formerRows[i]
+			if (key && live.has(key)) return key
+		}
+		for (let i = index - 1; i >= 0; i--) {
+			const key = formerRows[i]
+			if (key && live.has(key)) return key
+		}
+	}
+	return rows[0] ?? null
+}
+
 export function useSelection() {
 	return {
 		selectedIds: readonly(selectedIds),
 		focusedId: readonly(focusedId),
 		focusedNoteId,
 		anchorId: readonly(anchorId),
-		rowIds: readonly(rowIds),
-		visibleNoteIds: readonly(visibleNoteIds),
+		rowIds,
+		visibleNoteIds,
+		visibleGroups,
 		isSelected,
 		select,
 		toggle,

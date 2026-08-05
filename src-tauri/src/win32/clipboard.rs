@@ -680,11 +680,11 @@ pub fn restore(snapshot: &Snapshot, expected_seq: u32) -> Result<()> {
 /// Puts text on the clipboard, excluded from clipboard history and cloud sync.
 ///
 /// Phase 5's Copy and Copy as List are the callers this exists for; nothing in
-/// Phase 4 puts Copper's own text on the clipboard. Built and tested now anyway
-/// (task-005 R13) rather than left for the phase that first calls it — the write
-/// path is where a clipboard implementation destroys data, and shipping it
-/// untested for a phase is how that goes unnoticed.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Phase 4 puts Copper's own text on the clipboard. Built and tested a phase
+/// early (task-005 R13) rather than left for the phase that first calls it — the
+/// write path is where a clipboard implementation destroys data, and shipping it
+/// untested for a phase is how that goes unnoticed. Phase 5 has since arrived,
+/// and `clipboard::clipboard_write_text` is the caller.
 pub fn write_text_private(text: &str) -> Result<()> {
 	let mut wide: Vec<u16> = text.encode_utf16().collect();
 	wide.push(0);

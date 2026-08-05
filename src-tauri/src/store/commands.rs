@@ -1,5 +1,10 @@
 //! The twenty commands Phase 3 codes against (spec 8.1), and nothing else.
 //!
+//! Registration lives in the crate's own `commands.rs`: Tauri accepts exactly
+//! one `invoke_handler`, and the closure `generate_handler!` builds consumes the
+//! `Invoke` it is handed, so a per-module handler cannot be chained with
+//! another. The wrappers stay here, next to the module they serve.
+//!
 //! Deliberately thin. Each one locks the store inside a synchronous block, calls
 //! into the core, and lets the guard drop before returning — never held across
 //! an `.await` (there are none) and never held while emitting.
@@ -191,36 +196,4 @@ pub async fn redo(state: State<'_, SharedStore>) -> Reply<Option<Space>> {
 pub fn append_capture(app: &AppHandle, body: &str) -> Reply<String> {
 	let state = app.state::<SharedStore>();
 	super::append_capture(&state, body)
-}
-
-/// The invoke handler, built here so `generate_handler!` sees the commands in
-/// scope and `lib.rs` does not have to spell twenty paths.
-///
-/// These need no capability entries — app-defined commands are allowed for every
-/// window by default — and `build.removeUnusedCommands` cannot prune them,
-/// because it only prunes commands opted into the ACL via `AppManifest::commands`
-/// in `build.rs`, which this project does not do.
-pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
-	tauri::generate_handler![
-		get_settings,
-		update_settings,
-		get_status,
-		get_active_space,
-		open_space,
-		create_space,
-		add_note,
-		edit_note,
-		set_notes_done,
-		delete_notes,
-		reorder_note,
-		move_notes,
-		merge_notes,
-		add_section,
-		rename_section,
-		delete_section,
-		reorder_section,
-		set_active_section,
-		undo,
-		redo
-	]
 }

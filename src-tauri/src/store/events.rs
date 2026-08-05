@@ -44,6 +44,10 @@ pub enum ChangeReason {
 	/// Recovery from the errored state (spec 3.6a) — the panel is displaying
 	/// "this space is unreadable" and has no other way to learn that it is not.
 	Reload,
+	/// An `$EDITOR` read-back (Phase 5). Like a capture, this is a Rust-side
+	/// writer the frontend did not invoke, so its `Space` return value reaches
+	/// nobody and the panel would otherwise keep rendering the pre-save body.
+	Editor,
 }
 
 /// Braces, not a unit struct: `struct SettingsChanged;` and Rust's `()` both
@@ -224,6 +228,7 @@ mod tests {
 			(ChangeReason::External, "external"),
 			(ChangeReason::Capture, "capture"),
 			(ChangeReason::Reload, "reload"),
+			(ChangeReason::Editor, "editor"),
 		] {
 			assert_eq!(serde_json::to_value(reason).unwrap(), expected);
 		}

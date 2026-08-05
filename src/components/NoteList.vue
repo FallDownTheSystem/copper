@@ -1,80 +1,43 @@
 <script setup lang="ts">
-import autoAnimate, { type AnimationController } from '@formkit/auto-animate'
-import {
-	focusRowSoon,
-	noteRow,
-	rowElement,
-	rowSectionId,
-	sectionRow,
-} from '@/composables/useSelection'
+import { CHORDS } from '@/lib/chords'
+import { focusableIn } from '@/composables/useInteractionMode'
+import { rowElement, rowSectionId } from '@/composables/useSelection'
 
-const {
-	space,
-	sections,
-	activeSection,
-	notesInSection,
-	setNotesDone,
-	setActiveSection,
-	listAnimated,
-} = useSpace()
+const { space, sections, activeSection, setActiveSection, setNotesDone } = useSpace()
 const {
 	focusedId,
 	focusedNoteId,
-	selectedIds,
 	select,
 	toggle,
 	extendTo,
 	extendFocus,
 	selectAll,
-	clear,
 	moveFocus,
 	focusFirst,
 	focusLast,
+	visibleGroups,
 } = useSelection()
-const { editingNoteId, beginEdit, cancel } = useNoteEditor()
+const { beginEdit } = useNoteEditor()
+const { interactionRowId, enter, reconcile } = useInteractionMode()
+const { hasQuery, resultCount } = useNoteSearch()
+const { toggleDone, finishDrag } = useNoteActions()
 
 /**
- * Interaction mode. Without it `Show more` and in-body links have no keyboard
- * path at all, because everything inside a row is `tabindex="-1"` — which is
- * what makes the one-Tab-stop claim true in the first place.
+ * The rendered list, paired with its section objects in one place. Derived from
+ * `visibleGroups` rather than from `sections`, so what is on screen and what the
+ * arrow keys traverse come out of the same filtered walk and cannot disagree.
  */
-const interactionRowId = ref<string | null>(null)
-
-/** `pre[tabindex]` is in the list because a Shiki fence is a scroll container:
- *  it has to be reachable to be scrolled by keyboard, and it carries
- *  `tabindex="-1"` in navigation mode so it is not a second Tab stop. */
-function focusableIn(row: HTMLElement) {
-	return [...row.querySelectorAll<HTMLElement>('button, a[href], pre[tabindex]')]
-}
-
-/**
- * Anchors inside rendered Markdown carry `tabindex="-1"` from a render rule, so
- * they have to be flipped here rather than through a prop — the HTML string is
- * not Vue's to patch.
- */
-function setDescendantsTabbable(row: HTMLElement | null, tabbable: boolean) {
-	if (!row) return
-	for (const element of focusableIn(row)) element.tabIndex = tabbable ? 0 : -1
-}
-
-function enterInteraction() {
-	const key = focusedId.value
-	if (!key) return
-	interactionRowId.value = key
-	void nextTick(() => {
-		const row = rowElement(key)
-		setDescendantsTabbable(row, true)
-		if (row) focusableIn(row)[0]?.focus()
+const renderedSections = computed(() => {
+	const bySection = new Map(sections.value.map((section) => [section.id, section]))
+	return visibleGroups.value.flatMap((group) => {
+		const section = bySection.get(group.sectionId)
+		return section ? [{ section, noteIds: group.noteIds }] : []
 	})
-}
+})
 
-function exitInteraction() {
-	const key = interactionRowId.value
-	if (!key) return
-	setDescendantsTabbable(rowElement(key), false)
-	interactionRowId.value = null
-	focusRowSoon(key)
-}
+/** A query that matched nothing. A zero count with no query is simply an empty
+ *  space, which is task-004's own presentation and not this state. */
+const noMatches = computed(() => hasQuery.value && resultCount.value === 0)
 
 /** The roving target has to actually hold DOM focus, or arrow navigation moves
  *  a highlight the screen reader never follows. */
@@ -94,10 +57,11 @@ function activateSection(id: string) {
 	void setActiveSection(id)
 }
 
-function toggleDone(noteId: string) {
+/** A click on the completion circle names one card unambiguously, so it toggles
+ *  that card rather than the selection. The selection-aware form is `Space`. */
+function toggleOne(noteId: string) {
 	const note = space.value?.notes.find((candidate) => candidate.id === noteId)
-	if (!note) return
-	void setNotesDone([noteId], !note.done)
+	if (note) void setNotesDone([noteId], !note.done)
 }
 
 function startEditing(noteId: string) {
@@ -112,30 +76,24 @@ function onPointerSelect(event: MouseEvent, noteId: string) {
 	else select(noteId)
 }
 
+/**
+ * The DOM after a drop *is* the intended order, so it is read back rather than
+ * reconstructed from the library's callbacks. After a tick, because the reorder
+ * lands in the mirror array first and Vue patches on the next flush.
+ */
+function onDragEnd(noteId: string) {
+	void nextTick(() => finishDrag(noteId))
+}
+
 function onKeydown(event: KeyboardEvent) {
-	// A reka-ui overlay that consumed the key must not also clear the selection.
+	// A reka overlay that consumed the key must not also move the selection.
 	if (event.defaultPrevented) return
 
 	const target = event.target as HTMLElement | null
 
-	if (event.key === 'Escape') {
-		// The ladder, in order: open dropdown (already returned above) →
-		// interaction mode → inline editor → selection.
-		if (interactionRowId.value) {
-			event.preventDefault()
-			exitInteraction()
-		} else if (editingNoteId.value) {
-			event.preventDefault()
-			cancel()
-		} else if (selectedIds.value.length > 0) {
-			event.preventDefault()
-			clear()
-		}
-		return
-	}
-
 	// While in interaction mode the grid's own bindings do not fire; Tab and
-	// Shift+Tab cycle within the cell instead.
+	// Shift+Tab cycle within the cell instead. `Escape` is a rung of the shell's
+	// ladder and is deliberately not handled here.
 	if (interactionRowId.value) {
 		if (event.key !== 'Tab') return
 		const row = rowElement(interactionRowId.value)
@@ -184,7 +142,7 @@ function onKeydown(event: KeyboardEvent) {
 			return
 		case 'F2':
 			event.preventDefault()
-			enterInteraction()
+			enter(focusedId.value)
 			return
 		case ' ':
 			// Ctrl+Space and Shift+Space are the only keyboard path to a
@@ -193,7 +151,8 @@ function onKeydown(event: KeyboardEvent) {
 				event.preventDefault()
 				if (event.ctrlKey || event.metaKey) toggle(noteId)
 				else if (event.shiftKey) extendTo(noteId)
-				else toggleDone(noteId)
+				// Selection-aware, and one undoable operation whatever the count.
+				else void toggleDone()
 			} else if (sectionId && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
 				// Only an unmodified Space activates a section. Ctrl+Space is the
 				// Windows IME chord, and swallowing it here would take the candidate
@@ -203,6 +162,9 @@ function onKeydown(event: KeyboardEvent) {
 			}
 			return
 		case 'Enter':
+			// Ctrl+Enter starts the editor handoff and belongs to the shell's chord
+			// layer; only a bare Enter opens the inline editor.
+			if (!CHORDS.edit.matches(event)) return
 			event.preventDefault()
 			if (noteId) startEditing(noteId)
 			else if (sectionId) activateSection(sectionId)
@@ -217,124 +179,45 @@ function onKeydown(event: KeyboardEvent) {
 	}
 }
 
-// --- list animation ----------------------------------------------------------
-// The imperative controller rather than `v-auto-animate`: the directive gives no
-// handle to disable animation, and rows mid-transform report transformed
-// offsets — which invalidates the pixel offset a scroll restore is anchored on
-// and makes an external reload visibly thrash.
-
-// Keyed on the element, not the section id. Vue re-invokes an inline function
-// ref on every re-render because its identity changes — first with null, then
-// with the element — so keying on the id would tear down and re-register a
-// second MutationObserver over the same rowgroup on every render.
-const controllers = new Map<HTMLElement, AnimationController>()
-
-function registerRowgroup(element: unknown) {
-	if (!(element instanceof HTMLElement) || controllers.has(element)) return
-
-	// The library default of 250ms ease-in-out is too slow for the app's hottest
-	// path. Reduced motion is respected by auto-animate itself.
-	const controller = autoAnimate(element, { duration: 150, easing: 'ease-out' })
-	if (!listAnimated.value) controller.disable()
-	controllers.set(element, controller)
-}
-
-watch(listAnimated, (enabled) => {
-	for (const [element, controller] of controllers) {
-		if (!element.isConnected) {
-			controllers.delete(element)
-			continue
-		}
-		if (enabled) controller.enable()
-		else controller.disable()
-	}
-})
-
 // A document change does not by itself invalidate interaction mode — toggling
 // `done` with Space is a document change, and dropping the user out of the mode
-// they just used a key in would be its own bug. Only a row that is actually gone
-// forces an exit. A row that survived may have been re-rendered, which resets
-// the tabindex of anchors inside `v-html` (those are set on the DOM, not by
-// Vue), so they are re-promoted.
-watch(
-	() => space.value,
-	() => {
-		const key = interactionRowId.value
-		if (!key) return
-		void nextTick(() => {
-			const row = rowElement(key)
-			if (!row) exitInteraction()
-			else setDescendantsTabbable(row, true)
-		})
-	},
-)
+// they just used a key in would be its own bug.
+watch(() => space.value, reconcile)
 </script>
 
 <template>
-	<div
-		role="grid"
-		aria-multiselectable="true"
-		aria-label="Notes"
-		class="min-w-0"
-		@keydown="onKeydown"
-	>
+	<div class="min-w-0">
 		<!-- One grid spanning every section, not one per section: a Shift range has
 		     to extend across section boundaries, which needs a single composite
-		     widget. -->
+		     widget. During a search a section with no match is not rendered at all,
+		     header row included — which is what keeps `ArrowDown` off rows that are
+		     no longer on screen.
+
+		     Absent entirely when nothing matches, rather than rendered empty: a
+		     `grid` with no `row` or `rowgroup` child fails `aria-required-children`,
+		     and the empty state is not a row. -->
 		<div
-			v-for="section in sections"
-			:key="section.id"
-			:ref="registerRowgroup"
-			role="rowgroup"
-			:aria-labelledby="`section-heading-${section.id}`"
-			class="section-group min-w-0"
+			v-if="renderedSections.length > 0"
+			role="grid"
+			aria-multiselectable="true"
+			aria-label="Notes"
+			class="min-w-0"
+			@keydown="onKeydown"
 		>
-			<!-- Neither row's selection or focus arrives as a prop: reading them here
-			     would put them in this component's render dependencies, and every
-			     arrow keypress would rebuild all 200 rows to change two of them. -->
-			<SectionHeader
-				:section="section"
-				:active="section.id === activeSection"
-				:row-id="sectionRow(section.id)"
-				@activate="activateSection(section.id)"
+			<NoteSection
+				v-for="entry in renderedSections"
+				:key="entry.section.id"
+				:section="entry.section"
+				:note-ids="entry.noteIds"
+				:active="entry.section.id === activeSection"
+				:interaction-row-id="interactionRowId"
+				@activate="activateSection(entry.section.id)"
+				@pointer-select="onPointerSelect"
+				@toggle-done="toggleOne"
+				@drag-end="onDragEnd"
 			/>
-
-			<NoteCard
-				v-for="note in notesInSection(section.id)"
-				:key="note.id"
-				:note="note"
-				:row-id="noteRow(note.id)"
-				:interactive="interactionRowId === noteRow(note.id)"
-				@pointer-select="onPointerSelect($event, note.id)"
-				@toggle-done="toggleDone(note.id)"
-			/>
-
-			<!-- Only the *active* empty section says so. The general empty state is
-			     additive; the headers stay visible either way, because hiding where a
-			     capture will land is worst exactly when the list is empty. -->
-			<div
-				v-if="notesInSection(section.id).length === 0 && section.id === activeSection"
-				role="row"
-			>
-				<div role="gridcell" class="text-text-secondary px-3 py-1 text-meta">
-					No notes in this section yet.
-				</div>
-			</div>
 		</div>
+
+		<SearchEmptyState v-if="noMatches" />
 	</div>
 </template>
-
-<style scoped>
-.section-group + .section-group {
-	/* At least 2x the within-group gap, so sections read as separate groups. */
-	margin-top: 24px;
-}
-
-.section-group > :deep([role='row'] + [role='row']) {
-	margin-top: 4px;
-}
-
-.section-group > :deep([role='row']:first-child + [role='row']) {
-	margin-top: 8px;
-}
-</style>

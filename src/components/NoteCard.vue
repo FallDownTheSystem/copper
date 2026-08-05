@@ -18,64 +18,131 @@ const { isEditing } = useNoteEditor()
 // Subscribed to here rather than passed down. As props they sat in NoteList's
 // render dependencies, so a keypress that moved focus by one row rebuilt every
 // row in the list. They are still the wrapping row's state either way.
-const { focusedId, isSelected } = useSelection()
+const { focusedId, isSelected, select } = useSelection()
+const { isHandingOff, isConflicted } = useEditorHandoff()
+const { stopHandoff } = useNoteActions()
+const { hasQuery } = useNoteSearch()
 
 const selected = computed(() => isSelected(props.note.id))
 const focused = computed(() => focusedId.value === props.rowId)
 const editing = computed(() => isEditing(props.note.id))
+/** No handle, no drag: a filtered list is a subset of its section, so an index
+ *  read off it is not the index `reorder_note` takes. */
+const draggable = computed(() => !editing.value && !hasQuery.value)
 const descendantTabIndex = computed(() => (props.interactive ? 0 : -1))
+const handingOff = computed(() => isHandingOff(props.note.id))
+const conflicted = computed(() => isConflicted(props.note.id))
+
+/**
+ * Right-clicking outside the current selection replaces it with this card;
+ * right-clicking inside it leaves the selection untouched — which is what makes
+ * every menu item's target resolution correct without the menu having to know
+ * how it was opened.
+ *
+ * Runs before reka's own trigger handler, which defers its work to a `nextTick`.
+ */
+function onContextMenu() {
+	if (!selected.value) select(props.note.id)
+}
 </script>
 
 <template>
-	<div
-		role="row"
-		:data-row-id="rowId"
-		:aria-selected="selected"
-		:tabindex="focused ? 0 : -1"
-		class="note-row outline-focus-ring rounded-md focus-visible:outline-2 focus-visible:-outline-offset-2"
-		:class="[
-			selected ? 'row-selected ring-accent-ring ring-2 ring-inset' : '',
-			'hover:bg-surface-hover transition-colors duration-fast',
-		]"
-		@click="emit('pointerSelect', $event)"
-	>
-		<div class="flex min-h-11 min-w-0 items-start gap-2 px-3 py-2" role="gridcell">
-			<button
-				type="button"
-				:tabindex="descendantTabIndex"
-				:aria-pressed="note.done"
-				:aria-label="note.done ? 'Mark as not done' : 'Mark as done'"
-				class="completion-circle border-text-disabled outline-focus-ring relative mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border transition-colors duration-base focus-visible:outline-2 focus-visible:outline-offset-1"
-				:class="note.done ? 'bg-accent-ring border-accent-ring text-white' : ''"
-				@click.stop="emit('toggleDone')"
+	<!-- `ContextMenu` renders no element of its own, and the trigger merges onto
+	     the row through `as-child`: a `grid` may own only `row` and `rowgroup` and
+	     a `rowgroup` only `row`, so a wrapper here would break
+	     `aria-required-children`. Note rows only — a section header row opens no
+	     note menu. -->
+	<ContextMenu>
+		<ContextMenuTrigger as-child>
+			<div
+				role="row"
+				:data-row-id="rowId"
+				data-note-row
+				:aria-selected="selected"
+				:tabindex="focused ? 0 : -1"
+				class="note-row group/row outline-focus-ring rounded-md focus-visible:outline-2 focus-visible:-outline-offset-2"
+				:class="[
+					selected ? 'row-selected ring-accent-ring ring-2 ring-inset' : '',
+					'hover:bg-surface-hover transition-colors duration-fast',
+				]"
+				@click="emit('pointerSelect', $event)"
+				@contextmenu="onContextMenu"
 			>
-				<!-- No entrance animation on the glyph: the toggle is bound to Space,
-				     repeats, and a scale-in on a keyboard-repeated control reads as
-				     lag. Only background-color transitions. -->
-				<svg
-					v-if="note.done"
-					viewBox="0 0 16 16"
-					class="size-3"
-					aria-hidden="true"
-					focusable="false"
-				>
-					<path
-						d="M3.5 8.5 6.5 11.5 12.5 5"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-					/>
-				</svg>
-			</button>
+				<div class="flex min-h-11 min-w-0 items-start gap-2 px-3 py-2" role="gridcell">
+					<button
+						type="button"
+						:tabindex="descendantTabIndex"
+						:aria-pressed="note.done"
+						:aria-label="note.done ? 'Mark as not done' : 'Mark as done'"
+						class="completion-circle border-text-disabled outline-focus-ring relative mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border transition-colors duration-base focus-visible:outline-2 focus-visible:outline-offset-1"
+						:class="note.done ? 'bg-accent-ring border-accent-ring text-white' : ''"
+						@click.stop="emit('toggleDone')"
+					>
+						<!-- No entrance animation on the glyph: the toggle is bound to Space,
+						     repeats, and a scale-in on a keyboard-repeated control reads as
+						     lag. Only background-color transitions. -->
+						<svg
+							v-if="note.done"
+							viewBox="0 0 16 16"
+							class="size-3"
+							aria-hidden="true"
+							focusable="false"
+						>
+							<path
+								d="M3.5 8.5 6.5 11.5 12.5 5"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+							/>
+						</svg>
+					</button>
 
-			<div class="min-w-0 flex-1">
-				<NoteEditor v-if="editing" :row-id="rowId" />
-				<NoteBody v-else :note="note" :class="note.done ? 'note-done' : ''" />
+					<div class="min-w-0 flex-1">
+						<!-- A grip rather than a body-wide drag: the row already owns
+						     click-to-select and the context-menu trigger, and a whole-card
+						     drag would have to arbitrate with both on `pointerdown`. Kept
+						     out of the tab order like every other descendant — the keyboard
+						     path to reordering is Alt+Arrow, not this. -->
+						<span
+							v-if="draggable"
+							data-drag-handle
+							role="presentation"
+							class="text-text-disabled hover:text-text-secondary absolute top-2 right-1 cursor-grab rounded-md p-1 opacity-0 transition-opacity duration-fast group-focus-within/row:opacity-100 group-hover/row:opacity-100 active:cursor-grabbing"
+						>
+							<IconLucideGripVertical class="size-4" aria-hidden="true" focusable="false" />
+						</span>
+						<NoteEditor v-if="editing" :row-id="rowId" />
+						<NoteBody v-else :note="note" :class="note.done ? 'note-done' : ''" />
+
+						<!-- Icon plus text, never colour alone. The control that ends the
+						     handoff sits next to it because a handoff the user cannot end is
+						     a note they cannot edit in the panel. -->
+						<p
+							v-if="handingOff"
+							class="text-text-secondary mt-1 flex flex-wrap items-center gap-1.5 text-meta"
+						>
+							<IconLucideSquarePen class="size-3.5 shrink-0" aria-hidden="true" focusable="false" />
+							<span>{{
+								conflicted ? 'Editing externally — save refused' : 'Editing externally'
+							}}</span>
+							<button
+								type="button"
+								:tabindex="descendantTabIndex"
+								class="panel-button min-h-6"
+								@click.stop="stopHandoff(note.id)"
+							>
+								Stop
+							</button>
+						</p>
+					</div>
+				</div>
 			</div>
-		</div>
-	</div>
+		</ContextMenuTrigger>
+
+		<NoteContextMenu />
+	</ContextMenu>
 </template>
 
 <style scoped>

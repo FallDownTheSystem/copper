@@ -7,9 +7,43 @@ import PanelShell from './PanelShell.vue'
 // `vi.resetModules()` would resolve a *second* instance of a module whose state
 // is module-scoped by design, and the component tree would not share it.
 import { useNoteEditor } from '@/composables/useNoteEditor'
+import { useNoteSearch } from '@/composables/useNoteSearch'
+import { useSelection } from '@/composables/useSelection'
 import type { Space, StoreStatus } from '@/composables/useSpace'
 
 const editor = useNoteEditor()
+const search = useNoteSearch()
+const selection = useSelection()
+
+// happy-dom implements no Web Animations API, and auto-animate calls
+// `el.animate` from a MutationObserver callback — so a test that adds or removes
+// a row (filtering, undo, delete) throws out of band rather than failing an
+// assertion. Stubbed rather than worked around in the component: the animation
+// is real product behaviour and only the environment is missing.
+//
+// It has to *finish*, not merely exist: auto-animate re-appends a removed
+// element to animate it out and only takes it back out of the DOM on the
+// `finish` event, so a stub that never fires one leaves every filtered-out row
+// on screen forever.
+// Reached through an index signature rather than as `Element.prototype.animate`:
+// the typed property is a method, and both reading it and narrowing on it upset
+// the linter for reasons that have nothing to do with a stub.
+const elementPrototype = Element.prototype as unknown as Record<string, unknown>
+elementPrototype.animate ??= () => {
+	const finishHandlers: (() => void)[] = []
+	queueMicrotask(() => {
+		for (const handler of finishHandlers) handler()
+	})
+	return {
+		playState: 'finished',
+		finished: Promise.resolve(),
+		cancel: () => {},
+		removeEventListener: () => {},
+		addEventListener: (name: string, handler: () => void) => {
+			if (name === 'finish') finishHandlers.push(handler)
+		},
+	}
+}
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), openUrl: vi.fn() }))
 
@@ -70,12 +104,21 @@ beforeEach(() => {
 		if (command === 'get_settings') {
 			return { recents: [], activeSpace: 0, panelPosition: null, shortcuts: {}, theme: 'system' }
 		}
+		if (command === 'clipboard_write_text') return null
+		if (command === 'editor_handoffs') return []
+		if (command === 'set_notes_done') return SPACE
+		// An empty stack is `null`, not an error (task-003 §4.5).
+		if (command === 'undo' || command === 'redo') return null
 		throw { kind: 'invalid', message: command }
 	})
 })
 
 afterEach(() => {
 	editor.cancel()
+	// Module-scoped by design, so it outlives the component tree exactly as it
+	// does in the app. A query left behind would filter the next test's list.
+	search.clearQuery()
+	selection.clear()
 	document.body.innerHTML = ''
 })
 
@@ -232,6 +275,169 @@ describe('row controls', () => {
 		await circle.trigger('keydown', { key: 'Escape' })
 
 		expect(reachedGrid).toBe(true)
+	})
+})
+
+describe('search', () => {
+	async function typeQuery(wrapper: Awaited<ReturnType<typeof mountPanel>>, text: string) {
+		await wrapper.find('#panel-search').setValue(text)
+		// Several ticks: the filter reaches the list, the list re-renders, and
+		// auto-animate's exit animation has to finish before a removed row is
+		// actually out of the DOM.
+		for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+	}
+
+	it('filters to matching notes and drops sections with no match', async () => {
+		const wrapper = await mountPanel()
+		expect(wrapper.findAll('[role="rowgroup"]')).toHaveLength(2)
+
+		await typeQuery(wrapper, 'first')
+
+		expect(wrapper.findAll('[data-row-id^="n:"]')).toHaveLength(1)
+		expect(wrapper.find('[data-row-id="n:nte_1"]').exists()).toBe(true)
+		// A section header only renders for a group that still has a match, so a
+		// result's origin stays visible without a column of empty headings.
+		expect(wrapper.findAll('[role="rowgroup"]')).toHaveLength(1)
+	})
+
+	it('filters both traversal orders, not just the note one', async () => {
+		// Filtering only `visibleNoteIds` leaves ArrowDown stopping on header rows
+		// of sections the list has removed from the DOM. Both come out of one walk
+		// so they cannot disagree, and this is what says so.
+		const wrapper = await mountPanel()
+		await typeQuery(wrapper, 'first')
+
+		const rendered = wrapper.findAll('[data-row-id]').map((row) => row.attributes('data-row-id'))
+		expect(selection.rowIds.value).toEqual(rendered)
+		expect(selection.visibleNoteIds.value).toEqual(['nte_1'])
+	})
+
+	it('renders the no-results state with a way out, and no empty grid', async () => {
+		const wrapper = await mountPanel()
+		await typeQuery(wrapper, 'zzzznothing')
+
+		expect(wrapper.text()).toContain('No notes match “zzzznothing”.')
+		// A `grid` with no row or rowgroup child fails aria-required-children.
+		expect(wrapper.find('[role="grid"]').exists()).toBe(false)
+
+		const clear = wrapper.findAll('button').find((button) => button.text() === 'Clear search')
+		expect(clear).toBeTruthy()
+		await clear!.trigger('click')
+		expect(search.query.value).toBe('')
+	})
+
+	it('never changes the active section', async () => {
+		const wrapper = await mountPanel()
+		await typeQuery(wrapper, 'first')
+
+		// A capture arriving mid-search still has to land where the composer says
+		// it will.
+		expect(mocks.invoke).not.toHaveBeenCalledWith('set_active_section', expect.anything())
+		expect(wrapper.find('#composer').attributes('placeholder')).toContain('development')
+	})
+})
+
+describe('the Escape ladder', () => {
+	it('clears the query before the selection, and skips a rung with nothing to do', async () => {
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		await wrapper.find('#panel-search').setValue('first')
+		await wrapper.vm.$nextTick()
+
+		// One press, one level: the query goes and the selection survives.
+		await wrapper.trigger('keydown', { key: 'Escape' })
+		expect(search.query.value).toBe('')
+		expect(selection.selectedIds.value).toEqual(['nte_1'])
+
+		// The query rung now has nothing to do, so the press falls through to the
+		// selection rather than being swallowed.
+		await wrapper.trigger('keydown', { key: 'Escape' })
+		expect(selection.selectedIds.value).toEqual([])
+	})
+})
+
+describe('copy', () => {
+	it('writes the targeted bodies through the Rust clipboard module', async () => {
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+
+		await wrapper.trigger('keydown', { key: 'c', ctrlKey: true })
+		await wrapper.vm.$nextTick()
+
+		expect(mocks.invoke).toHaveBeenCalledWith('clipboard_write_text', { text: 'first note' })
+	})
+
+	it('joins several notes with a blank line and confirms the count', async () => {
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		selection.extendTo('nte_2')
+
+		await wrapper.trigger('keydown', { key: 'c', ctrlKey: true })
+		for (let i = 0; i < 3; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+
+		expect(mocks.invoke).toHaveBeenCalledWith('clipboard_write_text', {
+			text: `first note\n\n${SPACE.notes[1]!.body}`,
+		})
+		// Singular and plural are separate whole strings, never `note(s)`.
+		expect(wrapper.text()).toContain('Copied 2 notes')
+	})
+
+	it('leaves a live text selection to the native copy', async () => {
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+
+		const range = document.createRange()
+		range.selectNodeContents(wrapper.find('.note-prose').element)
+		window.getSelection()?.removeAllRanges()
+		window.getSelection()?.addRange(range)
+
+		await wrapper.trigger('keydown', { key: 'c', ctrlKey: true })
+		await wrapper.vm.$nextTick()
+
+		expect(mocks.invoke).not.toHaveBeenCalledWith('clipboard_write_text', expect.anything())
+		window.getSelection()?.removeAllRanges()
+	})
+})
+
+describe('mark as done', () => {
+	it('applies to the whole selection as one store call', async () => {
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		selection.extendTo('nte_2')
+
+		await wrapper.find('[data-row-id="n:nte_2"]').trigger('keydown', { key: ' ' })
+		await wrapper.vm.$nextTick()
+
+		// One call, not one per note: five calls would be five snapshots and five
+		// Ctrl+Z presses to undo.
+		expect(mocks.invoke).toHaveBeenCalledWith('set_notes_done', {
+			ids: ['nte_1', 'nte_2'],
+			done: true,
+		})
+	})
+})
+
+describe('undo', () => {
+	it('reports an empty stack rather than failing silently', async () => {
+		const wrapper = await mountPanel()
+
+		await wrapper.trigger('keydown', { key: 'z', ctrlKey: true })
+		for (let i = 0; i < 3; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+
+		expect(wrapper.text()).toContain('Nothing to undo.')
+	})
+
+	it('is inert while a text surface has focus', async () => {
+		const wrapper = await mountPanel()
+
+		// Native text undo owns the composer, the inline editor and the search
+		// field; omitting the third is what would let Ctrl+Z undo a note operation
+		// mid-query.
+		await wrapper.find('#panel-search').trigger('keydown', { key: 'z', ctrlKey: true })
+		await wrapper.find('#composer').trigger('keydown', { key: 'z', ctrlKey: true })
+		await wrapper.vm.$nextTick()
+
+		expect(mocks.invoke).not.toHaveBeenCalledWith('undo')
 	})
 })
 

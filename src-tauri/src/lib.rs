@@ -1,5 +1,10 @@
 mod capture;
+mod clipboard;
+mod commands;
 mod diagnostics;
+/// Public because `end_all` is the entry point Phase 6 calls on a space switch,
+/// and it must stay the only way another module ends every handoff at once.
+pub mod editor;
 mod panel;
 pub mod store;
 mod tray;
@@ -127,10 +132,17 @@ pub fn run() {
 			)?)));
 			capture::arm_when_frontend_ready(app.handle());
 
+			// Scavenged *before* the registry exists, so no live handoff can have its
+			// temp tree deleted out from under it. Startup scavenging is what makes
+			// the cleanup promise true after a crash — which runs no exit hook at all
+			// — or after an editor held a file open past shutdown.
+			editor::scavenge();
+			app.manage(editor::HandoffRegistry::default());
+
 			// The window is not shown here. It stays hidden until the tray reveals it.
 			Ok(())
 		})
-		.invoke_handler(store::commands::handler())
+		.invoke_handler(commands::handler())
 		.build(tauri::generate_context!())
 		.expect("error while running tauri application");
 
@@ -142,6 +154,10 @@ pub fn run() {
 	app.run(|handle, event| {
 		if matches!(event, RunEvent::Exit) {
 			capture::shutdown(handle);
+			// Before the sweep: each live handoff applies or refuses whatever is on
+			// disk, so exiting is not a way to silently discard unsaved editor work.
+			editor::end_all(handle);
+			editor::scavenge();
 		}
 	});
 }

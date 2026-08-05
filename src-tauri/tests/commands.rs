@@ -48,20 +48,55 @@ const COMMANDS: [&str; 20] = [
 	"redo",
 ];
 
+/// The commands later phases added beside the store's twenty.
+const EXTRA_COMMANDS: [&str; 5] = [
+	"clipboard_write_text",
+	"editor_handoffs",
+	"editor_open_note",
+	"editor_stop_handoff",
+	"editor_reconcile",
+];
+
 /// Spec 8.1c. Every argument name in the whole surface.
-const PARAMETERS: [&str; 9] = [
-	"patch", "path", "name", "body", "section", "id", "ids", "done", "index",
+const PARAMETERS: [&str; 10] = [
+	"patch", "path", "name", "body", "section", "id", "ids", "done", "index", "text",
 ];
 
 const SOURCE: &str = include_str!("../src/store/commands.rs");
 
+/// Command *wrappers* live next to the module they serve; only the registration
+/// is central, because Tauri accepts one `invoke_handler` and the closure
+/// `generate_handler!` builds consumes the `Invoke` it is handed.
+const OTHER_SOURCES: [&str; 2] = [
+	include_str!("../src/clipboard.rs"),
+	include_str!("../src/editor.rs"),
+];
+
+const REGISTRY: &str = include_str!("../src/commands.rs");
+
 /// Every `#[tauri::command]` in the module, as `(name, parameter names)`.
 ///
-/// `state` is dropped: it is injected by Tauri and never appears on the
-/// JavaScript side.
+/// `state` and `app` are dropped: both are injected by Tauri and never appear on
+/// the JavaScript side.
 fn defined_commands() -> Vec<(String, Vec<String>)> {
+	commands_in(SOURCE)
+}
+
+/// Every command the crate defines, wherever its wrapper lives.
+fn all_defined_commands() -> Vec<(String, Vec<String>)> {
+	let mut commands = defined_commands();
+	for source in OTHER_SOURCES {
+		commands.extend(commands_in(source));
+	}
+	commands
+}
+
+fn commands_in(source: &str) -> Vec<(String, Vec<String>)> {
 	let mut commands = Vec::new();
-	for block in SOURCE.split("#[tauri::command]").skip(1) {
+	// The attribute on a line of its own, not the bare token: prose mentioning
+	// `#[tauri::command]` in a module doc is not a command definition, and
+	// matching it would turn the guard below into a failure about a comment.
+	for block in source.split("\n#[tauri::command]\n").skip(1) {
 		let Some(signature) = block.split_once("pub async fn ") else {
 			panic!("a #[tauri::command] is not followed by `pub async fn`");
 		};
@@ -78,7 +113,7 @@ fn defined_commands() -> Vec<(String, Vec<String>)> {
 			.split(',')
 			.filter_map(|argument| argument.split_once(':'))
 			.map(|(name, _)| name.trim().to_string())
-			.filter(|name| !name.is_empty() && name != "state")
+			.filter(|name| !name.is_empty() && name != "state" && name != "app")
 			.collect();
 
 		commands.push((name.trim().to_string(), parameters));
@@ -86,9 +121,9 @@ fn defined_commands() -> Vec<(String, Vec<String>)> {
 	commands
 }
 
-/// The names inside `generate_handler!`.
+/// The names inside `generate_handler!`, with their module paths stripped.
 fn registered_commands() -> Vec<String> {
-	let block = SOURCE
+	let block = REGISTRY
 		.split_once("tauri::generate_handler![")
 		.expect("no generate_handler! block")
 		.1
@@ -99,7 +134,7 @@ fn registered_commands() -> Vec<String> {
 		.split(',')
 		.map(str::trim)
 		.filter(|name| !name.is_empty())
-		.map(str::to_string)
+		.map(|path| path.rsplit("::").next().unwrap_or(path).to_string())
 		.collect()
 }
 
@@ -112,12 +147,20 @@ fn sorted(mut names: Vec<String>) -> Vec<String> {
 /// one makes it callable. Nothing else in the suite would notice the difference.
 #[test]
 fn every_defined_command_is_registered_and_matches_the_documented_twenty() {
-	let defined: Vec<String> = defined_commands().into_iter().map(|(name, _)| name).collect();
+	let store_defined: Vec<String> = defined_commands().into_iter().map(|(name, _)| name).collect();
+	let defined: Vec<String> = all_defined_commands()
+		.into_iter()
+		.map(|(name, _)| name)
+		.collect();
 	let registered = registered_commands();
-	let documented: Vec<String> = COMMANDS.iter().map(|name| name.to_string()).collect();
+	let documented: Vec<String> = COMMANDS
+		.iter()
+		.chain(EXTRA_COMMANDS.iter())
+		.map(|name| name.to_string())
+		.collect();
 
 	assert_eq!(
-		sorted(defined.clone()),
+		sorted(defined),
 		sorted(registered.clone()),
 		"a command is defined but not registered, or registered but not defined"
 	);
@@ -126,7 +169,11 @@ fn every_defined_command_is_registered_and_matches_the_documented_twenty() {
 		sorted(documented),
 		"the command surface has drifted from spec 8.1 and doc-store-api.md"
 	);
-	assert_eq!(defined.len(), 20, "the surface is no longer twenty commands");
+	assert_eq!(
+		store_defined.len(),
+		20,
+		"the store's own surface is no longer twenty commands"
+	);
 }
 
 /// Spec 8.1c. Tauri converts snake_case argument names to camelCase on the
@@ -136,7 +183,7 @@ fn every_defined_command_is_registered_and_matches_the_documented_twenty() {
 /// long as something checks.
 #[test]
 fn every_command_parameter_is_a_single_word() {
-	for (command, parameters) in defined_commands() {
+	for (command, parameters) in all_defined_commands() {
 		for parameter in parameters {
 			assert!(
 				!parameter.contains('_'),
