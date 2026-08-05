@@ -287,11 +287,14 @@
    disappears in High Contrast. Mapping to the system keywords keeps it opaque
    and legible. */
 @media (forced-colors: active) {
+	/* No `forced-color-adjust: none` here. It inherits, so setting it on the root
+	   would opt the entire panel out of forced colors — the opposite of the
+	   intent. `Canvas`/`CanvasText` are system colours and need no opt-out to be
+	   honoured; every descendant keeps the user's palette. */
 	.panel-surface {
 		background: Canvas;
 		color: CanvasText;
 		border: 1px solid CanvasText;
-		forced-color-adjust: none;
 	}
 
 	.panel-surface::after {

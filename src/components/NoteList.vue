@@ -35,8 +35,11 @@ const { editingNoteId, beginEdit, cancel } = useNoteEditor()
  */
 const interactionRowId = ref<string | null>(null)
 
+/** `pre[tabindex]` is in the list because a Shiki fence is a scroll container:
+ *  it has to be reachable to be scrolled by keyboard, and it carries
+ *  `tabindex="-1"` in navigation mode so it is not a second Tab stop. */
 function focusableIn(row: HTMLElement) {
-	return [...row.querySelectorAll<HTMLElement>('button, a[href]')]
+	return [...row.querySelectorAll<HTMLElement>('button, a[href], pre[tabindex]')]
 }
 
 /**
@@ -144,9 +147,10 @@ function onKeydown(event: KeyboardEvent) {
 		return
 	}
 
-	// Ctrl+A must keep its native select-all-text behaviour in every text
-	// surface, and Space on the completion circle must not toggle the row twice.
-	if (target?.closest('input, textarea, a[href], button')) return
+	// Ctrl+A must keep its native select-all-text behaviour in every text surface
+	// — including inside a code fence, which is selectable text — and Space on the
+	// completion circle must not also toggle the row.
+	if (target?.closest('input, textarea, a[href], button, pre[tabindex]')) return
 
 	const noteId = focusedNoteId.value
 	const sectionId = rowSectionId(focusedId.value)
@@ -179,13 +183,20 @@ function onKeydown(event: KeyboardEvent) {
 			enterInteraction()
 			return
 		case ' ':
-			event.preventDefault()
 			// Ctrl+Space and Shift+Space are the only keyboard path to a
 			// discontiguous selection, since plain Space is taken by mark-as-done.
-			if (noteId && (event.ctrlKey || event.metaKey)) toggle(noteId)
-			else if (noteId && event.shiftKey) extendTo(noteId)
-			else if (noteId) toggleDone(noteId)
-			else if (sectionId) activateSection(sectionId)
+			if (noteId) {
+				event.preventDefault()
+				if (event.ctrlKey || event.metaKey) toggle(noteId)
+				else if (event.shiftKey) extendTo(noteId)
+				else toggleDone(noteId)
+			} else if (sectionId && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+				// Only an unmodified Space activates a section. Ctrl+Space is the
+				// Windows IME chord, and swallowing it here would take the candidate
+				// window away from anyone typing Japanese.
+				event.preventDefault()
+				activateSection(sectionId)
+			}
 			return
 		case 'Enter':
 			event.preventDefault()
@@ -235,12 +246,21 @@ watch(listAnimated, (enabled) => {
 	}
 })
 
-// A document swap invalidates any interaction mode: the row it belongs to may
-// not exist any more, and its descendants' tabindex would be left flipped.
+// A document change does not by itself invalidate interaction mode — toggling
+// `done` with Space is a document change, and dropping the user out of the mode
+// they just used a key in would be its own bug. Only a row that is actually gone
+// forces an exit. A row that survived may have been re-rendered, which resets
+// the tabindex of anchors inside `v-html` (those are set on the DOM, not by
+// Vue), so they are re-promoted.
 watch(
 	() => space.value,
 	() => {
-		if (interactionRowId.value) exitInteraction()
+		const key = interactionRowId.value
+		if (!key) return
+		void nextTick(() => {
+			if (!rowElement(key)) exitInteraction()
+			else setDescendantsTabbable(key, true)
+		})
 	},
 )
 </script>

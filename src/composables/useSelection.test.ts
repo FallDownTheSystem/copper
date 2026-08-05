@@ -133,6 +133,23 @@ describe('extendFocus', () => {
 		expect(selection.focusedId.value).toBe(noteRow('n3'))
 		expect(selection.selectedIds.value).toEqual(['n2', 'n3'])
 	})
+
+	it('reaches the adjacent note when focus is on a section header', () => {
+		selection.focusRow(sectionRow('sec_b'))
+		selection.extendFocus(1)
+
+		// Falling back to index 0 would jump the selection to the top of the
+		// document from anywhere in the list.
+		expect(selection.focusedId.value).toBe(noteRow('n3'))
+		expect(selection.selectedIds.value).toEqual(['n3'])
+	})
+
+	it('reaches backwards past a header to the preceding note', () => {
+		selection.focusRow(sectionRow('sec_b'))
+		selection.extendFocus(-1)
+
+		expect(selection.focusedId.value).toBe(noteRow('n2'))
+	})
 })
 
 describe('selectAll and clear', () => {
@@ -189,6 +206,28 @@ describe('reconcile', () => {
 
 		expect(selection.focusedId.value).toBe(noteRow('n3'))
 		expect(selection.selectedIds.value).toEqual(['n3'])
+	})
+
+	it('refocuses when the focused row was recreated under another rowgroup', () => {
+		// A row that moved between sections is a *new* element carrying the same
+		// id, and focus did not move with it — matching by id alone reported
+		// "still there" while document.activeElement had fallen back to the body.
+		document.body.innerHTML = '<div data-row-id="n:n3" tabindex="0"></div>'
+		const moved = document.body.firstElementChild as HTMLElement
+		moved.focus()
+
+		selection.select('n3')
+		const snapshot = selection.snapshot()
+		expect(snapshot.activeElement).toBe(moved)
+
+		// Vue tears the old node out and builds a fresh one with the same id.
+		document.body.innerHTML = '<div data-row-id="n:n3" tabindex="0"></div>'
+		selection.syncDocument(document2([['n1', 'n2', 'n3'], ['n4']]))
+		selection.reconcile(snapshot)
+		selection.restoreDom(snapshot)
+
+		expect(document.activeElement).toBe(document.body.firstElementChild)
+		document.body.innerHTML = ''
 	})
 
 	it('gives the grid a roving target on first load without selecting anything', () => {

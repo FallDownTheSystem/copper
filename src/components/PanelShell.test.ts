@@ -3,7 +3,13 @@ import axe from 'axe-core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 import PanelShell from './PanelShell.vue'
+// Statically imported, like PanelShell itself: a dynamic import after
+// `vi.resetModules()` would resolve a *second* instance of a module whose state
+// is module-scoped by design, and the component tree would not share it.
+import { useNoteEditor } from '@/composables/useNoteEditor'
 import type { Space, StoreStatus } from '@/composables/useSpace'
+
+const editor = useNoteEditor()
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), openUrl: vi.fn() }))
 
@@ -34,7 +40,7 @@ const SPACE: Space = {
 			section: 'sec_a',
 			order: 1,
 			done: true,
-			body: 'second note',
+			body: ['```js', 'const a = 1', '```'].join('\n'),
 			created: '2026-08-05T00:00:00Z',
 			updated: '2026-08-05T00:00:00Z',
 		},
@@ -64,6 +70,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+	editor.cancel()
 	document.body.innerHTML = ''
 })
 
@@ -163,6 +170,63 @@ describe('live regions', () => {
 		expect(wrapper.find('[role="alert"]').exists()).toBe(true)
 		expect(wrapper.find('[role="status"]').exists()).toBe(true)
 		expect(wrapper.find('[role="alert"]').text()).toBe('')
+	})
+})
+
+describe('the conflict state', () => {
+	it('keeps the editor mounted so its resolutions are reachable', async () => {
+		const wrapper = await mountPanel()
+
+		editor.beginEdit(SPACE, SPACE.notes[0]!)
+		await wrapper.vm.$nextTick()
+		expect(wrapper.find('textarea[aria-label="Edit note"]').exists()).toBe(true)
+
+		// An external change lands under the draft.
+		editor.reconcile(
+			{ ...SPACE, notes: [{ ...SPACE.notes[0]!, body: 'someone else wrote this' }] },
+			false,
+		)
+		await wrapper.vm.$nextTick()
+
+		// Regression: the editor used to unmount here, taking the draft off screen
+		// and leaving the conflict with no exit at all.
+		expect(wrapper.find('textarea[aria-label="Edit note"]').exists()).toBe(true)
+		const labels = wrapper.findAll('button').map((button) => button.text())
+		expect(labels).toContain('Keep my version')
+		expect(labels).toContain('Use the external version')
+
+		editor.cancel()
+	})
+})
+
+describe('code fences', () => {
+	it('are not a second Tab stop inside the grid', async () => {
+		const wrapper = await mountPanel()
+
+		for (const pre of wrapper.find('[role="grid"]').findAll('pre')) {
+			expect(pre.attributes('tabindex')).toBe('-1')
+		}
+	})
+})
+
+describe('row controls', () => {
+	it('do not swallow keys the grid needs', async () => {
+		const wrapper = await mountPanel()
+
+		const circle = wrapper.find('button[aria-label="Mark as done"]')
+		expect(circle.exists()).toBe(true)
+
+		// A blanket `@keydown.stop` here meant Escape and Tab never reached the
+		// grid handler, so interaction mode could not be left by keyboard. The
+		// grid's own guard already early-returns for a button target, so stopping
+		// propagation was redundant as well as harmful.
+		let reachedGrid = false
+		wrapper.find('[role="grid"]').element.addEventListener('keydown', () => {
+			reachedGrid = true
+		})
+		await circle.trigger('keydown', { key: 'Escape' })
+
+		expect(reachedGrid).toBe(true)
 	})
 })
 

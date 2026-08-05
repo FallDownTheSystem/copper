@@ -56,6 +56,13 @@ export type SelectionSnapshot = {
 	anchorId: string | null
 	/** The row the DOM was actually focused on, or null if focus was elsewhere. */
 	activeRowId: string | null
+	/** The node itself, not just its id.
+	 *
+	 *  Matching by id alone reports "still there" for a row Vue recreated under a
+	 *  different rowgroup — the id is the same but the element that held focus is
+	 *  gone and `document.activeElement` has fallen back to the body, so the list
+	 *  becomes unreachable by keyboard exactly when a note moves sections. */
+	activeElement: HTMLElement | null
 	/** Focus was inside a text-editing surface, which reconciliation must never
 	 *  steal. */
 	inTextSurface: boolean
@@ -162,10 +169,33 @@ function extendFocus(delta: number) {
 	if (notes.length === 0) return
 
 	const current = focusedNoteId.value
-	const index = current ? notes.indexOf(current) : -1
+	if (current === null) {
+		// Focus is on a section header. Extending has to reach the note *adjacent*
+		// to it in the direction of travel — falling back to index 0 would jump the
+		// selection to the top of the document from anywhere in the list.
+		const target = adjacentNoteFromRow(focusedId.value, delta)
+		if (target) extendTo(target)
+		return
+	}
+
+	const index = notes.indexOf(current)
 	const next = Math.min(notes.length - 1, Math.max(0, index === -1 ? 0 : index + delta))
 	const target = notes[next]
 	if (target) extendTo(target)
+}
+
+/** Walks `rowIds` from a header row until it meets a note row. */
+function adjacentNoteFromRow(rowKey: string | null, delta: number): string | null {
+	const rows = rowIds.value
+	const start = rowKey ? rows.indexOf(rowKey) : -1
+	if (start === -1) return null
+
+	const step = delta >= 0 ? 1 : -1
+	for (let i = start + step; i >= 0 && i < rows.length; i += step) {
+		const note = rowNoteId(rows[i] ?? null)
+		if (note) return note
+	}
+	return null
 }
 
 // --- document lifecycle ------------------------------------------------------
@@ -227,6 +257,7 @@ function snapshot(): SelectionSnapshot {
 		focusedId: focusedId.value,
 		anchorId: anchorId.value,
 		activeRowId: activeRow?.dataset.rowId ?? null,
+		activeElement: activeRow,
 		inTextSurface,
 		scroll: captureScroll(),
 	}
@@ -314,7 +345,9 @@ function restoreDom(snap: SelectionSnapshot) {
 	if (snap.scroll) restoreScroll(snap.scroll)
 	if (snap.inTextSurface) return
 	if (!snap.activeRowId) return
-	if (rowElement(snap.activeRowId)) return
+	// Identity, not id: a row that moved between sections is a *new* element with
+	// the same id, and focus did not move with it.
+	if (snap.activeElement?.isConnected) return
 
 	const target = focusedId.value ? rowElement(focusedId.value) : null
 	if (target) target.focus()

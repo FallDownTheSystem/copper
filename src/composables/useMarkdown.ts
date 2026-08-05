@@ -42,6 +42,40 @@ const MAX_HIGHLIGHT_CHARS = 20_000
 const MAX_HIGHLIGHT_LINE = 2_000
 
 /**
+ * The per-fence caps alone are not a bound on a *note*: fifty fences each one
+ * byte under the limit cost fifty times as much as the limit implies. This is
+ * the aggregate budget for one `renderNote`, spent as fences are highlighted;
+ * once exhausted the rest of that note takes the plain path.
+ */
+const MAX_HIGHLIGHT_CHARS_PER_NOTE = 60_000
+let highlightBudget = 0
+
+/**
+ * Validation, not normalisation: the emitted href stays exactly what the author
+ * wrote (as markdown-it normalised it), and this only decides whether it is
+ * emitted at all.
+ *
+ * The scheme test alone is not enough. `http:javascript:alert(1)` passes a
+ * prefix match and is not a URL at all, so anything that survives the regex is
+ * also required to parse — and an `http:`/`https:` URL is required to name a
+ * host, because a hostless survivor would still be handed to the OS opener.
+ */
+function isSafeHref(raw: string): boolean {
+	const trimmed = raw.trim()
+	if (!SAFE_SCHEMES.test(trimmed)) return false
+
+	let url: URL
+	try {
+		url = new URL(trimmed)
+	} catch {
+		return false
+	}
+
+	if (url.protocol === 'mailto:') return true
+	return url.host.length > 0
+}
+
+/**
  * One of Shiki's *special* languages: resolved at runtime without a grammar, but
  * absent from the option types, which enumerate bundled grammars only. Verified
  * against shiki 4.4.2 — `codeToHtml` accepts `text`, `plaintext` and `txt`.
@@ -64,13 +98,19 @@ function escape(text: string) {
 }
 
 /**
- * Layout-identical to Shiki's output: same `tabindex="0"`, same trimmed
- * trailing newline. An unmatched plain path makes every note below a code block
- * jump the moment the highlighter loads.
+ * Layout-identical to Shiki's output: same trimmed trailing newline, same
+ * `tabindex`. An unmatched plain path makes every note below a code block jump
+ * the moment the highlighter loads.
+ *
+ * `tabindex="-1"`, not Shiki's default `0`: a scrollable `<pre>` is natively
+ * tabbable and would be a second Tab stop inside the grid, which is exactly what
+ * the one-Tab-stop contract forbids. It stays reachable — and keyboard
+ * scrollable — through F2 interaction mode, which promotes it to `0`. Shiki's
+ * own output is brought in line by a transformer at install time.
  */
 function plainHighlight(code: string, lang: string) {
 	const language = lang ? ` data-language="${escape(lang)}"` : ''
-	return `<pre class="shiki-plain" tabindex="0"${language}><code>${escape(
+	return `<pre class="shiki-plain" tabindex="-1"${language}><code>${escape(
 		code.replace(/\n$/, ''),
 	)}</code></pre>`
 }
@@ -96,14 +136,23 @@ rules.heading_close = () => '</div>'
 rules.table_open = () => '<div class="table-scroll"><table>'
 rules.table_close = () => '</table></div>'
 
-rules.link_open = (tokens, index, options, _env, self) => {
+/** Nesting depth of the author's own links, tracked so the image rule below can
+ *  tell whether it is already inside one. `md.render` builds a fresh `env` per
+ *  call, so nothing leaks between notes. markdown-it types `env` as an open
+ *  record, so the shape is asserted at each use rather than in the signature. */
+type RenderEnv = { linkDepth?: number }
+
+rules.link_open = (tokens, index, options, rawEnv, self) => {
+	const env = rawEnv as RenderEnv
 	const token = tokens[index]
 	if (!token) return ''
+
+	env.linkDepth = (env.linkDepth ?? 0) + 1
 
 	const hrefIndex = token.attrIndex('href')
 	const href = hrefIndex === -1 ? null : String(token.attrs?.[hrefIndex]?.[1] ?? '')
 
-	if (href !== null && !SAFE_SCHEMES.test(href.trim())) {
+	if (href !== null && !isSafeHref(href)) {
 		// Not `href="#"`, not `aria-disabled`: the attribute is removed outright,
 		// so the context menu and middle-click have nothing to offer.
 		token.attrs?.splice(hrefIndex, 1)
@@ -117,19 +166,37 @@ rules.link_open = (tokens, index, options, _env, self) => {
 	return self.renderToken(tokens, index, options)
 }
 
+rules.link_close = (tokens, index, options, rawEnv, self) => {
+	const env = rawEnv as RenderEnv
+	env.linkDepth = Math.max(0, (env.linkDepth ?? 0) - 1)
+	return self.renderToken(tokens, index, options)
+}
+
 // `![alt](url)` renders as a link to the image, never as an <img>. The alt text
 // becomes the link text; the file is reachable but never prefetched.
-rules.image = (tokens, index) => {
+rules.image = (tokens, index, options, rawEnv, self) => {
+	const env = rawEnv as RenderEnv
 	const token = tokens[index]
 	if (!token) return ''
 
 	const src = token.attrGet('src')
-	const alt = String(token.content || src || 'image')
+	// Rendered, not `token.content`: the raw content of `![**bold**](url)` is the
+	// literal source, asterisks and all. Rendered *as text* rather than as HTML,
+	// because the alt of an image may itself contain a link and nesting one
+	// anchor inside another is invalid markup the browser will take apart.
+	const rendered = self.renderInlineAsText(token.children ?? [], options, rawEnv).trim()
+	const alt = rendered || String(src ?? '') || 'image'
+
+	// `[![alt](img)](link)` — inside the author's own link, the visible text has
+	// to belong to *their* link. Emitting an anchor here would nest one inside
+	// the other and the browser would break both apart.
+	if (env.linkDepth) return escape(alt)
+
 	// The same allowlist as links, deliberately: an image-derived anchor is
 	// handed to the OS opener by exactly the same click path, so a `file:` src
 	// would reopen the hole the link rule closes. Local attachments get their own
 	// designed treatment in task-011.
-	if (src === null || !SAFE_SCHEMES.test(String(src).trim())) return escape(alt)
+	if (src === null || !isSafeHref(String(src))) return escape(alt)
 	return `<a href="${escape(String(src))}" rel="noreferrer" tabindex="-1">${escape(alt)}</a>`
 }
 
@@ -193,12 +260,25 @@ function installHighlighter(highlighter: Highlighter) {
 			// and note bodies name whatever language they like.
 			fallbackLanguage: PLAIN_TEXT,
 			defaultLanguage: PLAIN_TEXT,
+			transformers: [
+				{
+					// Shiki emits `<pre tabindex="0">`. Inside the grid that is a second
+					// Tab stop, which breaks the one-Tab-stop contract; F2 interaction
+					// mode promotes it back to 0 when the user asks for it.
+					pre(node) {
+						node.properties.tabindex = '-1'
+					},
+				},
+			],
 		}),
 	)
 
 	const highlight = md.options.highlight
 	md.options.highlight = (code, lang, attrs) => {
-		if (tooLargeToHighlight(code)) return plainHighlight(code, lang)
+		if (tooLargeToHighlight(code) || code.length > highlightBudget) {
+			return plainHighlight(code, lang)
+		}
+		highlightBudget -= code.length
 		try {
 			return highlight?.(code, lang, attrs) ?? plainHighlight(code, lang)
 		} catch {
@@ -228,6 +308,7 @@ function renderNote(note: Pick<Note, 'id' | 'body'>): string {
 	const hit = cache.get(note.id)
 	if (hit && hit.body === note.body) return hit.html
 
+	highlightBudget = MAX_HIGHLIGHT_CHARS_PER_NOTE
 	const html = md.render(note.body)
 	cache.set(note.id, { body: note.body, html })
 	return html

@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { noteRow, rowElement } from '@/composables/useSelection'
 
-const { spaceName, addNote, actionError, clearActionError } = useSpace()
+const { spaceName, addNote, errorFor, clearActionError } = useSpace()
+
+const composerError = errorFor('composer')
 const { visibleNoteIds, focusRow } = useSelection()
 
 const textarea = useTemplateRef<HTMLTextAreaElement>('textarea')
@@ -26,8 +28,18 @@ function scheduleAutoSize() {
 	sizingFrame = requestAnimationFrame(() => {
 		const element = textarea.value
 		if (!element) return
+		// Measured, not assumed: the CSS cap is `5lh`, and a hardcoded pixel
+		// equivalent drifts from it at 200% browser zoom and at any user font size.
+		const style = getComputedStyle(element)
+		const lineHeight = Number.parseFloat(style.lineHeight)
+		const vertical =
+			Number.parseFloat(style.paddingTop) +
+			Number.parseFloat(style.paddingBottom) +
+			Number.parseFloat(style.borderTopWidth) +
+			Number.parseFloat(style.borderBottomWidth)
+		const max = Number.isFinite(lineHeight) ? lineHeight * 5 + vertical : Number.POSITIVE_INFINITY
 		element.style.height = 'auto'
-		element.style.height = `${Math.min(element.scrollHeight, 5 * 21)}px`
+		element.style.height = `${Math.min(element.scrollHeight, max)}px`
 	})
 }
 
@@ -42,7 +54,7 @@ defineExpose({ focus })
 function onInput(event: Event) {
 	value.value = (event.target as HTMLTextAreaElement).value
 	revision++
-	if (actionError.value) clearActionError()
+	if (composerError.value) clearActionError('composer')
 	scheduleAutoSize()
 }
 
@@ -138,7 +150,7 @@ function onKeydown(event: KeyboardEvent) {
 			@compositionend="composing = false"
 		/>
 
-		<p v-if="actionError" class="text-destructive mt-1 text-meta">{{ actionError }}</p>
+		<p v-if="composerError" class="text-destructive mt-1 text-meta">{{ composerError }}</p>
 
 		<p id="composer-hint" class="text-text-disabled mt-1 text-meta">
 			Enter to add · Shift+Enter or Ctrl+Enter for newline

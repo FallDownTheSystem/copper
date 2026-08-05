@@ -89,6 +89,45 @@ describe('images', () => {
 	})
 })
 
+describe('malformed URLs with an allowed scheme', () => {
+	it('rejects one that passes a prefix match but is not a URL', () => {
+		// `http:javascript:alert(1)` starts with an allowed scheme and is not a URL
+		// at all, so the regex alone would have let it through to the OS opener.
+		const html = render('[x](http:javascript:alert(1))')
+
+		expect(html).not.toContain('href')
+	})
+
+	it('rejects an http URL that names no host', () => {
+		const html = render('[x](https://)')
+
+		expect(html).not.toContain('href')
+	})
+})
+
+describe('nested links', () => {
+	it('renders a linked image as the author link, not an anchor inside an anchor', () => {
+		const html = render('[![alt text](https://img.test/p.png)](https://ok.test/page)')
+
+		// Nesting one anchor inside another is invalid markup the browser takes
+		// apart; the visible text has to belong to the author's outer link.
+		expect(html).toContain('href="https://ok.test/page"')
+		expect(html).not.toContain('https://img.test/p.png')
+		expect(html.match(/<a /g) ?? []).toHaveLength(1)
+		expect(html).toContain('alt text')
+	})
+})
+
+describe('image alt text', () => {
+	it('renders inline markup rather than showing its source', () => {
+		const html = render('![**bold** alt](https://ok.test/p.png)')
+
+		// `token.content` is the literal source, asterisks and all.
+		expect(html).not.toContain('**')
+		expect(html).toContain('bold alt')
+	})
+})
+
 describe('heading remapping', () => {
 	it('turns a Markdown heading into a non-heading element', () => {
 		const html = render('# Notes\n\ntext')
@@ -165,10 +204,13 @@ describe('the render cache', () => {
 })
 
 describe('code fences before the highlighter loads', () => {
-	it('matches Shiki in layout: tabindex and a trimmed trailing newline', () => {
+	it('matches Shiki in layout, with the fence out of the tab order', () => {
 		const html = render('```js\nconst a = 1\n```')
 
-		expect(html).toContain('<pre class="shiki-plain" tabindex="0"')
+		// A scrollable <pre> is natively tabbable, so Shiki's default tabindex="0"
+		// would be a second Tab stop inside a grid that claims to be one. F2
+		// interaction mode promotes it when the user asks for it.
+		expect(html).toContain('<pre class="shiki-plain" tabindex="-1"')
 		expect(html).not.toContain('const a = 1\n</code>')
 	})
 })
@@ -184,6 +226,21 @@ describe('with the highlighter installed', () => {
 
 		expect(html).toContain('class="shiki')
 		expect(html).toContain('--shiki-dark')
+	})
+
+	it('keeps the highlighted fence out of the tab order too', () => {
+		const html = render('```js\nconst a = 1\n```')
+
+		expect(html).toContain('tabindex="-1"')
+		expect(html).not.toContain('tabindex="0"')
+	})
+
+	it('stops highlighting once one note has spent its aggregate budget', () => {
+		// Each fence is comfortably under the per-fence cap; together they are not.
+		const fence = ['```js', 'const a = 1\n'.repeat(900), '```'].join('\n')
+		const html = render([fence, fence, fence, fence, fence, fence].join('\n\n'))
+
+		expect(html).toContain('shiki-plain')
 	})
 
 	it('falls back to plain text for an unknown language rather than throwing', () => {

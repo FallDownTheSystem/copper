@@ -48,6 +48,18 @@ describe('an external reload that did not touch the edited note', () => {
 })
 
 describe('an external change to the edited note', () => {
+	it('keeps the row in editing mode so the resolution controls are reachable', () => {
+		editor.reconcile(makeSpace({ n1: 'someone else wrote this', n2: 'other' }), false)
+
+		// Regression: `isEditing` used to require `conflict === null`, which
+		// unmounted NoteEditor the instant a conflict was raised — taking the draft
+		// off screen and leaving `Keep my version` / `Use the external version`
+		// unreachable, so the conflict state had no exit at all.
+		expect(editor.isEditing('n1')).toBe(true)
+		expect(editor.editingNoteId.value).toBe('n1')
+		expect(editor.session.value?.draft).toBe('my edit')
+	})
+
 	it('raises the conflict state and blocks committing', () => {
 		editor.reconcile(makeSpace({ n1: 'someone else wrote this', n2: 'other' }), false)
 
@@ -105,6 +117,33 @@ describe('space identity replacement', () => {
 
 		expect(editor.recovery.value?.draft).toBe('my edit')
 		expect(editor.session.value?.conflict).toBeNull()
+	})
+})
+
+describe('an in-flight commit of our own', () => {
+	it('is not mistaken for an external conflict when the user typed during it', () => {
+		const submission = editor.beginCommit()!
+		editor.setDraft('typed while pending')
+
+		// The coordinator applies the document `edit_note` returned before
+		// `finishCommit` runs. That body matches neither `baseBody` nor the current
+		// draft, so without the pending-body check it reads as somebody else's
+		// change — a conflict against our own write.
+		editor.reconcile(makeSpace({ n1: submission.body, n2: 'other' }), false)
+
+		expect(editor.session.value?.conflict).toBeNull()
+		expect(editor.canCommit.value).toBe(true)
+		expect(editor.session.value?.draft).toBe('typed while pending')
+	})
+
+	it('still detects a genuine external change landing during the same window', () => {
+		editor.beginCommit()
+		editor.setDraft('typed while pending')
+
+		editor.reconcile(makeSpace({ n1: 'somebody else entirely', n2: 'other' }), false)
+
+		expect(editor.session.value?.conflict).toBe('somebody else entirely')
+		expect(editor.canCommit.value).toBe(false)
 	})
 })
 

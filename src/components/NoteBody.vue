@@ -81,7 +81,6 @@ function onClick(event: MouseEvent) {
 			:aria-controls="bodyId"
 			class="text-text-secondary hover:bg-surface-hover active:bg-surface-active mt-1 rounded-md px-1.5 py-0.5 text-meta transition-colors duration-fast"
 			@click.stop="toggle(note.id)"
-			@keydown.stop
 		>
 			{{ expanded ? 'Show less' : 'Show more' }}
 		</button>

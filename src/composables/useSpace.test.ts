@@ -226,11 +226,94 @@ describe('local mutations', () => {
 		const result = await space.addNote('nope')
 
 		expect(result).toBeNull()
-		expect(space.actionError.value).toBe('the space is unreadable')
+		expect(space.actionError.value).toEqual({
+			scope: 'composer',
+			message: 'the space is unreadable',
+		})
 		// A failed mutation must not become the global error state, and must not
 		// leave the panel showing the empty state.
 		expect(space.loadState.value).toBe('ready')
 		expect(space.space.value?.notes).toHaveLength(1)
+	})
+})
+
+describe('status handling is keyed on the command, not on the document', () => {
+	it('sets canUndo even when the returned document was superseded', async () => {
+		const space = await freshModule()
+		await space.initialize()
+		await flush()
+
+		const done = deferred<Space>()
+		respond('set_notes_done', () => done.promise)
+		const pending = space.setNotesDone(['n1'], true)
+		await flush()
+
+		// A refresh lands first, so the mutation's document is dropped.
+		respond('get_active_space', () => makeSpace('spc_1', ['n1', 'external']))
+		emit('space-changed', { id: 'spc_1', path: 'p', reason: 'external' })
+		await flush()
+
+		done.resolve(makeSpace('spc_1', ['n1']))
+		await pending
+		await flush()
+
+		// The store carried the mutation out regardless — supersession is a
+		// decision this side of the boundary makes about a stale *document*, so
+		// there is something to undo either way.
+		expect(space.storeStatus.value.canUndo).toBe(true)
+	})
+
+	it('re-pulls status after a superseded edit_note', async () => {
+		const space = await freshModule()
+		await space.initialize()
+		await flush()
+		const before = callsTo('get_status')
+
+		const edit = deferred<Space>()
+		respond('edit_note', () => edit.promise)
+		const pending = space.updateNoteBody('n1', 'edited')
+		await flush()
+
+		respond('get_active_space', () => makeSpace('spc_1', ['n1', 'external']))
+		emit('space-changed', { id: 'spc_1', path: 'p', reason: 'external' })
+		await flush()
+
+		edit.resolve(makeSpace('spc_1', ['n1']))
+		await pending
+		await flush()
+
+		// One for the event, one for the mutation: the write may have cleared both
+		// undo stacks, and that is not visible in any document.
+		expect(callsTo('get_status') - before).toBeGreaterThanOrEqual(2)
+	})
+})
+
+describe('status responses are sequenced', () => {
+	it('discards a late errored status that a reload has already cleared', async () => {
+		const space = await freshModule()
+		await space.initialize()
+		await flush()
+
+		// The store-error handler's status pull hangs...
+		const stale = deferred<StoreStatus>()
+		respond('get_status', () => stale.promise)
+		emit('store-error', { kind: 'parse', message: 'bad json' })
+		await flush()
+
+		// ...while the reload's pull resolves first and clears the flag.
+		respond('get_status', () => ({ ...STATUS, errored: false }))
+		emit('space-changed', { id: 'spc_1', path: 'p', reason: 'reload' })
+		await flush()
+		expect(space.storeStatus.value.errored).toBe(false)
+
+		// The stale response now lands carrying errored: true. Applied, it would
+		// put the banner back with no further event coming — the exact failure
+		// §3.6a exists to prevent.
+		stale.resolve({ ...STATUS, errored: true })
+		await flush()
+
+		expect(space.storeStatus.value.errored).toBe(false)
+		expect(space.storeErrorEvent.value).toBeNull()
 	})
 })
 
@@ -401,6 +484,54 @@ describe('status and the error banner', () => {
 	})
 })
 
+describe('a failing pull does not drop the refresh', () => {
+	it('retries once after a transient failure', async () => {
+		const space = await freshModule()
+		await space.initialize()
+		await flush()
+		const before = callsTo('get_active_space')
+
+		let attempt = 0
+		respond('get_active_space', () => {
+			attempt++
+			if (attempt === 1) throw { kind: 'io', message: 'file busy' }
+			return makeSpace('spc_1', ['n1', 'n2'])
+		})
+
+		emit('space-changed', { id: 'spc_1', path: 'p', reason: 'external' })
+		await flush(12)
+
+		// A checkout's unlink-and-rewrite window makes the first read fail; without
+		// the retry the event that asked for the refresh is simply lost.
+		expect(callsTo('get_active_space') - before).toBe(2)
+		expect(space.space.value?.notes).toHaveLength(2)
+	})
+})
+
+describe('a superseded load does not replace a good document', () => {
+	it('stays ready when an event applied a document while the pull was failing', async () => {
+		const pull = deferred<Space>()
+		respond('get_active_space', () => pull.promise)
+
+		const space = await freshModule()
+		const init = space.initialize()
+		await flush()
+
+		respond('get_active_space', () => makeSpace('spc_1', ['n1', 'n2']))
+		emit('space-changed', { id: 'spc_1', path: 'p', reason: 'external' })
+		await flush()
+
+		pull.reject({ kind: 'io', message: 'gone' })
+		await init
+		await flush()
+
+		// The panel has a real document; the fatal error screen would be a strictly
+		// worse view of the same store.
+		expect(space.loadState.value).toBe('ready')
+		expect(space.space.value?.notes).toHaveLength(2)
+	})
+})
+
 describe('retry', () => {
 	it('re-opens the space by path rather than re-reading the in-memory document', async () => {
 		respond('get_active_space', () => {
@@ -420,6 +551,42 @@ describe('retry', () => {
 
 		expect(callsTo('open_space')).toBe(1)
 		expect(space.loadState.value).toBe('ready')
+	})
+})
+
+describe('action errors are scoped to their surface', () => {
+	it('does not put the editor failure under the composer', async () => {
+		const space = await freshModule()
+		await space.initialize()
+		await flush()
+
+		respond('edit_note', () => {
+			throw { kind: 'unavailable', message: 'cannot write' }
+		})
+		await space.updateNoteBody('n1', 'x')
+
+		expect(space.errorFor('editor').value).toBe('cannot write')
+		// A failure belongs to the text it left in place; one global string put it
+		// under every surface at once.
+		expect(space.errorFor('composer').value).toBeNull()
+	})
+
+	it('leaves another surface message alone when a new mutation starts', async () => {
+		const space = await freshModule()
+		await space.initialize()
+		await flush()
+
+		respond('edit_note', () => {
+			throw { kind: 'unavailable', message: 'cannot write' }
+		})
+		await space.updateNoteBody('n1', 'x')
+
+		respond('add_note', () => ({ space: makeSpace('spc_1', ['n1', 'n2']), noteId: 'n2' }))
+		await space.addNote('a new note')
+		await flush()
+
+		expect(space.errorFor('editor').value).toBe('cannot write')
+		expect(space.errorFor('composer').value).toBeNull()
 	})
 })
 

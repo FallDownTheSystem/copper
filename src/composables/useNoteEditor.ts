@@ -35,14 +35,28 @@ export type EditSession = {
 	conflict: string | null
 	deleted: boolean
 	pending: boolean
+	/** The exact body an in-flight `edit_note` is writing.
+	 *
+	 *  Without it our own write comes back as a conflict: the coordinator applies
+	 *  the returned document before `finishCommit` runs, and if the user typed
+	 *  during the round trip the returned body matches neither `baseBody` nor the
+	 *  current `draft`. */
+	pendingBody: string | null
 }
 
 const session = ref<EditSession | null>(null)
 
-const isEditing = (noteId: string) =>
-	session.value?.noteId === noteId && !session.value.deleted && session.value.conflict === null
+/**
+ * A conflicted session is still an editing session, deliberately.
+ *
+ * Requiring `conflict === null` here unmounted the editor the instant a conflict
+ * was raised — which took the draft off screen and made `Keep my version` and
+ * `Use the external version` unreachable, so the conflict state had no exit at
+ * all. The write is blocked by `canCommit`, which is where that belongs.
+ */
+const isEditing = (noteId: string) => session.value?.noteId === noteId && !session.value.deleted
 
-/** A live editing row: the note still exists and is not conflicted. */
+/** A live editing row: the note still exists in the document. */
 const editingNoteId = computed(() =>
 	session.value && !session.value.deleted ? session.value.noteId : null,
 )
@@ -50,7 +64,9 @@ const editingNoteId = computed(() =>
 /** A draft whose note was deleted externally, rendered outside the live rows. */
 const recovery = computed(() => (session.value?.deleted ? session.value : null))
 
-const conflicted = computed(() => (session.value?.conflict !== null ? session.value : null))
+const conflicted = computed(() =>
+	session.value && session.value.conflict !== null ? session.value : null,
+)
 
 /** Commit is blocked while conflicted: without that, a later blur or Ctrl+Enter
  *  calls `edit_note` and overwrites the external body — exactly the data loss
@@ -72,6 +88,7 @@ function beginEdit(space: SpaceView, note: NoteView) {
 		conflict: null,
 		deleted: false,
 		pending: false,
+		pendingBody: null,
 	}
 }
 
@@ -98,6 +115,7 @@ function cancel() {
 function beginCommit() {
 	if (!session.value) return null
 	session.value.pending = true
+	session.value.pendingBody = session.value.draft
 	return { body: session.value.draft, revision: session.value.draftRevision }
 }
 
@@ -110,6 +128,7 @@ function finishCommit(revision: number, ok: boolean) {
 	const current = session.value
 	if (!current) return
 	current.pending = false
+	current.pendingBody = null
 	if (!ok) return
 
 	if (current.draftRevision === revision) session.value = null
@@ -149,6 +168,17 @@ function reconcile(space: SpaceView | null, identityChanged: boolean) {
 
 	if (note.body === current.baseBody) {
 		// Unchanged externally — the draft survives untouched.
+		current.conflict = null
+		return
+	}
+
+	if (current.pending && note.body === current.pendingBody) {
+		// Our own in-flight write landing, not somebody else's change. The
+		// coordinator applies the returned document before `finishCommit` runs, so
+		// without this a user who typed during the round trip is shown a conflict
+		// against their own edit. A genuine external change during the same window
+		// still matches nothing here and falls through to the conflict below.
+		current.baseBody = note.body
 		current.conflict = null
 		return
 	}

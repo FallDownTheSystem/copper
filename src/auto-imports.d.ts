@@ -320,7 +320,7 @@ declare global {
   export type { SelectionSnapshot } from './composables/useSelection'
   import('./composables/useSelection')
   // @ts-ignore
-  export type { Note, Section, Space, StoreStatus, Settings, SpaceView, NoteView, ChangeReason, SpaceChangedPayload, StoreErrorPayload, AddNoteResult, LoadState } from './composables/useSpace'
+  export type { Note, Section, Space, StoreStatus, Settings, SpaceView, NoteView, ChangeReason, SpaceChangedPayload, StoreErrorPayload, AddNoteResult, LoadState, ActionErrorScope, ActionError } from './composables/useSpace'
   import('./composables/useSpace')
 }
 

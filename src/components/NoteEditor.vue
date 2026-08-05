@@ -14,7 +14,9 @@ const {
 	resolveUseExternal,
 	resolveKeepMine,
 } = useNoteEditor()
-const { updateNoteBody, actionError } = useSpace()
+const { updateNoteBody, errorFor } = useSpace()
+
+const editorError = errorFor('editor')
 
 const textarea = useTemplateRef<HTMLTextAreaElement>('textarea')
 
@@ -184,6 +186,6 @@ async function keepMine() {
 			</div>
 		</div>
 
-		<p v-if="actionError" class="text-destructive mt-1 text-meta">{{ actionError }}</p>
+		<p v-if="editorError" class="text-destructive mt-1 text-meta">{{ editorError }}</p>
 	</div>
 </template>

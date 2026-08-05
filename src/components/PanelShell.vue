@@ -139,7 +139,7 @@ function onContextMenu(event: MouseEvent) {
 		<!-- Pre-rendered and empty. Injecting the element and its text together
 		     does not announce; only a text change inside a live region already in
 		     the accessibility tree does. -->
-		<div class="sr-only" role="alert" aria-live="assertive">{{ actionError }}</div>
+		<div class="sr-only" role="alert" aria-live="assertive">{{ actionError?.message ?? '' }}</div>
 		<div class="sr-only" role="status" aria-live="polite">
 			{{ refreshing ? 'Refreshing notes' : '' }}
 		</div>

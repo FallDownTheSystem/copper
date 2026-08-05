@@ -101,6 +101,12 @@ export type AddNoteResult = { space: Space; noteId: string }
  *  owns `get_status`/`StoreStatus` and the collision reads as the same thing. */
 export type LoadState = 'loading' | 'ready' | 'error'
 
+/** Which surface a failed mutation belongs to. A failure has to render next to
+ *  the text it left in place, and one global string put the editor's error under
+ *  the composer as well. */
+export type ActionErrorScope = 'composer' | 'editor' | 'list'
+export type ActionError = { scope: ActionErrorScope; message: string }
+
 const EMPTY_STATUS: StoreStatus = {
 	path: null,
 	errored: false,
@@ -122,7 +128,7 @@ const loadError = ref<string | null>(null)
 const refreshing = ref(false)
 /** A failed mutation, rendered next to the surface that produced it. Must never
  *  become `loadState: 'error'`, and must never clear the text it belongs to. */
-const actionError = ref<string | null>(null)
+const actionError = ref<ActionError | null>(null)
 const storeStatus = ref<StoreStatus>(EMPTY_STATUS)
 const storeErrorEvent = ref<StoreErrorPayload | null>(null)
 const settings = ref<Settings | null>(null)
@@ -141,6 +147,9 @@ const listAnimated = ref(false)
 let generation = 0
 let refreshInFlight = false
 let refreshQueued = false
+/** Long enough for a checkout's unlink-and-rewrite window to close, short
+ *  enough not to read as a hang. */
+const REFRESH_RETRY_MS = 60
 let initPromise: Promise<void> | null = null
 let unlisteners: UnlistenFn[] = []
 
@@ -162,6 +171,7 @@ function emptySnapshot(): SelectionSnapshot {
 		focusedId: null,
 		anchorId: null,
 		activeRowId: null,
+		activeElement: null,
 		inTextSurface: false,
 		scroll: null,
 	}
@@ -218,11 +228,24 @@ function applyDocument(
 	return true
 }
 
-/** `canUndo`/`canRedo`/`errored`/`watching` are store state no `Space` payload
- *  carries, so §8.2's "no follow-up round trip" covers document contents only. */
+/**
+ * `canUndo`/`canRedo`/`errored`/`watching` are store state no `Space` payload
+ * carries, so §8.2's "no follow-up round trip" covers document contents only.
+ *
+ * Under the same discard discipline as the document, and for the same reason:
+ * two `get_status` calls can be in flight at once — an event handler's and a
+ * mutation's — and nothing makes them resolve in issue order. A late one
+ * carrying `errored: true` landing after the `reload` that cleared it would put
+ * the banner back with no further event coming, which is precisely the failure
+ * §3.6a exists to prevent.
+ */
+let statusToken = 0
+
 async function pullStatus() {
+	const issued = ++statusToken
 	try {
 		const status = await invoke<StoreStatus>('get_status')
+		if (issued !== statusToken) return
 		storeStatus.value = status
 		// The banner's message half is only meaningful while the flag it explains
 		// is still set.
@@ -246,6 +269,12 @@ async function refresh() {
 
 	refreshInFlight = true
 	refreshing.value = true
+	// A failed pull would otherwise drop the refresh entirely: the flag is already
+	// cleared, so the event that asked for it is simply lost. One bounded retry
+	// covers the transient case — a file briefly absent mid-checkout, which the
+	// store's own write path retries for the same reason — without spinning on a
+	// space that is genuinely unreadable.
+	let retried = false
 	try {
 		do {
 			refreshQueued = false
@@ -255,10 +284,16 @@ async function refresh() {
 				// A superseded response is dropped and another refresh scheduled,
 				// never applied late.
 				if (!applyDocument(next, issued, { animate: false })) refreshQueued = true
+				retried = false
 			} catch (error) {
 				// §3.6 keeps the in-memory document alive when a file becomes
 				// unreadable, so the list stays rendered while the banner reports it.
 				console.error('[copper] refresh failed', error)
+				if (!retried) {
+					retried = true
+					refreshQueued = true
+					await new Promise((resolve) => setTimeout(resolve, REFRESH_RETRY_MS))
+				}
 			}
 		} while (refreshQueued)
 	} finally {
@@ -318,7 +353,16 @@ async function load() {
 	if (status.status === 'fulfilled') storeStatus.value = status.value
 	if (nextSettings.status === 'fulfilled') settings.value = nextSettings.value
 
+	// An event may have installed a document while this pull was outstanding. If
+	// so the panel has something real to show, and replacing it with the fatal
+	// error screen would be a strictly worse view of the same store.
+	const superseded = generation !== issued.generation
+
 	if (document.status === 'rejected') {
+		if (superseded) {
+			loadState.value = 'ready'
+			return
+		}
 		// A store failure must never be indistinguishable from an empty space.
 		loadState.value = 'error'
 		loadError.value = errorMessage(document.reason)
@@ -347,10 +391,16 @@ async function retry() {
 
 	try {
 		const next = await invoke<Space>('open_space', { path })
-		applyDocument(next, issued, { animate: false })
+		// Superseded by a document that landed while the re-open was in flight:
+		// drop this one and pull again rather than writing it over the fresher one.
+		if (!applyDocument(next, issued, { animate: false })) void refresh()
 		await pullStatus()
 		loadState.value = 'ready'
 	} catch (error) {
+		if (generation !== issued.generation) {
+			loadState.value = 'ready'
+			return
+		}
 		loadState.value = 'error'
 		loadError.value = errorMessage(error)
 	}
@@ -392,35 +442,40 @@ function dispose() {
 async function mutate<T>(
 	run: () => Promise<T>,
 	document: (result: T) => Space,
-	options: { repullStatus?: boolean } = {},
+	options: { scope: ActionErrorScope; repullStatus?: boolean },
 ): Promise<T | null> {
-	actionError.value = null
+	// Only this surface's own error is cleared: a failure belongs to the text it
+	// left in place, and another surface's message is still explaining itself.
+	if (actionError.value?.scope === options.scope) actionError.value = null
 	const issued = { generation, epoch: epoch.value }
 
 	let result: T
 	try {
 		result = await run()
 	} catch (error) {
-		actionError.value = errorMessage(error)
+		actionError.value = { scope: options.scope, message: errorMessage(error) }
 		return null
 	}
 
-	if (applyDocument(document(result), issued, { animate: true })) {
-		if (options.repullStatus) {
-			// `edit_note` and `set_active_section` take no undo snapshot of their
-			// own, but a write that had to be re-applied over an external change
-			// clears both stacks and emits nothing — a re-pull is the only way to
-			// learn about it.
-			await pullStatus()
-		} else {
-			// Deterministic for an ordinary structural mutation, so no round trip.
-			storeStatus.value = { ...storeStatus.value, canUndo: true, canRedo: false }
-		}
+	const applied = applyDocument(document(result), issued, { animate: true })
+
+	// Keyed on the command resolving, not on the document being applied: the
+	// store carried the mutation out either way, and supersession is a decision
+	// this side of the boundary makes about a stale *document*. Skipping the
+	// status update there left `canUndo` false after a real, undoable change.
+	if (options.repullStatus) {
+		// `edit_note` and `set_active_section` take no undo snapshot of their own,
+		// but a write that had to be re-applied over an external change clears both
+		// stacks and emits nothing — a re-pull is the only way to learn about it.
+		await pullStatus()
 	} else {
-		// Superseded by a newer applied refresh. Drop it and pull again rather
-		// than writing a stale document over a fresh one.
-		void refresh()
+		// Deterministic for an ordinary structural mutation, so no round trip.
+		storeStatus.value = { ...storeStatus.value, canUndo: true, canRedo: false }
 	}
+
+	// Drop the stale document and pull again rather than writing it over a
+	// fresher one.
+	if (!applied) void refresh()
 
 	return result
 }
@@ -431,6 +486,7 @@ async function addNote(body: string) {
 	const result = await mutate(
 		() => invoke<AddNoteResult>('add_note', { body }),
 		(value) => value.space,
+		{ scope: 'composer' },
 	)
 	// The roving target follows the new note; DOM focus stays in the composer so
 	// consecutive captures need no mouse.
@@ -443,7 +499,7 @@ async function updateNoteBody(id: string, body: string) {
 	return mutate(
 		() => invoke<Space>('edit_note', { id, body }),
 		(value) => value,
-		{ repullStatus: true },
+		{ scope: 'editor', repullStatus: true },
 	)
 }
 
@@ -453,6 +509,7 @@ async function setNotesDone(ids: string[], done: boolean) {
 	return mutate(
 		() => invoke<Space>('set_notes_done', { ids, done }),
 		(value) => value,
+		{ scope: 'list' },
 	)
 }
 
@@ -460,12 +517,19 @@ async function setActiveSection(id: string) {
 	return mutate(
 		() => invoke<Space>('set_active_section', { id }),
 		(value) => value,
-		{ repullStatus: true },
+		{ scope: 'list', repullStatus: true },
 	)
 }
 
-function clearActionError() {
-	actionError.value = null
+/** Scoped, so dismissing the composer's message does not silently drop the
+ *  editor's. */
+function clearActionError(scope?: ActionErrorScope) {
+	if (!scope || actionError.value?.scope === scope) actionError.value = null
+}
+
+/** The message for one surface, or null. */
+function errorFor(scope: ActionErrorScope) {
+	return computed(() => (actionError.value?.scope === scope ? actionError.value.message : null))
 }
 
 // --- derived -----------------------------------------------------------------
@@ -518,6 +582,7 @@ export function useSpace() {
 	return {
 		...readonlyViews,
 		notesInSection,
+		errorFor,
 		initialize,
 		dispose,
 		load,

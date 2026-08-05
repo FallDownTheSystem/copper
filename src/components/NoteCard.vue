@@ -44,7 +44,6 @@ const descendantTabIndex = computed(() => (props.interactive ? 0 : -1))
 				class="completion-circle border-text-disabled outline-focus-ring relative mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border transition-colors duration-base focus-visible:outline-2 focus-visible:outline-offset-1"
 				:class="note.done ? 'bg-accent-ring border-accent-ring text-white' : ''"
 				@click.stop="emit('toggleDone')"
-				@keydown.stop
 			>
 				<!-- No entrance animation on the glyph: the toggle is bound to Space,
 				     repeats, and a scale-in on a keyboard-repeated control reads as
