@@ -12,10 +12,9 @@ const {
 } = useSpace()
 const { setClampHeight } = useNoteDisclosure()
 const { ensureHighlighter } = useMarkdown()
-// The same two refs the menus read, rather than a private copy: `setOverlayHost`
-// below is what fills them, and the header passes them down as plain nodes
-// because that is what reka wants.
-const { boundary, portalTo, setOverlayHost } = useOverlayHost()
+// `setOverlayHost` below is what fills the two refs every menu reads; each menu
+// reads them from the composable itself rather than being handed them.
+const { setOverlayHost } = useOverlayHost()
 const { hasQuery, clearQuery, resultCount } = useNoteSearch()
 const { selectedIds, clear } = useSelection()
 const { editingNoteId, cancel } = useNoteEditor()
@@ -234,7 +233,7 @@ function onContextMenu(event: MouseEvent) {
 		@keydown="onShellKeydown"
 		@contextmenu="onContextMenu"
 	>
-		<PanelHeader ref="header" :boundary="boundary" :portal-to="portalTo" />
+		<PanelHeader ref="header" />
 
 		<!-- The only scrollable region. `min-h-0` is load-bearing: a grid item
 		     defaults to `min-height: auto`, so without it this grows to its content

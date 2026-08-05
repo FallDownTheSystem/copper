@@ -40,6 +40,7 @@ declare global {
   const eagerComputed: typeof import('@vueuse/core').eagerComputed
   const effectScope: typeof import('vue').effectScope
   const emptySnapshot: typeof import('./composables/useSelection').emptySnapshot
+  const errorMessage: typeof import('./composables/useSpace').errorMessage
   const extendRef: typeof import('@vueuse/core').extendRef
   const focusRowSoon: typeof import('./composables/useSelection').focusRowSoon
   const focusableIn: typeof import('./composables/useInteractionMode').focusableIn
@@ -386,6 +387,7 @@ declare module 'vue' {
     readonly eagerComputed: UnwrapRef<typeof import('@vueuse/core')['eagerComputed']>
     readonly effectScope: UnwrapRef<typeof import('vue')['effectScope']>
     readonly emptySnapshot: UnwrapRef<typeof import('./composables/useSelection')['emptySnapshot']>
+    readonly errorMessage: UnwrapRef<typeof import('./composables/useSpace')['errorMessage']>
     readonly extendRef: UnwrapRef<typeof import('@vueuse/core')['extendRef']>
     readonly focusRowSoon: UnwrapRef<typeof import('./composables/useSelection')['focusRowSoon']>
     readonly focusableIn: UnwrapRef<typeof import('./composables/useInteractionMode')['focusableIn']>

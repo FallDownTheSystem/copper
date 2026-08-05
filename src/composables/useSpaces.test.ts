@@ -257,12 +257,15 @@ describe('switching', () => {
 		await flush()
 		const before = space.space.value
 
+		const listed = callsTo('list_recents')
 		respond('activate_space', () => ({ changed: false, space: null }))
 		const outcome = await spaces.openSpace('C:\\work.copper')
 		await flush()
 
 		expect(outcome?.changed).toBe(false)
 		expect(space.space.value).toBe(before)
+		// "Nothing at all" includes not re-reading a list that cannot have moved.
+		expect(callsTo('list_recents')).toBe(listed)
 	})
 
 	it('re-reads settings after a switch, because recents just moved', async () => {

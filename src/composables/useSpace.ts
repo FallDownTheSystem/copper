@@ -182,7 +182,9 @@ const search = useNoteSearch()
 const sectionEditor = useSectionEditor()
 const handoff = useEditorHandoff()
 
-function errorMessage(error: unknown): string {
+/** Exported for the adapter beside this one — `useSpaces` — so one shape of Rust
+ *  error is unwrapped in one place rather than two. */
+export function errorMessage(error: unknown): string {
 	if (error && typeof error === 'object' && 'message' in error) {
 		return String((error as { message: unknown }).message)
 	}

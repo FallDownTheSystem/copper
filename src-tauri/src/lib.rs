@@ -166,8 +166,7 @@ pub fn run() {
 			// thread until it does. A cold launch with no file queues a request that
 			// reveals nothing, so an ordinary start — including autostart — leaves the
 			// panel hidden.
-			spaces::dispatch::submit(cold);
-			spaces::start_dispatcher(app.handle());
+			spaces::start_dispatcher(app.handle(), cold);
 
 			// The window is not shown here. It stays hidden until the tray, a launch
 			// argument or a second instance asks for it.

@@ -29,6 +29,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
+use super::lock;
+
 /// How long the burst window stays open after the last request. Long enough to
 /// absorb an Explorer multi-select, short enough that a deliberate second
 /// double-click still feels immediate.
@@ -225,10 +227,6 @@ pub fn submit(request: Request) {
 
 pub fn start(host: Arc<dyn LaunchHost>) {
 	shared().start(host);
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-	mutex.lock().unwrap_or_else(|err| err.into_inner())
 }
 
 #[cfg(test)]

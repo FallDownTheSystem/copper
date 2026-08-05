@@ -39,7 +39,7 @@ use dispatch::{LaunchHost, Request};
 use paths::{comparison_key, display_path, same_path};
 
 use crate::store::error::StoreError;
-use crate::store::events::{StoreErrorEvent, STORE_ERROR};
+use crate::store::events::{AppSink, EventSink, StoreEvent};
 use crate::store::model::Space;
 use crate::store::{self, SharedStore};
 use crate::{diagnostics, editor, panel};
@@ -118,31 +118,41 @@ static EXECUTOR: OnceLock<Executor> = OnceLock::new();
 /// document swap would be bound to the outgoing document with nothing left to
 /// end it.
 pub fn activation() -> MutexGuard<'static, ()> {
-	ACTIVATION.lock().unwrap_or_else(|err| err.into_inner())
+	lock(&ACTIVATION)
+}
+
+/// Locking for every mutex in this layer, poison-tolerant.
+///
+/// A panicking worker must not turn every later lock into a second failure: what
+/// these mutexes hold is a queue and a cache, both still coherent after a panic
+/// in whatever was holding them. Same rule as `store::lock`, and the reason it is
+/// stated once rather than in each submodule.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+	mutex.lock().unwrap_or_else(|err| err.into_inner())
 }
 
 /// The availability event goes out through the app directly rather than through
 /// the store's `EventSink`: nothing about availability is a store change, and
 /// giving the store a way to emit it would be the first step towards persisting
-/// it.
-struct AppSink(AppHandle);
+/// it. Named for what it carries, so it does not read as a second spelling of
+/// the store's `AppSink`, which is imported above and does a different job.
+struct AvailabilitySink(AppHandle);
 
-impl availability::ResultSink for AppSink {
+impl availability::ResultSink for AvailabilitySink {
 	fn deliver(&self, result: &ProbeResult) {
-		let payload = serde_json::json!({
-			"generation": result.generation,
-			"key": result.key,
-			"availability": result.availability,
-			"name": result.name,
-		});
-		if let Err(err) = self.0.emit(availability::AVAILABILITY_CHANGED, payload) {
+		// The result *is* the payload. A hand-built object here would be a second
+		// copy of the field names the frontend already mirrors, free to drift from
+		// the struct that defines them.
+		if let Err(err) = self.0.emit(availability::AVAILABILITY_CHANGED, result) {
 			diagnostics::log_error(&format!("[copper] could not emit an availability result: {err}"));
 		}
 	}
 }
 
 fn executor(app: &AppHandle) -> &'static Executor {
-	EXECUTOR.get_or_init(|| Executor::new(Box::new(RealFs), Box::new(AppSink(app.clone()))))
+	EXECUTOR.get_or_init(|| {
+		Executor::new(Box::new(RealFs), Box::new(AvailabilitySink(app.clone())))
+	})
 }
 
 // --- the one open path ---------------------------------------------------------
@@ -153,16 +163,11 @@ pub fn open_space_at(app: &AppHandle, path: &Path) -> Reply<ActivateOutcome> {
 	let _serialised = activation();
 	let state = app.state::<SharedStore>();
 
-	// Bound rather than tested inline: a `MutexGuard` produced in an `if`
-	// condition lives to the end of the `if` statement, and everything below this
-	// point locks the store again through a non-reentrant mutex.
-	let already_active = is_active(&state, path);
-
 	// A23: re-opening the space that is already open is a reveal and nothing else
 	// — no store call, no settings write, no events. Explorer double-clicking the
 	// open file is the case this exists for, and it is why the caller reveals
 	// rather than this function.
-	if already_active {
+	if is_active(&state, path) {
 		return Ok(ActivateOutcome::unchanged());
 	}
 
@@ -248,13 +253,19 @@ fn refusal(reason: UnavailableReason, message: &str) -> StoreError {
 /// two would drive each other in a loop with every pass minting a new generation.
 #[tauri::command]
 pub async fn list_recents(app: AppHandle, state: State<'_, SharedStore>) -> Reply<Vec<RecentEntry>> {
-	let (recents, active, active_name) = {
+	let (recents, active_key, active_name) = {
 		let store = store::lock(&state);
-		let name = store.active_space().ok().map(|doc| doc.name);
 		(
 			store.recents().to_vec(),
-			store.active_path().map(Path::to_path_buf),
-			name,
+			// One key for the open document rather than one per row: `same_path`
+			// re-derives both sides for every entry, and each row's own key already
+			// *is* the lexical identity it would produce. Deriving it here is safe
+			// under the lock because `comparison_key` is lexical and never touches
+			// the filesystem or the store.
+			store.active_path().map(comparison_key),
+			// The name only, not the document: `active_space` would clone every note
+			// in the space to hand back this one string.
+			store.active_name().map(str::to_owned),
 		)
 	};
 
@@ -269,16 +280,17 @@ pub async fn list_recents(app: AppHandle, state: State<'_, SharedStore>) -> Repl
 		.zip(keys)
 		.zip(cached)
 		.map(|((entry, key), (availability, probed_name))| {
-			let path = PathBuf::from(&entry);
-			let is_active = active.as_deref().is_some_and(|open| same_path(open, &path));
-			let name = if is_active {
-				active_name.clone()
-			} else {
-				probed_name
-			};
+			// A string comparison rather than `same_path`: both sides are already the
+			// lexical key, one derived per row above and one derived once for the open
+			// document.
+			let is_active = active_key.as_deref() == Some(key.as_str());
+			let path = Path::new(&entry);
+			let display = display_path(path);
+			let name = if is_active { active_name.clone() } else { probed_name }
+				.unwrap_or_else(|| file_stem(path));
 			RecentEntry {
-				display_path: display_path(&path),
-				name: name.unwrap_or_else(|| file_stem(&path)),
+				display_path: display,
+				name,
 				key,
 				active: is_active,
 				// The open document is authoritative about itself: the store has it
@@ -313,9 +325,7 @@ pub async fn activate_space(path: String, app: AppHandle) -> Reply<ActivateOutco
 
 #[tauri::command]
 pub async fn pick_and_open_space(app: AppHandle) -> Reply<ActivateOutcome> {
-	let Some(window) = app.get_webview_window(panel::PANEL_LABEL) else {
-		return Err(StoreError::Unavailable("the panel window is not available".into()));
-	};
+	let window = panel_window(&app)?;
 
 	let picked = blocking_dialog(move || {
 		app_dialog(&window)
@@ -333,9 +343,7 @@ pub async fn pick_and_open_space(app: AppHandle) -> Reply<ActivateOutcome> {
 
 #[tauri::command]
 pub async fn create_space_interactive(app: AppHandle) -> Reply<ActivateOutcome> {
-	let Some(window) = app.get_webview_window(panel::PANEL_LABEL) else {
-		return Err(StoreError::Unavailable("the panel window is not available".into()));
-	};
+	let window = panel_window(&app)?;
 	let directory = store::lock(&app.state::<SharedStore>())
 		.spaces_dir()
 		.to_path_buf();
@@ -427,6 +435,17 @@ pub async fn remove_recent(path: String, state: State<'_, SharedStore>, app: App
 
 // --- dialogs -------------------------------------------------------------------
 
+/// The panel, or the reason there is nothing to parent a dialog to.
+///
+/// Both dialog commands need it and neither can proceed without it, so the
+/// lookup and its wording live in one place. `panel.rs` has its own lookup, but
+/// it logs the miss rather than returning it — which is right for the tray and
+/// wrong for a command someone is waiting on.
+fn panel_window(app: &AppHandle) -> Reply<WebviewWindow> {
+	app.get_webview_window(panel::PANEL_LABEL)
+		.ok_or_else(|| StoreError::Unavailable("the panel window is not available".into()))
+}
+
 /// `set_parent` is not optional. The panel is `alwaysOnTop`, so a dialog with no
 /// owner window opens *behind* it and reads as a hang — the app appears frozen
 /// with no visible dialog. An owned dialog is always drawn above its owner.
@@ -495,13 +514,14 @@ struct AppLaunchHost(AppHandle);
 impl LaunchHost for AppLaunchHost {
 	fn open(&self, path: &Path) {
 		if let Err(err) = open_space_at(&self.0, path) {
-			// A forwarded launch happens with the webview already listening, so an
-			// event is the right channel here — unlike the cold path below.
-			let event = StoreErrorEvent::from(&err);
 			diagnostics::log_error(&format!("[copper] could not open {}: {err}", path.display()));
-			if let Err(emit) = self.0.emit(STORE_ERROR, event) {
-				diagnostics::log_error(&format!("[copper] could not emit the open failure: {emit}"));
-			}
+			// A forwarded launch happens with the webview already listening, so an
+			// event is the right channel here — unlike the cold path below. Through
+			// the store's own sink rather than a second emit written by hand: it
+			// already owns this payload's shape and the rule that a failed emit is
+			// logged rather than propagated, because the failure it announces has
+			// already happened.
+			AppSink::new(self.0.clone()).emit(&StoreEvent::error(&err));
 		}
 	}
 
@@ -565,17 +585,21 @@ pub fn apply_cold_launch(app: &AppHandle) -> Request {
 	}
 
 	// Whether the open succeeded or not, the panel is revealed with the
-	// explanation: the user double-clicked a file and is owed a window.
+	// explanation: the user double-clicked a file and is owed a window. No `path`
+	// on it — the open happened above, synchronously, and re-queueing the path
+	// would open it a second time through the dispatcher.
 	Request {
 		path: None,
 		reveal: true,
 	}
 }
 
-/// Opens the readiness gate. Everything queued before this — including a
-/// forwarded launch that arrived during startup — drains afterwards, in arrival
-/// order.
-pub fn start_dispatcher(app: &AppHandle) {
+/// Queues the cold launch's presentation and opens the readiness gate.
+/// Everything queued before this — including a forwarded launch that arrived
+/// during startup — drains afterwards, in arrival order, with the cold request
+/// first.
+pub fn start_dispatcher(app: &AppHandle, cold: Request) {
+	dispatch::submit(cold);
 	// Initialised here so the first menu open does not pay for it, and so the
 	// availability sink exists before anything can produce a result.
 	let _ = executor(app);

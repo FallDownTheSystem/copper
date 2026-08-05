@@ -12,17 +12,17 @@
  * re-pointed to a loadable entry and this renders whatever is actually active.
  */
 
-defineProps<{
-	/** The panel root, so the menu is bounded by the window it lives in. */
-	boundary: HTMLElement | null
-	/** The in-panel portal host. Reka teleports to document.body otherwise,
-	 *  which escapes the panel root's clip and its rounded rect. */
-	portalTo: HTMLElement | null
-}>()
-
+// Read from the composable rather than taken as props, exactly as the two
+// context menus do. `PanelShell` publishes the panel root and the in-clip portal
+// host there once, so a menu does not have to be drilled two components' worth of
+// props to reach them.
+const { boundary, portalTo } = useOverlayHost()
 const { recents, probeRecents, openSpace, pickAndOpenSpace, createSpace, removeRecent } =
 	useSpaces()
-const { sections, addSection } = useSpace()
+const { sections, addSection, errorFor } = useSpace()
+/** The band's message for this surface's failures. Read back after a refused
+ *  create so the inline field can repeat the store's own cause. */
+const listError = errorFor('list')
 
 const open = ref(false)
 const creatingSection = ref(false)
@@ -92,10 +92,14 @@ async function submitSection() {
 
 	const result = await addSection(name)
 	if (!result) {
-		// A store-side refusal — the space became unavailable mid-edit, say. It also
-		// reaches the panel's action-error band; repeating it here keeps it next to
-		// the text it left in place.
-		sectionError.value = 'That section could not be created.'
+		// A store-side refusal — the space became unavailable mid-edit, say. The
+		// cause reaches the panel's action-error band; it is repeated here verbatim,
+		// next to the text it left in place. Repeated rather than replaced by a
+		// sentence of our own: "could not be created" says nothing the user can act
+		// on, and the store's message is the only thing that names what went wrong.
+		// The generic sentence is the fallback for the case that leaves no cause
+		// behind at all.
+		sectionError.value = listError.value ?? 'That section could not be created.'
 		return
 	}
 
@@ -112,10 +116,10 @@ function onSectionKeydown(event: KeyboardEvent) {
 		event.preventDefault()
 		void submitSection()
 	} else if (event.key === 'Escape') {
-		// Consumed here rather than left to bubble: the field is a rung above the
-		// menu, so the first Escape closes the field and the second closes the menu.
+		// `@keydown.stop` on the field is what keeps this from reaching the menu,
+		// so the first Escape closes the field and the second — with the field
+		// unmounted — closes the menu.
 		event.preventDefault()
-		event.stopPropagation()
 		cancelSection()
 	}
 }
@@ -270,16 +274,20 @@ function onSectionInput(event: Event) {
 					{{ sectionError }}
 				</p>
 				<div class="mt-1.5 flex justify-end gap-1">
+					<!-- `panel-button` is the project's one secondary-control appearance.
+					     Only the tighter padding and the focus ring are local, because
+					     the utility carries neither — and `py-0.5` is emitted after it,
+					     so at equal specificity it wins. -->
 					<button
 						type="button"
-						class="border-separator hover:bg-surface-hover outline-focus-ring rounded-md border px-2 py-0.5 text-meta transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
+						class="panel-button outline-focus-ring py-0.5 focus-visible:outline-2 focus-visible:-outline-offset-1"
 						@click="cancelSection"
 					>
 						Cancel
 					</button>
 					<button
 						type="button"
-						class="border-separator hover:bg-surface-hover outline-focus-ring rounded-md border px-2 py-0.5 text-meta transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
+						class="panel-button outline-focus-ring py-0.5 focus-visible:outline-2 focus-visible:-outline-offset-1"
 						@click="submitSection"
 					>
 						Create

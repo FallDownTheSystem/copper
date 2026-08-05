@@ -177,6 +177,16 @@ impl Store {
 		self.open.as_ref().map(|open| open.path.as_path())
 	}
 
+	/// The open document's own `name`, without cloning the document to read it.
+	///
+	/// The switcher labels the active row on every menu open and on every
+	/// `settings-changed`; reaching that string through [`Store::active_space`]
+	/// would deep-clone every note in the space and then discard all of it but
+	/// this one field.
+	pub fn active_name(&self) -> Option<&str> {
+		self.open.as_ref().map(|open| open.doc.name.as_str())
+	}
+
 	/// The bytes the store believes are on disk, for tests and diagnostics.
 	pub fn on_disk_text(&self) -> Option<&str> {
 		self.open.as_ref().map(|open| open.on_disk_text.as_str())

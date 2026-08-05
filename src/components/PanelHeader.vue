@@ -1,9 +1,4 @@
 <script setup lang="ts">
-defineProps<{
-	boundary: HTMLElement | null
-	portalTo: HTMLElement | null
-}>()
-
 /**
  * The query lives in `useNoteSearch` at module scope, not here. A ref held
  * inside this component cannot be read by `NoteList` — the same private-copy
@@ -59,6 +54,6 @@ defineExpose({ focusSearch, query })
 			/>
 		</div>
 
-		<PanelMenu :boundary="boundary" :portal-to="portalTo" />
+		<PanelMenu />
 	</header>
 </template>

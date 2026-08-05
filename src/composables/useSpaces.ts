@@ -15,16 +15,18 @@
  *   inference. If the active space was unavailable at startup the store has
  *   already re-pointed to a loadable recents entry, and this reflects whatever is
  *   actually active afterwards rather than initiating anything.
- * - **It does not refresh from `settings-changed`.** Listing recents is a pure
- *   read of cached availability; probing is started only by `refresh_recents`, on
- *   a menu open or an explicit retry. Refreshing availability from the event
- *   would close a loop, since probe results would then ask for another list.
+ * - **It never starts a probe from an event.** `settings-changed` does re-list
+ *   recents and pull the document — see `onSettingsChanged` for why that pull is
+ *   load-bearing — but listing is a pure read of cached availability. Probing is
+ *   started only by `refresh_recents`, on a menu open or an explicit retry;
+ *   probing from the event would close a loop, since probe results would then ask
+ *   for another list.
  */
 
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
-import type { Space } from './useSpace'
+import { errorMessage, type Space } from './useSpace'
 
 /** Only `unavailable` carries a cause. `unresponsive` is a transient state —
  *  the probe has concluded nothing, which is not the same as concluding that a
@@ -70,13 +72,6 @@ const recents = ref<RecentEntry[]>([])
 
 let initPromise: Promise<void> | null = null
 let unlisteners: UnlistenFn[] = []
-
-function errorMessage(error: unknown): string {
-	if (error && typeof error === 'object' && 'message' in error) {
-		return String((error as { message: unknown }).message)
-	}
-	return String(error)
-}
 
 /**
  * Serialised through a promise tail, because response order is not request
@@ -202,7 +197,13 @@ async function activate(run: () => Promise<ActivateOutcome>): Promise<ActivateOu
 		return null
 	}
 
-	if (outcome.changed && outcome.space) await adopt(outcome.space)
+	// Nothing to re-read on an unchanged outcome: A23 returns before the store is
+	// touched, so no settings write, no event and no availability result happened
+	// — and a cancelled dialog reports the same. Re-listing would be a round trip
+	// that returns the list already on screen, and would replace the array and
+	// re-render the menu for it.
+	if (!outcome.changed) return outcome
+	if (outcome.space) await adopt(outcome.space)
 	await refresh()
 	return outcome
 }

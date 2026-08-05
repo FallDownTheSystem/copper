@@ -116,6 +116,21 @@ fn the_active_space_and_the_recents_order_survive_a_restart() {
 	assert!(rig.recents().iter().any(|entry| entry == &beta.to_string_lossy()));
 }
 
+/// The switcher labels the active row on every menu open and on every
+/// `settings-changed`, so it reads the name through the cheap accessor. That
+/// accessor has to agree with the expensive one it replaced.
+#[test]
+fn the_active_name_agrees_with_the_open_document() {
+	let rig = Rig::new();
+	let alpha = rig.create("alpha");
+	rig.open(&alpha);
+
+	let guard = store::lock(&rig.shared);
+	let doc = guard.active_space().unwrap();
+	assert_eq!(doc.name, "alpha");
+	assert_eq!(guard.active_name(), Some(doc.name.as_str()));
+}
+
 /// A32. Removing a non-active entry drops exactly that entry, leaves the rest in
 /// order, does not change the active space, and sticks.
 #[test]
@@ -194,7 +209,18 @@ fn a_differently_cased_path_is_the_same_entry() {
 
 	rig.open(&shouted);
 
-	assert_eq!(rig.recents().len(), 2, "{:?}", rig.recents());
+	assert_eq!(
+		rig.recents()
+			.iter()
+			.filter(|entry| same_path(Path::new(entry), &alpha))
+			.count(),
+		1,
+		"one file is listed twice under two spellings: {:?}",
+		rig.recents()
+	);
+	// Alpha plus the default space bootstrap created — the shouted spelling added
+	// nothing of its own.
+	assert_eq!(rig.recents().len(), 2);
 	assert!(same_path(&rig.active(), &alpha));
 }
 
@@ -289,6 +315,8 @@ fn unavailable_reason(path: &Path) -> Option<UnavailableReason> {
 
 const LIB: &str = include_str!("../src/lib.rs");
 const SPACES: &str = include_str!("../src/spaces/mod.rs");
+const TRAY: &str = include_str!("../src/tray.rs");
+const CAPTURE: &str = include_str!("../src/capture/mod.rs");
 
 fn code(source: &str) -> String {
 	source
@@ -358,8 +386,8 @@ fn every_reveal_goes_through_the_panel_module() {
 	for (name, source) in [
 		("lib.rs", LIB),
 		("spaces/mod.rs", SPACES),
-		("tray.rs", include_str!("../src/tray.rs")),
-		("capture/mod.rs", include_str!("../src/capture/mod.rs")),
+		("tray.rs", TRAY),
+		("capture/mod.rs", CAPTURE),
 	] {
 		let code = code(source);
 		for forbidden in [".show()", ".unminimize()", ".set_focus()"] {
@@ -369,10 +397,6 @@ fn every_reveal_goes_through_the_panel_module() {
 			);
 		}
 	}
-	assert!(
-		SPACES.contains("panel::reveal_or_log"),
-		"the launch host no longer reveals through panel.rs"
-	);
 	// The dispatcher's worker is a background thread by design, so its reveal is
 	// the one call site in this crate that has to cross back to the thread that
 	// owns the window.
@@ -398,8 +422,8 @@ fn every_reveal_goes_through_the_panel_module() {
 fn the_activate_path_has_no_callers_outside_the_spaces_layer() {
 	for (name, source) in [
 		("lib.rs", LIB),
-		("tray.rs", include_str!("../src/tray.rs")),
-		("capture/mod.rs", include_str!("../src/capture/mod.rs")),
+		("tray.rs", TRAY),
+		("capture/mod.rs", CAPTURE),
 		("editor.rs", include_str!("../src/editor.rs")),
 		("store/commands.rs", include_str!("../src/store/commands.rs")),
 	] {

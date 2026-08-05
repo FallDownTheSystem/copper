@@ -33,6 +33,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+use super::lock;
 use super::paths::{comparison_key, drive_letter};
 use crate::store::format;
 
@@ -113,10 +114,6 @@ impl Availability {
 			reason: UnavailableReason::Unreadable,
 			message: "This file can't be read. You may not have permission to open it.".to_string(),
 		}
-	}
-
-	pub fn is_unavailable(&self) -> bool {
-		matches!(self, Self::Unavailable { .. })
 	}
 
 	/// The sentence to show, if there is one to show.
@@ -270,7 +267,12 @@ pub fn probe(fs: &dyn Filesystem, path: &Path) -> (Availability, Option<String>)
 // --- the executor --------------------------------------------------------------
 
 /// One entry's answer, stamped with the snapshot it was started for.
-#[derive(Clone, Debug)]
+///
+/// Serialised straight onto the wire as the `spaces-availability-changed`
+/// payload, so the event's shape is this declaration rather than a second copy
+/// of it written out at the emit site.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct ProbeResult {
 	pub generation: u64,
 	pub key: String,
@@ -383,28 +385,29 @@ impl Executor {
 		let mut state = lock(&self.shared.state);
 		state.generation += 1;
 		let generation = state.generation;
-		state.members = entries.iter().map(|(key, _)| key.clone()).collect();
+		state.members.clear();
 		state.queue.clear();
 
-		// Deduped by key, because a recents list can legitimately hold two spellings
-		// of one path — a hand-edited `%APPDATA%` entry beside the same file opened
-		// through the picker — and they share one comparison key. Two jobs for one
-		// key would be two probes of one file, and the second would arrive as a
-		// duplicate result for a row that already had its answer.
-		let mut seen: HashSet<&str> = HashSet::new();
-		for (key, path) in &entries {
-			if !seen.insert(key.as_str()) {
+		// The membership set *is* the dedupe: `insert` answers "was this key already
+		// in this snapshot", which is the question a second set would be asked. And
+		// dedupe by key is required, because a recents list can legitimately hold two
+		// spellings of one path — a hand-edited `%APPDATA%` entry beside the same
+		// file opened through the picker — and they share one comparison key. Two
+		// jobs for one key would be two probes of one file, and the second would
+		// arrive as a duplicate result for a row that already had its answer.
+		for (key, path) in entries {
+			if !state.members.insert(key.clone()) {
 				continue;
 			}
 			let job = Job {
 				key: key.clone(),
-				path: path.clone(),
+				path,
 				generation,
 			};
-			if state.in_flight.contains(key) {
+			if state.in_flight.contains(&key) {
 				// At most one attempt per key at a time; the newer request waits for
 				// the running one to return rather than starting a second.
-				state.rerun.insert(key.clone(), job);
+				state.rerun.insert(key, job);
 			} else {
 				state.queue.push_back(job);
 			}
@@ -659,10 +662,6 @@ pub fn snapshot(recents: &[String]) -> Vec<(String, PathBuf)> {
 		.collect()
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-	mutex.lock().unwrap_or_else(|err| err.into_inner())
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -733,6 +732,34 @@ mod tests {
 		assert_eq!(json["reason"], "drive-unavailable");
 		assert!(json["message"].as_str().unwrap().contains("drive"));
 		assert_eq!(serde_json::to_value(Availability::Pending).unwrap()["state"], "pending");
+	}
+
+	/// The payload is the struct now, so the four field names the frontend mirrors
+	/// are asserted here rather than at the emit site.
+	#[test]
+	fn a_result_serialises_as_the_availability_event_payload() {
+		let json = serde_json::to_value(ProbeResult {
+			generation: 7,
+			key: r"D:\X\A.COPPER".to_string(),
+			availability: Availability::Available,
+			name: Some("work".to_string()),
+		})
+		.unwrap();
+
+		assert_eq!(json["generation"], 7);
+		assert_eq!(json["key"], r"D:\X\A.COPPER");
+		assert_eq!(json["availability"]["state"], "available");
+		assert_eq!(json["name"], "work");
+		assert_eq!(json.as_object().unwrap().len(), 4, "the payload grew a field");
+
+		let absent = serde_json::to_value(ProbeResult {
+			generation: 1,
+			key: "K".to_string(),
+			availability: Availability::Pending,
+			name: None,
+		})
+		.unwrap();
+		assert!(absent["name"].is_null(), "an unread name must arrive as null");
 	}
 
 	// --- probing a real temp directory ---
@@ -923,7 +950,10 @@ mod tests {
 		let result = rx.recv_timeout(Duration::from_secs(5)).unwrap();
 
 		assert_eq!(result.availability, Availability::unresponsive());
-		assert!(!result.availability.is_unavailable(), "a timeout must not claim a cause");
+		assert!(
+			!matches!(result.availability, Availability::Unavailable { .. }),
+			"a timeout must not claim a cause"
+		);
 
 		*lock(&gate.0) = true;
 		gate.1.notify_all();
