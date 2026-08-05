@@ -45,8 +45,13 @@ const anchorId = ref<string | null>(null)
 
 /** The document's own grouping, before the search filter. Both traversal orders
  *  are derived from it, so they can never disagree about which notes a section
- *  holds. */
-const documentGroups = ref<{ sectionId: string; noteIds: string[] }[]>([])
+ *  holds.
+ *
+ *  Shallow because `syncDocument` only ever replaces it wholesale. A deep `ref`
+ *  proxies every group and every id array, and `orders` walks all of them on
+ *  every keystroke — paying a get trap and a dependency registration per note to
+ *  observe a mutation that never happens. */
+const documentGroups = shallowRef<{ sectionId: string; noteIds: string[] }[]>([])
 
 const { matchedIds } = useNoteSearch()
 

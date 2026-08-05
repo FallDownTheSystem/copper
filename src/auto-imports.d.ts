@@ -59,7 +59,6 @@ declare global {
   const makeDestructurable: typeof import('@vueuse/core').makeDestructurable
   const markRaw: typeof import('vue').markRaw
   const nextTick: typeof import('vue').nextTick
-  const noteCountLabel: typeof import('./composables/useStatusMessage').noteCountLabel
   const noteRow: typeof import('./composables/useSelection').noteRow
   const onActivated: typeof import('vue').onActivated
   const onBeforeMount: typeof import('vue').onBeforeMount

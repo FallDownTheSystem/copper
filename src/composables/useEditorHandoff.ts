@@ -19,7 +19,10 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 export type HandoffState = { noteId: string; conflicted: boolean }
 type HandoffChangedPayload = { handoffs: HandoffState[] }
 
-/** Named by Rust; the messages are the frontend's to render. */
+/** Named by Rust; the messages are the frontend's to render. `error` is the one
+ *  arm Rust never sends: a failed `editor_open_note` rejects, and the catch below
+ *  turns that rejection into this shape so callers have a single union to branch
+ *  on. */
 export type OpenOutcome =
 	| { kind: 'opened' }
 	/** The handoff this replaced had a save Copper refused, so its temp file was

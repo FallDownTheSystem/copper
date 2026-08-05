@@ -49,8 +49,8 @@ export const CHORDS = {
 	/**
 	 * Deliberately two things by context: on a focused card it starts the
 	 * `$EDITOR` handoff, inside the inline editor it commits the edit. The
-	 * editor's textarea is a text surface, so the guard in `NoteList` resolves the
-	 * ambiguity before this is ever consulted.
+	 * editor's textarea is a text surface, so the shell's `inTextSurface` guard
+	 * resolves the ambiguity before this is ever consulted.
 	 */
 	openInEditor: {
 		display: 'Ctrl+Enter',

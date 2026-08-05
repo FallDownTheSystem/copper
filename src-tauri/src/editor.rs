@@ -49,7 +49,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::diagnostics;
-use crate::store::events::{ChangeReason, SpaceChanged, StoreEvent};
+use crate::store::events::{AppSink, ChangeReason, EventSink, SpaceChanged, StoreEvent};
 use crate::store::model::Space;
 use crate::store::{self, ops, SharedStore};
 
@@ -136,9 +136,6 @@ pub enum OpenOutcome {
 	NoEditor,
 	AtCapacity {
 		limit: usize,
-	},
-	Error {
-		message: String,
 	},
 }
 
@@ -353,6 +350,20 @@ fn temp_root() -> PathBuf {
 	std::env::temp_dir().join(TEMP_DIR_NAME)
 }
 
+/// Deletes a temp tree, tolerating one that is already gone.
+///
+/// Cleanup is **best-effort** at every call site: a detached editor or an
+/// antivirus scanner can hold a handle open, so a failure is logged and never
+/// surfaced — [`scavenge`] completes the guarantee on the next startup. Factored
+/// out of the four places that each spelled this out, two of them silently.
+fn remove_tree(path: &Path) {
+	if let Err(err) = std::fs::remove_dir_all(path) {
+		if err.kind() != std::io::ErrorKind::NotFound {
+			diagnostics::log_error(&format!("[copper] could not remove {}: {err}", path.display()));
+		}
+	}
+}
+
 /// Editors are happier with a file that ends in a newline, and the store trims
 /// trailing whitespace on the way back in, so this round-trips cleanly.
 fn file_contents(body: &str) -> String {
@@ -472,9 +483,10 @@ fn write_if_unchanged(
 	// against a non-reentrant mutex.
 	drop(guard);
 	if let Some(event) = announcement {
-		if let Err(err) = app.emit(event.name(), event.payload()) {
-			diagnostics::log_error(&format!("[copper] could not emit {}: {err}", event.name()));
-		}
+		// The store's own sink rather than a second copy of it: this is an ordinary
+		// `StoreEvent`, and the emit-and-log-never-propagate policy — including its
+		// message — belongs in one place.
+		AppSink::new(app.clone()).emit(&event);
 	}
 
 	match written {
@@ -528,14 +540,7 @@ fn remove(app: &AppHandle, note_id: &str) -> Removed {
 		return Removed::Retained(handoff.file);
 	}
 
-	if let Err(err) = std::fs::remove_dir_all(&handoff.dir) {
-		if err.kind() != std::io::ErrorKind::NotFound {
-			diagnostics::log_error(&format!(
-				"[copper] could not remove {}: {err}",
-				handoff.dir.display()
-			));
-		}
-	}
+	remove_tree(&handoff.dir);
 	Removed::Deleted
 }
 
@@ -834,7 +839,7 @@ pub async fn editor_open_note(id: String, app: AppHandle) -> Result<OpenOutcome,
 	let file = dir.join(format!("{}.md", slugify_first_line(&body)));
 	let contents = file_contents(&body);
 	if let Err(err) = std::fs::write(&file, contents.as_bytes()) {
-		let _ = std::fs::remove_dir_all(&dir);
+		remove_tree(&dir);
 		return Err(err.to_string());
 	}
 
@@ -843,7 +848,7 @@ pub async fn editor_open_note(id: String, app: AppHandle) -> Result<OpenOutcome,
 	let watcher = match spawn_watch(&app, &id, &handoff_id, &dir, &file) {
 		Ok(watcher) => watcher,
 		Err(message) => {
-			let _ = std::fs::remove_dir_all(&dir);
+			remove_tree(&dir);
 			return Err(message);
 		}
 	};
@@ -934,10 +939,11 @@ pub fn reconcile_handoffs(app: &AppHandle) {
 	let mut changed = false;
 	for id in ids {
 		// The store lock is taken here, with the registry lock released.
-		let body = note_body(app, &id);
-		match body {
+		match note_body(app, &id) {
 			None => changed |= remove(app, &id).existed(),
-			Some(body) => changed |= rewrite_temp_file(app, &id, &body),
+			// A refreshed temp file changes no field of `HandoffState`, so there is
+			// nothing here for the frontend to re-render.
+			Some(body) => rewrite_temp_file(app, &id, &body),
 		}
 	}
 
@@ -946,16 +952,19 @@ pub fn reconcile_handoffs(app: &AppHandle) {
 	}
 }
 
-fn rewrite_temp_file(app: &AppHandle, note_id: &str, body: &str) -> bool {
+/// Refreshes one handoff's temp file from the note (AC47). Reports nothing: no
+/// field of `HandoffState` depends on the file's contents, so there is never an
+/// emit owed for this.
+fn rewrite_temp_file(app: &AppHandle, note_id: &str, body: &str) {
 	let mut guard = entries(app);
 	let Some(handoff) = guard.get_mut(note_id) else {
-		return false;
+		return;
 	};
 
 	// The card stays conflicted until the user resolves it by ending the handoff
 	// or reopening the note.
 	if !should_rewrite_temp_file(handoff.conflicted, &handoff.body_baseline, body) {
-		return false;
+		return;
 	}
 
 	let contents = file_contents(body);
@@ -964,12 +973,11 @@ fn rewrite_temp_file(app: &AppHandle, note_id: &str, body: &str) -> bool {
 			"[copper] could not refresh {}: {err}",
 			handoff.file.display()
 		));
-		return false;
+		return;
 	}
 
 	handoff.file_seen = contents.into_bytes();
 	handoff.body_baseline = body.to_string();
-	false
 }
 
 /// The one way to end every live handoff at once — Phase 6 calls it on a space
@@ -1034,15 +1042,7 @@ static EXITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// exit hook alone cannot, because a crash runs no exit hook at all. A failed
 /// delete is logged, never surfaced.
 pub fn scavenge() {
-	let root = temp_root();
-	if let Err(err) = std::fs::remove_dir_all(&root) {
-		if err.kind() != std::io::ErrorKind::NotFound {
-			diagnostics::log_error(&format!(
-				"[copper] could not clear {}: {err}",
-				root.display()
-			));
-		}
-	}
+	remove_tree(&temp_root());
 }
 
 #[cfg(test)]

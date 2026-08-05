@@ -24,7 +24,10 @@ async function remove() {
 	setMessage(
 		count === 0
 			? `Deleted “${props.section.name}” · Ctrl+Z to undo`
-			: `Deleted “${props.section.name}” and ${count === 1 ? '1 note' : `${count} notes`} · Ctrl+Z to undo`,
+			: countMessage(count, {
+					one: `Deleted “${props.section.name}” and 1 note · Ctrl+Z to undo`,
+					many: (n) => `Deleted “${props.section.name}” and ${n} notes · Ctrl+Z to undo`,
+				}),
 	)
 }
 

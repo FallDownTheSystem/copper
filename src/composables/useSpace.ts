@@ -528,14 +528,27 @@ async function updateNoteBody(id: string, body: string) {
 	)
 }
 
-/** There is no singular set-done command; `set_notes_done` takes an array. Phase
- *  5 calls this with a whole selection, with no signature change. */
-async function setNotesDone(ids: string[], done: boolean) {
+/**
+ * The shape every list-scope mutation shares: invoke, take the returned `Space`
+ * as the new document, and report a failure on the surface that produced it.
+ * The eight wrappers below were this same five-line body with one command name
+ * and one argument object changed.
+ *
+ * `setActiveSection` stays out of it deliberately — it re-pulls status, because
+ * it takes no undo snapshot of its own and `canUndo` cannot be assumed.
+ */
+function listCommand(command: string, args: Record<string, unknown>) {
 	return mutate(
-		() => invoke<Space>('set_notes_done', { ids, done }),
+		() => invoke<Space>(command, args),
 		(value) => value,
 		{ scope: 'list' },
 	)
+}
+
+/** There is no singular set-done command; `set_notes_done` takes an array. Phase
+ *  5 calls this with a whole selection, with no signature change. */
+async function setNotesDone(ids: string[], done: boolean) {
+	return listCommand('set_notes_done', { ids, done })
 }
 
 async function setActiveSection(id: string) {
@@ -552,63 +565,35 @@ async function setActiveSection(id: string) {
  * per note and make undoing a five-note operation take five presses.
  */
 async function moveNotes(ids: string[], section: string) {
-	return mutate(
-		() => invoke<Space>('move_notes', { ids, section }),
-		(value) => value,
-		{ scope: 'list' },
-	)
+	return listCommand('move_notes', { ids, section })
 }
 
 async function mergeNotes(ids: string[]) {
-	return mutate(
-		() => invoke<Space>('merge_notes', { ids }),
-		(value) => value,
-		{ scope: 'list' },
-	)
+	return listCommand('merge_notes', { ids })
 }
 
 async function deleteNotes(ids: string[]) {
-	return mutate(
-		() => invoke<Space>('delete_notes', { ids }),
-		(value) => value,
-		{ scope: 'list' },
-	)
+	return listCommand('delete_notes', { ids })
 }
 
 /** `index` is interpreted against the target list **after** the note has been
  *  removed from it, and clamped by the store. */
 async function reorderNote(id: string, section: string, index: number) {
-	return mutate(
-		() => invoke<Space>('reorder_note', { id, section, index }),
-		(value) => value,
-		{ scope: 'list' },
-	)
+	return listCommand('reorder_note', { id, section, index })
 }
 
 async function renameSection(id: string, name: string) {
-	return mutate(
-		() => invoke<Space>('rename_section', { id, name }),
-		(value) => value,
-		{ scope: 'list' },
-	)
+	return listCommand('rename_section', { id, name })
 }
 
 /** Deletes the section **and the notes in it** — undo covers both. Refused by
  *  the store for the last remaining section, so a capture target always exists. */
 async function deleteSection(id: string) {
-	return mutate(
-		() => invoke<Space>('delete_section', { id }),
-		(value) => value,
-		{ scope: 'list' },
-	)
+	return listCommand('delete_section', { id })
 }
 
 async function reorderSection(id: string, index: number) {
-	return mutate(
-		() => invoke<Space>('reorder_section', { id, index }),
-		(value) => value,
-		{ scope: 'list' },
-	)
+	return listCommand('reorder_section', { id, index })
 }
 
 /**

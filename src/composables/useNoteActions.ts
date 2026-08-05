@@ -253,20 +253,20 @@ function reorderBlockedBySearch(): boolean {
  * exactly the position it occupies in that final order. So this needs no diff
  * against the previous order and no knowledge of where the drag started.
  */
-function finishDrag(noteId: string) {
+async function finishDrag(noteId: string) {
 	// The DOM is read *before* the queue, not inside it: it holds the result of a
 	// gesture that has already finished, and a mutation completing in the meantime
 	// would re-render the list out from under it.
-	if (reorderBlockedBySearch()) return Promise.resolve()
+	if (reorderBlockedBySearch()) return
 	const row = rowElement(noteRow(noteId))
 	const group = row?.closest<HTMLElement>('[data-section-id]')
 	const sectionId = group?.dataset.sectionId
-	if (!group || sectionId === undefined) return Promise.resolve()
+	if (!group || sectionId === undefined) return
 
 	const index = [...group.querySelectorAll<HTMLElement>('[data-note-row]')].findIndex(
 		(element) => element.dataset.rowId === noteRow(noteId),
 	)
-	if (index === -1) return Promise.resolve()
+	if (index === -1) return
 
 	return serialize(async () => {
 		const note = space.noteById(noteId)
@@ -340,7 +340,7 @@ function edit() {
 	const current = space.space.value
 	if (id === null || !current) return
 
-	const note = current.notes.find((candidate) => candidate.id === id)
+	const note = space.noteById(id)
 	if (note) editor.beginEdit(current, note)
 }
 
@@ -418,9 +418,6 @@ function announceResults() {
 
 export function useNoteActions() {
 	return {
-		targetIds,
-		targetNotes,
-		targetCount,
 		everyTargetDone,
 		canMerge,
 		canMoveTo,

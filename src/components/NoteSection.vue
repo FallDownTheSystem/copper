@@ -17,7 +17,6 @@ const emit = defineEmits<{
 	activate: []
 	pointerSelect: [event: MouseEvent, noteId: string]
 	toggleDone: [noteId: string]
-	dragStart: []
 	dragEnd: [noteId: string]
 }>()
 
@@ -55,7 +54,6 @@ const [rowgroup, order] = useDragAndDrop<string>([...props.noteIds], {
 
 function onDragStart() {
 	dragging.value = true
-	emit('dragStart')
 }
 
 function onDragEnd(noteId: string) {
@@ -75,6 +73,16 @@ watch(
 		order.value = [...ids]
 	},
 	{ immediate: true },
+)
+
+/** Resolved once per row rather than twice — the `v-if` and the `:note` binding
+ *  asked the same question — which drops the non-null assertion with it. An id
+ *  the document no longer has simply yields no row. */
+const orderedNotes = computed(() =>
+	order.value.flatMap((id) => {
+		const note = noteById(id)
+		return note ? [note] : []
+	}),
 )
 
 // --- list animation ----------------------------------------------------------
@@ -126,16 +134,15 @@ onMounted(() => {
 			@activate="emit('activate')"
 		/>
 
-		<template v-for="id in order" :key="id">
-			<NoteCard
-				v-if="noteById(id)"
-				:note="noteById(id)!"
-				:row-id="noteRow(id)"
-				:interactive="interactionRowId === noteRow(id)"
-				@pointer-select="emit('pointerSelect', $event, id)"
-				@toggle-done="emit('toggleDone', id)"
-			/>
-		</template>
+		<NoteCard
+			v-for="note in orderedNotes"
+			:key="note.id"
+			:note="note"
+			:row-id="noteRow(note.id)"
+			:interactive="interactionRowId === noteRow(note.id)"
+			@pointer-select="emit('pointerSelect', $event, note.id)"
+			@toggle-done="emit('toggleDone', note.id)"
+		/>
 
 		<!-- Only the *active* empty section says so. The general empty state is
 		     additive; the headers stay visible either way, because hiding where a

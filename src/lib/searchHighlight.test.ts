@@ -72,6 +72,15 @@ describe('applyHighlight', () => {
 		expect(published?.ranges.map((range) => range.toString())).toEqual(['stan'])
 	})
 
+	it('collects every term of a multi-term query', async () => {
+		// The terms share one folded copy of each text node now, so more than one
+		// term is the case that would break if that sharing were wrong.
+		applyHighlight(body('alpha beta'), ['alpha', 'beta'])
+		await flush()
+
+		expect(published?.ranges.map((range) => range.toString())).toEqual(['alpha', 'beta'])
+	})
+
 	it('publishes once per flush however many bodies wrote', async () => {
 		// One watcher per rendered body means a keystroke calls this once per note;
 		// a publish that walked the whole map each time made the keystroke

@@ -64,11 +64,11 @@ function createIndex() {
  */
 function rebuild(space: SpaceView | null) {
 	index = createIndex()
-	if (space) {
-		index.addAll(
-			space.notes.map((note) => ({ id: note.id, body: note.body, section: note.section })),
-		)
-	}
+	// The notes go in as they are: `IndexedNote` names the three fields MiniSearch
+	// reads and a `Note` already has all three, so the reshaping copy allocated an
+	// object per note to change nothing. Nothing is retained either — `storeFields`
+	// values are copied into MiniSearch's own object.
+	if (space) index.addAll(space.notes)
 	indexRevision.value++
 }
 
@@ -110,7 +110,6 @@ export function useNoteSearch() {
 		matchedIds,
 		matchTerms,
 		resultCount,
-		indexRevision: readonly(indexRevision),
 		rebuild,
 		clearQuery,
 	}

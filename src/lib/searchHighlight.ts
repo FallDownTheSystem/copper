@@ -22,10 +22,10 @@
 export const HIGHLIGHT_NAME = 'copper-search-match'
 
 /**
- * One `Highlight` holds ranges from every note at once, so a per-note update has
- * to rebuild the registry entry from all of them. Keyed by element rather than
- * by note id: a row Vue recreated is a different element, and the entry for the
- * old one has to go with it.
+ * One `Highlight` holds ranges from every note at once, so the registry entry is
+ * rebuilt from this whole map — in `publish`, once per flush, never once per
+ * note. Keyed by element rather than by note id: a row Vue recreated is a
+ * different element, and the entry for the old one has to go with it.
  */
 const ranges = new Map<HTMLElement, Range[]>()
 
@@ -44,8 +44,16 @@ function registry(): HighlightRegistry | null {
 	return css.highlights
 }
 
+/** A term with the folded form the walk compares against, lowered once for the
+ *  whole tree rather than once per text node. */
+type Term = { raw: string; needle: string }
+
 /**
  * Case-insensitive occurrences of `term` in `text`, as offsets **into `text`**.
+ *
+ * `haystack` is `text` already folded, because one fold serves every term, and
+ * the caller owns the length guard, so a node no term could fit in is never
+ * folded at all.
  *
  * Searching a wholesale-lowercased copy is wrong for the same reason it is
  * tempting: `String.prototype.toLowerCase` is not length-preserving. `İ` folds to
@@ -54,12 +62,9 @@ function registry(): HighlightRegistry | null {
  * for running off the end. Each candidate window is folded on its own instead, so
  * an offset is always an index into the original string.
  */
-function occurrences(text: string, term: string): number[] {
+function occurrences(text: string, haystack: string, term: Term): number[] {
+	const { raw, needle } = term
 	const found: number[] = []
-	if (term.length === 0 || term.length > text.length) return found
-
-	const needle = term.toLowerCase()
-	const haystack = text.toLowerCase()
 
 	// The fast path, and the one essentially every body takes: folding left the
 	// length alone, so an offset into the folded string is an offset into the
@@ -76,13 +81,13 @@ function occurrences(text: string, term: string): number[] {
 	// that itself spans a length-changing fold is not found by a fixed-width
 	// window and simply goes unpainted — which is the safe direction, since the
 	// alternative is a range over the wrong characters.
-	for (let at = 0; at + term.length <= text.length; at++) {
-		if (text.slice(at, at + term.length).toLowerCase() === needle) found.push(at)
+	for (let at = 0; at + raw.length <= text.length; at++) {
+		if (text.slice(at, at + raw.length).toLowerCase() === needle) found.push(at)
 	}
 	return found
 }
 
-function collect(root: HTMLElement, terms: string[]): Range[] {
+function collect(root: HTMLElement, terms: readonly Term[]): Range[] {
 	const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
 	const collected: Range[] = []
 
@@ -90,11 +95,20 @@ function collect(root: HTMLElement, terms: string[]): Range[] {
 		const text = node.nodeValue
 		if (!text) continue
 
+		// Folded on first use and then reused. Shiki's output is mostly text nodes
+		// too short to hold a term, so the guard keeps those free, and folding per
+		// (node × term) made the per-character half of a keystroke scale with the
+		// number of terms typed.
+		let haystack: string | null = null
+
 		for (const term of terms) {
-			for (const at of occurrences(text, term)) {
+			if (term.raw.length === 0 || term.raw.length > text.length) continue
+			haystack ??= text.toLowerCase()
+
+			for (const at of occurrences(text, haystack, term)) {
 				const range = document.createRange()
 				range.setStart(node, at)
-				range.setEnd(node, at + term.length)
+				range.setEnd(node, at + term.raw.length)
 				collected.push(range)
 			}
 		}
@@ -165,7 +179,14 @@ export function applyHighlight(root: HTMLElement | null, terms: readonly string[
 		return
 	}
 	if (terms.length === 0) ranges.delete(root)
-	else ranges.set(root, collect(root, [...terms]))
+	else
+		ranges.set(
+			root,
+			collect(
+				root,
+				terms.map((raw) => ({ raw, needle: raw.toLowerCase() })),
+			),
+		)
 
 	schedulePublish()
 }

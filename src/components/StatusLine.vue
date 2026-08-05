@@ -3,11 +3,11 @@ const { message, clear } = useStatusMessage()
 const { errorFor } = useSpace()
 
 /**
- * Every action in this task reports a failed mutation on the `list` scope, and
- * until now nothing rendered it: the failure reached the assertive live region
- * for screen readers and was invisible to everyone else. It shares this band
- * rather than getting a fourth surface — the panel cannot grow, and an error and
- * a confirmation from the same action are never both true.
+ * A failed `list`-scope mutation is rendered here rather than only reaching the
+ * assertive live region, where it would be invisible to everyone not using a
+ * screen reader. It shares this band rather than getting a fourth surface — the
+ * panel cannot grow, and an error and a confirmation from the same action are
+ * never both true.
  *
  * The error wins when both are present: a confirmation left standing next to a
  * failure would be the more misleading of the two.

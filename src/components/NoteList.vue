@@ -3,7 +3,7 @@ import { CHORDS } from '@/lib/chords'
 import { focusableIn } from '@/composables/useInteractionMode'
 import { rowElement, rowSectionId } from '@/composables/useSelection'
 
-const { space, sections, activeSection, setActiveSection, setNotesDone } = useSpace()
+const { space, sections, activeSection, noteById, setActiveSection, setNotesDone } = useSpace()
 const {
 	focusedId,
 	focusedNoteId,
@@ -60,13 +60,13 @@ function activateSection(id: string) {
 /** A click on the completion circle names one card unambiguously, so it toggles
  *  that card rather than the selection. The selection-aware form is `Space`. */
 function toggleOne(noteId: string) {
-	const note = space.value?.notes.find((candidate) => candidate.id === noteId)
+	const note = noteById(noteId)
 	if (note) void setNotesDone([noteId], !note.done)
 }
 
 function startEditing(noteId: string) {
 	const current = space.value
-	const note = current?.notes.find((candidate) => candidate.id === noteId)
+	const note = noteById(noteId)
 	if (current && note) beginEdit(current, note)
 }
 

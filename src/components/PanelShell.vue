@@ -12,7 +12,10 @@ const {
 } = useSpace()
 const { setClampHeight } = useNoteDisclosure()
 const { ensureHighlighter } = useMarkdown()
-const { setOverlayHost } = useOverlayHost()
+// The same two refs the menus read, rather than a private copy: `setOverlayHost`
+// below is what fills them, and the header passes them down as plain nodes
+// because that is what reka wants.
+const { boundary, portalTo, setOverlayHost } = useOverlayHost()
 const { hasQuery, clearQuery, resultCount } = useNoteSearch()
 const { selectedIds, clear } = useSelection()
 const { editingNoteId, cancel } = useNoteEditor()
@@ -36,10 +39,6 @@ const clampProbe = useTemplateRef<HTMLElement>('clampProbe')
 const header = useTemplateRef<{ focusSearch: () => void }>('header')
 const composer = useTemplateRef<{ focus: () => void }>('composer')
 
-// Passed down as plain elements rather than refs: reka wants the node.
-const boundary = ref<HTMLElement | null>(null)
-const portalTo = ref<HTMLElement | null>(null)
-
 const empty = computed(() => loadState.value === 'ready' && noteCount.value === 0)
 
 // `--note-clamp` is a calc() over other custom properties, and getComputedStyle
@@ -53,8 +52,6 @@ function measureClamp() {
 useResizeObserver(clampProbe, measureClamp)
 
 onMounted(() => {
-	boundary.value = root.value
-	portalTo.value = portalHost.value
 	setOverlayHost(root.value, portalHost.value)
 
 	measureClamp()

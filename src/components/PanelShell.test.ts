@@ -134,10 +134,22 @@ afterEach(() => {
 	document.body.innerHTML = ''
 })
 
+/**
+ * Lets the chained work of an applied document finish: the pull, reconciliation,
+ * the post-`nextTick` DOM restore, the re-render, and auto-animate's exit
+ * animation — which only takes a removed row back out of the DOM on `finish`.
+ *
+ * A macrotask per turn rather than `nextTick`, because several of those steps
+ * are promises chained behind an `invoke`, and a flush does not reach the end of
+ * them.
+ */
+async function settle(turns = 4) {
+	for (let i = 0; i < turns; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
 async function mountPanel() {
 	panel = mount(PanelShell, { attachTo: document.body })
-	// Let the mount pull, reconciliation and the post-nextTick restore settle.
-	for (let i = 0; i < 6; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+	await settle(6)
 	return panel as ReturnType<typeof mount<typeof PanelShell>>
 }
 
@@ -293,10 +305,7 @@ describe('row controls', () => {
 describe('search', () => {
 	async function typeQuery(wrapper: Awaited<ReturnType<typeof mountPanel>>, text: string) {
 		await wrapper.find('#panel-search').setValue(text)
-		// Several ticks: the filter reaches the list, the list re-renders, and
-		// auto-animate's exit animation has to finish before a removed row is
-		// actually out of the DOM.
-		for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+		await settle()
 	}
 
 	it('filters to matching notes and drops sections with no match', async () => {
@@ -355,7 +364,7 @@ describe('search', () => {
 
 		// Any applied document runs reconciliation.
 		await space.refresh()
-		for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+		await settle()
 
 		search.clearQuery()
 		await wrapper.vm.$nextTick()
@@ -402,7 +411,7 @@ describe('the Escape ladder', () => {
 		selection.select('nte_1')
 
 		await wrapper.find('[data-row-id="n:nte_1"]').trigger('contextmenu')
-		for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+		await settle()
 
 		const content = document.querySelector<HTMLElement>('[data-slot="context-menu-content"]')
 		expect(content, 'the context menu did not open').not.toBeNull()
@@ -420,7 +429,7 @@ describe('the Escape ladder', () => {
 		selection.select('nte_1')
 
 		await wrapper.find('[data-row-id="n:nte_1"]').trigger('contextmenu')
-		for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+		await settle()
 
 		const content = document.querySelector<HTMLElement>('[data-slot="context-menu-content"]')
 		expect(content).not.toBeNull()
@@ -451,7 +460,7 @@ describe('copy', () => {
 		selection.extendTo('nte_2')
 
 		await wrapper.trigger('keydown', { key: 'c', ctrlKey: true })
-		for (let i = 0; i < 3; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+		await settle(3)
 
 		expect(mocks.invoke).toHaveBeenCalledWith('clipboard_write_text', {
 			text: `first note\n\n${SPACE.notes[1]!.body}`,
@@ -500,7 +509,7 @@ describe('undo', () => {
 		const wrapper = await mountPanel()
 
 		await wrapper.trigger('keydown', { key: 'z', ctrlKey: true })
-		for (let i = 0; i < 3; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+		await settle(3)
 
 		expect(wrapper.text()).toContain('Nothing to undo.')
 	})
