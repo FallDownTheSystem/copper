@@ -19,11 +19,8 @@ watch(
 	loadState,
 	(state) => {
 		clearTimeout(timer)
-		if (state !== 'loading') {
-			skeletonVisible.value = false
-			return
-		}
 		skeletonVisible.value = false
+		if (state !== 'loading') return
 		timer = setTimeout(() => (skeletonVisible.value = true), 400)
 	},
 	{ immediate: true },

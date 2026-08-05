@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import autoAnimate, { type AnimationController } from '@formkit/auto-animate'
-import { noteRow, rowElement, rowSectionId, sectionRow } from '@/composables/useSelection'
+import {
+	focusRowSoon,
+	noteRow,
+	rowElement,
+	rowSectionId,
+	sectionRow,
+} from '@/composables/useSelection'
 
 const {
 	space,
@@ -14,7 +20,6 @@ const {
 const {
 	focusedId,
 	focusedNoteId,
-	isSelected,
 	selectedIds,
 	select,
 	toggle,
@@ -47,8 +52,7 @@ function focusableIn(row: HTMLElement) {
  * they have to be flipped here rather than through a prop — the HTML string is
  * not Vue's to patch.
  */
-function setDescendantsTabbable(key: string, tabbable: boolean) {
-	const row = rowElement(key)
+function setDescendantsTabbable(row: HTMLElement | null, tabbable: boolean) {
 	if (!row) return
 	for (const element of focusableIn(row)) element.tabIndex = tabbable ? 0 : -1
 }
@@ -58,18 +62,18 @@ function enterInteraction() {
 	if (!key) return
 	interactionRowId.value = key
 	void nextTick(() => {
-		setDescendantsTabbable(key, true)
 		const row = rowElement(key)
-		focusableIn(row ?? document.createElement('div'))[0]?.focus()
+		setDescendantsTabbable(row, true)
+		if (row) focusableIn(row)[0]?.focus()
 	})
 }
 
 function exitInteraction() {
 	const key = interactionRowId.value
 	if (!key) return
-	setDescendantsTabbable(key, false)
+	setDescendantsTabbable(rowElement(key), false)
 	interactionRowId.value = null
-	void nextTick(() => rowElement(key)?.focus())
+	focusRowSoon(key)
 }
 
 /** The roving target has to actually hold DOM focus, or arrow navigation moves
@@ -258,8 +262,9 @@ watch(
 		const key = interactionRowId.value
 		if (!key) return
 		void nextTick(() => {
-			if (!rowElement(key)) exitInteraction()
-			else setDescendantsTabbable(key, true)
+			const row = rowElement(key)
+			if (!row) exitInteraction()
+			else setDescendantsTabbable(row, true)
 		})
 	},
 )
@@ -284,10 +289,12 @@ watch(
 			:aria-labelledby="`section-heading-${section.id}`"
 			class="section-group min-w-0"
 		>
+			<!-- Neither row's selection or focus arrives as a prop: reading them here
+			     would put them in this component's render dependencies, and every
+			     arrow keypress would rebuild all 200 rows to change two of them. -->
 			<SectionHeader
 				:section="section"
 				:active="section.id === activeSection"
-				:focused="focusedId === sectionRow(section.id)"
 				:row-id="sectionRow(section.id)"
 				@activate="activateSection(section.id)"
 			/>
@@ -297,8 +304,6 @@ watch(
 				:key="note.id"
 				:note="note"
 				:row-id="noteRow(note.id)"
-				:selected="isSelected(note.id)"
-				:focused="focusedId === noteRow(note.id)"
 				:interactive="interactionRowId === noteRow(note.id)"
 				@pointer-select="onPointerSelect($event, note.id)"
 				@toggle-done="toggleDone(note.id)"

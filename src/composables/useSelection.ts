@@ -69,6 +69,23 @@ export type SelectionSnapshot = {
 	scroll: { noteId: string; offset: number } | null
 }
 
+/**
+ * A different document is reconciled against *this* rather than the outgoing
+ * snapshot, so it takes the first-load path. Lives here because this module owns
+ * the shape.
+ */
+export function emptySnapshot(): SelectionSnapshot {
+	return {
+		noteIds: [],
+		focusedId: null,
+		anchorId: null,
+		activeRowId: null,
+		activeElement: null,
+		inTextSurface: false,
+		scroll: null,
+	}
+}
+
 function setSelection(ids: string[]) {
 	selectedIds.value = ids
 }
@@ -130,37 +147,32 @@ function focusRow(key: string | null) {
 	focusedId.value = key
 }
 
+/** Landing on a note selects it; landing on a header leaves the selection
+ *  alone. Every arrow, Home and End path ends here. */
+function landOn(key: string | undefined) {
+	if (!key) return
+	const note = rowNoteId(key)
+	if (note) select(note)
+	else focusedId.value = key
+}
+
 /** Moves over `rowIds`, headers included, clamping at both ends rather than
- *  wrapping. Landing on a note selects it; landing on a header leaves the
- *  selection alone. */
+ *  wrapping. */
 function moveFocus(delta: number) {
 	const rows = rowIds.value
 	if (rows.length === 0) return
 
 	const current = focusedId.value ? rows.indexOf(focusedId.value) : -1
 	const next = Math.min(rows.length - 1, Math.max(0, current === -1 ? 0 : current + delta))
-	const key = rows[next]
-	if (!key) return
-
-	const note = rowNoteId(key)
-	if (note) select(note)
-	else focusedId.value = key
+	landOn(rows[next])
 }
 
 function focusFirst() {
-	const key = rowIds.value[0]
-	if (!key) return
-	const note = rowNoteId(key)
-	if (note) select(note)
-	else focusedId.value = key
+	landOn(rowIds.value[0])
 }
 
 function focusLast() {
-	const key = rowIds.value.at(-1)
-	if (!key) return
-	const note = rowNoteId(key)
-	if (note) select(note)
-	else focusedId.value = key
+	landOn(rowIds.value.at(-1))
 }
 
 /** Shift+Arrow: over notes only, skipping header rows. */
@@ -208,14 +220,19 @@ function syncDocument(space: SpaceView | null) {
 		return
 	}
 
+	// Grouped in one pass rather than re-walking every note per section. Same two
+	// orders out, but the cost stops being notes × sections.
+	const bySection = new Map<string, string[]>()
+	for (const section of space.sections) bySection.set(section.id, [])
+	for (const note of space.notes) bySection.get(note.section)?.push(note.id)
+
 	const rows: string[] = []
 	const notes: string[] = []
 	for (const section of space.sections) {
 		rows.push(sectionRow(section.id))
-		for (const note of space.notes) {
-			if (note.section !== section.id) continue
-			rows.push(noteRow(note.id))
-			notes.push(note.id)
+		for (const id of bySection.get(section.id) ?? []) {
+			rows.push(noteRow(id))
+			notes.push(id)
 		}
 	}
 
@@ -239,6 +256,14 @@ export function rowElement(key: string): HTMLElement | null {
 		if (element.dataset.rowId === key) return element
 	}
 	return null
+}
+
+/**
+ * Focus a row once Vue has patched the DOM. Focusing before the patch lands on
+ * an element that is about to be replaced.
+ */
+export function focusRowSoon(key: string) {
+	void nextTick(() => rowElement(key)?.focus())
 }
 
 /**
@@ -272,9 +297,19 @@ function captureScroll(): SelectionSnapshot['scroll'] {
 	const region = scrollRegion()
 	if (!region) return null
 
+	// One DOM query for the whole walk. `rowElement` re-queries every row on each
+	// call, so calling it per note is quadratic in a list that reaches 200 — and
+	// this runs on every applied document, not only on a reload.
+	const rows = new Map<string, HTMLElement>()
+	for (const element of document.querySelectorAll<HTMLElement>('[data-row-id]')) {
+		const key = element.dataset.rowId
+		// First match wins, exactly as `rowElement` does.
+		if (key !== undefined && !rows.has(key)) rows.set(key, element)
+	}
+
 	const top = region.getBoundingClientRect().top
 	for (const id of visibleNoteIds.value) {
-		const element = rowElement(noteRow(id))
+		const element = rows.get(noteRow(id))
 		if (!element) continue
 		const offset = element.getBoundingClientRect().top - top
 		if (offset >= 0) return { noteId: id, offset }
@@ -300,7 +335,7 @@ function reconcile(snap: SelectionSnapshot) {
 	}
 
 	const formerNote = rowNoteId(snap.focusedId)
-	focusedId.value = formerNote ? nearestSurvivor(snap.noteIds, formerNote) : null
+	focusedId.value = formerNote ? nearestSurvivor(snap.noteIds, formerNote, live) : null
 
 	// Either nothing was focused before or its whole neighbourhood is gone. Give
 	// the grid a roving target anyway: with every row at tabindex="-1" the list
@@ -313,8 +348,11 @@ function reconcile(snap: SelectionSnapshot) {
 
 /** Nearest survivor by the focused note's *former* flattened index: forward
  *  first, then backward, then a clamp into the new list. */
-function nearestSurvivor(formerOrder: string[], formerNoteId: string): string | null {
-	const live = new Set(visibleNoteIds.value)
+function nearestSurvivor(
+	formerOrder: string[],
+	formerNoteId: string,
+	live: Set<string>,
+): string | null {
 	const index = formerOrder.indexOf(formerNoteId)
 
 	if (index !== -1) {

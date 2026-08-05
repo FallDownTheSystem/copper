@@ -4,12 +4,14 @@ import type { Section } from '@/composables/useSpace'
 const props = defineProps<{
 	section: Section
 	active: boolean
-	focused: boolean
 	rowId: string
 }>()
 
 const emit = defineEmits<{ activate: [] }>()
 
+const { focusedId } = useSelection()
+
+const focused = computed(() => focusedId.value === props.rowId)
 const headingId = computed(() => `section-heading-${props.section.id}`)
 </script>
 

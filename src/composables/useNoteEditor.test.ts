@@ -67,7 +67,6 @@ describe('an external change to the edited note', () => {
 		// Without this, a later blur or Ctrl+Enter calls edit_note and overwrites
 		// the external body — exactly the data loss the conflict state exists for.
 		expect(editor.canCommit.value).toBe(false)
-		expect(editor.conflicted.value).not.toBeNull()
 	})
 
 	it('does not conflict when the file caught up with the draft', () => {

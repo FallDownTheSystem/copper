@@ -23,33 +23,26 @@ const portalTo = ref<HTMLElement | null>(null)
 
 const empty = computed(() => loadState.value === 'ready' && noteCount.value === 0)
 
-let probeObserver: ResizeObserver | null = null
+// `--note-clamp` is a calc() over other custom properties, and getComputedStyle
+// returns it unevaluated — so it is measured off one real box, once, rather
+// than per card.
+function measureClamp() {
+	const probe = clampProbe.value
+	if (probe) setClampHeight(probe.getBoundingClientRect().height)
+}
+
+useResizeObserver(clampProbe, measureClamp)
 
 onMounted(() => {
 	boundary.value = root.value
 	portalTo.value = portalHost.value
 
-	// `--note-clamp` is a calc() over other custom properties, and
-	// getComputedStyle returns it unevaluated — so it is measured off one real
-	// box, once, rather than per card.
-	const probe = clampProbe.value
-	if (probe) {
-		setClampHeight(probe.getBoundingClientRect().height)
-		if (typeof ResizeObserver !== 'undefined') {
-			probeObserver = new ResizeObserver(() => setClampHeight(probe.getBoundingClientRect().height))
-			probeObserver.observe(probe)
-		}
-	}
+	measureClamp()
 
 	void initialize()
 	// Fire and forget: until it resolves, fences render unhighlighted and the
 	// panel is fully usable.
 	void ensureHighlighter()
-})
-
-onBeforeUnmount(() => {
-	probeObserver?.disconnect()
-	probeObserver = null
 })
 
 // Focus the composer only when the empty state actually renders — never during

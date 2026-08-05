@@ -34,7 +34,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { DeepReadonly } from 'vue'
 
-import { noteRow, useSelection, type SelectionSnapshot } from './useSelection'
+import { emptySnapshot, noteRow, useSelection } from './useSelection'
 import { useMarkdown } from './useMarkdown'
 import { useNoteDisclosure } from './useNoteDisclosure'
 import { useNoteEditor } from './useNoteEditor'
@@ -163,18 +163,6 @@ function errorMessage(error: unknown): string {
 		return String((error as { message: unknown }).message)
 	}
 	return String(error)
-}
-
-function emptySnapshot(): SelectionSnapshot {
-	return {
-		noteIds: [],
-		focusedId: null,
-		anchorId: null,
-		activeRowId: null,
-		activeElement: null,
-		inTextSurface: false,
-		scroll: null,
-	}
 }
 
 /**
@@ -344,7 +332,7 @@ async function load() {
 	// case that needs it: `retry()` re-opens by `status.path`, so losing the path
 	// on the failing load leaves the error state with a retry control that can
 	// only fail the same way.
-	const [document, status, nextSettings] = await Promise.allSettled([
+	const [pulled, status, nextSettings] = await Promise.allSettled([
 		invoke<Space>('get_active_space'),
 		invoke<StoreStatus>('get_status'),
 		invoke<Settings>('get_settings'),
@@ -358,18 +346,18 @@ async function load() {
 	// error screen would be a strictly worse view of the same store.
 	const superseded = generation !== issued.generation
 
-	if (document.status === 'rejected') {
+	if (pulled.status === 'rejected') {
 		if (superseded) {
 			loadState.value = 'ready'
 			return
 		}
 		// A store failure must never be indistinguishable from an empty space.
 		loadState.value = 'error'
-		loadError.value = errorMessage(document.reason)
+		loadError.value = errorMessage(pulled.reason)
 		return
 	}
 
-	applyDocument(document.value, issued, { animate: false })
+	applyDocument(pulled.value, issued, { animate: false })
 	loadState.value = 'ready'
 }
 
@@ -441,7 +429,7 @@ function dispose() {
  */
 async function mutate<T>(
 	run: () => Promise<T>,
-	document: (result: T) => Space,
+	toSpace: (result: T) => Space,
 	options: { scope: ActionErrorScope; repullStatus?: boolean },
 ): Promise<T | null> {
 	// Only this surface's own error is cleared: a failure belongs to the text it
@@ -457,7 +445,7 @@ async function mutate<T>(
 		return null
 	}
 
-	const applied = applyDocument(document(result), issued, { animate: true })
+	const applied = applyDocument(toSpace(result), issued, { animate: true })
 
 	// Keyed on the command resolving, not on the document being applied: the
 	// store carried the mutation out either way, and supersession is a decision

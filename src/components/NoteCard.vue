@@ -3,8 +3,6 @@ import type { Note } from '@/composables/useSpace'
 
 const props = defineProps<{
 	note: Note
-	selected: boolean
-	focused: boolean
 	rowId: string
 	/** Interaction mode: this row's descendants are tabbable and the grid's own
 	 *  bindings do not fire. */
@@ -17,7 +15,13 @@ const emit = defineEmits<{
 }>()
 
 const { isEditing } = useNoteEditor()
+// Subscribed to here rather than passed down. As props they sat in NoteList's
+// render dependencies, so a keypress that moved focus by one row rebuilt every
+// row in the list. They are still the wrapping row's state either way.
+const { focusedId, isSelected } = useSelection()
 
+const selected = computed(() => isSelected(props.note.id))
+const focused = computed(() => focusedId.value === props.rowId)
 const editing = computed(() => isEditing(props.note.id))
 const descendantTabIndex = computed(() => (props.interactive ? 0 : -1))
 </script>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { rowElement } from '@/composables/useSelection'
+import { useAutoSize } from '@/composables/useAutoSize'
+import { focusRowSoon } from '@/composables/useSelection'
 
 const props = defineProps<{ rowId: string }>()
 
@@ -24,27 +25,8 @@ const draft = computed(() => session.value?.draft ?? '')
 const conflict = computed(() => session.value?.conflict ?? null)
 const pending = computed(() => session.value?.pending ?? false)
 
-/**
- * `field-sizing: content` is the clean answer but landed in Chromium 123, while
- * the build targets chrome105 and Evergreen WebView2 cannot be pinned to one
- * runtime version. The fallback must not reset height and read `scrollHeight`
- * per keystroke — that forces synchronous layout on every character.
- */
-const supportsFieldSizing =
-	typeof CSS !== 'undefined' && CSS.supports?.('field-sizing', 'content') === true
-
-let sizingFrame = 0
-
-function scheduleAutoSize() {
-	if (supportsFieldSizing) return
-	cancelAnimationFrame(sizingFrame)
-	sizingFrame = requestAnimationFrame(() => {
-		const element = textarea.value
-		if (!element) return
-		element.style.height = 'auto'
-		element.style.height = `${element.scrollHeight}px`
-	})
-}
+/** Uncapped: a note body is a document, and the list scrolls around it. */
+const { supportsFieldSizing, scheduleAutoSize } = useAutoSize(textarea)
 
 onMounted(() => {
 	const element = textarea.value
@@ -54,31 +36,30 @@ onMounted(() => {
 	scheduleAutoSize()
 })
 
-onBeforeUnmount(() => cancelAnimationFrame(sizingFrame))
-
 function onInput(event: Event) {
 	setDraft((event.target as HTMLTextAreaElement).value)
 	scheduleAutoSize()
 }
 
 function returnFocusToRow() {
-	// nextTick: focusing before Vue has patched the DOM lands on an element that
-	// is about to be replaced.
-	void nextTick(() => {
-		rowElement(props.rowId)?.focus()
-	})
+	focusRowSoon(props.rowId)
+}
+
+/** The one write path. Both the ordinary commit and `Keep my version` report
+ *  back through `finishCommit`, which is what closes the editor only when the
+ *  field is unchanged since the request went out. */
+async function write(submission: { body: string; revision: number } | null) {
+	const id = session.value?.noteId
+	if (!submission || !id) return false
+
+	const result = await updateNoteBody(id, submission.body)
+	finishCommit(submission.revision, result !== null)
+	return true
 }
 
 async function commit() {
 	if (!canCommit.value) return
-	const submission = beginCommit()
-	if (!submission) return
-
-	const id = session.value?.noteId
-	if (!id) return
-
-	const result = await updateNoteBody(id, submission.body)
-	finishCommit(submission.revision, result !== null)
+	await write(beginCommit())
 }
 
 function onKeydown(event: KeyboardEvent) {
@@ -121,13 +102,9 @@ function useExternal() {
 }
 
 async function keepMine() {
-	const submission = resolveKeepMine()
-	const id = session.value?.noteId
-	if (!submission || !id) return
-
-	const result = await updateNoteBody(id, submission.body)
-	finishCommit(submission.revision, result !== null)
-	returnFocusToRow()
+	// Gated on the write actually happening: a second click after the conflict is
+	// resolved gets null back, and must not move focus off whatever now has it.
+	if (await write(resolveKeepMine())) returnFocusToRow()
 }
 </script>
 

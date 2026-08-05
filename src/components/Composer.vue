@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { noteRow, rowElement } from '@/composables/useSelection'
+import { useAutoSize } from '@/composables/useAutoSize'
+import { focusRowSoon, noteRow } from '@/composables/useSelection'
 
 const { spaceName, addNote, errorFor, clearActionError } = useSpace()
 
@@ -17,33 +18,8 @@ let revision = 0
 
 const placeholder = computed(() => `Add a note or a prompt (${spaceName.value})`)
 
-const supportsFieldSizing =
-	typeof CSS !== 'undefined' && CSS.supports?.('field-sizing', 'content') === true
-
-let sizingFrame = 0
-
-function scheduleAutoSize() {
-	if (supportsFieldSizing) return
-	cancelAnimationFrame(sizingFrame)
-	sizingFrame = requestAnimationFrame(() => {
-		const element = textarea.value
-		if (!element) return
-		// Measured, not assumed: the CSS cap is `5lh`, and a hardcoded pixel
-		// equivalent drifts from it at 200% browser zoom and at any user font size.
-		const style = getComputedStyle(element)
-		const lineHeight = Number.parseFloat(style.lineHeight)
-		const vertical =
-			Number.parseFloat(style.paddingTop) +
-			Number.parseFloat(style.paddingBottom) +
-			Number.parseFloat(style.borderTopWidth) +
-			Number.parseFloat(style.borderBottomWidth)
-		const max = Number.isFinite(lineHeight) ? lineHeight * 5 + vertical : Number.POSITIVE_INFINITY
-		element.style.height = 'auto'
-		element.style.height = `${Math.min(element.scrollHeight, max)}px`
-	})
-}
-
-onBeforeUnmount(() => cancelAnimationFrame(sizingFrame))
+/** Capped at five lines, tracking the `max-h-[5lh]` on the field itself. */
+const { supportsFieldSizing, scheduleAutoSize } = useAutoSize(textarea, { maxLines: 5 })
 
 function focus() {
 	textarea.value?.focus()
@@ -85,6 +61,16 @@ async function submit() {
 	focus()
 }
 
+/** The keyboard route out of the composer and back into the list. Returns false
+ *  when there is no list to return to. */
+function focusLastNote() {
+	const last = visibleNoteIds.value.at(-1)
+	if (!last) return false
+	focusRow(noteRow(last))
+	focusRowSoon(noteRow(last))
+	return true
+}
+
 function onKeydown(event: KeyboardEvent) {
 	// Before anything else: an IME candidate confirmed with Enter must insert
 	// text, not submit the note. WebView2 still reports keyCode 229 while
@@ -102,22 +88,16 @@ function onKeydown(event: KeyboardEvent) {
 	}
 
 	if (event.key === 'Escape') {
+		// Escape is always consumed here; it just stays put when the list is empty.
 		event.preventDefault()
-		const last = visibleNoteIds.value.at(-1)
-		if (!last) return // Stay put when there is no list to return to.
-		focusRow(noteRow(last))
-		void nextTick(() => rowElement(noteRow(last))?.focus())
+		focusLastNote()
 		return
 	}
 
 	if (event.key === 'ArrowUp' && value.value.length === 0) {
-		const last = visibleNoteIds.value.at(-1)
 		// Let the key through untouched when there are no notes, rather than
 		// silently swallowing the keystroke.
-		if (!last) return
-		event.preventDefault()
-		focusRow(noteRow(last))
-		void nextTick(() => rowElement(noteRow(last))?.focus())
+		if (focusLastNote()) event.preventDefault()
 	}
 }
 </script>

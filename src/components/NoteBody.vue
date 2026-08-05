@@ -19,8 +19,6 @@ const expandable = computed(() => canExpand(props.note.id))
  *  itself with no way back. */
 const contentRef = useTemplateRef<HTMLElement>('content')
 
-let observer: ResizeObserver | null = null
-
 function remeasure() {
 	const element = contentRef.value
 	if (!element || clampHeight.value <= 0) return
@@ -28,16 +26,9 @@ function remeasure() {
 	measure(props.note.id, element.getBoundingClientRect().height, clampHeight.value)
 }
 
-onMounted(() => {
-	if (typeof ResizeObserver === 'undefined') return
-	observer = new ResizeObserver(remeasure)
-	if (contentRef.value) observer.observe(contentRef.value)
-})
-
-onBeforeUnmount(() => {
-	observer?.disconnect()
-	observer = null
-})
+// VueUse owns the lifecycle and the unsupported-environment guard — happy-dom
+// and older WebViews do not both provide ResizeObserver.
+useResizeObserver(contentRef, remeasure)
 
 // The probe resolves after the first paint, and the rendered HTML changes when
 // the highlighter swaps in — both change the answer.

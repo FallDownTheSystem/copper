@@ -327,7 +327,6 @@ function clearCache() {
 
 export function useMarkdown() {
 	return {
-		revision: readonly(revision),
 		renderNote,
 		pruneCache,
 		clearCache,

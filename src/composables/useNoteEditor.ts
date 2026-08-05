@@ -64,10 +64,6 @@ const editingNoteId = computed(() =>
 /** A draft whose note was deleted externally, rendered outside the live rows. */
 const recovery = computed(() => (session.value?.deleted ? session.value : null))
 
-const conflicted = computed(() =>
-	session.value && session.value.conflict !== null ? session.value : null,
-)
-
 /** Commit is blocked while conflicted: without that, a later blur or Ctrl+Enter
  *  calls `edit_note` and overwrites the external body — exactly the data loss
  *  the conflict state exists to prevent. */
@@ -219,7 +215,6 @@ export function useNoteEditor() {
 		session: readonly(session),
 		editingNoteId,
 		recovery,
-		conflicted,
 		canCommit,
 		isEditing,
 		beginEdit,

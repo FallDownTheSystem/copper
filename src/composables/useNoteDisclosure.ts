@@ -45,20 +45,22 @@ function isExpanded(noteId: string) {
  * style in the same synchronous block.
  *
  * @param contentHeight height of the unconstrained content element
- * @param clampHeight   the resolved `--note-clamp`
+ * @param clampPx       the resolved `--note-clamp`
  */
-function measure(noteId: string, contentHeight: number, clampHeight: number) {
-	const overflowing = contentHeight - clampHeight > EPSILON_PX
+function measure(noteId: string, contentHeight: number, clampPx: number) {
+	const overflowing = contentHeight - clampPx > EPSILON_PX
+
+	// Retained while expanded, or `Show less` removes itself with no way back.
+	if (!overflowing && expanded.value.has(noteId)) return
+	// The copy is only worth making when membership actually changes. This runs
+	// once per note per ResizeObserver callback, and copying a 200-entry Set to
+	// discover nothing moved is the cost of every reflow.
+	if (overflowing === expandable.value.has(noteId)) return
+
 	const next = new Set(expandable.value)
-
 	if (overflowing) next.add(noteId)
-	else if (expanded.value.has(noteId))
-		return // retained: see the header comment
 	else next.delete(noteId)
-
-	if (next.size !== expandable.value.size || overflowing !== expandable.value.has(noteId)) {
-		expandable.value = next
-	}
+	expandable.value = next
 }
 
 function toggle(noteId: string) {
