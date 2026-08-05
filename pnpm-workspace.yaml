@@ -1,3 +1,8 @@
+allowBuilds:
+  # Pulled in transitively by reka-ui's @vueuse/core. Its postinstall is what
+  # selects the Vue 3 build; blocked, the package resolves to a stub and every
+  # reka-ui import fails at runtime.
+  vue-demi: true
 catalog:
   vite: npm:@voidzero-dev/vite-plus-core@0.2.7
   vite-plus: 0.2.7

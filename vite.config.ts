@@ -69,6 +69,15 @@ export default defineConfig({
 		// server ends up in a reload loop.
 		watch: { ignored: ['**/src-tauri/**'] },
 	},
+	// `vp test` bundles Vitest, so nothing extra is installed for the runner
+	// itself. happy-dom rather than jsdom: the suites here need a DOM for focus,
+	// datasets and ResizeObserver-free measurement, not a browser.
+	test: {
+		environment: 'happy-dom',
+		include: ['src/**/*.test.ts'],
+		restoreMocks: true,
+	},
+
 	build: {
 		target: 'chrome105',
 		// Boolean rather than a named minifier: Vite+ builds on Rolldown, where

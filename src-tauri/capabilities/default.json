@@ -1,7 +1,7 @@
 {
 	"$schema": "../gen/schemas/desktop-schema.json",
 	"identifier": "default",
-	"description": "Permissions granted to the main panel window. Capabilities gate the frontend IPC surface only: Phase 1's show/hide/unminimize/focus all happen Rust-side through panel.rs and bypass the ACL, so allow-start-dragging is the one grant this phase exercises (it is what makes data-tauri-drag-region work on an undecorated window). The other four are granted now because later phases call them from the webview, and because build.removeUnusedCommands would otherwise prune those commands out of the binary — turning a later phase's first call into a runtime 'command not found' rather than a permission error. single-instance needs no entry: it registers no frontend commands.",
+	"description": "Permissions granted to the main panel window. Capabilities gate the frontend IPC surface only: Phase 1's show/hide/unminimize/focus all happen Rust-side through panel.rs and bypass the ACL, so allow-start-dragging is the one grant this phase exercises (it is what makes data-tauri-drag-region work on an undecorated window). The other four are granted now because later phases call them from the webview, and because build.removeUnusedCommands would otherwise prune those commands out of the binary — turning a later phase's first call into a runtime 'command not found' rather than a permission error. single-instance needs no entry: it registers no frontend commands. opener:default is task-004's: nothing is granted implicitly under Tauri 2 capabilities, so without it a link clicked inside a rendered note body fails silently. The store's own twenty commands need no entry — app-defined commands are allowed for every window by default.",
 	"windows": ["main"],
 	"permissions": [
 		"core:default",
@@ -10,6 +10,7 @@
 		"core:window:allow-hide",
 		"core:window:allow-set-focus",
 		"core:window:allow-unminimize",
-		"core:window:allow-start-dragging"
+		"core:window:allow-start-dragging",
+		"opener:default"
 	]
 }

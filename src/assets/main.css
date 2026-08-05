@@ -1,47 +1,502 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 
-@custom-variant dark (&:is(.dark *));
+/* Amends task-002's `&:is(.dark *)`. `:where` contributes zero specificity where
+   `:is` inherits its argument's, and this form also matches the `.dark` element
+   itself — `html` carries the class, so `:is(.dark *)` alone cannot style
+   anything set on the root. */
+@custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
 	--font-sans: 'Inter Variable', system-ui, sans-serif;
+
+	/* Three roles, not a size ramp. Emphasis within a role is a weight step. */
+	--text-label: 0.75rem;
+	--text-label--line-height: 1.3;
+	--text-label--letter-spacing: 0.06em;
+	--text-body: 0.875rem;
+	--text-body--line-height: 1.5;
+	--text-meta: 0.75rem;
+	--text-meta--line-height: 1.4;
+
+	--duration-fast: 100ms;
+	--duration-base: 150ms;
+	--ease-out-quint: cubic-bezier(0.23, 1, 0.32, 1);
+
+	/* PROVISIONAL. DWMWCP_ROUND exposes no numeric radius and Microsoft
+	   documents none, so the real value has to be measured off a screenshot of
+	   the running window and pasted here. Until then a mismatch shows as a
+	   hairline of desktop between the CSS corner and the DWM one. */
+	--panel-radius: 12px;
+
+	/* A multiple of the body line-height, so the mask fade always lands on a
+	   line boundary rather than bisecting a row of text. */
+	--note-clamp-lines: 8;
+	--note-clamp: calc(var(--note-clamp-lines) * var(--text-body--line-height) * var(--text-body));
 }
 
-/* Minimal placeholder token set, only enough to satisfy the bg-background-style
-   utilities the component layer will reference. task-004 runs `shadcn-vue init`,
-   which generates the real new-york/neutral variables — do not hand-author those
-   names here or they will have to be merged by hand later. */
 :root {
+	--radius: 0.625rem;
+
+	/* --- Copper's own semantic set ------------------------------------------
+	   Contrast is verified against the panel's *composited* surface, not
+	   against the token colour: at 90% opacity a light tint over a pure-black
+	   desktop lands near #E6E6E6, and that is what secondary text has to clear
+	   4.5:1 on. (At the 70% this started at, it was 2.2–2.5:1.) */
+	--text-primary: oklch(0.24 0.008 60);
+	--text-secondary: oklch(0.46 0.012 60);
+	--text-disabled: oklch(0.63 0.008 60);
+	--surface: oklch(0.99 0.002 80 / 0.9);
+	--surface-hover: oklch(0.24 0.008 60 / 0.06);
+	--surface-active: oklch(0.24 0.008 60 / 0.1);
+	--separator: oklch(0.24 0.008 60 / 0.14);
+	--link: oklch(0.5 0.14 250);
+	--focus-ring: oklch(0.5 0.16 250);
+	/* Copper carries exactly one meaning: selection and active state. Split in
+	   two because oklch(0.62 0.11 55) is 3.77:1 on white — a pass for a UI
+	   component at 3:1 and a failure for text at 4.5:1. */
+	--accent-ring: oklch(0.62 0.11 55);
+	--accent-text: oklch(0.53 0.11 55);
+	--panel-hairline: oklch(0.24 0.008 60 / 0.12);
+	--panel-highlight: oklch(1 0 0 / 0.5);
+	--scrollbar-thumb: oklch(0.24 0.008 60 / 0.25);
+
+	/* --- shadcn-vue's generated set (reka-vega / neutral) ------------------- */
 	--background: oklch(1 0 0);
 	--foreground: oklch(0.145 0 0);
 	--muted: oklch(0.97 0 0);
 	--muted-foreground: oklch(0.556 0 0);
 	--border: oklch(0.922 0 0);
+	--card: oklch(1 0 0);
+	--card-foreground: oklch(0.145 0 0);
+	--popover: oklch(1 0 0);
+	--popover-foreground: oklch(0.145 0 0);
+	--primary: oklch(0.205 0 0);
+	--primary-foreground: oklch(0.985 0 0);
+	--secondary: oklch(0.97 0 0);
+	--secondary-foreground: oklch(0.205 0 0);
+	--accent: oklch(0.97 0 0);
+	--accent-foreground: oklch(0.205 0 0);
+	--destructive: oklch(0.577 0.245 27.325);
+	--input: oklch(0.922 0 0);
+	--ring: oklch(0.708 0 0);
 }
 
 .dark {
+	--text-primary: oklch(0.96 0.004 60);
+	--text-secondary: oklch(0.73 0.012 60);
+	--text-disabled: oklch(0.55 0.008 60);
+	--surface: oklch(0.18 0.004 60 / 0.9);
+	--surface-hover: oklch(1 0 0 / 0.07);
+	--surface-active: oklch(1 0 0 / 0.11);
+	--separator: oklch(1 0 0 / 0.14);
+	--link: oklch(0.76 0.12 240);
+	--focus-ring: oklch(0.78 0.14 240);
+	--accent-ring: oklch(0.7 0.12 55);
+	--accent-text: oklch(0.78 0.1 60);
+	--panel-hairline: oklch(1 0 0 / 0.12);
+	--panel-highlight: oklch(1 0 0 / 0.08);
+	--scrollbar-thumb: oklch(1 0 0 / 0.22);
+
 	--background: oklch(0.145 0 0);
 	--foreground: oklch(0.985 0 0);
 	--muted: oklch(0.269 0 0);
 	--muted-foreground: oklch(0.708 0 0);
 	--border: oklch(1 0 0 / 10%);
+	--card: oklch(0.205 0 0);
+	--card-foreground: oklch(0.985 0 0);
+	--popover: oklch(0.205 0 0);
+	--popover-foreground: oklch(0.985 0 0);
+	--primary: oklch(0.922 0 0);
+	--primary-foreground: oklch(0.205 0 0);
+	--secondary: oklch(0.269 0 0);
+	--secondary-foreground: oklch(0.985 0 0);
+	--accent: oklch(0.269 0 0);
+	--accent-foreground: oklch(0.985 0 0);
+	--destructive: oklch(0.704 0.191 22.216);
+	--input: oklch(1 0 0 / 15%);
+	--ring: oklch(0.556 0 0);
 }
 
 @theme inline {
+	--color-text-primary: var(--text-primary);
+	--color-text-secondary: var(--text-secondary);
+	--color-text-disabled: var(--text-disabled);
+	--color-surface: var(--surface);
+	--color-surface-hover: var(--surface-hover);
+	--color-surface-active: var(--surface-active);
+	--color-separator: var(--separator);
+	--color-link: var(--link);
+	--color-focus-ring: var(--focus-ring);
+	/* Named `accent-ring` rather than the plan's bare `accent`: `shadcn-vue init`
+	   (planning ruling Q21) generates an `--accent` of its own meaning "subtle
+	   hover surface", which every generated component references. Two meanings
+	   cannot share one custom property, and the generated set is the one a CLI
+	   rewrites. */
+	--color-accent-ring: var(--accent-ring);
+	--color-accent-text: var(--accent-text);
+
 	--color-background: var(--background);
 	--color-foreground: var(--foreground);
 	--color-muted: var(--muted);
 	--color-muted-foreground: var(--muted-foreground);
 	--color-border: var(--border);
+	--font-heading: var(--font-sans);
+	--color-ring: var(--ring);
+	--color-input: var(--input);
+	--color-destructive: var(--destructive);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-accent: var(--accent);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-secondary: var(--secondary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-primary: var(--primary);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-popover: var(--popover);
+	--color-card-foreground: var(--card-foreground);
+	--color-card: var(--card);
+	--radius-sm: calc(var(--radius) - 4px);
+	--radius-md: calc(var(--radius) - 2px);
+	--radius-lg: var(--radius);
+	--radius-xl: calc(var(--radius) + 4px);
 }
 
-/* Load-bearing, not decoration. window-vibrancy composites the Acrylic/Mica
-   material through the transparent webview surface; without this the window
-   renders opaque white and the backdrop is invisible. The scaffold's
-   src/style.css was deleted for the same reason — its opaque `:root` background
-   outranks this rule. */
-html,
-body,
-#app {
-	background: transparent;
+@layer base {
+	* {
+		@apply border-border;
+	}
+
+	/* The vertical half of the containment chain starts here. Grid and flex items
+	   default to `min-height: auto`, so an `overflow: hidden` ancestor is not
+	   enough on its own — see PanelShell for the rest of it. */
+	html,
+	body,
+	#app {
+		height: 100%;
+		margin: 0;
+		overflow: hidden;
+		/* Load-bearing, not decoration. window-vibrancy composites the Acrylic/Mica
+		   material through the transparent webview surface; an opaque background
+		   anywhere in this chain renders the window solid and hides the backdrop. */
+		background: transparent;
+	}
+
+	body {
+		@apply font-sans text-text-primary antialiased;
+		/* Inter Variable ships every weight, so a synthesised bold or oblique can
+		   only be a mistake — and a missing weight silently produces one. */
+		font-synthesis: none;
+		font-feature-settings:
+			'calt' 1,
+			'cv05' 1;
+	}
+
+	::selection {
+		background: color-mix(in oklab, var(--accent-ring) 28%, transparent);
+	}
+
+	/* Native scrollbar, deliberately. This is the panel's primary scroll region,
+	   and the whole caret/field/scrollbar treatment is native — which is what
+	   makes `color-scheme` (set by useTheme) load-bearing rather than cosmetic. */
+	.thin-scrollbar {
+		scrollbar-width: thin;
+		scrollbar-color: var(--scrollbar-thumb) transparent;
+		/* Keeps the text column — and therefore Markdown wrapping — from changing
+		   width as the list crosses the overflow threshold. */
+		scrollbar-gutter: stable;
+	}
+}
+
+/* A one-frame guard across a theme switch, so several hundred elements do not
+   each run a colour transition. Distinct from the reduced-motion fallback
+   below, and correctly uses `none`: nothing listens for a transitionend during
+   the switch. */
+.no-transitions,
+.no-transitions * {
+	transition: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	/* 0.01ms rather than `none` so `transitionend` still fires and any handler
+	   waiting on it is not stranded. */
+	*,
+	*::before,
+	*::after {
+		transition-duration: 0.01ms !important;
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+	}
+}
+
+/* --- The panel surface ------------------------------------------------------
+   No `backdrop-filter` anywhere: it cannot sample the desktop from inside the
+   webview and would fight the native Mica/Acrylic that Rust already applied. */
+.panel-surface {
+	background: var(--surface);
+	border-radius: var(--panel-radius);
+	/* Radius alone does not clip descendants. Without this the scrollbar, focus
+	   rings and row backgrounds paint into the transparent corners. */
+	overflow: hidden;
+	isolation: isolate;
+	position: relative;
+}
+
+/* Edge definition as an overlay rather than a border, so it sits above the
+   scroll region and takes no part in layout. */
+.panel-surface::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	border-radius: inherit;
+	pointer-events: none;
+	z-index: 20;
+	box-shadow:
+		inset 0 0 0 1px var(--panel-hairline),
+		inset 0 1px 0 0 var(--panel-highlight);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+	.panel-surface {
+		background: oklch(1 0 0);
+	}
+
+	.dark .panel-surface {
+		background: oklch(0.18 0.004 60);
+	}
+}
+
+@media (prefers-contrast: more) {
+	:root {
+		--text-primary: oklch(0.12 0 0);
+		--text-secondary: oklch(0.3 0.008 60);
+		--text-disabled: oklch(0.48 0.006 60);
+		--separator: oklch(0.24 0.008 60 / 0.4);
+		--accent-text: oklch(0.44 0.12 55);
+	}
+
+	.dark {
+		--text-primary: oklch(1 0 0);
+		--text-secondary: oklch(0.85 0.01 60);
+		--text-disabled: oklch(0.66 0.008 60);
+		--separator: oklch(1 0 0 / 0.4);
+		--accent-text: oklch(0.86 0.09 60);
+	}
+}
+
+/* Not optional on a Windows-first app: a panel built entirely from alpha values
+   disappears in High Contrast. Mapping to the system keywords keeps it opaque
+   and legible. */
+@media (forced-colors: active) {
+	.panel-surface {
+		background: Canvas;
+		color: CanvasText;
+		border: 1px solid CanvasText;
+		forced-color-adjust: none;
+	}
+
+	.panel-surface::after {
+		box-shadow: none;
+	}
+
+	.row-selected {
+		outline: 2px solid Highlight;
+		outline-offset: -2px;
+	}
+
+	.completion-circle {
+		border-color: ButtonBorder;
+		color: ButtonText;
+	}
+
+	.note-prose a[href] {
+		color: LinkText;
+	}
+}
+
+/* --- Rendered note bodies ---------------------------------------------------
+   Written as real CSS, not utilities: this styles `v-html` output, which
+   Tailwind's source scanner never sees. */
+.note-prose {
+	font-size: var(--text-body);
+	line-height: var(--text-body--line-height);
+	color: inherit;
+	/* The horizontal containment chain terminates here. */
+	min-width: 0;
+	max-width: 100%;
+	overflow-wrap: break-word;
+}
+
+.note-prose > :first-child {
+	margin-top: 0;
+}
+
+.note-prose > :last-child {
+	margin-bottom: 0;
+}
+
+.note-prose p,
+.note-prose li,
+.note-prose blockquote {
+	text-wrap: pretty;
+}
+
+.note-prose p {
+	margin-block: 0.5em;
+}
+
+.note-prose ul,
+.note-prose ol {
+	margin-block: 0.5em;
+	padding-inline-start: 1.5em;
+}
+
+.note-prose ul {
+	list-style: disc;
+}
+
+.note-prose ol {
+	list-style: decimal;
+}
+
+.note-prose li {
+	margin-block: 0.15em;
+}
+
+.note-prose li::marker {
+	color: var(--text-secondary);
+}
+
+.note-prose strong {
+	font-weight: 600;
+}
+
+.note-prose em {
+	font-style: italic;
+}
+
+.note-prose a {
+	color: var(--link);
+	text-decoration: underline;
+	text-underline-offset: 2px;
+}
+
+/* A link the render rule stripped of its href is plain text and must look like
+   plain text — otherwise it advertises an action it cannot perform. */
+.note-prose a:not([href]) {
+	color: inherit;
+	text-decoration: none;
+}
+
+.note-prose blockquote {
+	margin-block: 0.5em;
+	padding-inline-start: 0.75em;
+	border-inline-start: 2px solid var(--separator);
+	color: var(--text-secondary);
+}
+
+.note-prose hr {
+	margin-block: 0.75em;
+	border: 0;
+	border-top: 1px solid var(--separator);
+}
+
+.note-prose code {
+	font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+	font-size: 0.9em;
+	background: var(--surface-hover);
+	border-radius: 4px;
+	padding: 0.1em 0.3em;
+}
+
+/* Plain and Shiki-highlighted `<pre>` must be interchangeable in layout, or
+   every note below a code block jumps when the highlighter finishes loading.
+   Shiki emits `<pre class="shiki" tabindex="0">` with the trailing newline
+   trimmed; the plain path matches both (see useMarkdown). */
+.note-prose pre {
+	margin-block: 0.5em;
+	padding: 0.6em 0.75em;
+	border-radius: 6px;
+	background: var(--surface-hover);
+	font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+	font-size: 0.8125rem;
+	line-height: 1.5;
+	white-space: pre;
+	tab-size: 2;
+	/* A wide fence must scroll inside itself. Without this it widens the
+	   document, which is a different failure from vertical overflow and needs
+	   its own assertion. */
+	overflow-x: auto;
+	max-width: 100%;
+}
+
+.note-prose pre code {
+	background: none;
+	border-radius: 0;
+	padding: 0;
+	font-size: inherit;
+}
+
+/* Same reasoning as `pre`: an 8-column Markdown table will otherwise blow out
+   the ~340px text column and widen the whole document. */
+.note-prose .table-scroll {
+	overflow-x: auto;
+	max-width: 100%;
+	margin-block: 0.5em;
+}
+
+.note-prose table {
+	border-collapse: collapse;
+	font-size: 0.8125rem;
+}
+
+.note-prose th,
+.note-prose td {
+	border: 1px solid var(--separator);
+	padding: 0.25em 0.5em;
+	text-align: start;
+	white-space: nowrap;
+}
+
+/* User Markdown headings are remapped to these by a render rule, so a note
+   beginning `# Notes` cannot inject an <h1> into the panel's own outline. */
+.note-prose .note-h1,
+.note-prose .note-h2,
+.note-prose .note-h3,
+.note-prose .note-h4,
+.note-prose .note-h5,
+.note-prose .note-h6 {
+	font-weight: 600;
+	margin-block: 0.6em 0.3em;
+	line-height: 1.3;
+}
+
+.note-prose .note-h1 {
+	font-size: 1rem;
+}
+
+.note-prose .note-h2 {
+	font-size: 0.9375rem;
+}
+
+.note-prose .note-h3 {
+	font-size: 0.90625rem;
+}
+
+.note-prose .note-h4,
+.note-prose .note-h5,
+.note-prose .note-h6 {
+	font-size: var(--text-body);
+	color: var(--text-secondary);
+}
+
+/* Shiki's dual-theme output carries the light colour inline and the dark one as
+   a custom property, so a theme switch is pure CSS and the render cache stays
+   valid — the generated HTML is byte-identical across the toggle. */
+html.dark .shiki,
+html.dark .shiki span {
+	color: var(--shiki-dark) !important;
+	background-color: var(--shiki-dark-bg) !important;
+	font-style: var(--shiki-dark-font-style) !important;
+	font-weight: var(--shiki-dark-font-weight) !important;
+	text-decoration: var(--shiki-dark-text-decoration) !important;
 }

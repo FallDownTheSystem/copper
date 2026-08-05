@@ -1,4 +1,13 @@
 {
 	"files": [],
-	"references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.node.json" }]
+	"references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.node.json" }],
+	/* Solution-style roots compile nothing, so this affects no type check — it is
+	   here because the shadcn-vue CLI reads the import alias from the root
+	   tsconfig only, and refuses to run without it. The alias that matters is the
+	   one in tsconfig.app.json, and the two must agree. */
+	"compilerOptions": {
+		"paths": {
+			"@/*": ["./src/*"]
+		}
+	}
 }

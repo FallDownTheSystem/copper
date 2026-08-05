@@ -7,13 +7,20 @@
 		<title>Copper</title>
 		<script>
 			// Pre-hydration so the panel never paints a light frame before Vue mounts.
+			// Must stay inline and dependency-free to run before first paint.
+			//
+			// Only the two explicit choices override the OS. useColorMode stores its
+			// third mode, "auto", under this same key, and the earlier `stored ?
+			// stored === 'dark' : media` form read that as "not dark" — which is a
+			// light flash on every launch on a dark-themed system.
 			;(() => {
 				try {
 					const stored = localStorage.getItem('color-scheme')
-					const dark = stored
-						? stored === 'dark'
-						: window.matchMedia('(prefers-color-scheme: dark)').matches
+					const dark =
+						stored === 'dark' ||
+						(stored !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches)
 					document.documentElement.classList.toggle('dark', dark)
+					document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
 				} catch {
 					// localStorage can throw in restricted contexts; fall back to light.
 				}
