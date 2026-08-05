@@ -6,6 +6,7 @@ mod diagnostics;
 /// and it must stay the only way another module ends every handoff at once.
 pub mod editor;
 mod panel;
+pub mod spaces;
 pub mod store;
 mod tray;
 mod win32;
@@ -43,11 +44,18 @@ pub fn run() {
 		// where the plugin's hidden message window lives, so it may touch window
 		// handles directly with no marshalling.
 		//
-		// argv carrying a .copper file path is task-007's problem, not this one.
-		.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-			panel::reveal_or_log(app);
+		// The callback hands over and returns. Anything slow in here stalls the
+		// message loop it is running inside, and opening a space is filesystem work.
+		// It cannot reach managed state either — nothing guarantees `app.manage` has
+		// run — so the dispatcher is process-wide and queues until the gate opens.
+		.plugin(tauri_plugin_single_instance::init(|_app, argv, cwd| {
+			spaces::forwarded_launch(&argv, &cwd);
 		}))
 		.plugin(tauri_plugin_global_shortcut::Builder::new().build())
+		// Rust-side only: no npm package and no capability entry, because the
+		// plugin's JS API is never used. It hands back a path and every read and
+		// write still goes through the store.
+		.plugin(tauri_plugin_dialog::init())
 		.plugin(tauri_plugin_autostart::init(
 			tauri_plugin_autostart::MacosLauncher::LaunchAgent,
 			None,
@@ -117,29 +125,52 @@ pub fn run() {
 				diagnostics::log_error(&format!("[copper] store startup: {event:?}"));
 			}
 
-			// Capture starts here — after the store bootstrap above, so a trigger
-			// always finds an open space — but it is deliberately **not armed**.
-			// Arming waits for the frontend to report that its notice listeners are
-			// registered, because Tauri events are not replayed and a failure
-			// arriving before then would reveal an empty panel.
+			// Scavenged *before* the registry exists, so no live handoff can have its
+			// temp tree deleted out from under it. Startup scavenging is what makes
+			// the cleanup promise true after a crash — which runs no exit hook at all
+			// — or after an editor held a file open past shutdown.
 			//
-			// Task-007's cold-launch argv open attaches to the same gate when it
-			// lands: until the double-clicked space is open a capture would append
-			// to the default one instead — and silently, since a successful capture
-			// produces nothing at all.
+			// Ahead of the argv open below rather than after it, because that open
+			// goes through the same policy wrapper the switcher does, and that wrapper
+			// ends live handoffs through a registry it therefore has to be able to
+			// resolve. Nothing creates a handoff before the frontend mounts, so the
+			// scavenge still runs against an empty registry.
+			editor::scavenge();
+			app.manage(editor::HandoffRegistry::default());
+
+			// A `.copper` path on the command line — as Explorer passes on a
+			// double-click — is opened **here**, synchronously, before capture starts.
+			// Merely submitting it to the dispatcher would order nothing: the
+			// dispatcher is asynchronous by design, so capture could still start
+			// first, and a double-tap in the moments after the launch would append to
+			// whatever space was previously active. Silently, since a successful
+			// capture produces nothing at all.
+			//
+			// A failure degrades to "panel open on the previous active space, with an
+			// explanation" rather than propagating: a bad argument must not be able to
+			// leave the app with no capture destination.
+			let cold = spaces::apply_cold_launch(app.handle());
+
+			// Capture starts here — after the store bootstrap and the argv open above,
+			// so a trigger always finds the right open space — but it is deliberately
+			// **not armed**. Arming waits for the frontend to report that its notice
+			// listeners are registered, because Tauri events are not replayed and a
+			// failure arriving before then would reveal an empty panel.
 			app.manage(capture::CaptureState(Mutex::new(capture::start_capture(
 				app.handle(),
 			)?)));
 			capture::arm_when_frontend_ready(app.handle());
 
-			// Scavenged *before* the registry exists, so no live handoff can have its
-			// temp tree deleted out from under it. Startup scavenging is what makes
-			// the cleanup promise true after a crash — which runs no exit hook at all
-			// — or after an editor held a file open past shutdown.
-			editor::scavenge();
-			app.manage(editor::HandoffRegistry::default());
+			// The presentation half of the cold launch, queued rather than performed:
+			// window operations before the message pump resumes would block this
+			// thread until it does. A cold launch with no file queues a request that
+			// reveals nothing, so an ordinary start — including autostart — leaves the
+			// panel hidden.
+			spaces::dispatch::submit(cold);
+			spaces::start_dispatcher(app.handle());
 
-			// The window is not shown here. It stays hidden until the tray reveals it.
+			// The window is not shown here. It stays hidden until the tray, a launch
+			// argument or a second instance asks for it.
 			Ok(())
 		})
 		.invoke_handler(commands::handler())

@@ -49,12 +49,21 @@ const COMMANDS: [&str; 20] = [
 ];
 
 /// The commands later phases added beside the store's twenty.
-const EXTRA_COMMANDS: [&str; 5] = [
+const EXTRA_COMMANDS: [&str; 11] = [
 	"clipboard_write_text",
 	"editor_handoffs",
 	"editor_open_note",
 	"editor_stop_handoff",
 	"editor_reconcile",
+	// Phase 6. Note what is *not* here: no `open_space` or `create_space` of its
+	// own. Those are the store's, and the spaces layer wraps them rather than
+	// growing a second way to open a document.
+	"list_recents",
+	"refresh_recents",
+	"activate_space",
+	"pick_and_open_space",
+	"create_space_interactive",
+	"remove_recent",
 ];
 
 /// Spec 8.1c. Every argument name in the whole surface.
@@ -67,9 +76,10 @@ const SOURCE: &str = include_str!("../src/store/commands.rs");
 /// Command *wrappers* live next to the module they serve; only the registration
 /// is central, because Tauri accepts one `invoke_handler` and the closure
 /// `generate_handler!` builds consumes the `Invoke` it is handed.
-const OTHER_SOURCES: [&str; 2] = [
+const OTHER_SOURCES: [&str; 3] = [
 	include_str!("../src/clipboard.rs"),
 	include_str!("../src/editor.rs"),
+	include_str!("../src/spaces/mod.rs"),
 ];
 
 const REGISTRY: &str = include_str!("../src/commands.rs");

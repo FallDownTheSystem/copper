@@ -47,6 +47,12 @@ windows = { version = "=0.61.3", features = [
 	# SetClipboardData — cannot be created at all.
 	"Win32_Graphics_Gdi",
 	"Win32_Security",
+	# --- spaces (task-007) ---
+	# GetLogicalDrives, for the one availability check that is safe to make
+	# without touching the filesystem: a drive letter that is simply not there.
+	# Probing a path beneath it reports ERROR_PATH_NOT_FOUND, which is
+	# indistinguishable from a deleted file.
+	"Win32_Storage_FileSystem",
 	"Win32_System_Com",
 	"Win32_System_DataExchange",
 	"Win32_System_LibraryLoader",
@@ -74,6 +80,11 @@ tempfile = "3.27"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
+
+# --- spaces (task-007) ---
+# Driven from Rust only, so there is no npm package and no capability entry: the
+# plugin hands back a path and every read and write still goes through the store.
+tauri-plugin-dialog = "2.7.2"
 
 [profile.release]
 # The no-unwrap()-in-setup() reasoning in lib.rs is about release behaviour, so

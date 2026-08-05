@@ -11,7 +11,7 @@
 //! commands opted into the ACL through `AppManifest::commands` in `build.rs`,
 //! which this project does not do.
 
-use crate::{clipboard, editor, store};
+use crate::{clipboard, editor, spaces, store};
 
 pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
 	tauri::generate_handler![
@@ -39,6 +39,12 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
 		editor::editor_handoffs,
 		editor::editor_open_note,
 		editor::editor_stop_handoff,
-		editor::editor_reconcile
+		editor::editor_reconcile,
+		spaces::list_recents,
+		spaces::refresh_recents,
+		spaces::activate_space,
+		spaces::pick_and_open_space,
+		spaces::create_space_interactive,
+		spaces::remove_recent
 	]
 }

@@ -21,6 +21,7 @@ const { selectedIds, clear } = useSelection()
 const { editingNoteId, cancel } = useNoteEditor()
 const { interactionRowId, exit } = useInteractionMode()
 const { initialize: initializeHandoffs } = useEditorHandoff()
+const { initialize: initializeSpaces } = useSpaces()
 const {
 	copyNotes,
 	copyAsList,
@@ -58,6 +59,10 @@ onMounted(() => {
 
 	void initialize()
 	void initializeHandoffs()
+	// The recents list is pulled on mount for the same reason the document is:
+	// a launch-with-file open happens during `setup()`, long before the webview
+	// has registered a listener, and Tauri replays nothing.
+	void initializeSpaces()
 	// Fire and forget: until it resolves, fences render unhighlighted and the
 	// panel is fully usable.
 	void ensureHighlighter()

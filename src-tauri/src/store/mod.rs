@@ -652,6 +652,19 @@ pub fn open_space(shared: &SharedStore, path: &Path) -> Result<Space> {
 	Ok(doc)
 }
 
+/// Phase 6's "forget this space", wrapped the same way `open_space` is.
+///
+/// [`Store::remove_recent`] returns its event rather than emitting it (spec
+/// 2.10), and the sink is private to this module — so the emit-after-dropping
+/// step has to live here rather than in the command wrapper, exactly as it does
+/// for every other mutation that announces itself.
+pub fn remove_recent(shared: &SharedStore, path: &Path) -> Result<()> {
+	let mut guard = lock(shared);
+	let produced = vec![guard.remove_recent(path)?];
+	emit_after(guard, produced);
+	Ok(())
+}
+
 pub fn create_space(shared: &SharedStore, path: &Path, name: &str) -> Result<Space> {
 	let weak = Arc::downgrade(shared);
 	let mut guard = lock(shared);
@@ -780,14 +793,30 @@ fn canonical_or_raw(path: &Path) -> String {
 }
 
 fn strip_verbatim(path: PathBuf) -> PathBuf {
-	let text = path.to_string_lossy().into_owned();
+	let text = path.to_string_lossy();
+	match strip_verbatim_str(&text) {
+		stripped if stripped == *text => path,
+		stripped => PathBuf::from(stripped),
+	}
+}
+
+/// The two verbatim shapes, stripped **separately**.
+///
+/// `\\?\C:\x` loses four characters; `\\?\UNC\server\share\x` loses seven and
+/// gains two, because chopping the first four off the UNC form yields
+/// `UNC\server\share\x`, which is not a path at all — and would then be both
+/// displayed to the user and compared against as though it were.
+///
+/// Public because Phase 6 compares and displays paths that never went through
+/// [`canonical`], and a second copy of this rule is how the two forms drift.
+pub fn strip_verbatim_str(text: &str) -> String {
 	if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
-		return PathBuf::from(format!(r"\\{rest}"));
+		return format!(r"\\{rest}");
 	}
 	if let Some(rest) = text.strip_prefix(r"\\?\") {
-		return PathBuf::from(rest);
+		return rest.to_string();
 	}
-	path
+	text.to_string()
 }
 
 pub fn path_string(path: &Path) -> String {

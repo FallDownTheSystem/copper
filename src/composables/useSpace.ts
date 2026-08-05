@@ -582,6 +582,12 @@ async function reorderNote(id: string, section: string, index: number) {
 	return listCommand('reorder_note', { id, section, index })
 }
 
+/** Appended last and **made active immediately** by the store, which is what
+ *  makes the section the `...` menu just created the one a capture lands in. */
+async function addSection(name: string) {
+	return listCommand('add_section', { name })
+}
+
 async function renameSection(id: string, name: string) {
 	return listCommand('rename_section', { id, name })
 }
@@ -637,6 +643,38 @@ function undo() {
 
 function redo() {
 	return restore('redo')
+}
+
+/**
+ * Adopts a document handed over by a command this module did not invoke.
+ *
+ * `activate_space` returns the authoritative `Space` for the space it switched
+ * to, so pulling it again here would be a second read of state we were just
+ * given — and a second chance for the two to disagree. The status re-pull is not
+ * optional though: `path`, `watching` and both undo flags all belong to the
+ * space that was just closed until it happens.
+ */
+async function adopt(next: Space) {
+	const issued = { generation, epoch: epoch.value }
+	// Synchronous, so it cannot be superseded between issuing and applying — the
+	// guard is kept anyway because `applyDocument` is the only assignment point
+	// and giving it an exception is how a second one starts.
+	if (!applyDocument(next, issued, { animate: false })) void refresh()
+	await pullStatus()
+	// The switch rewrote `recents` and `activeSpace`, and this is the copy the
+	// panel reads.
+	try {
+		settings.value = await invoke<Settings>('get_settings')
+	} catch (error) {
+		console.error('[copper] could not read settings after a space switch', error)
+	}
+}
+
+/** For the adapters beside this one — `useSpaces` — so a failed space action
+ *  renders in the same place a failed list mutation does instead of inventing a
+ *  fourth error surface. */
+function reportActionError(scope: ActionErrorScope, message: string) {
+	actionError.value = { scope, message }
 }
 
 /** Scoped, so dismissing the composer's message does not silently drop the
@@ -727,6 +765,7 @@ export function useSpace() {
 		load,
 		refresh,
 		retry,
+		adopt,
 		addNote,
 		updateNoteBody,
 		setNotesDone,
@@ -735,11 +774,13 @@ export function useSpace() {
 		mergeNotes,
 		deleteNotes,
 		reorderNote,
+		addSection,
 		renameSection,
 		deleteSection,
 		reorderSection,
 		undo,
 		redo,
 		clearActionError,
+		reportActionError,
 	}
 }

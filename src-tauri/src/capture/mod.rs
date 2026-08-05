@@ -176,13 +176,20 @@ impl CaptureFailure {
 			}
 			// The one variant with more than one message. A conflict resolves
 			// itself on a retry; a parse failure means the space file needs fixing
-			// by hand and task-003 refuses all writes to it until then. Neither is
-			// actionable the way a generic I/O error is.
+			// by hand and task-003 refuses all writes to it until then; an
+			// unavailable space is Phase 6's case, where the active space's file has
+			// gone out of reach. None is actionable the way a generic I/O error is.
+			//
+			// A fourth arm rather than a new `CaptureFailure` variant, deliberately:
+			// this module knows nothing about spaces, and that boundary is what keeps
+			// its interface narrow. `unavailable` is already one of task-003's error
+			// kinds, so the case was reachable before it had wording of its own.
 			Self::NotSaved { kind } => match *kind {
 				"conflict" => "Couldn't save — the space file kept changing.".to_owned(),
 				"parse" => {
 					"Couldn't save — Copper won't overwrite a space file it can't read.".to_owned()
 				}
+				"unavailable" => "Couldn't save — the active space isn't available.".to_owned(),
 				_ => "Captured, but couldn't save it.".to_owned(),
 			},
 		}
@@ -601,11 +608,11 @@ mod tests {
 	#[test]
 	fn every_message_is_non_empty_and_belongs_to_one_variant() {
 		// The expected number of distinct messages is derived, not written down:
-		// one per variant, plus two extra because NotSaved renders three.
+		// one per variant, plus three extra because NotSaved renders four.
 		let samples = every_failure();
 		let variants: std::collections::HashSet<_> =
 			samples.iter().map(CaptureFailure::cause).collect();
-		let expected_distinct = variants.len() + 2;
+		let expected_distinct = variants.len() + 3;
 
 		let mut owners: HashMap<String, &'static str> = HashMap::new();
 		for failure in &samples {
@@ -633,14 +640,16 @@ mod tests {
 
 	#[test]
 	fn not_saved_branches_on_kind() {
-		let conflict = CaptureFailure::NotSaved { kind: "conflict" }.message();
-		let parse = CaptureFailure::NotSaved { kind: "parse" }.message();
+		let branches = ["conflict", "parse", "unavailable"]
+			.map(|kind| CaptureFailure::NotSaved { kind }.message());
 		let generic = CaptureFailure::NotSaved { kind: "io" }.message();
-		assert_ne!(conflict, parse);
-		assert_ne!(conflict, generic);
-		assert_ne!(parse, generic);
-		// The four remaining kinds all collapse onto the generic branch.
-		for kind in ["not-found", "invalid", "unavailable"] {
+
+		let distinct: std::collections::HashSet<&String> = branches.iter().collect();
+		assert_eq!(distinct.len(), branches.len(), "two kinds share a message");
+		assert!(branches.iter().all(|message| *message != generic));
+
+		// The two remaining kinds collapse onto the generic branch.
+		for kind in ["not-found", "invalid"] {
 			assert_eq!(CaptureFailure::NotSaved { kind }.message(), generic);
 		}
 	}

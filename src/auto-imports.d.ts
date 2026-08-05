@@ -262,6 +262,7 @@ declare global {
   const useSlots: typeof import('vue').useSlots
   const useSorted: typeof import('@vueuse/core').useSorted
   const useSpace: typeof import('./composables/useSpace').useSpace
+  const useSpaces: typeof import('./composables/useSpaces').useSpaces
   const useSpeechRecognition: typeof import('@vueuse/core').useSpeechRecognition
   const useSpeechSynthesis: typeof import('@vueuse/core').useSpeechSynthesis
   const useStatusMessage: typeof import('./composables/useStatusMessage').useStatusMessage
@@ -343,6 +344,9 @@ declare global {
   // @ts-ignore
   export type { Note, Section, Space, StoreStatus, Settings, SpaceView, NoteView, ChangeReason, SpaceChangedPayload, StoreErrorPayload, AddNoteResult, LoadState, ActionErrorScope, ActionError, MutationResult } from './composables/useSpace'
   import('./composables/useSpace')
+  // @ts-ignore
+  export type { UnavailableReason, Availability, RecentEntry, ActivateOutcome } from './composables/useSpaces'
+  import('./composables/useSpaces')
 }
 
 // for vue template auto import
@@ -604,6 +608,7 @@ declare module 'vue' {
     readonly useSlots: UnwrapRef<typeof import('vue')['useSlots']>
     readonly useSorted: UnwrapRef<typeof import('@vueuse/core')['useSorted']>
     readonly useSpace: UnwrapRef<typeof import('./composables/useSpace')['useSpace']>
+    readonly useSpaces: UnwrapRef<typeof import('./composables/useSpaces')['useSpaces']>
     readonly useSpeechRecognition: UnwrapRef<typeof import('@vueuse/core')['useSpeechRecognition']>
     readonly useSpeechSynthesis: UnwrapRef<typeof import('@vueuse/core')['useSpeechSynthesis']>
     readonly useStatusMessage: UnwrapRef<typeof import('./composables/useStatusMessage')['useStatusMessage']>
