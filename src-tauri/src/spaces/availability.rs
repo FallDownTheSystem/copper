@@ -29,7 +29,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -312,6 +312,11 @@ struct State {
 	rerun: HashMap<String, Job>,
 	members: HashSet<String>,
 	cache: HashMap<String, Cached>,
+	/// When the current snapshot's UI deadline falls due, and which snapshot it
+	/// belongs to. There is only ever one: a newer submission supersedes the
+	/// generation an older deadline would have expired, so replacing it is not a
+	/// lost timer.
+	due: Option<(Instant, u64)>,
 	shutdown: bool,
 	/// Test counters. Started probes and queued jobs are what the accumulation
 	/// check asserts on — a process thread count cannot distinguish our leak from
@@ -322,6 +327,10 @@ struct State {
 struct Shared {
 	state: Mutex<State>,
 	work: Condvar,
+	/// Woken when a submission moves the pending deadline. Separate from `work` so
+	/// the timer does not wake on every completed probe and the workers do not
+	/// wake when a deadline is merely rescheduled.
+	timer: Condvar,
 	fs: Box<dyn Filesystem>,
 	sink: Box<dyn ResultSink>,
 	deadline: Duration,
@@ -346,6 +355,7 @@ impl Executor {
 		let shared = Arc::new(Shared {
 			state: Mutex::new(State::default()),
 			work: Condvar::new(),
+			timer: Condvar::new(),
 			fs,
 			sink,
 			deadline,
@@ -358,6 +368,11 @@ impl Executor {
 			// exist.
 			std::thread::spawn(move || run_worker(&worker));
 		}
+		// One timer for the process, rescheduled on each submission, rather than a
+		// thread per submission: opening the menu is a cheap, repeatable action and
+		// should not mint a thread that outlives the answer it was waiting for.
+		let timer = Arc::clone(&shared);
+		std::thread::spawn(move || run_timer(&timer));
 		Self { shared }
 	}
 
@@ -371,31 +386,36 @@ impl Executor {
 		state.members = entries.iter().map(|(key, _)| key.clone()).collect();
 		state.queue.clear();
 
-		for (key, path) in entries {
+		// Deduped by key, because a recents list can legitimately hold two spellings
+		// of one path — a hand-edited `%APPDATA%` entry beside the same file opened
+		// through the picker — and they share one comparison key. Two jobs for one
+		// key would be two probes of one file, and the second would arrive as a
+		// duplicate result for a row that already had its answer.
+		let mut seen: HashSet<&str> = HashSet::new();
+		for (key, path) in &entries {
+			if !seen.insert(key.as_str()) {
+				continue;
+			}
 			let job = Job {
 				key: key.clone(),
-				path,
+				path: path.clone(),
 				generation,
 			};
-			if state.in_flight.contains(&key) {
+			if state.in_flight.contains(key) {
 				// At most one attempt per key at a time; the newer request waits for
 				// the running one to return rather than starting a second.
-				state.rerun.insert(key, job);
+				state.rerun.insert(key.clone(), job);
 			} else {
 				state.queue.push_back(job);
 			}
 		}
-		drop(state);
-		self.shared.work.notify_all();
 
-		let timer = Arc::clone(&self.shared);
-		let deadline = self.shared.deadline;
 		// The deadline is what makes the promise keepable when every thread is
 		// blocked: an entry that never gets a thread still has an answer on time.
-		std::thread::spawn(move || {
-			std::thread::sleep(deadline);
-			expire(&timer, generation);
-		});
+		state.due = Some((Instant::now() + self.shared.deadline, generation));
+		drop(state);
+		self.shared.work.notify_all();
+		self.shared.timer.notify_all();
 
 		generation
 	}
@@ -456,6 +476,7 @@ impl Drop for Executor {
 		state.shutdown = true;
 		drop(state);
 		self.shared.work.notify_all();
+		self.shared.timer.notify_all();
 	}
 }
 
@@ -519,8 +540,44 @@ fn run_worker(shared: &Arc<Shared>) {
 	}
 }
 
+/// The one timer, waiting until whatever deadline is currently pending.
+///
+/// A submission moves the deadline rather than adding one, so a menu opened ten
+/// times in a row leaves one thread waiting on one instant — not ten threads each
+/// outliving the answer it was waiting for.
+fn run_timer(shared: &Arc<Shared>) {
+	let mut state = lock(&shared.state);
+	loop {
+		if state.shutdown {
+			return;
+		}
+		let Some((at, generation)) = state.due else {
+			state = shared.timer.wait(state).unwrap_or_else(|err| err.into_inner());
+			continue;
+		};
+
+		let now = Instant::now();
+		if now < at {
+			// A spurious or early wake just re-reads `due`, which is the point of
+			// looping on it rather than trusting the wait to mean "it is time".
+			let (next, _) = shared
+				.timer
+				.wait_timeout(state, at - now)
+				.unwrap_or_else(|err| err.into_inner());
+			state = next;
+			continue;
+		}
+
+		state.due = None;
+		let owed = mark_unresponsive(&mut state, generation);
+		drop(state);
+		deliver(shared, generation, owed);
+		state = lock(&shared.state);
+	}
+}
+
 /// Everything in `generation` that has no answer *from* that generation by the
-/// deadline resolves to `Unresponsive`.
+/// deadline resolves to `Unresponsive`. Returns the keys that were marked.
 ///
 /// Note what this does not claim: an entry with four probes ahead of it that all
 /// block forever resolves here rather than staying `Pending` indefinitely. The
@@ -529,10 +586,9 @@ fn run_worker(shared: &Arc<Shared>) {
 /// depends on Windows eventually unblocking them. Making that impossible needs
 /// probe work in a killable helper process, which is a second process, its
 /// lifecycle and its IPC in service of a menu that lists files.
-fn expire(shared: &Arc<Shared>, generation: u64) {
-	let mut state = lock(&shared.state);
+fn mark_unresponsive(state: &mut State, generation: u64) -> Vec<String> {
 	if state.generation != generation {
-		return;
+		return Vec::new();
 	}
 	let stale: Vec<String> = state
 		.members
@@ -546,8 +602,7 @@ fn expire(shared: &Arc<Shared>, generation: u64) {
 		.cloned()
 		.collect();
 
-	let mut delivered = Vec::new();
-	for key in stale {
+	for key in &stale {
 		state.cache.insert(
 			key.clone(),
 			Cached {
@@ -556,17 +611,40 @@ fn expire(shared: &Arc<Shared>, generation: u64) {
 				generation,
 			},
 		);
-		delivered.push(key);
 	}
-	drop(state);
+	stale
+}
 
-	for key in delivered {
-		shared.sink.deliver(&ProbeResult {
-			generation,
-			key,
-			availability: Availability::unresponsive(),
-			name: None,
-		});
+/// Sends what the cache **currently** holds for each key, re-read under the lock
+/// at delivery time.
+///
+/// Emitting cannot happen under the lock, so there is a gap between marking and
+/// sending in which a real answer can land for one of these keys. Sending the
+/// `Unresponsive` we decided on earlier would then overwrite a good result with a
+/// stale timeout, and no further event would come to correct it. Re-reading means
+/// the real answer is what goes out, and a key that has since been superseded
+/// sends nothing at all.
+fn deliver(shared: &Arc<Shared>, generation: u64, keys: Vec<String>) {
+	if keys.is_empty() {
+		return;
+	}
+	let results: Vec<ProbeResult> = {
+		let state = lock(&shared.state);
+		keys.into_iter()
+			.filter_map(|key| {
+				let entry = state.cache.get(&key)?;
+				(entry.generation == generation && state.members.contains(&key)).then(|| ProbeResult {
+					generation,
+					key,
+					availability: entry.availability.clone(),
+					name: entry.name.clone(),
+				})
+			})
+			.collect()
+	};
+
+	for result in &results {
+		shared.sink.deliver(result);
 	}
 }
 
@@ -846,6 +924,40 @@ mod tests {
 
 		assert_eq!(result.availability, Availability::unresponsive());
 		assert!(!result.availability.is_unavailable(), "a timeout must not claim a cause");
+
+		*lock(&gate.0) = true;
+		gate.1.notify_all();
+	}
+
+	/// A6. Two spellings of one path — a hand-edited `%APPDATA%` entry beside the
+	/// same file opened through the picker — share one comparison key, and one key
+	/// must mean one probe. Two jobs would be two reads of one file and a
+	/// duplicate result for a row that already had its answer.
+	#[test]
+	fn a_repeated_key_in_one_snapshot_queues_a_single_job() {
+		let (tx, _rx) = channel();
+		let gate = Arc::new((Mutex::new(false), Condvar::new()));
+		let executor = Executor::with_deadline(
+			Box::new(Blocking {
+				gate: Arc::clone(&gate),
+			}),
+			Box::new(Recorder(tx)),
+			Duration::from_millis(50),
+		);
+
+		// One key, three entries, three different spellings of the path.
+		let duplicated = vec![
+			("\\\\DEAD\\SHARE\\A.COPPER".to_string(), PathBuf::from(r"\\dead\share\a.copper")),
+			("\\\\DEAD\\SHARE\\A.COPPER".to_string(), PathBuf::from(r"\\DEAD\SHARE\A.COPPER")),
+			("\\\\DEAD\\SHARE\\A.COPPER".to_string(), PathBuf::from(r"\\dead\share\.\a.copper")),
+		];
+		executor.submit(duplicated);
+		std::thread::sleep(Duration::from_millis(30));
+
+		let (started, queued, rerun) = executor.counts();
+		assert_eq!(started, 1, "one key produced {started} probes");
+		assert_eq!(queued, 0, "a duplicate key was queued behind the first");
+		assert_eq!(rerun, 0, "a duplicate key was recorded as a rerun");
 
 		*lock(&gate.0) = true;
 		gate.1.notify_all();

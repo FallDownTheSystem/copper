@@ -78,26 +78,73 @@ function errorMessage(error: unknown): string {
 	return String(error)
 }
 
-async function refresh() {
-	try {
-		recents.value = await invoke<RecentEntry[]>('list_recents')
-	} catch (error) {
-		console.error('[copper] could not list recent spaces', error)
-	}
+/**
+ * Serialised through a promise tail, because response order is not request
+ * order.
+ *
+ * Two overlapping `list_recents` calls can resolve in either order, and the
+ * loser would then overwrite the fresher list with a stale one — with nothing
+ * further coming to correct it. Chaining each call behind the previous one costs
+ * a menu open nothing and removes the interleaving entirely. A counter would not
+ * do: it assumes the backend answers in the order it was asked, which is the
+ * assumption being ruled out.
+ */
+let tail: Promise<void> = Promise.resolve()
+
+function refresh(): Promise<void> {
+	tail = tail.then(async () => {
+		try {
+			recents.value = await invoke<RecentEntry[]>('list_recents')
+		} catch (error) {
+			console.error('[copper] could not list recent spaces', error)
+		}
+	})
+	return tail
 }
 
 /**
- * One row, patched in place.
+ * Every row with that key, patched in place.
+ *
+ * **Every**, not the first: a comparison key is deliberately many-to-one over
+ * stored paths, so a hand-edited `%APPDATA%` entry and the same file opened
+ * through the picker are two rows sharing one key. Rust probes such a key once,
+ * so there is exactly one result for both rows — and patching only the first
+ * would leave the second saying "Checking…" forever, with no further event
+ * coming.
  *
  * Rust already discards a result whose snapshot is stale or whose entry has been
  * removed, so an unknown key here is not an error to report — it is an entry
  * that left the list while its probe was in flight.
  */
 function patch(result: AvailabilityChanged) {
-	const entry = recents.value.find((candidate) => candidate.key === result.key)
-	if (!entry) return
-	entry.availability = result.availability
-	if (result.name) entry.name = result.name
+	for (const entry of recents.value) {
+		if (entry.key !== result.key) continue
+		entry.availability = result.availability
+		if (result.name) entry.name = result.name
+	}
+}
+
+/**
+ * `settings-changed` is the **only** signal that a space was opened by something
+ * the frontend did not invoke.
+ *
+ * This is load-bearing rather than tidy. `store::open_space` emits exactly one
+ * `settings-changed` on its happy path and no `space-changed` — the latter is
+ * reserved for watcher reloads, captures and editor read-backs — so a forwarded
+ * launch or an Explorer double-click into an already-running app changes the
+ * active document with nothing else announcing it. Re-listing recents alone
+ * would leave the panel revealed and still rendering the *previous* space's
+ * notes, which is precisely the failure the launch path exists to avoid.
+ *
+ * Refreshed unconditionally rather than only when the path looks new: the event
+ * carries no payload to compare against, `refresh()` in `useSpace` is already
+ * single-in-flight with a monotonic guard, and its epoch resets selection and
+ * focus when document identity actually changes. A burst of three forwarded
+ * opens therefore costs one pull, and a `remove_recent` that changed no document
+ * costs one that applies the same document and nothing else.
+ */
+async function onSettingsChanged() {
+	await Promise.all([refresh(), useSpace().refresh()])
 }
 
 /**
@@ -109,10 +156,7 @@ function initialize(): Promise<void> {
 	initPromise ??= (async () => {
 		unlisteners = await Promise.all([
 			listen<AvailabilityChanged>('spaces-availability-changed', (event) => patch(event.payload)),
-			// `recents` changes ride on the store's own `settings-changed` — opening,
-			// creating and forgetting a space all mutate it. Re-listing is a pure
-			// read; nothing here starts a probe.
-			listen('settings-changed', () => void refresh()),
+			listen('settings-changed', () => void onSettingsChanged()),
 		])
 		await refresh()
 	})()

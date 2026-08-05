@@ -322,6 +322,33 @@ fn single_instance_is_the_literal_first_plugin() {
 	);
 }
 
+/// A27, for the path that is easy to forget: **creating** a space switches the
+/// active document just as opening one does, so it owes the outgoing space's
+/// editor sessions the same teardown. The ordering is what matters and it is not
+/// reachable off-runtime — both entry points need an `AppHandle` — so it is
+/// asserted structurally: every call that replaces the active document is
+/// preceded by the teardown, under the guard that makes the pair indivisible.
+#[test]
+fn every_document_swap_ends_editor_handoffs_first() {
+	let code = code(SPACES);
+	for swap in ["store::open_space(", "store::create_space("] {
+		let at = code
+			.find(swap)
+			.unwrap_or_else(|| panic!("{swap} is no longer called; this test needs rewriting"));
+		let before = &code[..at];
+		let teardown = before
+			.rfind("end_handoffs_before_switching(")
+			.unwrap_or_else(|| panic!("{swap} runs without ending editor handoffs first"));
+		let guard = before
+			.rfind("activation()")
+			.unwrap_or_else(|| panic!("{swap} runs without the activation guard held"));
+		assert!(
+			guard < teardown,
+			"{swap} ends handoffs before taking the guard, so an activation can interleave"
+		);
+	}
+}
+
 /// A21. One focused reveal, in the module task-002 made the only owner of the
 /// panel's `HWND`. A second reveal helper is exactly the "two files racing to
 /// define how this one window is shown" that both earlier phases wrote rules
@@ -358,6 +385,15 @@ fn every_reveal_goes_through_the_panel_module() {
 /// A30. Nothing switches the active space on its own, so the activate path may
 /// not have callers outside the layer that owns the policy — the switcher's
 /// command, the cold argv open and the dispatcher's host are all here.
+///
+/// What this proves is narrower than "only the switcher can activate a space",
+/// and the difference is worth stating rather than implying. The store's
+/// `open_space` **command** stays registered and reachable from the webview, and
+/// one caller uses it deliberately: task-004's error-state retry re-opens by path
+/// (`useSpace.ts`, `retry()`), because `get_active_space` returns the in-memory
+/// document and would appear to succeed while rereading nothing. That is a named
+/// exception, not a hole. What the assertions below actually establish is that no
+/// *Rust* module outside `spaces/` reaches either entry point.
 #[test]
 fn the_activate_path_has_no_callers_outside_the_spaces_layer() {
 	for (name, source) in [
@@ -365,12 +401,15 @@ fn the_activate_path_has_no_callers_outside_the_spaces_layer() {
 		("tray.rs", include_str!("../src/tray.rs")),
 		("capture/mod.rs", include_str!("../src/capture/mod.rs")),
 		("editor.rs", include_str!("../src/editor.rs")),
+		("store/commands.rs", include_str!("../src/store/commands.rs")),
 	] {
 		let code = code(source);
 		assert!(
 			!code.contains("open_space_at("),
 			"{name} activates a space without going through the spaces layer"
 		);
+		// `store/commands.rs` defines the command and calls `super::open_space`; the
+		// fully-qualified spelling is what another module would have to write.
 		assert!(
 			!code.contains("store::open_space("),
 			"{name} reaches the store's open command behind the spaces layer's back"
@@ -382,5 +421,13 @@ fn the_activate_path_has_no_callers_outside_the_spaces_layer() {
 		code(SPACES).matches("store::open_space(").count(),
 		1,
 		"the spaces layer delegates to the store's open in more than one place"
+	);
+	// The frontend's one legitimate direct use, asserted so that removing it is a
+	// deliberate act and adding a second one is visible.
+	let frontend = include_str!("../../src/composables/useSpace.ts");
+	assert_eq!(
+		frontend.matches("invoke<Space>('open_space'").count(),
+		1,
+		"the re-open-by-path retry is the only frontend caller of the store's open"
 	);
 }

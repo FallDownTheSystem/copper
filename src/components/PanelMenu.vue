@@ -148,7 +148,12 @@ function onSectionInput(event: Event) {
 			<!-- Capped and scrolled internally, so a full recents list cannot outgrow
 			     the fixed panel or make the body scroll. -->
 			<div class="thin-scrollbar max-h-44 overflow-y-auto overflow-x-hidden">
-				<div v-for="entry in recents" :key="entry.key" class="flex items-stretch gap-1">
+				<!-- Keyed by path, not by comparison key: the key is many-to-one over
+				     stored paths by design — a hand-edited `%APPDATA%` entry and the
+				     same file opened through the picker share one — and a duplicate
+				     `:key` makes Vue patch the wrong row. The store dedupes `recents`
+				     by resolved path, so the path is the unique one. -->
+				<div v-for="entry in recents" :key="entry.path" class="flex items-stretch gap-1">
 					<DropdownMenuItem
 						class="min-w-0 flex-1 items-start"
 						:aria-current="entry.active ? 'true' : undefined"
@@ -193,20 +198,30 @@ function onSectionInput(event: Event) {
 					</DropdownMenuItem>
 
 					<!-- Disabled rather than hidden on the active entry: removal would
-					     otherwise have to invent a replacement active space. -->
-					<DropdownMenuItem
-						:disabled="entry.active"
-						:aria-label="
-							entry.active
-								? `Switch to another space before removing ${entry.name}`
-								: `Remove ${entry.name} from recents`
-						"
+					     otherwise have to invent a replacement active space.
+
+					     The hint lives on this wrapper rather than on the item itself.
+					     A disabled menu item carries `pointer-events: none`, so a
+					     `title` on it never surfaces — the browser needs a hover to show
+					     a tooltip and the element cannot receive one. The wrapper stays
+					     interactive, so the explanation is actually reachable by the
+					     people who need it. -->
+					<div
 						:title="entry.active ? 'Switch to another space first' : 'Remove from recents'"
-						class="shrink-0 self-start"
-						@select="removeRecent(entry.path)"
+						class="flex shrink-0 items-start"
 					>
-						<IconLucideX class="size-3.5" aria-hidden="true" focusable="false" />
-					</DropdownMenuItem>
+						<DropdownMenuItem
+							:disabled="entry.active"
+							:aria-label="
+								entry.active
+									? `Switch to another space before removing ${entry.name}`
+									: `Remove ${entry.name} from recents`
+							"
+							@select="removeRecent(entry.path)"
+						>
+							<IconLucideX class="size-3.5" aria-hidden="true" focusable="false" />
+						</DropdownMenuItem>
+					</div>
 				</div>
 			</div>
 

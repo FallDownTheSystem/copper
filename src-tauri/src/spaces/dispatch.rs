@@ -139,6 +139,13 @@ impl Drop for Dispatcher {
 /// starts, which is what makes "every file reaches `recents`" true without a
 /// batch API on the store, and what stops two requests interleaving their
 /// settings reads and writes.
+///
+/// **The reveal is on the leading edge of the burst, not the trailing one.** A
+/// lone double-click is the overwhelmingly common case, and waiting out the
+/// coalescing window before showing the window would put the whole 300 ms on the
+/// path the user actually feels. Revealing on the first reveal-bearing request
+/// and suppressing the rest until the burst closes gives the same "once per
+/// burst" guarantee with none of the latency.
 fn run_worker(shared: &Arc<Shared>) {
 	loop {
 		let (host, first) = {
@@ -154,30 +161,41 @@ fn run_worker(shared: &Arc<Shared>) {
 			}
 		};
 
-		let mut reveal = apply(host.as_ref(), first);
+		let mut revealed = false;
+		let mut present_once = |request: Request| {
+			if apply(host.as_ref(), request) && !revealed {
+				host.present();
+				revealed = true;
+			}
+		};
+		present_once(first);
 
-		// The burst is defined by silence, not by a fixed slot: keep draining until
-		// nothing new has arrived for a whole window, then present once.
+		// The burst is defined by silence, and only a genuine timeout counts as
+		// silence: `wait_timeout` also returns on a notify and on a spurious wake,
+		// and treating either as "the window closed" would end the burst on the very
+		// event that should have extended it.
 		loop {
-			let mut state = lock(&shared.state);
-			if state.queue.is_empty() && !state.shutdown {
-				let (next, _) = shared
-					.work
-					.wait_timeout(state, shared.window)
-					.unwrap_or_else(|err| err.into_inner());
-				state = next;
-			}
-			match state.queue.pop_front() {
-				Some(request) => {
-					drop(state);
-					reveal |= apply(host.as_ref(), request);
+			let next = {
+				let mut state = lock(&shared.state);
+				loop {
+					if let Some(request) = state.queue.pop_front() {
+						break Some(request);
+					}
+					if state.shutdown {
+						break None;
+					}
+					let (guard, timeout) = shared
+						.work
+						.wait_timeout(state, shared.window)
+						.unwrap_or_else(|err| err.into_inner());
+					state = guard;
+					if timeout.timed_out() && state.queue.is_empty() {
+						break None;
+					}
 				}
-				None => break,
-			}
-		}
-
-		if reveal {
-			host.present();
+			};
+			let Some(request) = next else { break };
+			present_once(request);
 		}
 	}
 }
@@ -259,20 +277,50 @@ mod tests {
 		panic!("the dispatcher did not reach the expected state");
 	}
 
+	/// Waits out a whole burst window plus slack, so "no further reveal happened"
+	/// is a settled fact rather than a race with the worker.
+	fn settle(window: Duration) {
+		std::thread::sleep(window * 4);
+	}
+
 	/// A24. Three files, three opens, **one** reveal.
 	#[test]
 	fn a_burst_applies_every_file_and_presents_once() {
 		let host = Arc::new(Counting::default());
-		let dispatcher = Dispatcher::new(Duration::from_millis(40));
+		let window = Duration::from_millis(40);
+		let dispatcher = Dispatcher::new(window);
 		dispatcher.start(Arc::clone(&host) as Arc<dyn LaunchHost>);
 
 		for name in ["a", "b", "c"] {
 			dispatcher.submit(Request::forwarded(file(name)));
 		}
 
-		until(|| host.presents() == 1);
+		until(|| host.opened().len() == 3);
+		settle(window);
 		assert_eq!(host.opened().len(), 3, "a file the user asked for was dropped");
-		assert_eq!(host.presents(), 1);
+		assert_eq!(host.presents(), 1, "the burst revealed more than once");
+	}
+
+	/// The reveal lands on the first reveal-bearing request rather than after the
+	/// window: a lone double-click is the common case and must not pay the
+	/// coalescing delay.
+	#[test]
+	fn the_reveal_happens_before_the_burst_window_closes() {
+		let host = Arc::new(Counting::default());
+		// Long enough that a trailing-edge reveal could not possibly pass this.
+		let window = Duration::from_millis(400);
+		let dispatcher = Dispatcher::new(window);
+		dispatcher.start(Arc::clone(&host) as Arc<dyn LaunchHost>);
+
+		let started = std::time::Instant::now();
+		dispatcher.submit(Request::forwarded(file("a")));
+		until(|| host.presents() == 1);
+
+		assert!(
+			started.elapsed() < window,
+			"the reveal waited for the coalescing window: {:?}",
+			started.elapsed()
+		);
 	}
 
 	/// Arrival order is the applied order, so the last one applied is the active
@@ -298,14 +346,16 @@ mod tests {
 	#[test]
 	fn a_bare_reveal_does_not_cancel_a_pending_open() {
 		let host = Arc::new(Counting::default());
-		let dispatcher = Dispatcher::new(Duration::from_millis(40));
+		let window = Duration::from_millis(40);
+		let dispatcher = Dispatcher::new(window);
 		dispatcher.start(Arc::clone(&host) as Arc<dyn LaunchHost>);
 
 		dispatcher.submit(Request::forwarded(file("a")));
 		dispatcher.submit(Request::forwarded(None));
 		dispatcher.submit(Request::forwarded(file("b")));
 
-		until(|| host.presents() == 1);
+		until(|| host.opened().len() == 2);
+		settle(window);
 		assert_eq!(host.opened().len(), 2);
 		assert_eq!(host.presents(), 1);
 	}
@@ -358,11 +408,15 @@ mod tests {
 	#[test]
 	fn a_request_after_the_window_closes_presents_again() {
 		let host = Arc::new(Counting::default());
-		let dispatcher = Dispatcher::new(Duration::from_millis(20));
+		let window = Duration::from_millis(20);
+		let dispatcher = Dispatcher::new(window);
 		dispatcher.start(Arc::clone(&host) as Arc<dyn LaunchHost>);
 
 		dispatcher.submit(Request::forwarded(file("a")));
 		until(|| host.presents() == 1);
+		// Past the window, so the second request genuinely starts a new burst
+		// rather than joining the first and being suppressed by it.
+		settle(window);
 
 		dispatcher.submit(Request::forwarded(file("b")));
 		until(|| host.presents() == 2);

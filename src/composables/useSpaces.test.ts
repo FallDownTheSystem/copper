@@ -187,6 +187,32 @@ describe('availability results', () => {
 		expect(spaces.recents.value[1]?.name).toBe('archive of everything')
 	})
 
+	// A6. A comparison key is many-to-one over stored paths, and Rust probes one
+	// key once — so patching only the first match would leave the second row
+	// saying "Checking…" forever with no further event coming.
+	it('patches every row sharing the key, not just the first', async () => {
+		recents = [
+			entry('C:\\shared.copper', { key: 'C:\\SHARED.COPPER' }),
+			entry('%APPDATA%\\shared.copper', { key: 'C:\\SHARED.COPPER' }),
+			entry('D:\\other.copper', { key: 'D:\\OTHER.COPPER' }),
+		]
+		const { spaces } = await freshModules()
+		await spaces.initialize()
+
+		emit('spaces-availability-changed', {
+			generation: 1,
+			key: 'C:\\SHARED.COPPER',
+			availability: { state: 'available' },
+			name: 'shared',
+		})
+		await flush()
+
+		expect(spaces.recents.value[0]?.availability).toEqual({ state: 'available' })
+		expect(spaces.recents.value[1]?.availability).toEqual({ state: 'available' })
+		expect(spaces.recents.value[1]?.name).toBe('shared')
+		expect(spaces.recents.value[2]?.availability).toEqual({ state: 'pending' })
+	})
+
 	it('ignores a result for an entry that is no longer listed', async () => {
 		const { spaces } = await freshModules()
 		await spaces.initialize()
@@ -322,5 +348,54 @@ describe('the settings-changed handler', () => {
 
 		expect(spaces.recents.value).toHaveLength(1)
 		expect(callsTo('refresh_recents')).toBe(0)
+	})
+
+	// A13/A14/A20. `store::open_space` emits exactly one `settings-changed` and no
+	// `space-changed`, so this event is the only signal that a forwarded launch or
+	// an Explorer double-click changed the active document. Without the document
+	// pull the panel reveals still rendering the previous space's notes.
+	it('pulls the document, because nothing else announces a forwarded open', async () => {
+		const { spaces, space } = await freshModules()
+		await space.initialize()
+		await spaces.initialize()
+		await flush()
+		const pullsBefore = callsTo('get_active_space')
+
+		respond('get_active_space', () => makeSpace('spc_forwarded', 'opened by argv'))
+		emit('settings-changed', {})
+		await flush()
+
+		expect(callsTo('get_active_space')).toBe(pullsBefore + 1)
+		expect(space.space.value?.id).toBe('spc_forwarded')
+		expect(space.spaceName.value).toBe('opened by argv')
+	})
+})
+
+describe('listing', () => {
+	// Response order is not request order, so two overlapping lists could
+	// otherwise resolve backwards and leave the stale one on screen with nothing
+	// coming to correct it.
+	it('applies overlapping refreshes in request order', async () => {
+		const { spaces } = await freshModules()
+		await spaces.initialize()
+
+		const pending: Array<(rows: RecentEntry[]) => void> = []
+		respond('list_recents', () => new Promise((resolve) => pending.push(resolve)))
+
+		const first = spaces.refresh()
+		const second = spaces.refresh()
+		await flush()
+
+		// Only one request is outstanding: the tail holds the second back.
+		expect(pending).toHaveLength(1)
+		pending[0]?.([entry('C:\\first.copper')])
+		await flush()
+
+		expect(pending).toHaveLength(2)
+		pending[1]?.([entry('C:\\second.copper')])
+		await Promise.all([first, second])
+		await flush()
+
+		expect(spaces.recents.value.map((row) => row.path)).toEqual(['C:\\second.copper'])
 	})
 })

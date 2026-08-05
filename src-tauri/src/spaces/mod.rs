@@ -110,7 +110,14 @@ static ACTIVATION: Mutex<()> = Mutex::new(());
 
 static EXECUTOR: OnceLock<Executor> = OnceLock::new();
 
-fn activation() -> MutexGuard<'static, ()> {
+/// The guard every space transition is serialised behind.
+///
+/// Public because opening a note in `$EDITOR` has to take it too: creating a
+/// handoff and switching space are the two halves of the hazard A27 exists to
+/// prevent, and a handoff created between this layer's teardown and the store's
+/// document swap would be bound to the outgoing document with nothing left to
+/// end it.
+pub fn activation() -> MutexGuard<'static, ()> {
 	ACTIVATION.lock().unwrap_or_else(|err| err.into_inner())
 }
 
@@ -168,29 +175,47 @@ pub fn open_space_at(app: &AppHandle, path: &Path) -> Reply<ActivateOutcome> {
 		return Err(refusal(*reason, message));
 	}
 
-	// A27. Handoffs are keyed by `note_id`, which is unique only within one
-	// document, so one surviving a switch can rebind to a coincidentally matching
-	// id in the new space and write one space's external edit into another. Each
-	// is reconciled against the *outgoing* document first — the temp file may hold
-	// work the user has not saved, and switching space is not consent to discard
-	// it — and only then stopped.
-	let retained = editor::end_all(app);
-	if !retained.is_empty() {
-		// The switch aborts: the outgoing space stays active and its handoffs stay
-		// live. Discarding someone's unsaved external edit to complete a switch they
-		// can simply retry is the wrong trade.
-		let kept: Vec<String> = retained.iter().map(|path| path.display().to_string()).collect();
-		return Err(StoreError::Io(format!(
-			"an open editor's changes could not be saved, so the space was not switched. The text \
-			 is still in {}",
-			kept.join(", ")
-		)));
-	}
+	end_handoffs_before_switching(app)?;
 
 	let doc = store::open_space(&state, path)?;
 	// The row agrees with what just happened without waiting for another probe.
 	executor(app).record(&key, Availability::Available, Some(doc.name.clone()));
 	Ok(ActivateOutcome::changed(doc))
+}
+
+/// Ends every live `$EDITOR` handoff against the **outgoing** document, and
+/// refuses the transition when any of them could not be saved back.
+///
+/// A27. Handoffs are keyed by `note_id`, which is unique only within one
+/// document, so one surviving a switch can rebind to a coincidentally matching
+/// id in the new space and write one space's external edit into another. Each is
+/// reconciled against the outgoing document first — the temp file may hold work
+/// the user has not saved, and switching space is not consent to discard it —
+/// and only then stopped.
+///
+/// **What a refusal here does and does not mean.** By the time `end_all` returns,
+/// every session has already ended: they do *not* stay live, and an earlier
+/// version of this comment claimed they did. What survives a refusal is the
+/// *text* — a handoff whose save could not be read back keeps its temp file, and
+/// the message below names it. The transition is refused so the user can recover
+/// that text against the space it belongs to, rather than against whichever space
+/// they were moving to.
+///
+/// Must be called with the activation guard held, so nothing can create a handoff
+/// between the teardown and the document swap.
+fn end_handoffs_before_switching(app: &AppHandle) -> Reply<()> {
+	let retained = editor::end_all(app);
+	if retained.is_empty() {
+		return Ok(());
+	}
+
+	let kept: Vec<String> = retained.iter().map(|path| path.display().to_string()).collect();
+	Err(StoreError::Io(format!(
+		"the space was not switched, because an open editor's text could not be saved back. Every \
+		 editor session has ended and any changes that did save were applied; the text that could \
+		 not be read back is still in {}",
+		kept.join(", ")
+	)))
 }
 
 /// Whether `path` names the space that is currently open.
@@ -337,15 +362,27 @@ pub async fn create_space_interactive(app: AppHandle) -> Reply<ActivateOutcome> 
 		let (availability, _) = availability::probe(&RealFs, &path);
 		return match availability {
 			Availability::Available => open_space_at(&app, &path),
-			_ => Err(StoreError::Invalid(format!(
-				"{} already exists and is not a Copper space. Nothing was written.",
-				display_path(&path)
+			// The probe's own sentence, not an assertion of our own. "Not a Copper
+			// space" is only established for `Invalid`; a file the probe could not
+			// read, or one on a drive that just went away, has established nothing of
+			// the sort and saying so would send the user to fix the wrong thing.
+			other => Err(StoreError::Invalid(format!(
+				"{} already exists and was not created. {}",
+				display_path(&path),
+				other.message().unwrap_or("It could not be read.")
 			))),
 		};
 	}
 
 	let name = file_stem(&path);
 	let _serialised = activation();
+	// Creating is a switch like any other, so the outgoing space's editor sessions
+	// are ended against the document they belong to first — under the same guard,
+	// so nothing can open a handoff between the teardown and the swap. Without
+	// this, `create_space` replaces the active document while a handoff keyed by
+	// `note_id` is still live, which is the exact cross-space write A27 exists to
+	// prevent.
+	end_handoffs_before_switching(&app)?;
 	// `create_space` opens what it created, updates `recents` and emits its one
 	// `settings-changed`. Opening again would be a redundant second load and a
 	// second recents touch. If the create succeeds and the open half then fails,

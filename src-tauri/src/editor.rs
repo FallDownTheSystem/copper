@@ -814,6 +814,15 @@ pub async fn editor_handoffs(app: AppHandle) -> Result<Vec<HandoffState>, String
 
 #[tauri::command]
 pub async fn editor_open_note(id: String, app: AppHandle) -> Result<OpenOutcome, String> {
+	// Serialised against space activation (Phase 6). Creating a handoff and
+	// switching space are the two halves of one hazard: a handoff created between
+	// the switch's teardown and the store's document swap would be keyed by a
+	// `note_id` from the outgoing document, with nothing left to end it — which is
+	// how one space's external edit reaches another. Taken before the note is
+	// read, so the body cannot come from a document that is already being
+	// replaced.
+	let _serialised = crate::spaces::activation();
+
 	let Some(body) = note_body(&app, &id) else {
 		return Err(format!("note {id} no longer exists"));
 	};
