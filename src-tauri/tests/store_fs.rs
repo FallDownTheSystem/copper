@@ -1376,3 +1376,130 @@ fn update_settings_persists_and_returns_the_new_settings() {
 	// Opening a space is still the only thing that touches recents.
 	assert_eq!(reloaded.settings.recents, harness.settings().recents);
 }
+
+// --- read-path retry (task-005 review ruling, 2026-08-05) --------------------
+// The write path has retried a sharing violation since spec 2.2; the read path
+// did not. A brief hold by antivirus, the indexer or OneDrive during a watcher
+// event therefore marked the space unreadable with no recovery until some other
+// filesystem event happened to arrive.
+
+/// Holds `path` open with no sharing for `hold`, then releases it.
+///
+/// Returns a join handle plus a barrier the caller waits on, so the hold is
+/// provably in place before the read starts rather than racing it.
+fn hold_exclusively(path: &Path, hold: Duration) -> thread::JoinHandle<()> {
+	let path = path.to_path_buf();
+	let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+	let handle = thread::spawn(move || {
+		let file = OpenOptions::new()
+			.read(true)
+			.share_mode(0)
+			.open(&path)
+			.expect("the file exists and nothing else holds it");
+		ready_tx.send(()).unwrap();
+		thread::sleep(hold);
+		drop(file);
+	});
+	ready_rx.recv().expect("the hold thread started");
+	handle
+}
+
+#[test]
+fn a_read_survives_a_transient_sharing_violation() {
+	let harness = Harness::new();
+	let path = harness.path();
+	let expected = harness.text();
+
+	// Well inside the 500 ms backoff budget, and long enough that the first
+	// attempt is guaranteed to fail.
+	let holder = hold_exclusively(&path, Duration::from_millis(200));
+
+	let started = Instant::now();
+	let text = atomic::read_with_backoff(&path).expect("a transient hold must not fail the read");
+	let elapsed = started.elapsed();
+
+	holder.join().unwrap();
+	assert_eq!(text, expected);
+	assert!(
+		elapsed >= Duration::from_millis(25),
+		"the read returned in {elapsed:?}, so it cannot have waited out the hold"
+	);
+	assert!(
+		elapsed < Duration::from_millis(500),
+		"the read took {elapsed:?}, past the whole backoff budget"
+	);
+}
+
+#[test]
+fn a_permanently_unreadable_file_still_fails_fast() {
+	// The retry must not turn a missing file into half a second of waiting: the
+	// recents fallback (spec 7.3) reads paths that are legitimately absent.
+	let harness = Harness::new();
+	let missing = harness.config.join("spaces").join("not-here.copper");
+
+	let started = Instant::now();
+	let err = atomic::read_with_backoff(&missing).unwrap_err();
+	let elapsed = started.elapsed();
+
+	assert_eq!(err.kind(), "not-found");
+	assert!(
+		elapsed < Duration::from_millis(100),
+		"a missing file took {elapsed:?}; it must not be retried"
+	);
+}
+
+#[test]
+fn opening_a_space_survives_a_transient_sharing_violation() {
+	// The `OpenSpace::load` read site.
+	let harness = Harness::new();
+	let other = harness.config.join("spaces").join("second.copper");
+	std::fs::write(&other, format::to_git_json(&golden_doc()).unwrap()).unwrap();
+
+	let holder = hold_exclusively(&other, Duration::from_millis(200));
+	let opened = store::open_space(&harness.shared, &other);
+	holder.join().unwrap();
+
+	let opened = opened.expect("a transient hold must not fail the open");
+	assert_eq!(body_set(&opened), body_set(&golden_doc()));
+	assert!(!harness.status().errored);
+}
+
+#[test]
+fn a_watcher_reload_survives_a_transient_sharing_violation() {
+	// The `reload_from_disk` read site — the one the ruling is actually about,
+	// since that is where a failed read marks the space errored with no recovery.
+	let harness = Harness::new();
+	let path = harness.path();
+
+	let mut updated = harness.doc();
+	updated.notes.push(Note {
+		id: "n-held".to_owned(),
+		section: updated.sections[0].id.clone(),
+		order: 900,
+		done: false,
+		body: "written while the file was about to be held".to_owned(),
+		created: "2026-08-05T12:00:00Z".to_owned(),
+		updated: "2026-08-05T12:00:00Z".to_owned(),
+	});
+	external_write(&path, &format::to_git_json(&updated).unwrap());
+
+	// Held across the debounce, so the reload's first read attempt lands inside
+	// the hold. Shorter than the backoff budget, so it must still recover.
+	let holder = hold_exclusively(&path, Duration::from_millis(400));
+
+	assert!(
+		wait_until(|| harness
+			.doc()
+			.notes
+			.iter()
+			.any(|note| note.id == "n-held")),
+		"the external write never arrived: {:?}",
+		harness.status()
+	);
+	holder.join().unwrap();
+
+	assert!(
+		!harness.status().errored,
+		"a transient hold left the space marked unreadable"
+	);
+}

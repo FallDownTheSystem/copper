@@ -114,7 +114,7 @@ pub struct OpenSpace {
 
 impl OpenSpace {
 	fn load(path: &Path) -> Result<Self> {
-		let text = std::fs::read_to_string(path).map_err(|err| io_err(path, "read", &err))?;
+		let text = atomic::read_with_backoff(path)?;
 		let mut doc = format::from_json(&text)?;
 		format::normalise(&mut doc);
 		Ok(Self {
@@ -548,9 +548,9 @@ impl Store {
 		};
 		let path = open.path.clone();
 
-		let text = match std::fs::read_to_string(&path) {
+		let text = match atomic::read_with_backoff(&path) {
 			Ok(text) => text,
-			Err(err) => return open.mark_errored(io_err(&path, "read", &err)),
+			Err(err) => return open.mark_errored(err),
 		};
 
 		// Our own write, so nothing to do — unless the space is errored, in which

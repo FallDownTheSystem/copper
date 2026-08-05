@@ -1,17 +1,27 @@
+mod capture;
 mod diagnostics;
 mod panel;
 pub mod store;
 mod tray;
+mod win32;
 
 pub use diagnostics::install_panic_dialog;
 
 use std::sync::{Arc, Mutex};
 
-use tauri::{Manager, WindowEvent};
+use tauri::{DeviceEventFilter, Manager, RunEvent, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-	tauri::Builder::default()
+	let app = tauri::Builder::default()
+		// tauri-apps/tauri#13919 — a WH_KEYBOARD_LL hook failing to see system
+		// keys while a Tauri window is focused — was closed by the reporter
+		// changing this setting rather than by a Tauri fix. Tauri's default lets
+		// tao register for raw keyboard input while the window is focused, and
+		// that registration is the interference. `Always` is the only value that
+		// reduces it. The acceptance test is empirical: the double-tap must fire
+		// while the Copper panel itself has focus.
+		.device_event_filter(DeviceEventFilter::Always)
 		// single-instance must be the literal first plugin on the builder, before
 		// every other plugin and before .setup().
 		//
@@ -102,10 +112,36 @@ pub fn run() {
 				diagnostics::log_error(&format!("[copper] store startup: {event:?}"));
 			}
 
+			// Capture starts here — after the store bootstrap above, so a trigger
+			// always finds an open space — but it is deliberately **not armed**.
+			// Arming waits for the frontend to report that its notice listeners are
+			// registered, because Tauri events are not replayed and a failure
+			// arriving before then would reveal an empty panel.
+			//
+			// Task-007's cold-launch argv open attaches to the same gate when it
+			// lands: until the double-clicked space is open a capture would append
+			// to the default one instead — and silently, since a successful capture
+			// produces nothing at all.
+			app.manage(capture::CaptureState(Mutex::new(capture::start_capture(
+				app.handle(),
+			)?)));
+			capture::arm_when_frontend_ready(app.handle());
+
 			// The window is not shown here. It stays hidden until the tray reveals it.
 			Ok(())
 		})
 		.invoke_handler(store::commands::handler())
-		.run(tauri::generate_context!())
+		.build(tauri::generate_context!())
 		.expect("error while running tauri application");
+
+	// Built and run in two steps rather than `Builder::run`, which passes an empty
+	// callback: the hook has to come down explicitly. Relying on managed state
+	// being dropped is not enough, because Tauri's exit path does not guarantee
+	// that drop runs. `shutdown` is idempotent, so the drop that may or may not
+	// follow is harmless.
+	app.run(|handle, event| {
+		if matches!(event, RunEvent::Exit) {
+			capture::shutdown(handle);
+		}
+	});
 }

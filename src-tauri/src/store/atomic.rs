@@ -77,6 +77,26 @@ pub fn with_backoff<T>(mut attempt: impl FnMut() -> Attempt<T>) -> Result<T> {
 	}
 }
 
+/// Reads a file, retrying a transient sharing violation.
+///
+/// The write path has retried since spec 2.2 and the read path did not, which
+/// left an asymmetry with a real consequence (task-005 review, 2026-08-05): a
+/// brief hold by antivirus, the search indexer or OneDrive during a watcher
+/// event made the space file unreadable, and nothing retried — the space stayed
+/// marked errored until some *other* filesystem event happened to arrive, which
+/// for a file nobody touches again is never.
+///
+/// Only error 32 is transient here. On the read side error 5 keeps its ordinary
+/// meaning — the file is not ours to read — and the reasoning that makes it
+/// retryable at the rename step does not apply.
+pub fn read_with_backoff(path: &Path) -> Result<String> {
+	with_backoff(|| match std::fs::read_to_string(path) {
+		Ok(text) => Attempt::Done(text),
+		Err(err) if is_sharing_violation(&err) => Attempt::Transient(io_err(path, "read", &err)),
+		Err(err) => Attempt::Failed(io_err(path, "read", &err)),
+	})
+}
+
 /// Whether a failed *open* is worth another try shortly.
 ///
 /// Only error 32 here. On the read side error 5 keeps its ordinary meaning —

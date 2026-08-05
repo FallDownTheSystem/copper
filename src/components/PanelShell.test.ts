@@ -14,7 +14,12 @@ const editor = useNoteEditor()
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), openUrl: vi.fn() }))
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
-vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => {} }))
+// `emit` is here for the capture notice the shell mounts, which signals frontend
+// readiness once its listeners resolve.
+vi.mock('@tauri-apps/api/event', () => ({
+	listen: async () => () => {},
+	emit: async () => {},
+}))
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: mocks.openUrl }))
 
 const SPACE: Space = {

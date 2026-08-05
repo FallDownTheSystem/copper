@@ -129,6 +129,10 @@ function onContextMenu(event: MouseEvent) {
 			class="pointer-events-none absolute h-(--note-clamp) w-0"
 		/>
 
+		<!-- The capture failure notice. Last child, inside the isolate stacking
+		     context, and it places itself in the scroll region's grid cell. -->
+		<CaptureNotice />
+
 		<!-- Pre-rendered and empty. Injecting the element and its text together
 		     does not announce; only a text change inside a live region already in
 		     the accessibility tree does. -->

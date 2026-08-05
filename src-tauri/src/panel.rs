@@ -9,6 +9,10 @@ use windows::Win32::Graphics::Dwm::{
 	DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
 	DWM_WINDOW_CORNER_PREFERENCE,
 };
+use windows::Win32::UI::WindowsAndMessaging::{
+	SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+	SW_SHOWNOACTIVATE,
+};
 
 /// Label of the single panel window, as declared in `tauri.conf.json`.
 pub const PANEL_LABEL: &str = "main";
@@ -73,6 +77,43 @@ pub fn reveal(window: &WebviewWindow) -> tauri::Result<()> {
 	Ok(())
 }
 
+/// Reveals the panel **without** giving it focus, for the capture failure
+/// notice.
+///
+/// Tauri's `WebviewWindow::show()` is not used here and neither is `reveal()`
+/// above: a capture must never move focus, so the user keeps typing into
+/// whatever they were typing into while the notice is on screen.
+///
+/// `HWND_TOPMOST` rather than `HWND_TOP` because the panel is configured
+/// `alwaysOnTop: true`, and `HWND_TOP` would move it to the top of the
+/// *non-topmost* band — dropping it out of the band it is supposed to live in.
+///
+/// Must be called on the main thread, like every other window operation.
+///
+/// `Box<dyn Error>` rather than `tauri::Result` for the same reason
+/// [`apply_effects`] uses it: `windows::core::Error` has no `From` impl into
+/// `tauri::Error`, so `?` would not compile.
+pub fn reveal_without_activating(
+	window: &WebviewWindow,
+) -> Result<(), Box<dyn std::error::Error>> {
+	let hwnd = window.hwnd()?;
+	// SAFETY: `hwnd` is a live window handle owned by Tauri for the lifetime of
+	// this call, and both calls are made on the thread that owns the window.
+	unsafe {
+		let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+		SetWindowPos(
+			hwnd,
+			Some(HWND_TOPMOST),
+			0,
+			0,
+			0,
+			0,
+			SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+		)?;
+	}
+	Ok(())
+}
+
 /// Hides the panel. The window is never destroyed, only hidden.
 pub fn hide(window: &WebviewWindow) -> tauri::Result<()> {
 	window.hide()
@@ -101,6 +142,7 @@ fn with_panel<M: Manager<tauri::Wry>>(
 
 /// Reveals the panel, or logs why it could not be reached.
 pub fn reveal_or_log<M: Manager<tauri::Wry>>(app: &M) {
+	crate::capture::panel_revealed_by_user(app);
 	with_panel(app, "reveal", reveal);
 }
 
@@ -113,6 +155,7 @@ pub fn hide_or_log<M: Manager<tauri::Wry>>(app: &M) {
 /// could not be reached. This is the tray's left-click behaviour, kept here so
 /// that the window lookup stays in the module that owns the window.
 pub fn toggle_or_log<M: Manager<tauri::Wry>>(app: &M) {
+	crate::capture::panel_revealed_by_user(app);
 	with_panel(app, "toggle", |window| {
 		if is_visible(window) {
 			hide(window)
