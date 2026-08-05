@@ -146,18 +146,8 @@ async function keepMine() {
 				>{{ conflict }}</pre>
 
 			<div class="mt-2 flex flex-wrap gap-2">
-				<button
-					type="button"
-					class="border-separator hover:bg-surface-hover rounded-md border px-2 py-1 text-meta transition-colors duration-fast"
-					@click="keepMine"
-				>
-					Keep my version
-				</button>
-				<button
-					type="button"
-					class="border-separator hover:bg-surface-hover rounded-md border px-2 py-1 text-meta transition-colors duration-fast"
-					@click="useExternal"
-				>
+				<button type="button" class="panel-button" @click="keepMine">Keep my version</button>
+				<button type="button" class="panel-button" @click="useExternal">
 					Use the external version
 				</button>
 			</div>

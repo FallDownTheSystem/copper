@@ -19,8 +19,15 @@
 	--text-meta: 0.75rem;
 	--text-meta--line-height: 1.4;
 
-	--duration-fast: 100ms;
-	--duration-base: 150ms;
+	/* `--transition-duration-*`, not `--duration-*`: the `duration-*` utility
+	   resolves against the `--transition-duration` namespace and falls back to
+	   bare numerics, so a token named `--duration-fast` is read by nothing.
+	   `duration-fast` then scans as an unknown candidate, silently emits no rule,
+	   and the element animates at `--default-transition-duration` (150ms)
+	   instead. It fails silently in a class attribute and only errors under
+	   `@apply` — which is how this was found. */
+	--transition-duration-fast: 100ms;
+	--transition-duration-base: 150ms;
 	--ease-out-quint: cubic-bezier(0.23, 1, 0.32, 1);
 
 	/* PROVISIONAL. DWMWCP_ROUND exposes no numeric radius and Microsoft
@@ -226,6 +233,12 @@
 		animation-duration: 0.01ms !important;
 		animation-iteration-count: 1 !important;
 	}
+}
+
+/* The secondary controls in the conflict and recovery surfaces: one appearance,
+   four buttons, and one place to change it. */
+@utility panel-button {
+	@apply border-separator hover:bg-surface-hover rounded-md border px-2 py-1 text-meta transition-colors duration-fast;
 }
 
 /* --- The panel surface ------------------------------------------------------

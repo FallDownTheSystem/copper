@@ -43,20 +43,8 @@ async function copyDraft() {
 			>{{ recovery.draft }}</pre>
 
 		<div class="mt-2 flex flex-wrap items-center gap-2">
-			<button
-				type="button"
-				class="border-separator hover:bg-surface-hover rounded-md border px-2 py-1 text-meta transition-colors duration-fast"
-				@click="copyDraft"
-			>
-				Copy the draft
-			</button>
-			<button
-				type="button"
-				class="border-separator hover:bg-surface-hover rounded-md border px-2 py-1 text-meta transition-colors duration-fast"
-				@click="dismissRecovery"
-			>
-				Dismiss
-			</button>
+			<button type="button" class="panel-button" @click="copyDraft">Copy the draft</button>
+			<button type="button" class="panel-button" @click="dismissRecovery">Dismiss</button>
 			<span v-if="copied" class="text-text-secondary text-meta">Copied</span>
 		</div>
 	</div>
