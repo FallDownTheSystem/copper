@@ -33,20 +33,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::diagnostics;
+use crate::win32::keys::{
+	VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT,
+	VK_SHIFT,
+};
 use crate::win32::EXTRA_INFO_SIGNATURE;
 
 use super::{GAP_MAX_MS, TAP_MAX_MS};
-
-// Virtual-key codes, as the low-level hook reports them in `vkCode`.
-const VK_SHIFT: u32 = 0x10;
-const VK_CONTROL: u32 = 0x11;
-const VK_MENU: u32 = 0x12;
-const VK_LSHIFT: u32 = 0xA0;
-const VK_RSHIFT: u32 = 0xA1;
-const VK_LCONTROL: u32 = 0xA2;
-const VK_RCONTROL: u32 = 0xA3;
-const VK_LMENU: u32 = 0xA4;
-const VK_RMENU: u32 = 0xA5;
 
 // --- the pure state machine --------------------------------------------------
 // No Win32 below this line until the callback, so all of it is unit-testable.

@@ -76,9 +76,7 @@ function initialize(): Promise<void> {
 				error,
 			)
 			// Undo a half-finished registration so a retry cannot double-register.
-			for (const unlisten of unlisteners) unlisten()
-			unlisteners = []
-			initPromise = null
+			unlistenAll()
 			throw error
 		}
 	})()
@@ -86,10 +84,16 @@ function initialize(): Promise<void> {
 	return initPromise
 }
 
-function dispose() {
+/** Drops whatever registration exists and forgets the memoised promise, so the
+ *  next `initialize()` is a real second attempt rather than the same dead one. */
+function unlistenAll() {
 	for (const unlisten of unlisteners) unlisten()
 	unlisteners = []
 	initPromise = null
+}
+
+function dispose() {
+	unlistenAll()
 	notice.value = null
 }
 

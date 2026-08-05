@@ -234,7 +234,9 @@ pub struct Evidence {
 	pub clipboard_never_opened: bool,
 	/// The clipboard sequence number never moved.
 	pub clipboard_unchanged: bool,
-	/// `SendInput` inserted fewer events than requested.
+	/// `SendInput` came up short and the recovery had to release keys — the
+	/// stranded-modifier hazard. Read by nothing today; kept as the record of the
+	/// one input-state failure the short-insert recovery exists for.
 	pub send_input_failed: bool,
 	/// A modifier was still down past `MODIFIER_RELEASE_TIMEOUT`.
 	pub modifier_held: bool,
@@ -357,20 +359,25 @@ pub fn resolve(evidence: &Evidence) -> CaptureFailure {
 /// Markdown" — that is about the app not *parsing* the body. Task-003's
 /// `add_note` also trims, so the double trim is harmless.
 pub fn normalise(text: &str) -> String {
-	let unified = if text.contains('\r') {
-		text.replace("\r\n", "\n").replace('\r', "\n")
+	// Trimmed first, then unified. The two commute: `\r` is whitespace and maps
+	// to `\n`, which is also whitespace, so neither order can trim a different
+	// set of characters. Doing it this way round means the no-`\r` path copies
+	// once instead of twice, and the `\r` path rewrites the shorter string.
+	let trimmed = text.trim();
+	if trimmed.contains('\r') {
+		trimmed.replace("\r\n", "\n").replace('\r', "\n")
 	} else {
-		text.to_owned()
-	};
-	unified.trim().to_owned()
+		trimmed.to_owned()
+	}
 }
 
 // --- lifecycle ---------------------------------------------------------------
 
 /// Everything the capture pipeline owns, for as long as the app runs.
 ///
-/// Opaque: no window handle, no thread internals. The hook thread id and the
-/// shutdown flag are the whole of it.
+/// Opaque: nothing window-handle shaped is in it. What is: the hook thread, the
+/// worker thread and the trigger channel that ends it, the notice controller,
+/// and the two flags that arm and stop the pipeline.
 pub struct CaptureHandle {
 	hook: hook::HookHandle,
 	worker: Option<std::thread::JoinHandle<()>>,
@@ -501,10 +508,7 @@ pub fn arm_when_frontend_ready(app: &AppHandle) {
 	let armed_app = app.clone();
 	app.listen_any(FRONTEND_READY_EVENT, move |_| {
 		if let Some(handle) = armed_app.try_state::<CaptureState>() {
-			handle.0.lock().map_or_else(
-				|err| err.into_inner().arm(),
-				|guard| guard.arm(),
-			);
+			lock(&handle.0).arm();
 		}
 	});
 }
@@ -526,14 +530,22 @@ pub fn panel_revealed_by_user<M: Manager<tauri::Wry>>(app: &M) {
 /// The handle as the app holds it. A `Mutex` because shutdown mutates.
 pub struct CaptureState(pub std::sync::Mutex<CaptureHandle>);
 
+/// Locks through a poisoned mutex rather than panicking.
+///
+/// Everything behind these locks is small owned state — an episode's flags, a
+/// timer handle, the pipeline handle — and a panic elsewhere cannot leave any of
+/// it in a shape that makes reading it dangerous. Propagating the poison instead
+/// would turn one panic into a capture pipeline that can never again be armed or
+/// shut down, which is strictly worse. `store::lock` takes the same view of the
+/// same problem for the same reason.
+fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+	mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Stops capture, if it started. Idempotent.
 pub fn shutdown(app: &AppHandle) {
 	if let Some(state) = app.try_state::<CaptureState>() {
-		let mut guard = state
-			.0
-			.lock()
-			.unwrap_or_else(|poisoned| poisoned.into_inner());
-		guard.shutdown();
+		lock(&state.0).shutdown();
 	}
 }
 
@@ -802,6 +814,9 @@ mod tests {
 		assert_eq!(normalise("  padded \n"), "padded");
 		assert_eq!(normalise("\r\n\t  \r\n"), "");
 		assert_eq!(normalise("kept\ninside"), "kept\ninside");
+		// Carriage returns at both ends: trimming and unifying commute, so the
+		// order the implementation picks cannot change the answer.
+		assert_eq!(normalise("\r\n  a\r\nb  \r\n"), "a\nb");
 	}
 
 	#[test]

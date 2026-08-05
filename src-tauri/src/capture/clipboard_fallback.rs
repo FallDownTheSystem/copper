@@ -22,15 +22,16 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use crate::diagnostics;
 use crate::win32::clipboard::{self, ClipboardError, Snapshot};
 use crate::win32::foreground::Target;
+use crate::win32::keys::{
+	VK_C, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RMENU, VK_RSHIFT,
+	VK_RWIN,
+};
 use crate::win32::EXTRA_INFO_SIGNATURE;
 
 use super::{
 	normalise, Evidence, StrategyResult, CLIPBOARD_POLL_INTERVAL, CLIPBOARD_POLL_TIMEOUT,
 	MODIFIER_RELEASE_TIMEOUT,
 };
-
-const VK_C: u32 = 0x43;
-const VK_CONTROL: u32 = 0x11;
 
 /// Every modifier that could turn the injected `Ctrl+C` into a different chord.
 ///
@@ -39,14 +40,7 @@ const VK_CONTROL: u32 = 0x11;
 /// and the fallback injects a chord, so a trigger key missing from here would let
 /// a still-held trigger corrupt the injection.
 const WATCHED_MODIFIERS: [u32; 8] = [
-	0xA0, // VK_LSHIFT
-	0xA1, // VK_RSHIFT
-	0xA2, // VK_LCONTROL
-	0xA3, // VK_RCONTROL
-	0xA4, // VK_LMENU
-	0xA5, // VK_RMENU
-	0x5B, // VK_LWIN
-	0x5C, // VK_RWIN
+	VK_LSHIFT, VK_RSHIFT, VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN,
 ];
 
 const MODIFIER_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -115,7 +109,10 @@ pub fn try_clipboard(target: Target) -> StrategyResult {
 			"[copper] capture: the clipboard changed while the fallback was preparing; \
 			 abandoning without injecting rather than working from a stale snapshot",
 		);
-		evidence.clipboard_unchanged = true;
+		// Nothing is recorded against this path: the clipboard plainly did move, so
+		// the unchanged flag would be a lie to whoever extends the precedence rule
+		// next, and nothing was injected — the cause belongs to whatever the rest of
+		// the cascade saw.
 		return StrategyResult::nothing(evidence);
 	}
 
@@ -150,7 +147,7 @@ pub fn try_clipboard(target: Target) -> StrategyResult {
 		// No sequence to trust, so no restore is attempted below.
 		Err(err) => (Err(err), 0),
 	};
-	let foreign_now = clipboard::owner_pid().is_some_and(|pid| pid != target.pid);
+	let foreign_now = owner_is_foreign(target);
 
 	if expected != 0 {
 		restore(&snapshot, expected, foreign_owner || foreign_now, &mut evidence);
@@ -202,11 +199,20 @@ struct Observation {
 /// window or through OLE and a mismatch must never by itself discard a good
 /// capture, but a **hard** signal for the restore, because content somebody else
 /// just wrote is not Copper's to overwrite.
+/// Whether whoever owns the clipboard right now is somebody other than the
+/// capture target.
+///
+/// Sampled fresh at each call, never cached: the whole point is that it can
+/// change between the poll and the read.
+fn owner_is_foreign(target: Target) -> bool {
+	clipboard::owner_pid().is_some_and(|pid| pid != target.pid)
+}
+
 fn poll_for_change(target: Target, before: u32, injected_at: Instant) -> Option<Observation> {
 	let mut observed: Option<Observation> = None;
 	loop {
 		if clipboard::sequence_number() != before {
-			let foreign_owner = clipboard::owner_pid().is_some_and(|pid| pid != target.pid);
+			let foreign_owner = owner_is_foreign(target);
 			observed = Some(Observation { foreign_owner });
 			if !foreign_owner {
 				break;
@@ -397,11 +403,12 @@ fn send_ctrl_c() -> bool {
 fn outstanding_key_ups(inserted: usize) -> Vec<u32> {
 	let mut down = Vec::new();
 	// Ctrl-down is event 0, and its matching up is event 3.
-	if (1..4).contains(&inserted) {
+	if (1..=3).contains(&inserted) {
 		down.push(VK_CONTROL);
 	}
-	// C-down is event 1, and its matching up is event 2.
-	if (2..3).contains(&inserted) {
+	// C-down is event 1, and its matching up is event 2, so C is left down only
+	// when exactly those two went in.
+	if inserted == 2 {
 		down.push(VK_C);
 	}
 	down.reverse();

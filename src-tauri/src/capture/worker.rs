@@ -68,11 +68,11 @@ pub fn spawn(
 /// One capture attempt, start to finish.
 ///
 /// The clipboard-loss precedence is applied **once**, here, around the whole
-/// result. Applying it at the individual return sites is how it went missing from
-/// three of five paths in the first version: the foreground-changed, too-large
-/// and not-saved returns each left the flag unread, so a capture that destroyed
-/// the user's clipboard reported something else entirely and the loss went
-/// unmentioned. One wrapper cannot be forgotten by a return added later.
+/// result. At the individual return sites it is trivially lost: the
+/// foreground-changed, too-large and not-saved returns each leave without reading
+/// the flag, and a capture that destroyed the user's clipboard would then report
+/// something else entirely with the loss unmentioned. A wrapper cannot be
+/// forgotten by a return added later; five return sites can.
 fn capture_once(app: &AppHandle, uia: &mut UiaService) -> CaptureOutcome {
 	let mut evidence = Evidence::default();
 	let outcome = run_cascade(app, uia, &mut evidence);

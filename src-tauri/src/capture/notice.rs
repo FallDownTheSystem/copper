@@ -108,9 +108,7 @@ struct Shared {
 
 impl Shared {
 	fn episode(&self) -> std::sync::MutexGuard<'_, Episode> {
-		self.episode
-			.lock()
-			.unwrap_or_else(|poisoned| poisoned.into_inner())
+		super::lock(&self.episode)
 	}
 }
 
@@ -169,15 +167,8 @@ impl NoticeController {
 	/// teardown observable rather than hopeful — the thread only ever queues work
 	/// onto the main thread and never blocks, so this cannot wedge shutdown.
 	pub fn shutdown(&self) {
-		self.schedule
-			.lock()
-			.unwrap_or_else(|poisoned| poisoned.into_inner())
-			.take();
-		let handle = self
-			.timer
-			.lock()
-			.unwrap_or_else(|poisoned| poisoned.into_inner())
-			.take();
+		super::lock(&self.schedule).take();
+		let handle = super::lock(&self.timer).take();
 		if let Some(handle) = handle {
 			let _ = handle.join();
 		}
@@ -202,15 +193,11 @@ impl NoticeController {
 		}
 
 		let shared = Arc::clone(&self.shared);
-		let schedule = self
-			.schedule
-			.lock()
-			.unwrap_or_else(|poisoned| poisoned.into_inner())
-			.clone();
+		let schedule = super::lock(&self.schedule).clone();
 
 		// Every window operation is marshalled to the main thread; the worker
 		// never touches a window handle itself.
-		let marshalled = self.shared.app.run_on_main_thread(move || {
+		on_main_thread(&self.shared.app, "show", move || {
 			let Some(window) = shared.app.get_webview_window(panel::PANEL_LABEL) else {
 				diagnostics::log_error("[copper] capture: the panel window is gone; no notice shown");
 				return;
@@ -237,18 +224,23 @@ impl NoticeController {
 				let _ = schedule.send((generation, Instant::now() + FAILURE_NOTICE_DURATION));
 			}
 		});
-
-		if let Err(err) = marshalled {
-			diagnostics::log_error(&format!(
-				"[copper] capture: could not reach the main thread to show a notice: {err}"
-			));
-		}
 	}
 
 	/// The user revealed the panel themselves — tray click today, summon in
 	/// Phase 7. The current episode gives up its claim on the window.
 	pub fn user_revealed(&self) {
 		self.shared.episode().user_revealed();
+	}
+}
+
+/// Runs `op` on the main thread, reporting a failure to *get* there rather than
+/// dropping it. Every window operation goes this way; neither the worker nor the
+/// timer thread touches a window handle itself.
+fn on_main_thread(app: &AppHandle, verb: &str, op: impl FnOnce() + Send + 'static) {
+	if let Err(err) = app.run_on_main_thread(op) {
+		diagnostics::log_error(&format!(
+			"[copper] capture: could not reach the main thread to {verb} a notice: {err}"
+		));
 	}
 }
 
@@ -278,7 +270,8 @@ fn timer_loop(shared: &Arc<Shared>, schedule: &mpsc::Receiver<(u64, Instant)>) {
 
 fn expire(shared: &Arc<Shared>, generation: u64) {
 	let shared = Arc::clone(shared);
-	let marshalled = shared.app.clone().run_on_main_thread(move || {
+	let app = shared.app.clone();
+	on_main_thread(&app, "clear", move || {
 		// Re-checked **inside** the main-thread closure, not only on the timer
 		// thread. Checking on the timer thread alone leaves a gap: a stale timer
 		// can pass its check, enqueue the hide, and have a newer failure land
@@ -302,12 +295,6 @@ fn expire(shared: &Arc<Shared>, generation: u64) {
 			panel::hide_or_log(&shared.app);
 		}
 	});
-
-	if let Err(err) = marshalled {
-		diagnostics::log_error(&format!(
-			"[copper] capture: could not reach the main thread to clear a notice: {err}"
-		));
-	}
 }
 
 #[cfg(test)]

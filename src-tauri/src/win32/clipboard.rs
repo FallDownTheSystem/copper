@@ -412,9 +412,11 @@ impl Drop for Moveable {
 ///
 /// Returns 0 when this window station denies clipboard access, which callers
 /// must treat as "polling unavailable" rather than as a baseline that will never
-/// change. It also increments on `EmptyClipboard` and on Copper's own restore,
-/// which is why the fallback polls for a specific expected value rather than for
-/// "any change".
+/// change. It also increments on `EmptyClipboard`, so a target answering an
+/// injected `Ctrl+C` moves it by one or by two depending on whether it empties
+/// first — which is why the fallback polls for *any* change and guards the
+/// restore with the tokens [`Snapshot::sequence`] and [`read_text`] hand back
+/// from inside their own sessions, rather than by predicting a value.
 pub fn sequence_number() -> u32 {
 	// SAFETY: no preconditions.
 	unsafe { GetClipboardSequenceNumber() }
@@ -443,22 +445,43 @@ pub fn owner_pid() -> Option<u32> {
 /// from it automatically.
 pub fn read_text() -> Result<(Option<String>, u32)> {
 	let _session = Session::open_read()?;
-	Ok((decode_text(read_format_bytes(CF_UNICODETEXT)), sequence_number()))
+	// No size limit on a read the caller asked for by name; the capture path's
+	// own `MAX_CAPTURE_CHARS` is what bounds that.
+	let bytes = match read_format_bytes(CF_UNICODETEXT, usize::MAX) {
+		FormatBytes::Bytes(bytes) => Some(bytes),
+		FormatBytes::TooLarge | FormatBytes::Unreadable => None,
+	};
+	Ok((decode_text(bytes), sequence_number()))
 }
 
-/// Copies a format's payload out of the clipboard's own memory. The handle
-/// belongs to the clipboard: it is locked and read, never freed.
-fn read_format_bytes(format: u32) -> Option<Vec<u8>> {
+/// What one format's payload turned out to be.
+enum FormatBytes {
+	Bytes(Vec<u8>),
+	/// Advertised, readable, and over the caller's limit. Measured under the
+	/// lock and declined *before* the copy, so a 30 MB screenshot costs a
+	/// `GlobalSize` rather than an allocation and a memcpy of bytes we drop.
+	TooLarge,
+	/// Advertised but not readable at all.
+	Unreadable,
+}
+
+/// Copies a format's payload out of the clipboard's own memory, unless it is
+/// larger than `limit`. The handle belongs to the clipboard: it is locked and
+/// read, never freed.
+fn read_format_bytes(format: u32, limit: usize) -> FormatBytes {
 	// SAFETY: called only with the clipboard open.
-	let handle = unsafe { GetClipboardData(format) }.ok()?;
+	let handle = match unsafe { GetClipboardData(format) } {
+		Ok(handle) => handle,
+		Err(_) => return FormatBytes::Unreadable,
+	};
 	if handle.is_invalid() {
-		return None;
+		return FormatBytes::Unreadable;
 	}
 	let hglobal = HGLOBAL(handle.0);
 	// SAFETY: `hglobal` is an HGLOBAL-backed clipboard handle; unlocked below.
 	let ptr = unsafe { GlobalLock(hglobal) };
 	if ptr.is_null() {
-		return None;
+		return FormatBytes::Unreadable;
 	}
 	// SAFETY: `hglobal` is locked, so its size is stable for this call.
 	let size = unsafe { GlobalSize(hglobal) };
@@ -467,17 +490,19 @@ fn read_format_bytes(format: u32) -> Option<Vec<u8>> {
 	// backs it with nothing. Treated as a failed read so the snapshot refuses
 	// rather than recording an empty payload it would later restore over real
 	// content.
-	let bytes = if size == 0 {
-		None
+	let outcome = if size == 0 {
+		FormatBytes::Unreadable
+	} else if size > limit {
+		FormatBytes::TooLarge
 	} else {
 		// SAFETY: `ptr` is valid for `size` bytes while the lock is held.
-		Some(unsafe { std::slice::from_raw_parts(ptr as *const u8, size) }.to_vec())
+		FormatBytes::Bytes(unsafe { std::slice::from_raw_parts(ptr as *const u8, size) }.to_vec())
 	};
 	// SAFETY: paired with the GlobalLock above.
 	unsafe {
 		let _ = GlobalUnlock(hglobal);
 	}
-	bytes
+	outcome
 }
 
 fn decode_text(bytes: Option<Vec<u8>>) -> Option<String> {
@@ -604,27 +629,26 @@ pub fn snapshot() -> Result<Snapshot> {
 			continue;
 		}
 
-		// A format we intend to restore but cannot *read* is a hard failure, not
-		// an absent format. Reporting it as absent would let the snapshot look
-		// complete, the injection proceed, and the restore silently omit content
-		// the user had — destroying it. Failing here leaves the clipboard
-		// untouched, because nothing has been injected yet.
-		let Some(bytes) = read_format_bytes(id) else {
-			return Err(ClipboardError::Win32 {
-				op: "GetClipboardData",
-				code: 0,
-				message: format!(
-					"format {id} was advertised but could not be read; refusing to continue \
-					 and risk losing it"
-				),
-			});
-		};
-
-		if bytes.len() > SNAPSHOT_FORMAT_SIZE_LIMIT {
-			snapshot.lossy = true;
-			continue;
+		match read_format_bytes(id, SNAPSHOT_FORMAT_SIZE_LIMIT) {
+			FormatBytes::Bytes(bytes) => snapshot.entries.push((id, bytes)),
+			// Over the limit, so not preserved — which is what lossy means.
+			FormatBytes::TooLarge => snapshot.lossy = true,
+			// A format we intend to restore but cannot *read* is a hard failure,
+			// not an absent format. Reporting it as absent would let the snapshot
+			// look complete, the injection proceed, and the restore silently omit
+			// content the user had — destroying it. Failing here leaves the
+			// clipboard untouched, because nothing has been injected yet.
+			FormatBytes::Unreadable => {
+				return Err(ClipboardError::Win32 {
+					op: "GetClipboardData",
+					code: 0,
+					message: format!(
+						"format {id} was advertised but could not be read; refusing to continue \
+						 and risk losing it"
+					),
+				})
+			}
 		}
-		snapshot.entries.push((id, bytes));
 	}
 
 	Ok(snapshot)
@@ -648,12 +672,7 @@ fn is_ignorable(id: u32, formats: &Registered) -> bool {
 /// the clipboard can take up to a second of retries, and anything the user
 /// copied during that window would be destroyed by the `EmptyClipboard`.
 pub fn restore(snapshot: &Snapshot, expected_seq: u32) -> Result<()> {
-	let entries: Vec<(u32, &[u8])> = snapshot
-		.entries
-		.iter()
-		.map(|(id, bytes)| (*id, bytes.as_slice()))
-		.collect();
-	write_excluded(&entries, Some(expected_seq))
+	write_excluded(&snapshot.entries, Some(expected_seq))
 }
 
 // --- writing -----------------------------------------------------------------
@@ -670,12 +689,12 @@ pub fn write_text_private(text: &str) -> Result<()> {
 	let mut wide: Vec<u16> = text.encode_utf16().collect();
 	wide.push(0);
 	let bytes: Vec<u8> = wide.iter().flat_map(|unit| unit.to_ne_bytes()).collect();
-	write_excluded(&[(CF_UNICODETEXT, &bytes)], None)
+	write_excluded(&[(CF_UNICODETEXT, bytes)], None)
 }
 
 /// The one write path: an owner window, `EmptyClipboard`, the payloads, and the
 /// three privacy formats, all inside one session.
-fn write_excluded(entries: &[(u32, &[u8])], expected_seq: Option<u32>) -> Result<()> {
+fn write_excluded(entries: &[(u32, Vec<u8>)], expected_seq: Option<u32>) -> Result<()> {
 	let formats = registered();
 	let owner = OwnerWindow::create()?;
 	let session = Session::open_write(&owner)?;
@@ -892,6 +911,23 @@ mod tests {
 		let before = sequence_number();
 		write_text_private("copper sequence probe").expect("write");
 		assert_ne!(before, sequence_number());
+	}
+
+	#[test]
+	#[ignore = "touches the real clipboard"]
+	fn an_oversized_format_is_declined_before_it_is_copied() {
+		// UTF-16 doubles it, so the payload is over the limit either way.
+		let payload = "x".repeat(SNAPSHOT_FORMAT_SIZE_LIMIT);
+		write_text_private(&payload).expect("seed");
+		let snapshot = snapshot().expect("snapshot");
+		assert!(
+			snapshot.is_lossy(),
+			"an over-limit format must mark the snapshot lossy"
+		);
+		assert!(snapshot
+			.entries
+			.iter()
+			.all(|(_, bytes)| bytes.len() <= SNAPSHOT_FORMAT_SIZE_LIMIT));
 	}
 
 	#[test]
