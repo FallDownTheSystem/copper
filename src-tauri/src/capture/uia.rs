@@ -51,12 +51,25 @@ const UIA_E_NOTSUPPORTED: i32 = 0x8004_0204_u32 as i32;
 /// stage take far longer than `UIA_TIMEOUT`. Task-001 measured init at 3 ms.
 const THREAD_INIT_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// How many threads may be abandoned before UI Automation is given up on for the
+/// rest of the session.
+///
+/// Abandoning is safe but not free: each abandoned thread is still alive, still
+/// holds COM state, and is never joined. A provider that hangs once usually hangs
+/// again, so without a ceiling a single pathological application would leak one
+/// thread per capture for as long as Copper runs. Past the ceiling the cascade
+/// goes straight to the clipboard fallback, which is the strategy that was going
+/// to serve the capture anyway.
+const MAX_ABANDONED_UIA_THREADS: u32 = 3;
+
 /// What one read produced. Owned data only — see condition 1.
 #[derive(Debug, Clone)]
 enum UiaOutcome {
 	Text(String),
 	/// The automation object could not be created; UIA is unusable this session.
 	Unavailable,
+	/// Too many threads have been abandoned, so UIA is no longer attempted.
+	GivenUp,
 	/// No `TextPattern`, or a control that supports no text selection at all.
 	NoTextPattern,
 	/// A degenerate caret-only range: an insertion point with nothing selected.
@@ -111,6 +124,12 @@ impl UiaService {
 	}
 
 	fn request(&mut self, target: Target, budget: Duration) -> UiaOutcome {
+		if self.abandoned >= MAX_ABANDONED_UIA_THREADS {
+			// Given up on for the session. Not an error to report: the cascade falls
+			// through to the clipboard fallback, which is what has been serving these
+			// captures anyway.
+			return UiaOutcome::GivenUp;
+		}
 		if self.ensure_thread().is_err() {
 			return UiaOutcome::Unavailable;
 		}
@@ -155,11 +174,20 @@ impl UiaService {
 	fn abandon(&mut self) {
 		self.abandoned += 1;
 		self.requests = None;
-		diagnostics::log_error(&format!(
-			"[copper] capture: a UI Automation read exceeded its budget; abandoning the thread \
-			 and replacing it on the next capture (abandoned {} so far this session)",
-			self.abandoned
-		));
+		if self.abandoned >= MAX_ABANDONED_UIA_THREADS {
+			diagnostics::log_error(&format!(
+				"[copper] capture: {} UI Automation threads have been abandoned this session; \
+				 giving up on UI Automation and using the clipboard fallback alone, rather than \
+				 leaking a thread per capture",
+				self.abandoned
+			));
+		} else {
+			diagnostics::log_error(&format!(
+				"[copper] capture: a UI Automation read exceeded its budget; abandoning the thread \
+				 and replacing it on the next capture (abandoned {} so far this session)",
+				self.abandoned
+			));
+		}
 	}
 
 	fn ensure_thread(&mut self) -> Result<(), ()> {
@@ -424,6 +452,9 @@ fn to_result(outcome: UiaOutcome) -> StrategyResult {
 			diagnostics::log_error("[copper] capture: UI Automation is unavailable");
 			StrategyResult::nothing(Evidence::default())
 		}
+		// Already reported once, when the ceiling was reached. Logging it per
+		// capture afterwards would be noise about a decision already taken.
+		UiaOutcome::GivenUp => StrategyResult::nothing(Evidence::default()),
 		UiaOutcome::Error { hresult, op } => {
 			diagnostics::log_error(&format!(
 				"[copper] capture: UI Automation {op} failed with 0x{hresult:08X}"
@@ -494,8 +525,38 @@ mod tests {
 			UiaOutcome::NoTextPattern,
 			UiaOutcome::Timeout,
 			UiaOutcome::Unavailable,
+			UiaOutcome::GivenUp,
 		] {
 			assert!(!to_result(outcome).terminal);
 		}
+	}
+
+	#[test]
+	fn giving_up_on_uia_leaves_no_evidence_of_its_own() {
+		// The clipboard fallback runs next, and its findings are what the
+		// precedence rule should decide on. Evidence here would misattribute the
+		// cause to a strategy that did not run.
+		let result = to_result(UiaOutcome::GivenUp);
+		assert_eq!(result.evidence, Evidence::default());
+		assert!(result.text.is_none());
+	}
+
+	#[test]
+	fn the_abandonment_ceiling_stops_spawning_replacements() {
+		let mut service = UiaService::new();
+		service.abandoned = MAX_ABANDONED_UIA_THREADS;
+		// No thread is created and none is needed: the request short-circuits
+		// before `ensure_thread`, which is what stops the per-capture thread leak.
+		assert!(matches!(
+			service.request(
+				Target {
+					hwnd: windows::Win32::Foundation::HWND(std::ptr::null_mut()),
+					pid: 0,
+				},
+				Duration::from_millis(1)
+			),
+			UiaOutcome::GivenUp
+		));
+		assert!(service.requests.is_none());
 	}
 }

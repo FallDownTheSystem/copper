@@ -55,20 +55,6 @@ const MODIFIER_POLL_INTERVAL: Duration = Duration::from_millis(10);
 pub fn try_clipboard(target: Target) -> StrategyResult {
 	let mut evidence = Evidence::default();
 
-	let snapshot = match clipboard::snapshot() {
-		Ok(snapshot) => snapshot,
-		Err(ClipboardError::Busy { .. }) => {
-			evidence.clipboard_never_opened = true;
-			return StrategyResult::nothing(evidence);
-		}
-		Err(err) => {
-			// Nothing has been injected yet, so the clipboard is exactly as the
-			// user left it. Failing here costs a capture and nothing else.
-			diagnostics::log_error(&format!("[copper] capture: clipboard snapshot failed: {err}"));
-			return StrategyResult::nothing(evidence);
-		}
-	};
-
 	// The trigger fires on a key-up, so nothing is held by construction — but the
 	// user can genuinely be holding something else, and `SendInput` is documented
 	// not to reset keyboard state. A physically-held Shift at injection time turns
@@ -92,16 +78,44 @@ pub fn try_clipboard(target: Target) -> StrategyResult {
 		return StrategyResult::nothing(evidence);
 	}
 
-	// Sampled immediately before the injection rather than before the snapshot:
-	// reading the clipboard during the snapshot can itself advance the sequence
-	// number if a format was delayed-rendered, and every millisecond between the
-	// sample and the injection is a window in which an unrelated write gets
-	// attributed to Copper.
-	let before = clipboard::sequence_number();
+	// Taken **after** the waits, not before them. The snapshot is the bytes that
+	// will be put back and its sequence token is what says they are still the
+	// current clipboard; a snapshot taken before a 300 ms modifier wait can be
+	// stale by the time it matters, and restoring it would destroy whatever the
+	// user copied in between. Nothing has been injected at this point either way,
+	// so a failure here still costs a capture and nothing else.
+	let snapshot = match clipboard::snapshot() {
+		Ok(snapshot) => snapshot,
+		Err(ClipboardError::Busy { .. }) => {
+			evidence.clipboard_never_opened = true;
+			return StrategyResult::nothing(evidence);
+		}
+		Err(err) => {
+			diagnostics::log_error(&format!("[copper] capture: clipboard snapshot failed: {err}"));
+			return StrategyResult::nothing(evidence);
+		}
+	};
+
+	let before = snapshot.sequence();
 	if before == 0 {
 		// No WINSTA_ACCESSCLIPBOARD on this window station: polling cannot work,
 		// so this is not a baseline that will never change — it is no baseline.
 		evidence.clipboard_never_opened = true;
+		return StrategyResult::nothing(evidence);
+	}
+
+	// The last check before anything is injected. Between the snapshot's session
+	// closing and this line the clipboard could have moved again; if it has, the
+	// bytes in hand are a stale copy and every later step — the poll baseline, the
+	// restore — would be reasoning about a clipboard that no longer exists.
+	// Abandoning without injecting is the safe direction: it costs one capture,
+	// where continuing would cost the user whatever they just copied.
+	if clipboard::sequence_number() != before {
+		diagnostics::log(
+			"[copper] capture: the clipboard changed while the fallback was preparing; \
+			 abandoning without injecting rather than working from a stale snapshot",
+		);
+		evidence.clipboard_unchanged = true;
 		return StrategyResult::nothing(evidence);
 	}
 
@@ -122,19 +136,25 @@ pub fn try_clipboard(target: Target) -> StrategyResult {
 		return StrategyResult::nothing(evidence);
 	};
 
-	let read = clipboard::read_text();
-
-	// Re-sampled AFTER the read, not before it. Reading a delayed-rendered format
-	// makes the owning application call `SetClipboardData`, which bumps the
-	// sequence — so expecting the pre-read value would withhold the restore every
-	// time Copper captures from an application that uses delayed rendering, which
-	// is most of the interesting ones. Expecting the post-read value still cannot
-	// clobber a user copy, because anything written after this point is caught by
-	// the check inside the write session.
-	let expected = clipboard::sequence_number();
+	// The sequence comes back from inside the read's own session. Taken AFTER the
+	// read rather than before it, because reading a delayed-rendered format makes
+	// the owning application call `SetClipboardData`, which bumps the sequence —
+	// so expecting the pre-read value would withhold the restore every time Copper
+	// captures from an application that uses delayed rendering, which is most of
+	// the interesting ones. Taken *inside* that session rather than after it,
+	// because a copy landing in the gap would raise the live sequence, the
+	// restore's own in-session check would then compare equal, and the user's new
+	// content would be destroyed by the check meant to protect it.
+	let (read, expected) = match clipboard::read_text() {
+		Ok((text, sequence)) => (Ok(text), sequence),
+		// No sequence to trust, so no restore is attempted below.
+		Err(err) => (Err(err), 0),
+	};
 	let foreign_now = clipboard::owner_pid().is_some_and(|pid| pid != target.pid);
 
-	restore(&snapshot, expected, foreign_owner || foreign_now, &mut evidence);
+	if expected != 0 {
+		restore(&snapshot, expected, foreign_owner || foreign_now, &mut evidence);
+	}
 
 	match read {
 		Ok(Some(text)) => {
@@ -208,9 +228,6 @@ fn poll_for_change(target: Target, before: u32, injected_at: Instant) -> Option<
 /// that fails is the one outcome in this task that destroys user data rather than
 /// merely failing to capture — so it is never swallowed.
 fn restore(snapshot: &Snapshot, expected: u32, foreign: bool, evidence: &mut Evidence) {
-	if snapshot.is_empty() {
-		return;
-	}
 	if foreign {
 		diagnostics::log(
 			"[copper] capture: the clipboard is owned by another process; withholding the restore \
@@ -218,15 +235,20 @@ fn restore(snapshot: &Snapshot, expected: u32, foreign: bool, evidence: &mut Evi
 		);
 		return;
 	}
-	// Tested before any restoration is attempted. When Copper cannot reproduce
-	// the original clipboard faithfully, leaving the captured text on the
-	// clipboard is better than a lossy restore that silently destroys richer
-	// content the user had — an image, a file list, an OLE-backed format.
+	// Checked before emptiness, not after. A clipboard holding nothing but an
+	// image is both lossy *and* empty of restorable entries, and reporting that as
+	// "nothing to put back" would hide the fact that Copper is walking away from
+	// real content it cannot reproduce. When Copper cannot reproduce the original
+	// faithfully, leaving the captured text on the clipboard is better than a
+	// lossy restore that silently destroys the richer content the user had.
 	if snapshot.is_lossy() {
 		diagnostics::log(
 			"[copper] capture: the clipboard held a format Copper cannot reproduce; withholding \
 			 the restore rather than performing a lossy one",
 		);
+		return;
+	}
+	if snapshot.is_empty() {
 		return;
 	}
 
@@ -316,8 +338,8 @@ fn send_ctrl_c() -> bool {
 		key_event(VK_CONTROL, true),
 	];
 	// SAFETY: `sequence` outlives the call and the size argument matches INPUT.
-	let inserted = unsafe { SendInput(&sequence, std::mem::size_of::<INPUT>() as i32) };
-	if inserted as usize == sequence.len() {
+	let inserted = unsafe { SendInput(&sequence, std::mem::size_of::<INPUT>() as i32) } as usize;
+	if inserted == sequence.len() {
 		return true;
 	}
 
@@ -325,15 +347,65 @@ fn send_ctrl_c() -> bool {
 	// docs state explicitly that neither the return value nor GetLastError
 	// identifies UIPI as the cause, which is why elevation is detected by token
 	// probe rather than inferred here.
-	let recovery = [key_event(VK_C, true), key_event(VK_CONTROL, true)];
-	// SAFETY: as above.
-	unsafe { SendInput(&recovery, std::mem::size_of::<INPUT>() as i32) };
+	let outstanding = outstanding_key_ups(inserted);
+	if outstanding.is_empty() {
+		diagnostics::log_error(&format!(
+			"[copper] capture: SendInput inserted {inserted} of {} events; no key is left down",
+			sequence.len()
+		));
+		return false;
+	}
+
+	let recovery: Vec<INPUT> = outstanding
+		.iter()
+		.map(|vk| key_event(*vk, true))
+		.collect();
+	// SAFETY: `recovery` outlives the call and the size argument matches INPUT.
+	let recovered = unsafe { SendInput(&recovery, std::mem::size_of::<INPUT>() as i32) } as usize;
+	if recovered == recovery.len() {
+		diagnostics::log_error(&format!(
+			"[copper] capture: SendInput inserted {inserted} of {} events; {recovered} recovery \
+			 key-ups sent, so no modifier is left down",
+			sequence.len()
+		));
+		return false;
+	}
+
+	// The recovery itself came up short, which is the state this whole path exists
+	// to prevent: a key Copper pressed is still logically down for every
+	// application on the desktop, and the user's next click or keystroke is
+	// silently modified until something else releases it. There is nothing further
+	// Copper can do about it — a second SendInput would fail the same way — so it
+	// is reported as loudly as this layer can report anything.
 	diagnostics::log_error(&format!(
-		"[copper] capture: SendInput inserted {inserted} of {} events; recovery key-ups sent so \
-		 Ctrl is not left down system-wide",
-		sequence.len()
+		"[copper] capture: RECOVERY KEY-UPS FAILED — SendInput inserted {recovered} of {} \
+		 recovery events after a short insert of {inserted}. A modifier Copper pressed may be \
+		 stuck down system-wide until another key event releases it.",
+		recovery.len()
 	));
 	false
+}
+
+/// Which keys the injection left logically **down**, given how many of its four
+/// events actually went in.
+///
+/// The sequence is Ctrl-down, C-down, C-up, Ctrl-up, so a short insert strands
+/// exactly those keys whose down went in and whose up did not. Derived from the
+/// count rather than assumed: sending an unconditional pair would press-and-
+/// release nothing on a zero insert and could send a stray C-up on a partial one.
+/// Returned in reverse press order, which is how a person releases keys.
+fn outstanding_key_ups(inserted: usize) -> Vec<u32> {
+	let mut down = Vec::new();
+	// Ctrl-down is event 0, and its matching up is event 3.
+	if (1..4).contains(&inserted) {
+		down.push(VK_CONTROL);
+	}
+	// C-down is event 1, and its matching up is event 2.
+	if (2..3).contains(&inserted) {
+		down.push(VK_C);
+	}
+	down.reverse();
+	down
 }
 
 #[cfg(test)]
@@ -375,5 +447,40 @@ mod tests {
 		let mut evidence = Evidence::default();
 		restore(&Snapshot::default(), 0, false, &mut evidence);
 		assert!(!evidence.clipboard_restore_failed);
+	}
+
+	#[test]
+	fn a_complete_insert_leaves_nothing_to_recover() {
+		assert!(outstanding_key_ups(4).is_empty());
+	}
+
+	#[test]
+	fn a_zero_insert_leaves_nothing_to_recover() {
+		// UIPI refusing the whole batch is the common case. Sending key-ups here
+		// would release keys the user is holding rather than keys Copper pressed.
+		assert!(outstanding_key_ups(0).is_empty());
+	}
+
+	#[test]
+	fn a_short_insert_releases_exactly_what_it_pressed() {
+		// One event in: Ctrl is down with no matching up.
+		assert_eq!(outstanding_key_ups(1), vec![VK_CONTROL]);
+		// Two in: Ctrl and C are both down. Released in reverse press order.
+		assert_eq!(outstanding_key_ups(2), vec![VK_C, VK_CONTROL]);
+		// Three in: C has already been released, Ctrl has not.
+		assert_eq!(outstanding_key_ups(3), vec![VK_CONTROL]);
+	}
+
+	#[test]
+	fn no_short_insert_ever_strands_control() {
+		// Ctrl stuck down system-wide is the failure this path exists to prevent,
+		// and it is the one that presents as the machine breaking rather than as a
+		// failed capture. Every partial insert must release it.
+		for inserted in 1..4 {
+			assert!(
+				outstanding_key_ups(inserted).contains(&VK_CONTROL),
+				"an insert of {inserted} events left Ctrl down"
+			);
+		}
 	}
 }

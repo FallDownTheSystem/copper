@@ -14,6 +14,9 @@ const mocks = vi.hoisted(() => ({
 	/** Recorded so the ordering rule can be asserted rather than assumed: the
 	 *  readiness signal must not go out before both handlers are registered. */
 	handlersAtReady: -1,
+	/** Drives the setup-failure path, which is the one that would otherwise leave
+	 *  capture disarmed for the session with nothing written anywhere. */
+	failNextEmit: false,
 }))
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -29,6 +32,10 @@ vi.mock('@tauri-apps/api/event', () => ({
 		}
 	},
 	emit: async (name: string) => {
+		if (mocks.failNextEmit) {
+			mocks.failNextEmit = false
+			throw new Error('emit failed')
+		}
 		mocks.handlersAtReady = mocks.handlers.size
 		mocks.emitted.push(name)
 	},
@@ -58,6 +65,7 @@ describe('useCaptureNotice', () => {
 		mocks.unlistenCount = 0
 		mocks.emitted = []
 		mocks.handlersAtReady = -1
+		mocks.failNextEmit = false
 	})
 
 	it('renders the message a failure carries', async () => {
@@ -131,6 +139,20 @@ describe('useCaptureNotice', () => {
 
 		fail(FIRST)
 		expect(b.notice.value).toEqual(FIRST)
+	})
+
+	it('leaves capture retryable when setup fails', async () => {
+		// The failure that disables the whole feature: capture stays disarmed and
+		// the symptom is a double-tap doing nothing. A rejected promise must not be
+		// cached, or every later caller is handed the same dead one.
+		mocks.failNextEmit = true
+		const { initialize } = useCaptureNotice()
+
+		await expect(initialize()).rejects.toThrow('emit failed')
+		expect(mocks.handlers.size).toBe(0)
+
+		await initialize()
+		expect(mocks.emitted).toEqual(['capture://ready'])
 	})
 
 	it('unlistens and forgets its state on dispose', async () => {

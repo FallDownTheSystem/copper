@@ -6,7 +6,12 @@
 //! by grep rather than by trait, which is why the rule is written as a grep
 //! assertion in the task rather than as a principle.
 //!
-//! # Four threads
+//! # Five threads
+//!
+//! Four carry a capture; the fifth only expires notices. The notice timer is
+//! counted here because it exists precisely so a burst of failures cannot spawn
+//! a thread each, and a topology that did not mention it would be describing a
+//! design nobody built.
 //!
 //! ```text
 //!   hook thread            worker thread              UIA thread        main thread
@@ -18,7 +23,10 @@
 //!     send()  ──────────▶    normalise + revalidate    (abandoned on
 //!     CallNextHookEx         store::append_capture      timeout, never
 //!                              ok  → nothing            joined)
-//!                              err → notice ───────────────────────────▶ emit + reveal + timer
+//!                              err → notice ───────────────────────────▶ emit + reveal
+//!                                                                            │
+//!                              notice timer thread ◀── one deadline ─────────┘
+//!                              (one, shared)      ──── expiry ──────────────▶ emit + hide
 //! ```
 //!
 //! The hook procedure is trivial on purpose: Windows silently uninstalls a
@@ -309,6 +317,17 @@ impl StrategyResult {
 /// windows normally — and a target whose token could not be read proves nothing
 /// either, which is why `Unknown` gets its own cause instead of being folded
 /// into the administrator wording.
+///
+/// **Orchestrator ruling, 2026-08-05: rule 4's precedence is amended.** As R11
+/// was originally written, an `Unknown` probe outranked everything the cascade
+/// had actually observed — so a caret with no selection in a process whose token
+/// happens to be unreadable (Discord and `audiodg.exe` are the measured cases,
+/// both running at ordinary integrity) reported "Copper couldn't reach that
+/// window." instead of "Nothing was selected.". The rule's original wording
+/// targeted the self-UIAccess probe, which in this design cannot fail. Positive
+/// cascade evidence now outranks an unreadable-target probe, and
+/// `InaccessibleTarget` sits immediately above the terminal fallback: it is what
+/// Copper says when it observed nothing *and* could not find out why.
 pub fn resolve(evidence: &Evidence) -> CaptureFailure {
 	if evidence.foreground_changed {
 		CaptureFailure::ForegroundChanged
@@ -316,14 +335,14 @@ pub fn resolve(evidence: &Evidence) -> CaptureFailure {
 		CaptureFailure::ModifierHeld
 	} else if evidence.integrity == TargetIntegrity::Higher && !evidence.uiaccess {
 		CaptureFailure::ElevatedTarget
-	} else if evidence.integrity == TargetIntegrity::Unknown {
-		CaptureFailure::InaccessibleTarget
 	} else if evidence.caret_without_selection || evidence.empty_after_normalisation {
 		CaptureFailure::NoSelection
 	} else if evidence.clipboard_changed_but_untextual {
 		CaptureFailure::NonTextSelection
 	} else if evidence.clipboard_never_opened {
 		CaptureFailure::ClipboardBusy
+	} else if evidence.integrity == TargetIntegrity::Unknown {
+		CaptureFailure::InaccessibleTarget
 	} else {
 		CaptureFailure::Unsupported
 	}
@@ -358,6 +377,7 @@ pub struct CaptureHandle {
 	/// Dropping this closes the trigger channel, which is how the worker learns
 	/// to exit.
 	trigger_tx: Option<mpsc::Sender<hook::Trigger>>,
+	notice: Arc<notice::NoticeController>,
 	armed: Arc<AtomicBool>,
 	shut_down: AtomicBool,
 }
@@ -378,12 +398,32 @@ impl CaptureHandle {
 		}
 		// New triggers stop first, so nothing can be queued behind the shutdown.
 		self.armed.store(false, Ordering::SeqCst);
-		self.hook.stop();
+		let hook_stopped = self.hook.stop();
 		// Closing the channel is what ends the worker's receive loop.
 		self.trigger_tx.take();
-		if let Some(worker) = self.worker.take() {
-			let _ = worker.join();
+
+		match self.worker.take() {
+			// The worker waits for every trigger sender to drop. A hook thread that
+			// could not be stopped is still running and still owns one, so that will
+			// never happen and the join would block until the process is killed —
+			// which is exactly the hang this shutdown exists to avoid. The worker is
+			// idle and holds nothing the OS will not reclaim, so leaving it is the
+			// cheaper of the two failures.
+			Some(worker) if hook_stopped => {
+				let _ = worker.join();
+			}
+			Some(_) => diagnostics::log_error(
+				"[copper] capture: the hook thread could not be stopped, so it still holds the \
+				 trigger channel open; leaving the worker thread rather than blocking exit on a \
+				 join that cannot complete",
+			),
+			None => {}
 		}
+
+		// The controller lives in managed state and outlives this handle, so its
+		// timer has to be stopped explicitly rather than by drop.
+		self.notice.shutdown();
+
 		// The UIA thread belongs to the worker and uninitialises COM on its own
 		// thread as the worker unwinds. Abandoned UIA threads are never joined.
 	}
@@ -417,7 +457,12 @@ pub fn start_capture(app: &AppHandle) -> Result<CaptureHandle, Box<dyn std::erro
 	// the user deliberately opened.
 	app.manage(Arc::clone(&notice));
 
-	let worker = worker::spawn(app.clone(), trigger_rx, Arc::clone(&in_flight), notice)?;
+	let worker = worker::spawn(
+		app.clone(),
+		trigger_rx,
+		Arc::clone(&in_flight),
+		Arc::clone(&notice),
+	)?;
 
 	let hook = match hook::install(
 		CAPTURE_TRIGGER,
@@ -431,6 +476,7 @@ pub fn start_capture(app: &AppHandle) -> Result<CaptureHandle, Box<dyn std::erro
 			// than leaving a thread behind a failed start.
 			drop(trigger_tx);
 			let _ = worker.join();
+			notice.shutdown();
 			return Err(Box::new(err));
 		}
 	};
@@ -439,6 +485,7 @@ pub fn start_capture(app: &AppHandle) -> Result<CaptureHandle, Box<dyn std::erro
 		hook,
 		worker: Some(worker),
 		trigger_tx: Some(trigger_tx),
+		notice,
 		armed,
 		shut_down: AtomicBool::new(false),
 	})
@@ -676,6 +723,52 @@ mod tests {
 			..Evidence::default()
 		};
 		assert_eq!(resolve(&evidence), CaptureFailure::InaccessibleTarget);
+	}
+
+	#[test]
+	fn positive_evidence_outranks_an_unreadable_target() {
+		// The amended rule 4. Discord and audiodg.exe refuse the token read while
+		// running at ordinary integrity, so an unreadable probe is common and says
+		// nothing about why the capture found nothing. Telling the user "Copper
+		// couldn't reach that window." when the cascade plainly saw a caret with no
+		// selection would be reporting the probe instead of the observation.
+		let caret = Evidence {
+			caret_without_selection: true,
+			integrity: TargetIntegrity::Unknown,
+			..Evidence::default()
+		};
+		assert_eq!(resolve(&caret), CaptureFailure::NoSelection);
+
+		let untextual = Evidence {
+			clipboard_changed_but_untextual: true,
+			integrity: TargetIntegrity::Unknown,
+			..Evidence::default()
+		};
+		assert_eq!(resolve(&untextual), CaptureFailure::NonTextSelection);
+
+		let busy = Evidence {
+			clipboard_never_opened: true,
+			integrity: TargetIntegrity::Unknown,
+			..Evidence::default()
+		};
+		assert_eq!(resolve(&busy), CaptureFailure::ClipboardBusy);
+	}
+
+	#[test]
+	fn an_unreadable_target_still_beats_the_terminal_fallback() {
+		// It is what Copper says when it observed nothing *and* could not find out
+		// why, which is more informative than "this app didn't give Copper
+		// anything".
+		let nothing_but_a_failed_probe = Evidence {
+			no_text_pattern: true,
+			clipboard_unchanged: true,
+			integrity: TargetIntegrity::Unknown,
+			..Evidence::default()
+		};
+		assert_eq!(
+			resolve(&nothing_but_a_failed_probe),
+			CaptureFailure::InaccessibleTarget
+		);
 	}
 
 	#[test]

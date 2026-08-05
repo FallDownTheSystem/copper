@@ -30,7 +30,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{
+	GetLastError, GlobalFree, ERROR_SUCCESS, HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, WPARAM,
+};
 use windows::Win32::System::DataExchange::{
 	CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardOwner,
 	GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
@@ -72,15 +74,22 @@ const MAX_ENUMERATED_FORMATS: usize = 256;
 
 const CF_TEXT: u32 = 1;
 const CF_BITMAP: u32 = 2;
-const CF_METAFILEPICT: u32 = 3;
 const CF_OEMTEXT: u32 = 7;
 const CF_DIB: u32 = 8;
-const CF_PALETTE: u32 = 9;
 const CF_UNICODETEXT: u32 = 13;
-const CF_ENHMETAFILE: u32 = 14;
 const CF_HDROP: u32 = 15;
 const CF_LOCALE: u32 = 16;
 const CF_DIBV5: u32 = 17;
+
+// Named only so the tests can assert they are absent from both lists. Their
+// whole significance here is that they are neither restorable nor exempt: a
+// clipboard carrying one is a clipboard Copper must not restore over.
+#[cfg(test)]
+const CF_METAFILEPICT: u32 = 3;
+#[cfg(test)]
+const CF_PALETTE: u32 = 9;
+#[cfg(test)]
+const CF_ENHMETAFILE: u32 = 14;
 
 /// The built-in formats the snapshot copies out and puts back.
 ///
@@ -99,14 +108,12 @@ const BUILTIN_ALLOW_LIST: [u32; 5] = [CF_UNICODETEXT, CF_TEXT, CF_HDROP, CF_DIB,
 /// otherwise draw the wrong conclusion. Here the stake is higher than a
 /// misleading log: treating a synthesized format as unreproducible would mark
 /// almost every ordinary text clipboard lossy and suppress every restore.
-const SYNTHESIZED: [u32; 6] = [
-	CF_OEMTEXT,
-	CF_LOCALE,
-	CF_BITMAP,
-	CF_PALETTE,
-	CF_METAFILEPICT,
-	CF_ENHMETAFILE,
-];
+///
+/// The list is exactly three, and metafiles and `CF_PALETTE` are deliberately
+/// **not** on it. Windows synthesizes neither from anything Copper restores, so
+/// their presence means real content a restore would destroy — they must count
+/// toward lossy and withhold it.
+const SYNTHESIZED: [u32; 3] = [CF_OEMTEXT, CF_LOCALE, CF_BITMAP];
 
 // --- errors ------------------------------------------------------------------
 
@@ -423,13 +430,20 @@ pub fn owner_pid() -> Option<u32> {
 	pid_of_window(hwnd)
 }
 
-/// Reads `CF_UNICODETEXT`, or `None` when the format is absent.
+/// Reads `CF_UNICODETEXT` — `None` when the format is absent — along with the
+/// sequence number as it was **inside the same session**.
 ///
-/// `CF_TEXT` is deliberately not consulted: Windows synthesizes
-/// `CF_UNICODETEXT` from it automatically.
-pub fn read_text() -> Result<Option<String>> {
+/// The sequence comes back with the text because the caller needs a value it can
+/// hand to [`restore`], and sampling one after this session closes would leave a
+/// gap: a copy landing in that gap would raise the live sequence, the restore's
+/// in-session check would compare equal, and the user's new content would be
+/// destroyed by the very check meant to protect it.
+///
+/// `CF_TEXT` is deliberately not consulted: Windows synthesizes `CF_UNICODETEXT`
+/// from it automatically.
+pub fn read_text() -> Result<(Option<String>, u32)> {
 	let _session = Session::open_read()?;
-	Ok(decode_text(read_format_bytes(CF_UNICODETEXT)))
+	Ok((decode_text(read_format_bytes(CF_UNICODETEXT)), sequence_number()))
 }
 
 /// Copies a format's payload out of the clipboard's own memory. The handle
@@ -448,17 +462,22 @@ fn read_format_bytes(format: u32) -> Option<Vec<u8>> {
 	}
 	// SAFETY: `hglobal` is locked, so its size is stable for this call.
 	let size = unsafe { GlobalSize(hglobal) };
+	// A zero size after a *successful* lock is `GlobalSize` failing, not a
+	// legitimately empty payload — no application advertises a format and then
+	// backs it with nothing. Treated as a failed read so the snapshot refuses
+	// rather than recording an empty payload it would later restore over real
+	// content.
 	let bytes = if size == 0 {
-		Vec::new()
+		None
 	} else {
 		// SAFETY: `ptr` is valid for `size` bytes while the lock is held.
-		unsafe { std::slice::from_raw_parts(ptr as *const u8, size) }.to_vec()
+		Some(unsafe { std::slice::from_raw_parts(ptr as *const u8, size) }.to_vec())
 	};
 	// SAFETY: paired with the GlobalLock above.
 	unsafe {
 		let _ = GlobalUnlock(hglobal);
 	}
-	Some(bytes)
+	bytes
 }
 
 fn decode_text(bytes: Option<Vec<u8>>) -> Option<String> {
@@ -483,8 +502,12 @@ pub struct Snapshot {
 	/// Allow-listed formats and their raw payload bytes, in enumeration order.
 	entries: Vec<(u32, Vec<u8>)>,
 	/// A format was present that this snapshot cannot faithfully reproduce —
-	/// outside the allow-list, or over `SNAPSHOT_FORMAT_SIZE_LIMIT`.
+	/// outside the allow-list, over `SNAPSHOT_FORMAT_SIZE_LIMIT`, or beyond the
+	/// enumeration cap.
 	lossy: bool,
+	/// The sequence number as it was **inside** the session that took this
+	/// snapshot. See [`Snapshot::sequence`].
+	sequence: u32,
 }
 
 impl Snapshot {
@@ -501,15 +524,26 @@ impl Snapshot {
 	pub fn is_empty(&self) -> bool {
 		self.entries.is_empty()
 	}
+
+	/// The clipboard's sequence number at the moment these bytes were copied.
+	///
+	/// Sampled inside the snapshot's own session, so it describes *this* content
+	/// and nothing else. A caller holding a snapshot whose token no longer matches
+	/// the live sequence is holding a stale copy of a clipboard that has since
+	/// moved on, and restoring it would destroy whatever replaced it.
+	pub fn sequence(&self) -> u32 {
+		self.sequence
+	}
 }
 
 /// Copies the clipboard's restorable formats out under one session.
 ///
 /// The single session is itself the atomicity guarantee: no other process can
-/// write while it is held. A sequence-number check across the copy would add
-/// nothing and would actively harm — reading a delayed-rendered format makes the
-/// owning application call `SetClipboardData`, which bumps the sequence, so a
-/// strict check would refuse to snapshot exactly the applications worth
+/// write while it is held, so the bytes and the sequence number returned with
+/// them describe the same clipboard. A sequence check *across* the copy would
+/// add nothing and would actively harm — reading a delayed-rendered format makes
+/// the owning application call `SetClipboardData`, which bumps the sequence, so
+/// a strict check would refuse to snapshot exactly the applications worth
 /// capturing from.
 pub fn snapshot() -> Result<Snapshot> {
 	let _session = Session::open_read()?;
@@ -519,17 +553,47 @@ pub fn snapshot() -> Result<Snapshot> {
 	// can trigger delayed rendering in the owning application, which changes the
 	// clipboard *during* the walk and can truncate or corrupt the enumeration.
 	let mut ids: Vec<u32> = Vec::new();
+	let mut truncated = false;
 	let mut id = 0u32;
 	loop {
-		// SAFETY: called only with the clipboard open; 0 terminates the walk.
+		// SAFETY: called only with the clipboard open.
 		id = unsafe { EnumClipboardFormats(id) };
-		if id == 0 || ids.len() >= MAX_ENUMERATED_FORMATS {
+		if id == 0 {
+			// Zero is both "no more formats" and "the call failed", and the only way
+			// to tell them apart is the last error. A failed enumeration read as a
+			// complete one is the dangerous direction: it would produce a snapshot
+			// that looks whole, restore over the real clipboard, and drop whatever
+			// the enumeration never reached.
+			// SAFETY: no preconditions.
+			let last = unsafe { GetLastError() };
+			if last != ERROR_SUCCESS {
+				return Err(ClipboardError::Win32 {
+					op: "EnumClipboardFormats",
+					code: last.0 as i32,
+					message: "the format enumeration failed part-way; refusing to snapshot a \
+					          clipboard it cannot see all of"
+						.to_owned(),
+				});
+			}
+			break;
+		}
+		if ids.len() >= MAX_ENUMERATED_FORMATS {
+			// A misbehaving clipboard owner must not be able to spin us forever, but
+			// stopping early means there is content this snapshot has not seen —
+			// which is exactly what lossy means.
+			truncated = true;
 			break;
 		}
 		ids.push(id);
 	}
 
-	let mut snapshot = Snapshot::default();
+	let mut snapshot = Snapshot {
+		lossy: truncated,
+		// Sampled inside this session, so no other process can have written between
+		// the copy and the reading of it.
+		sequence: sequence_number(),
+		..Snapshot::default()
+	};
 	for id in ids {
 		if !is_restorable(id, formats) {
 			// Copper's own privacy markers are not a loss: they are what the last
@@ -642,15 +706,41 @@ fn write_excluded(entries: &[(u32, &[u8])], expected_seq: Option<u32>) -> Result
 		Moveable::with_bytes(&0u32.to_ne_bytes())?,
 	));
 
+	// `RegisterClipboardFormatW` returns 0 on failure, and 0 is not a format id.
+	// Caught here, before `EmptyClipboard`, because afterwards it is too late to
+	// decline: the clipboard would already be empty and a `SetClipboardData(0, ..)`
+	// would leave it that way. Failing now costs a capture and nothing else.
+	if let Some((bad, _)) = prepared.iter().find(|(id, _)| *id == 0) {
+		return Err(ClipboardError::Win32 {
+			op: "RegisterClipboardFormatW",
+			code: 0,
+			message: format!(
+				"format id {bad} is not valid; refusing to empty the clipboard for a write \
+				 that cannot be completed"
+			),
+		});
+	}
+
 	// SAFETY: the clipboard is open for writing with a live owner window.
 	unsafe { EmptyClipboard() }.map_err(|err| win32("EmptyClipboard", err))?;
 
+	// Past `EmptyClipboard` the clipboard is already gone, so abandoning on the
+	// first failure would leave it holding *less* than a complete failure would.
+	// Every remaining format is attempted and the first error reported once they
+	// have been — partial content beats none, and the caller still learns the
+	// write did not fully succeed.
+	let mut first_failure = None;
 	for (id, block) in prepared {
-		block.set_as(id)?;
+		if let Err(err) = block.set_as(id) {
+			first_failure.get_or_insert(err);
+		}
 	}
 
 	drop(session);
-	Ok(())
+	match first_failure {
+		Some(err) => Err(err),
+		None => Ok(()),
+	}
 }
 
 #[cfg(test)]
@@ -718,6 +808,19 @@ mod tests {
 	}
 
 	#[test]
+	fn metafiles_and_palettes_count_toward_lossy() {
+		// Windows synthesizes none of these from anything Copper restores, so their
+		// presence is real content a restore would destroy. Exempting them would
+		// let the restore run and drop them silently — the opposite of what the
+		// lossy check is for.
+		let formats = registered();
+		for id in [CF_METAFILEPICT, CF_ENHMETAFILE, CF_PALETTE] {
+			assert!(!is_ignorable(id, formats));
+			assert!(!is_restorable(id, formats));
+		}
+	}
+
+	#[test]
 	fn copper_own_privacy_markers_are_not_a_loss() {
 		let formats = registered();
 		for id in [
@@ -761,7 +864,26 @@ mod tests {
 	fn write_then_read_round_trips() {
 		let payload = "copper clipboard round trip";
 		write_text_private(payload).expect("write");
-		assert_eq!(read_text().expect("read").as_deref(), Some(payload));
+		assert_eq!(read_text().expect("read").0.as_deref(), Some(payload));
+	}
+
+	#[test]
+	#[ignore = "touches the real clipboard"]
+	fn a_snapshot_carries_the_sequence_of_the_content_it_copied() {
+		write_text_private("original").expect("seed");
+		let snapshot = snapshot().expect("snapshot");
+		assert_eq!(
+			snapshot.sequence(),
+			sequence_number(),
+			"a fresh snapshot's token must match the live clipboard"
+		);
+
+		write_text_private("something the user copied afterwards").expect("overwrite");
+		assert_ne!(
+			snapshot.sequence(),
+			sequence_number(),
+			"the token must go stale the moment the clipboard moves on"
+		);
 	}
 
 	#[test]
@@ -780,10 +902,10 @@ mod tests {
 		assert!(!snapshot.is_empty());
 
 		write_text_private("replacement").expect("overwrite");
-		assert_eq!(read_text().expect("read").as_deref(), Some("replacement"));
+		assert_eq!(read_text().expect("read").0.as_deref(), Some("replacement"));
 
 		restore(&snapshot, sequence_number()).expect("restore");
-		assert_eq!(read_text().expect("read").as_deref(), Some("original"));
+		assert_eq!(read_text().expect("read").0.as_deref(), Some("original"));
 	}
 
 	#[test]
@@ -798,7 +920,7 @@ mod tests {
 		let err = restore(&snapshot, stale).expect_err("restore must refuse");
 		assert!(matches!(err, ClipboardError::Superseded { .. }));
 		assert_eq!(
-			read_text().expect("read").as_deref(),
+			read_text().expect("read").0.as_deref(),
 			Some("what the user copied afterwards"),
 			"the newer content must survive"
 		);

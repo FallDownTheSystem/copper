@@ -66,7 +66,41 @@ pub fn spawn(
 }
 
 /// One capture attempt, start to finish.
+///
+/// The clipboard-loss precedence is applied **once**, here, around the whole
+/// result. Applying it at the individual return sites is how it went missing from
+/// three of five paths in the first version: the foreground-changed, too-large
+/// and not-saved returns each left the flag unread, so a capture that destroyed
+/// the user's clipboard reported something else entirely and the loss went
+/// unmentioned. One wrapper cannot be forgotten by a return added later.
 fn capture_once(app: &AppHandle, uia: &mut UiaService) -> CaptureOutcome {
+	let mut evidence = Evidence::default();
+	let outcome = run_cascade(app, uia, &mut evidence);
+	with_clipboard_loss(outcome, evidence.clipboard_restore_failed)
+}
+
+/// Folds a failed restore into whatever the capture itself produced.
+///
+/// A failed restore destroys data the user already had, rather than merely
+/// failing to produce a note, so it outranks any cause the precedence rule would
+/// report and it accompanies a success rather than being swallowed by one.
+fn with_clipboard_loss(outcome: CaptureOutcome, restore_failed: bool) -> CaptureOutcome {
+	if !restore_failed {
+		return outcome;
+	}
+	match outcome {
+		CaptureOutcome::Captured => CaptureOutcome::CapturedWithClipboardLoss,
+		CaptureOutcome::Failed(_) => CaptureOutcome::Failed(CaptureFailure::ClipboardRestoreFailed),
+		// Neither reaches the clipboard at all, so neither can carry its loss.
+		already @ (CaptureOutcome::CapturedWithClipboardLoss | CaptureOutcome::Ignored) => already,
+	}
+}
+
+fn run_cascade(
+	app: &AppHandle,
+	uia: &mut UiaService,
+	evidence: &mut Evidence,
+) -> CaptureOutcome {
 	let Some(target) = Target::current() else {
 		return CaptureOutcome::Failed(CaptureFailure::NoForegroundWindow);
 	};
@@ -79,7 +113,6 @@ fn capture_once(app: &AppHandle, uia: &mut UiaService) -> CaptureOutcome {
 		return CaptureOutcome::Ignored;
 	}
 
-	let mut evidence = Evidence::default();
 	let mut captured: Option<String> = None;
 
 	for strategy in CAPTURE_CASCADE {
@@ -113,17 +146,11 @@ fn capture_once(app: &AppHandle, uia: &mut UiaService) -> CaptureOutcome {
 	}
 
 	let Some(text) = captured else {
-		// A failed restore outranks whatever the precedence rule would say: it is
-		// the one outcome that destroys data the user already had, rather than
-		// merely failing to produce a note.
-		if evidence.clipboard_restore_failed {
-			return CaptureOutcome::Failed(CaptureFailure::ClipboardRestoreFailed);
-		}
 		// The elevation probe runs only here, after the cascade has already
 		// failed, so the success path pays nothing for it.
 		evidence.integrity = target_integrity(target.pid);
 		evidence.uiaccess = uiaccess_active();
-		return CaptureOutcome::Failed(resolve(&evidence));
+		return CaptureOutcome::Failed(resolve(evidence));
 	};
 
 	// Re-checked after reading and before persisting. Saving text read from a
@@ -139,16 +166,7 @@ fn capture_once(app: &AppHandle, uia: &mut UiaService) -> CaptureOutcome {
 		return CaptureOutcome::Failed(CaptureFailure::TooLarge { chars });
 	}
 
-	match save(app, &text) {
-		// The note was written and the clipboard was not put back. The one
-		// successful outcome that still shows a notice: R8's silence on success is
-		// explicitly qualified by "unless the user's clipboard was destroyed on
-		// the way".
-		CaptureOutcome::Captured if evidence.clipboard_restore_failed => {
-			CaptureOutcome::CapturedWithClipboardLoss
-		}
-		outcome => outcome,
-	}
+	save(app, &text)
 }
 
 /// Appends through task-003's Rust-side entry point, which pushes the undo
@@ -223,3 +241,72 @@ fn report(outcome: &CaptureOutcome, trigger: Trigger) {
 
 #[cfg(not(debug_assertions))]
 fn report(_outcome: &CaptureOutcome, _trigger: Trigger) {}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// Every shape `run_cascade` can return, so a variant added later without a
+	/// rule here fails to compile rather than silently swallowing a data loss.
+	fn every_outcome() -> Vec<CaptureOutcome> {
+		vec![
+			CaptureOutcome::Captured,
+			CaptureOutcome::CapturedWithClipboardLoss,
+			CaptureOutcome::Ignored,
+			CaptureOutcome::Failed(CaptureFailure::NoSelection),
+			CaptureOutcome::Failed(CaptureFailure::ForegroundChanged),
+			CaptureOutcome::Failed(CaptureFailure::TooLarge { chars: 200_000 }),
+			CaptureOutcome::Failed(CaptureFailure::NotSaved { kind: "io" }),
+			CaptureOutcome::Failed(CaptureFailure::Unsupported),
+		]
+	}
+
+	#[test]
+	fn an_intact_clipboard_leaves_every_outcome_alone() {
+		for outcome in every_outcome() {
+			assert_eq!(with_clipboard_loss(outcome.clone(), false), outcome);
+		}
+	}
+
+	#[test]
+	fn a_failed_restore_is_never_swallowed_by_a_failure() {
+		// The bug this replaces: the precedence used to be applied at individual
+		// return sites, so the foreground-changed, too-large and not-saved paths
+		// each reported their own cause and the destroyed clipboard went
+		// unmentioned. Three of five paths lost it.
+		for outcome in every_outcome() {
+			let CaptureOutcome::Failed(_) = outcome else {
+				continue;
+			};
+			assert_eq!(
+				with_clipboard_loss(outcome.clone(), true),
+				CaptureOutcome::Failed(CaptureFailure::ClipboardRestoreFailed),
+				"{outcome:?} swallowed a failed restore"
+			);
+		}
+	}
+
+	#[test]
+	fn a_failed_restore_upgrades_a_success_rather_than_hiding_it() {
+		// The note was written; the clipboard was not put back. R8's silence on
+		// success is qualified by exactly this case.
+		assert_eq!(
+			with_clipboard_loss(CaptureOutcome::Captured, true),
+			CaptureOutcome::CapturedWithClipboardLoss
+		);
+	}
+
+	#[test]
+	fn outcomes_that_never_touched_the_clipboard_are_unchanged() {
+		// Copper being in front returns before any strategy runs, so it cannot be
+		// carrying a restore failure of its own.
+		assert_eq!(
+			with_clipboard_loss(CaptureOutcome::Ignored, true),
+			CaptureOutcome::Ignored
+		);
+		assert_eq!(
+			with_clipboard_loss(CaptureOutcome::CapturedWithClipboardLoss, true),
+			CaptureOutcome::CapturedWithClipboardLoss
+		);
+	}
+}

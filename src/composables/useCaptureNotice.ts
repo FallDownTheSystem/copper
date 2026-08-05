@@ -54,15 +54,33 @@ function onCleared(payload: ClearedPayload) {
 
 /**
  * Registers the listeners and tells Rust it is safe to arm capture. Idempotent.
+ *
+ * A failure here is the one that disables the whole feature: capture stays
+ * disarmed forever and the symptom is a double-tap that does nothing, with
+ * nothing written anywhere. So the promise is cleared on rejection — a later
+ * caller gets a real second attempt instead of being handed the same dead
+ * promise — and the reason is logged rather than swallowed.
  */
 function initialize(): Promise<void> {
 	initPromise ??= (async () => {
-		unlisteners = await Promise.all([
-			listen<CaptureNotice>('capture://failed', (event) => onFailed(event.payload)),
-			listen<ClearedPayload>('capture://cleared', (event) => onCleared(event.payload)),
-		])
-		// Only now: a hook armed before this point could reveal an empty panel.
-		await emit(READY_EVENT)
+		try {
+			unlisteners = await Promise.all([
+				listen<CaptureNotice>('capture://failed', (event) => onFailed(event.payload)),
+				listen<ClearedPayload>('capture://cleared', (event) => onCleared(event.payload)),
+			])
+			// Only now: a hook armed before this point could reveal an empty panel.
+			await emit(READY_EVENT)
+		} catch (error) {
+			console.error(
+				'[copper] capture notice setup failed; capture stays disarmed until this succeeds',
+				error,
+			)
+			// Undo a half-finished registration so a retry cannot double-register.
+			for (const unlisten of unlisteners) unlisten()
+			unlisteners = []
+			initPromise = null
+			throw error
+		}
 	})()
 
 	return initPromise
@@ -76,6 +94,12 @@ function dispose() {
 }
 
 export function useCaptureNotice() {
+	// The listeners belong to whatever scope registered them, so they come down
+	// with it. `tryOnScopeDispose` rather than `onScopeDispose` because this is
+	// also called outside a component — from tests, and from anywhere a later
+	// phase wants to read the current notice.
+	tryOnScopeDispose(dispose)
+
 	return {
 		notice: readonly(notice),
 		initialize,

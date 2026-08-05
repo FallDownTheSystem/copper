@@ -155,11 +155,14 @@ pub fn hide_or_log<M: Manager<tauri::Wry>>(app: &M) {
 /// could not be reached. This is the tray's left-click behaviour, kept here so
 /// that the window lookup stays in the module that owns the window.
 pub fn toggle_or_log<M: Manager<tauri::Wry>>(app: &M) {
-	crate::capture::panel_revealed_by_user(app);
 	with_panel(app, "toggle", |window| {
 		if is_visible(window) {
 			hide(window)
 		} else {
+			// Only the reveal branch. Telling capture the user opened the panel when
+			// they in fact just closed it would hand a live notice episode a window
+			// it does not own, and the notice would then leave the panel up.
+			crate::capture::panel_revealed_by_user(app);
 			reveal(window)
 		}
 	});

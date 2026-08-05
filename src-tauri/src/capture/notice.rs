@@ -121,6 +121,11 @@ pub struct NoticeController {
 	/// otherwise spawn a burst of threads and the stated thread topology would
 	/// stop being true. Dropping the sender ends the timer thread.
 	schedule: Mutex<Option<Sender<(u64, Instant)>>>,
+	/// Held so shutdown can wait for the timer to actually be gone rather than
+	/// assume it. The controller lives in managed state and is never dropped, so
+	/// without an explicit teardown the thread would outlive the pipeline it
+	/// belongs to.
+	timer: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl NoticeController {
@@ -137,8 +142,8 @@ impl NoticeController {
 			.name("copper-notice".to_owned())
 			.spawn(move || timer_loop(&timer_shared, &schedule_rx));
 
-		let schedule = match spawned {
-			Ok(_) => Some(schedule_tx),
+		let (schedule, timer) = match spawned {
+			Ok(handle) => (Some(schedule_tx), Some(handle)),
 			Err(err) => {
 				// The notice can still be shown; it just will not clear itself.
 				// Better than no notice at all, and it says so.
@@ -146,13 +151,35 @@ impl NoticeController {
 					"[copper] capture: could not start the notice timer ({err}); \
 					 failure notices will not clear on their own"
 				));
-				None
+				(None, None)
 			}
 		};
 
 		Self {
 			shared,
 			schedule: Mutex::new(schedule),
+			timer: Mutex::new(timer),
+		}
+	}
+
+	/// Cancels any pending notice and stops the timer thread. Idempotent.
+	///
+	/// Dropping the sender is what the timer waits on: its `recv` reports the
+	/// channel disconnected and the loop returns. Joining afterwards makes the
+	/// teardown observable rather than hopeful — the thread only ever queues work
+	/// onto the main thread and never blocks, so this cannot wedge shutdown.
+	pub fn shutdown(&self) {
+		self.schedule
+			.lock()
+			.unwrap_or_else(|poisoned| poisoned.into_inner())
+			.take();
+		let handle = self
+			.timer
+			.lock()
+			.unwrap_or_else(|poisoned| poisoned.into_inner())
+			.take();
+		if let Some(handle) = handle {
+			let _ = handle.join();
 		}
 	}
 

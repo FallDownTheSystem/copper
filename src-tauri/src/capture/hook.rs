@@ -408,8 +408,13 @@ unsafe extern "system" fn keyboard_proc(ncode: i32, wparam: WPARAM, lparam: LPAR
 						.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
 						.is_ok()
 				{
-					// Unbounded channel: `send` never blocks. A bounded one could park
-					// the callback and get the hook silently removed.
+					// An unbounded channel, so the send does not wait on a receiver
+					// the way a bounded one would — parking the callback is what gets
+					// the hook silently removed. It is not a hard real-time
+					// guarantee: the send takes an uncontended lock and may allocate a
+					// node. Task-001 measured the whole callback at 7.8 microseconds
+					// worst case against a budget of up to 1000 ms, which is the
+					// evidence this rests on rather than the absence of allocation.
 					if state.tx.send(Trigger { at: Instant::now() }).is_err() {
 						// The worker is gone; do not leave the gate latched shut.
 						state.in_flight.store(false, Ordering::SeqCst);
@@ -453,9 +458,17 @@ pub struct HookHandle {
 
 impl HookHandle {
 	/// Uninstalls the hook and joins its thread. Idempotent.
-	pub fn stop(&mut self) {
+	///
+	/// Returns whether the quit actually reached the thread. That matters to the
+	/// caller and is not merely diagnostic: a detached hook thread keeps running,
+	/// and with it the thread-local state holding the trigger `Sender`. The worker
+	/// is waiting on that channel to close, so joining the worker after a failed
+	/// post would block forever — trading a leaked thread for a hung exit.
+	pub fn stop(&mut self) -> bool {
 		let Some(join) = self.join.take() else {
-			return;
+			// Already stopped. Reporting success is right: whatever the first call
+			// decided has already been acted on.
+			return true;
 		};
 		// Check the post. A blind join after a failed post hangs shutdown forever;
 		// detaching the thread instead is survivable, a deadlock at exit is not.
@@ -463,28 +476,35 @@ impl HookHandle {
 		match unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) } {
 			Ok(()) => {
 				let _ = join.join();
+				true
 			}
-			Err(err) => diagnostics::log_error(&format!(
-				"[copper] capture: could not post WM_QUIT to the hook thread ({err}); \
-				 detaching it rather than joining"
-			)),
+			Err(err) => {
+				diagnostics::log_error(&format!(
+					"[copper] capture: could not post WM_QUIT to the hook thread ({err}); \
+					 detaching it rather than joining"
+				));
+				false
+			}
 		}
 	}
 }
 
 impl Drop for HookHandle {
 	fn drop(&mut self) {
-		self.stop();
+		let _ = self.stop();
 	}
 }
 
 /// Installs the hook on its own thread and waits for it to report readiness.
 ///
-/// The order inside the thread is task-001's and is easy to get wrong: install,
-/// then force the message queue into existence, then publish the thread id.
-/// Publishing before `PeekMessageW` leaves a window in which `PostThreadMessageW`
-/// fails with `ERROR_INVALID_THREAD_ID`, the `WM_QUIT` is lost, and shutdown
-/// blocks forever.
+/// The order inside the thread is task-001's and is easy to get wrong. It is, in
+/// full: force the message queue into existence with `PeekMessageW`; install the
+/// state the callback reads; install the hook; and only then publish the thread
+/// id. A thread has no message queue until it calls a message function, so
+/// publishing the id before `PeekMessageW` leaves a window in which
+/// `PostThreadMessageW` fails with `ERROR_INVALID_THREAD_ID`, the `WM_QUIT` is
+/// lost, and shutdown blocks forever. The state goes in before the hook because
+/// the callback can fire the instant the hook is installed.
 pub fn install(
 	trigger: TriggerKey,
 	tx: Sender<Trigger>,
