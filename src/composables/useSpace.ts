@@ -110,6 +110,24 @@ export type LoadState = 'loading' | 'ready' | 'error'
 export type ActionErrorScope = 'composer' | 'editor' | 'list'
 export type ActionError = { scope: ActionErrorScope; message: string }
 
+/**
+ * What a mutation gives back: the command's own result, plus whether the
+ * document it returned is the one now on screen.
+ *
+ * The two are genuinely separate. A superseded response means the store carried
+ * the mutation out — so this is not a failure — but a fresher document had
+ * already landed and this one was discarded, with a refresh scheduled behind it.
+ * A caller that then moves focus or the selection on the strength of its own
+ * result would be reasoning about a document nobody is looking at.
+ */
+export type MutationResult<T> = { value: T; applied: boolean }
+
+/** Whether a mutation's own document is the one now on screen. `null` — the
+ *  mutation failed — is not applied either. */
+export function applied<T>(result: MutationResult<T> | null): boolean {
+	return result?.applied ?? false
+}
+
 const EMPTY_STATUS: StoreStatus = {
 	path: null,
 	errored: false,
@@ -450,7 +468,7 @@ async function mutate<T>(
 	run: () => Promise<T>,
 	toSpace: (result: T) => Space,
 	options: { scope: ActionErrorScope; repullStatus?: boolean },
-): Promise<T | null> {
+): Promise<MutationResult<T> | null> {
 	// Only this surface's own error is cleared: a failure belongs to the text it
 	// left in place, and another surface's message is still explaining itself.
 	if (actionError.value?.scope === options.scope) actionError.value = null
@@ -484,7 +502,7 @@ async function mutate<T>(
 	// fresher one.
 	if (!applied) void refresh()
 
-	return result
+	return { value: result, applied }
 }
 
 async function addNote(body: string) {
@@ -497,7 +515,7 @@ async function addNote(body: string) {
 	)
 	// The roving target follows the new note; DOM focus stays in the composer so
 	// consecutive captures need no mouse.
-	if (result) selection.focusRow(noteRow(result.noteId))
+	if (result?.applied) selection.focusRow(noteRow(result.value.noteId))
 	return result
 }
 
@@ -717,6 +735,7 @@ export function useSpace() {
 		notesInSection,
 		noteById,
 		notesByIds,
+		applied,
 		errorFor,
 		initialize,
 		dispose,

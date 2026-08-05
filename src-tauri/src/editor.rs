@@ -27,12 +27,17 @@
 //! `%EDITOR%` is user-controlled text, so it is parsed into an executable plus an
 //! argument *vector* and handed to `std::process::Command`, which reaches
 //! `CreateProcessW` with the arguments still separate. Copper never concatenates
-//! a command line. That is not a claim that `cmd.exe` never appears in the
-//! process tree — the common `EDITOR=code` resolves through `code.cmd`, and
-//! Rust's own `Command` runs `.cmd` targets via the shell — but std's escaping
-//! keeps the arguments separated there, which a hand-built string would not.
+//! a command line and **never constructs a `cmd` invocation of its own** — not
+//! even for console editors, which get a window from `CREATE_NEW_CONSOLE`
+//! instead. That is still not a claim that `cmd.exe` never appears in the process
+//! tree: the common `EDITOR=code` resolves through `code.cmd`, and Rust's own
+//! `Command` runs `.cmd` targets via the shell. The difference is who builds the
+//! command line — std's escaping keeps the arguments separated there, which a
+//! hand-built string would not, and which a `cmd /c start` wrapper of our own
+//! would have put back in our hands.
 
 use std::collections::HashMap;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
@@ -73,6 +78,16 @@ type FileWatcher = Debouncer<RecommendedWatcher, RecommendedCache>;
 /// detached.
 const CONSOLE_EDITORS: [&str; 8] = ["vi", "vim", "nvim", "nano", "micro", "helix", "hx", "emacs"];
 
+/// `CREATE_NEW_CONSOLE`. Declared here rather than pulled from the `windows`
+/// crate: it is one ABI-fixed integer from `winbase.h`, and the alternative is
+/// widening the feature set of a crate this module otherwise does not touch.
+const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
+/// A body larger than this is not read back. A temp file that has grown to tens
+/// of megabytes is a runaway process or a mistaken paste, not a note, and the
+/// store would hold the whole thing in memory for the rest of the session.
+const MAX_READ_BACK_BYTES: u64 = 8 * 1024 * 1024;
+
 // --- state -------------------------------------------------------------------
 
 struct Handoff {
@@ -112,9 +127,19 @@ pub struct HandoffState {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum OpenOutcome {
 	Opened,
+	/// Opened, but the handoff this replaced had a refused save whose temp file
+	/// was kept. The path is carried so the panel can say where that text is —
+	/// otherwise the only copy of it would be somewhere the user cannot find.
+	OpenedWithRetainedFile {
+		path: String,
+	},
 	NoEditor,
-	AtCapacity { limit: usize },
-	Error { message: String },
+	AtCapacity {
+		limit: usize,
+	},
+	Error {
+		message: String,
+	},
 }
 
 /// `%VISUAL%` and `%EDITOR%` and `notepad.exe` are an executable plus arguments;
@@ -193,7 +218,13 @@ pub fn slugify_first_line(body: &str) -> String {
 			pending_dash = false;
 			// Lowercased so the name is stable across filesystems that differ on
 			// case, and so two notes cannot collide only by capitalisation.
-			slug.extend(character.to_lowercase());
+			let folded: String = character.to_lowercase().collect();
+			// Checked *before* appending, not after: `İ` folds to two chars, so a
+			// post-append check lets the slug overshoot the cap by one.
+			if slug.chars().count() + folded.chars().count() > MAX_SLUG_CHARS {
+				break;
+			}
+			slug.push_str(&folded);
 		} else {
 			pending_dash = true;
 		}
@@ -203,10 +234,29 @@ pub fn slugify_first_line(body: &str) -> String {
 	}
 
 	if slug.is_empty() {
-		FALLBACK_SLUG.to_string()
-	} else {
-		slug
+		return FALLBACK_SLUG.to_string();
 	}
+	// `CON.md`, `NUL.md` and friends are device names on Windows whatever the
+	// extension and whatever directory they are in: creating one either fails or
+	// opens the device. A note beginning with the word "con" is not exotic enough
+	// to leave that to chance.
+	if is_reserved_device_name(&slug) {
+		return format!("{slug}-note");
+	}
+	slug
+}
+
+/// The DOS device names, which Win32 still resolves ahead of any real path.
+fn is_reserved_device_name(slug: &str) -> bool {
+	const RESERVED: [&str; 4] = ["con", "prn", "aux", "nul"];
+	if RESERVED.contains(&slug) {
+		return true;
+	}
+	// COM1–COM9 and LPT1–LPT9.
+	let Some(digit) = slug.strip_prefix("com").or_else(|| slug.strip_prefix("lpt")) else {
+		return false;
+	};
+	matches!(digit, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
 }
 
 /// The editors to try, in order. Each falls through to the next on a spawn
@@ -242,6 +292,63 @@ fn is_console_editor(path: &Path) -> bool {
 	CONSOLE_EDITORS.contains(&stem.as_str())
 }
 
+/// Resolves a bare program name against `PATH` × `PATHEXT`.
+///
+/// Rust's `Command` searches `PATH` but appends only `.exe`, so the single most
+/// common value on Windows — `EDITOR=code`, which is really `code.cmd` — fails
+/// with `NotFound` and the candidate list falls silently through to the OS
+/// association. Resolving to a concrete path first is what makes `code` and
+/// `code --wait` work, and it is also what lets std's own hardening apply: a
+/// `.cmd` target goes through the shell with its arguments still escaped
+/// separately, which is exactly the case AC36 anticipates.
+///
+/// A name that already carries an extension, or any path with a separator, is
+/// returned untouched — `Command` handles those itself.
+fn resolve_program(program: &Path, path_var: Option<&str>, pathext: Option<&str>) -> PathBuf {
+	let has_separator = program
+		.as_os_str()
+		.to_string_lossy()
+		.contains(['/', '\\']);
+	if has_separator || program.extension().is_some() {
+		return program.to_path_buf();
+	}
+
+	let extensions: Vec<String> = pathext
+		.unwrap_or(".COM;.EXE;.BAT;.CMD")
+		.split(';')
+		.map(|ext| ext.trim().to_ascii_lowercase())
+		.filter(|ext| !ext.is_empty())
+		.collect();
+
+	for directory in path_var.unwrap_or_default().split(';') {
+		let directory = directory.trim();
+		if directory.is_empty() {
+			continue;
+		}
+		for extension in &extensions {
+			let mut name = program.as_os_str().to_os_string();
+			name.push(extension);
+			let candidate = Path::new(directory).join(name);
+			if candidate.is_file() {
+				return candidate;
+			}
+		}
+	}
+
+	// Nothing matched. Handed back unchanged so `Command` reports the failure and
+	// the caller falls through to the next candidate, rather than this inventing
+	// an error of its own.
+	program.to_path_buf()
+}
+
+fn resolve_from_environment(program: &Path) -> PathBuf {
+	resolve_program(
+		program,
+		std::env::var("PATH").ok().as_deref(),
+		std::env::var("PATHEXT").ok().as_deref(),
+	)
+}
+
 fn temp_root() -> PathBuf {
 	std::env::temp_dir().join(TEMP_DIR_NAME)
 }
@@ -263,20 +370,22 @@ fn launch(target: &EditorTarget, app: &AppHandle, file: &Path) -> Result<(), Str
 				.map_err(|err| err.to_string())
 		}
 		EditorTarget::Executable { path, args } => {
-			// A terminal is created only for editors that need one to draw in.
-			// `start`'s first quoted argument is the window title, hence the empty
-			// one — and every part of this is a separate `Command` argument, never a
-			// concatenated command line.
-			let mut command = if is_console_editor(path) {
-				let mut command = Command::new("cmd");
-				command.args(["/c", "start", ""]);
-				command.arg(path);
-				command
-			} else {
-				Command::new(path)
-			};
-
+			// The editor is spawned **directly**. An earlier form wrapped console
+			// editors in `cmd /c start`, which was wrong twice over: it put a shell
+			// between Copper and a program named by user-controlled text, and — worse
+			// in practice — `cmd` itself spawns successfully whatever it is asked to
+			// run, so a missing editor reported success and the fall-through to the
+			// next candidate never happened.
+			let resolved = resolve_from_environment(path);
+			let mut command = Command::new(&resolved);
 			command.args(args).arg(file);
+
+			// A console editor needs a window to draw in, which it gets from the
+			// creation flag rather than from a shell.
+			if is_console_editor(&resolved) {
+				command.creation_flags(CREATE_NEW_CONSOLE);
+			}
+
 			// Never awaited: `notepad.exe` blocks until its window closes and
 			// `code.exe` returns at once, so an exit status would mean two different
 			// things. The file watch is the trigger.
@@ -296,17 +405,54 @@ fn note_body(app: &AppHandle, note_id: &str) -> Option<String> {
 	space.note(note_id).map(|note| note.body.clone())
 }
 
-/// Writes the note and announces it.
+enum WriteOutcome {
+	Written,
+	/// The note already held exactly this text — nothing to write, and no reason
+	/// to bump `updated` or churn the file.
+	AlreadyEqual,
+	/// The note no longer exists.
+	Missing,
+	/// The note moved underneath the editor: the save is refused, not applied.
+	Moved,
+	Refused(String),
+}
+
+/// Compares the note against the handoff's baseline and writes only if it still
+/// matches — **both under one store lock**.
 ///
-/// The announcement is not optional. A mutation the *frontend* invokes needs no
-/// event because its return value is the change (task-003 §8.4) — but this one
-/// has no caller on that side, so without an emit the panel would keep rendering
-/// the pre-save body until something else happened to refresh it. The watcher
-/// cannot rescue it either: the write is Copper's own, so it is correctly
-/// suppressed as a self-write.
-fn write_body(app: &AppHandle, note_id: &str, body: &str) -> Result<(), String> {
+/// Splitting the compare from the write is the mistake this exists to prevent:
+/// the check is the whole of AC34a's protection, and with the lock released in
+/// between, an undo landing in that window would be silently overwritten by a
+/// save the check had already blessed.
+///
+/// The announcement is not optional either. A mutation the *frontend* invokes
+/// needs no event because its return value is the change (task-003 §8.4) — but
+/// this one has no caller on that side, so without an emit the panel would keep
+/// rendering the pre-save body. The watcher cannot rescue it: the write is
+/// Copper's own, so it is correctly suppressed as a self-write.
+fn write_if_unchanged(
+	app: &AppHandle,
+	note_id: &str,
+	baseline: &str,
+	body: &str,
+) -> WriteOutcome {
 	let state = app.state::<SharedStore>();
 	let mut guard = store::lock(&state);
+
+	let current = match guard.active_space() {
+		Ok(space) => space.note(note_id).map(|note| note.body.clone()),
+		Err(err) => return WriteOutcome::Refused(err.message()),
+	};
+	let Some(current) = current else {
+		return WriteOutcome::Missing;
+	};
+	if current != baseline {
+		return WriteOutcome::Moved;
+	}
+	if current == body {
+		return WriteOutcome::AlreadyEqual;
+	}
+
 	// No snapshot, by design: task-003 §4.3 excludes `edit_note` from the undo
 	// stack, and snapshot undo covers structural operations only.
 	let written = guard
@@ -331,7 +477,10 @@ fn write_body(app: &AppHandle, note_id: &str, body: &str) -> Result<(), String> 
 		}
 	}
 
-	written.map(|_| ())
+	match written {
+		Ok(_) => WriteOutcome::Written,
+		Err(message) => WriteOutcome::Refused(message),
+	}
 }
 
 // --- registry operations -----------------------------------------------------
@@ -356,18 +505,29 @@ fn emit_state(app: &AppHandle) {
 	}
 }
 
-/// Drops the watcher and deletes the temp tree. Does not emit — callers decide
-/// when the batch is done.
+/// Drops the watcher and, unless the handoff is conflicted, deletes the temp
+/// tree. Does not emit — callers decide when the batch is done.
 ///
-/// Cleanup is **best-effort**: a detached editor or an antivirus scanner can
-/// hold a handle open. The guarantee is completed on the other side, by
-/// [`scavenge`] on startup.
-fn remove(app: &AppHandle, note_id: &str) -> bool {
+/// **A conflicted handoff keeps its file.** Its contents are a save Copper
+/// refused to apply, so the temp file is the only copy of that work; deleting it
+/// on stop, on reopen or on exit would destroy exactly what AC34a set out to
+/// preserve. The retained path is returned so the caller can say where it is.
+///
+/// Cleanup is otherwise **best-effort**: a detached editor or an antivirus
+/// scanner can hold a handle open. The guarantee is completed on the other side,
+/// by [`scavenge`] on startup — which is also why a retained file is not a leak
+/// so much as a deferred one.
+fn remove(app: &AppHandle, note_id: &str) -> Removed {
 	let Some(handoff) = entries(app).remove(note_id) else {
-		return false;
+		return Removed::Absent;
 	};
-	// The watcher is dropped with the entry, before the directory goes.
+	// The watcher is dropped with the entry, before the directory would go.
 	drop(handoff._watcher);
+
+	if keeps_its_file(handoff.conflicted) {
+		return Removed::Retained(handoff.file);
+	}
+
 	if let Err(err) = std::fs::remove_dir_all(&handoff.dir) {
 		if err.kind() != std::io::ErrorKind::NotFound {
 			diagnostics::log_error(&format!(
@@ -376,12 +536,52 @@ fn remove(app: &AppHandle, note_id: &str) -> bool {
 			));
 		}
 	}
-	true
+	Removed::Deleted
+}
+
+/// Whether ending a handoff keeps its temp file.
+///
+/// A conflicted handoff's file holds a save Copper refused to apply, and that
+/// text exists nowhere else — so stopping, reopening or exiting must not take it
+/// with them. Factored out from the four call sites that used to delete
+/// unconditionally, and testable without a Tauri runtime.
+fn keeps_its_file(conflicted: bool) -> bool {
+	conflicted
+}
+
+/// Whether `reconcile_handoffs` may refresh a temp file from the note.
+///
+/// Never while conflicted, for the same reason: overwriting the refused text to
+/// "catch the editor up" would destroy exactly what the refusal protected.
+fn should_rewrite_temp_file(conflicted: bool, baseline: &str, body: &str) -> bool {
+	!conflicted && baseline != body
+}
+
+enum Removed {
+	Absent,
+	Deleted,
+	/// The handoff was conflicted, so its temp file was kept. Carries the path,
+	/// which is the only way the user can reach the refused text.
+	Retained(PathBuf),
+}
+
+impl Removed {
+	fn existed(&self) -> bool {
+		!matches!(self, Removed::Absent)
+	}
+
+	fn retained(&self) -> Option<&Path> {
+		match self {
+			Removed::Retained(path) => Some(path.as_path()),
+			_ => None,
+		}
+	}
 }
 
 /// Everything a save handler needs, taken in one pass under the registry lock so
 /// the store lock can be taken afterwards rather than alongside.
 struct Pending {
+	handoff_id: String,
 	file: PathBuf,
 	file_seen: Vec<u8>,
 	body_baseline: String,
@@ -396,41 +596,112 @@ fn pending_for(app: &AppHandle, note_id: &str, handoff_id: Option<&str>) -> Opti
 		return None;
 	}
 	Some(Pending {
+		handoff_id: handoff.handoff_id.clone(),
 		file: handoff.file.clone(),
 		file_seen: handoff.file_seen.clone(),
 		body_baseline: handoff.body_baseline.clone(),
 	})
 }
 
-fn mark_conflicted(app: &AppHandle, note_id: &str) {
-	if let Some(handoff) = entries(app).get_mut(note_id) {
-		handoff.conflicted = true;
+/// Every mutation re-checks the `handoff_id` it was resolved under.
+///
+/// The read and the decision are not atomic — the store lock is taken between
+/// them, and the registry lock is deliberately not held across it — so a stop or
+/// a reopen can land in the gap. Without this the callback would write its
+/// verdict onto a *different* handoff's entry.
+fn with_handoff<T>(
+	app: &AppHandle,
+	note_id: &str,
+	handoff_id: &str,
+	edit: impl FnOnce(&mut Handoff) -> T,
+) -> Option<T> {
+	let mut guard = entries(app);
+	let handoff = guard.get_mut(note_id)?;
+	if handoff.handoff_id != handoff_id {
+		return None;
 	}
+	Some(edit(handoff))
+}
+
+fn mark_conflicted(app: &AppHandle, note_id: &str, handoff_id: &str) -> bool {
+	with_handoff(app, note_id, handoff_id, |handoff| {
+		!std::mem::replace(&mut handoff.conflicted, true)
+	})
+	.unwrap_or(false)
 }
 
 /// Returns whether the card's state changed — that is, whether an earlier
 /// refusal has just stopped being true.
-fn accept_save(app: &AppHandle, note_id: &str, bytes: Vec<u8>, body: String) -> bool {
-	let mut guard = entries(app);
-	let Some(handoff) = guard.get_mut(note_id) else {
-		return false;
-	};
-	handoff.file_seen = bytes;
-	handoff.body_baseline = body;
-	std::mem::replace(&mut handoff.conflicted, false)
+fn accept_save(
+	app: &AppHandle,
+	note_id: &str,
+	handoff_id: &str,
+	bytes: Vec<u8>,
+	body: String,
+) -> bool {
+	with_handoff(app, note_id, handoff_id, |handoff| {
+		handoff.file_seen = bytes;
+		handoff.body_baseline = body;
+		std::mem::replace(&mut handoff.conflicted, false)
+	})
+	.unwrap_or(false)
 }
 
 // --- the save path -----------------------------------------------------------
 
-fn read_with_retry(file: &Path) -> Option<Vec<u8>> {
-	match std::fs::read(file) {
-		Ok(bytes) => Some(bytes),
-		// The editor may be mid-write. One more chance, a debounce window later.
-		Err(_) => {
-			std::thread::sleep(READ_RETRY);
-			std::fs::read(file).ok()
+/// Why a save did not reach the note. Each variant is surfaced rather than
+/// logged: a handoff that silently stops applying saves while the card still
+/// reads "Editing externally" is the worst of both states.
+enum SaveProblem {
+	Unreadable,
+	NotText,
+	TooLarge(u64),
+	Empty,
+	Rejected(String),
+}
+
+impl SaveProblem {
+	fn describe(&self, note_id: &str) -> String {
+		match self {
+			SaveProblem::Unreadable => format!("could not read the temp file for {note_id}"),
+			SaveProblem::NotText => format!("the temp file for {note_id} is not UTF-8 text"),
+			SaveProblem::TooLarge(size) => {
+				format!("the temp file for {note_id} is {size} bytes, past the read-back limit")
+			}
+			SaveProblem::Empty => format!("the temp file for {note_id} is empty"),
+			SaveProblem::Rejected(message) => format!("the store refused the save for {note_id}: {message}"),
 		}
 	}
+}
+
+/// Reads the file, size-capped. The second attempt covers an editor caught
+/// mid-write; it is skipped on the way out, where the sleep would only delay a
+/// process the user has already closed.
+fn read_body_file(file: &Path) -> Result<Vec<u8>, SaveProblem> {
+	let attempts = if EXITING.load(std::sync::atomic::Ordering::Relaxed) {
+		1
+	} else {
+		2
+	};
+	for attempt in 0..attempts {
+		match std::fs::metadata(file) {
+			Ok(metadata) if metadata.len() > MAX_READ_BACK_BYTES => {
+				return Err(SaveProblem::TooLarge(metadata.len()))
+			}
+			Ok(_) => {}
+			Err(_) if attempt + 1 < attempts => {
+				std::thread::sleep(READ_RETRY);
+				continue;
+			}
+			Err(_) => return Err(SaveProblem::Unreadable),
+		}
+		match std::fs::read(file) {
+			Ok(bytes) => return Ok(bytes),
+			Err(_) if attempt + 1 < attempts => std::thread::sleep(READ_RETRY),
+			Err(_) => return Err(SaveProblem::Unreadable),
+		}
+	}
+	Err(SaveProblem::Unreadable)
 }
 
 /// The debounced save handler, and [`end_all`]'s per-handoff step. Returns true
@@ -439,53 +710,55 @@ fn apply_saved_file(app: &AppHandle, note_id: &str, handoff_id: Option<&str>) ->
 	let Some(pending) = pending_for(app, note_id, handoff_id) else {
 		return false;
 	};
-	let Some(bytes) = read_with_retry(&pending.file) else {
-		return false;
+	let id = pending.handoff_id.as_str();
+
+	let bytes = match read_body_file(&pending.file) {
+		Ok(bytes) => bytes,
+		Err(problem) => return report_problem(app, note_id, id, &problem),
 	};
 	// Our own write coming back as an event.
 	if bytes == pending.file_seen {
 		return false;
 	}
-	let Ok(text) = String::from_utf8(bytes.clone()) else {
-		diagnostics::log_error(&format!(
-			"[copper] {} is not UTF-8; the save was not applied",
-			pending.file.display()
-		));
-		return false;
+	let Ok(text) = std::str::from_utf8(&bytes) else {
+		return report_problem(app, note_id, id, &SaveProblem::NotText);
 	};
-
-	let Some(current) = note_body(app, note_id) else {
-		// The note ceased to exist while the editor held it.
-		return remove(app, note_id);
-	};
-
-	// Step 9. An upstream change landed that the editor's buffer never started
-	// from, so applying this save would silently destroy it.
-	if current != pending.body_baseline {
-		mark_conflicted(app, note_id);
-		return true;
-	}
 
 	// Matches what `edit_note` will actually store, so the baseline this sets is
 	// the store's own text rather than a version of it that only agrees by luck.
 	let body = text.trim_end().to_string();
 	if body.is_empty() {
-		// The store refuses an empty body rather than treating it as a delete, and
-		// a cleared buffer is far more likely to be an accident than an intent.
-		return false;
-	}
-	if body == current {
-		return accept_save(app, note_id, bytes, body);
+		// The store refuses an empty body rather than treating it as a delete, and a
+		// cleared buffer is far more likely to be an accident than an intent.
+		return report_problem(app, note_id, id, &SaveProblem::Empty);
 	}
 
-	match write_body(app, note_id, &body) {
-		Ok(()) => accept_save(app, note_id, bytes, body),
-		Err(message) => {
-			diagnostics::log_error(&format!("[copper] editor save for {note_id} failed: {message}"));
-			mark_conflicted(app, note_id);
-			true
+	// One store lock for the compare *and* the write. Reading the body, deciding,
+	// and writing under three separate acquisitions left a window in which an undo
+	// could land between the check and the write — and the check is the whole of
+	// AC34a's protection.
+	match write_if_unchanged(app, note_id, &pending.body_baseline, &body) {
+		WriteOutcome::Written | WriteOutcome::AlreadyEqual => {
+			accept_save(app, note_id, id, bytes, body)
+		}
+		// The note ceased to exist while the editor held it.
+		WriteOutcome::Missing => remove(app, note_id).existed(),
+		// An upstream change landed that the editor's buffer never started from.
+		WriteOutcome::Moved => mark_conflicted(app, note_id, id),
+		WriteOutcome::Refused(message) => {
+			report_problem(app, note_id, id, &SaveProblem::Rejected(message))
 		}
 	}
+}
+
+/// Marks the handoff conflicted and says why. Returns whether the card changed.
+fn report_problem(app: &AppHandle, note_id: &str, handoff_id: &str, problem: &SaveProblem) -> bool {
+	let detail = problem.describe(note_id);
+	diagnostics::log_error(&format!("[copper] editor read-back: {detail}"));
+	// Conflicted rather than silent: the card keeps its temp file and says the
+	// save did not land, instead of reading "Editing externally" forever while
+	// every save is quietly dropped.
+	mark_conflicted(app, note_id, handoff_id)
 }
 
 fn spawn_watch(
@@ -542,10 +815,12 @@ pub async fn editor_open_note(id: String, app: AppHandle) -> Result<OpenOutcome,
 
 	// Reopening the same note replaces its handoff rather than stacking a second
 	// temp file on one note. Its pending save is applied first, for the same
-	// reason the cap refuses rather than evicts.
+	// reason the cap refuses rather than evicts — and if that save was refused,
+	// `remove` keeps the file rather than taking the refused text with it.
+	let mut retained: Option<PathBuf> = None;
 	if entries(&app).contains_key(&id) {
 		apply_saved_file(&app, &id, None);
-		remove(&app, &id);
+		retained = remove(&app, &id).retained().map(Path::to_path_buf);
 	} else if entries(&app).len() >= MAX_HANDOFFS {
 		return Ok(OpenOutcome::AtCapacity {
 			limit: MAX_HANDOFFS,
@@ -591,14 +866,20 @@ pub async fn editor_open_note(id: String, app: AppHandle) -> Result<OpenOutcome,
 		match launch(&target, &app, &file) {
 			Ok(()) => {
 				emit_state(&app);
-				return Ok(OpenOutcome::Opened);
+				return Ok(match retained {
+					Some(path) => OpenOutcome::OpenedWithRetainedFile {
+						path: path.to_string_lossy().into_owned(),
+					},
+					None => OpenOutcome::Opened,
+				});
 			}
 			Err(message) => failures.push(message),
 		}
 	}
 
 	// Every candidate failed: roll the whole thing back rather than leaving a
-	// watched temp file nothing will ever open.
+	// watched temp file nothing will ever open. This handoff has written nothing
+	// and cannot be conflicted, so nothing is retained.
 	remove(&app, &id);
 	diagnostics::log_error(&format!(
 		"[copper] no editor could be launched: {}",
@@ -607,14 +888,18 @@ pub async fn editor_open_note(id: String, app: AppHandle) -> Result<OpenOutcome,
 	Ok(OpenOutcome::NoEditor)
 }
 
+/// Ends a handoff, reporting the temp file's path when a refused save meant it
+/// was kept.
 #[tauri::command]
-pub async fn editor_stop_handoff(id: String, app: AppHandle) -> Result<(), String> {
-	// A pending save is applied — or refused and reported — before the temp file
-	// goes. Ending a handoff is not consent to discard unsaved work.
+pub async fn editor_stop_handoff(id: String, app: AppHandle) -> Result<Option<String>, String> {
+	// A pending save is applied — or refused and reported — before the file goes.
+	// Ending a handoff is not consent to discard unsaved work, and `remove` keeps
+	// a conflicted handoff's file for the same reason.
 	apply_saved_file(&app, &id, None);
-	remove(&app, &id);
+	let outcome = remove(&app, &id);
+	let retained = outcome.retained().map(|path| path.to_string_lossy().into_owned());
 	emit_state(&app);
-	Ok(())
+	Ok(retained)
 }
 
 /// Called by the frontend after every **applied document**, which is the only
@@ -651,7 +936,7 @@ pub fn reconcile_handoffs(app: &AppHandle) {
 		// The store lock is taken here, with the registry lock released.
 		let body = note_body(app, &id);
 		match body {
-			None => changed |= remove(app, &id),
+			None => changed |= remove(app, &id).existed(),
 			Some(body) => changed |= rewrite_temp_file(app, &id, &body),
 		}
 	}
@@ -666,7 +951,10 @@ fn rewrite_temp_file(app: &AppHandle, note_id: &str, body: &str) -> bool {
 	let Some(handoff) = guard.get_mut(note_id) else {
 		return false;
 	};
-	if handoff.body_baseline == body {
+
+	// The card stays conflicted until the user resolves it by ending the handoff
+	// or reopening the note.
+	if !should_rewrite_temp_file(handoff.conflicted, &handoff.body_baseline, body) {
 		return false;
 	}
 
@@ -681,10 +969,7 @@ fn rewrite_temp_file(app: &AppHandle, note_id: &str, body: &str) -> bool {
 
 	handoff.file_seen = contents.into_bytes();
 	handoff.body_baseline = body.to_string();
-	// The note caught up with what the editor is looking at, so an earlier refusal
-	// no longer describes anything. The old flag is the return value: it is what
-	// decides whether the card's state actually changed.
-	std::mem::replace(&mut handoff.conflicted, false)
+	false
 }
 
 /// The one way to end every live handoff at once — Phase 6 calls it on a space
@@ -700,17 +985,47 @@ fn rewrite_temp_file(app: &AppHandle, note_id: &str, body: &str) -> bool {
 /// It must complete **before** the store swaps documents: reconciliation writes
 /// through `edit_note` against the space that is still active. Idempotent and
 /// safe on an empty registry.
-pub fn end_all(app: &AppHandle) {
+///
+/// A handoff whose save is refused keeps its temp file, and the retained paths
+/// come back so the caller can report them. At exit nobody is listening, which is
+/// why `scavenge` runs afterwards and the startup sweep is the real guarantee.
+pub fn end_all(app: &AppHandle) -> Vec<PathBuf> {
 	let ids: Vec<String> = entries(app).keys().cloned().collect();
 	if ids.is_empty() {
-		return;
+		return Vec::new();
 	}
+
+	let mut retained = Vec::new();
 	for id in ids {
 		apply_saved_file(app, &id, None);
-		remove(app, &id);
+		if let Some(path) = remove(app, &id).retained() {
+			retained.push(path.to_path_buf());
+		}
 	}
 	emit_state(app);
+	retained
 }
+
+/// [`end_all`] with the read retries turned off.
+///
+/// The retry in [`read_body_file`] exists for an editor caught mid-write, and it
+/// sleeps a debounce window per attempt. At the cap of eight handoffs that is
+/// several seconds of a process the user has already asked to close, for a case
+/// that cannot arise at exit anyway — nothing is going to save into those files
+/// while the app is going down.
+pub fn end_all_at_exit(app: &AppHandle) {
+	EXITING.store(true, std::sync::atomic::Ordering::Relaxed);
+	let retained = end_all(app);
+	for path in retained {
+		diagnostics::log_error(&format!(
+			"[copper] kept {} — it holds an editor save Copper could not apply",
+			path.display()
+		));
+	}
+}
+
+/// Set once, on the way out. Read by [`read_body_file`] only.
+static EXITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Removes the whole `%TEMP%\Copper` tree.
 ///
@@ -797,6 +1112,88 @@ mod tests {
 	}
 
 	#[test]
+	fn a_multi_scalar_fold_cannot_overshoot_the_cap() {
+		// `İ` lowercases to two chars, so a cap checked after appending lets the
+		// slug run one past it.
+		let body = "İ".repeat(60);
+		assert!(slugify_first_line(&body).chars().count() <= MAX_SLUG_CHARS);
+	}
+
+	#[test]
+	fn reserved_device_names_are_never_produced() {
+		// `CON.md` is a device on Windows whatever the directory and whatever the
+		// extension, so creating the file either fails or opens the device.
+		for name in ["con", "PRN", "Aux", "nul", "com1", "LPT9"] {
+			let slug = slugify_first_line(name);
+			assert!(
+				!is_reserved_device_name(&slug),
+				"{name} slugged to the reserved name {slug}"
+			);
+		}
+		// A name that merely starts the same way is left alone.
+		assert_eq!(slugify_first_line("console output"), "console-output");
+		assert_eq!(slugify_first_line("com10 notes"), "com10-notes");
+	}
+
+	#[test]
+	fn a_program_with_an_extension_or_a_path_is_left_alone() {
+		let untouched = Path::new(r"C:\tools\vim.exe");
+		assert_eq!(
+			resolve_program(untouched, Some(r"C:\nowhere"), Some(".EXE")),
+			untouched
+		);
+		assert_eq!(
+			resolve_program(Path::new("notepad.exe"), Some(r"C:\nowhere"), Some(".EXE")),
+			Path::new("notepad.exe")
+		);
+	}
+
+	#[test]
+	fn an_extensionless_program_resolves_through_path_and_pathext() {
+		// The case that decides whether `EDITOR=code` works at all: `code` on PATH
+		// is `code.cmd`, and Rust's own Command appends only `.exe`.
+		let dir = std::env::temp_dir().join(format!("copper-resolve-{}", uuid::Uuid::new_v4()));
+		std::fs::create_dir_all(&dir).expect("temp dir");
+		let target = dir.join("code.cmd");
+		std::fs::write(&target, b"@echo off").expect("write");
+
+		let resolved = resolve_program(
+			Path::new("code"),
+			Some(&dir.to_string_lossy()),
+			Some(".EXE;.CMD"),
+		);
+		assert_eq!(resolved, target);
+
+		// Unresolvable names come back unchanged, so `Command` reports the failure
+		// and the caller falls through to the next candidate.
+		assert_eq!(
+			resolve_program(Path::new("nosucheditor"), Some(&dir.to_string_lossy()), Some(".EXE")),
+			Path::new("nosucheditor")
+		);
+
+		std::fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn pathext_order_decides_which_extension_wins() {
+		let dir = std::env::temp_dir().join(format!("copper-pathext-{}", uuid::Uuid::new_v4()));
+		std::fs::create_dir_all(&dir).expect("temp dir");
+		std::fs::write(dir.join("ed.cmd"), b"").expect("write");
+		std::fs::write(dir.join("ed.exe"), b"").expect("write");
+
+		assert_eq!(
+			resolve_program(Path::new("ed"), Some(&dir.to_string_lossy()), Some(".EXE;.CMD")),
+			dir.join("ed.exe")
+		);
+		assert_eq!(
+			resolve_program(Path::new("ed"), Some(&dir.to_string_lossy()), Some(".CMD;.EXE")),
+			dir.join("ed.cmd")
+		);
+
+		std::fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
 	fn a_slug_carries_no_path_separators_or_reserved_characters() {
 		let slug = slugify_first_line(r#"..\..\Windows\System32 <bad> "x" |y| ?z*"#);
 		assert!(slug
@@ -830,5 +1227,44 @@ mod tests {
 	#[test]
 	fn a_body_reaches_the_file_with_exactly_one_trailing_newline() {
 		assert_eq!(file_contents("one\ntwo"), "one\ntwo\n");
+	}
+
+	#[test]
+	fn a_refused_save_keeps_its_temp_file_on_every_ending() {
+		// Stopping, reopening the same note, and exiting all funnel through
+		// `remove`, and all three used to delete unconditionally — taking with them
+		// the only copy of a save Copper had refused to apply.
+		assert!(keeps_its_file(true));
+		assert!(!keeps_its_file(false));
+	}
+
+	#[test]
+	fn a_conflicted_handoff_is_never_rewritten_from_the_note() {
+		// The other half of the same hole: reconciliation refreshed the temp file
+		// whenever the note moved, ignoring the flag — so the refused text was
+		// overwritten by the very body the refusal was protecting it from, and the
+		// flag was cleared on the way out.
+		assert!(!should_rewrite_temp_file(true, "baseline", "moved"));
+		// Unconflicted, and the note actually moved: refresh it (AC47).
+		assert!(should_rewrite_temp_file(false, "baseline", "moved"));
+		// Unconflicted and unchanged: nothing to do, and no needless write.
+		assert!(!should_rewrite_temp_file(false, "same", "same"));
+	}
+
+	#[test]
+	fn every_save_problem_says_which_note_it_is_about() {
+		// Each of these used to be a silent drop that left the card reading
+		// "Editing externally" while every save was discarded.
+		let problems = [
+			SaveProblem::Unreadable,
+			SaveProblem::NotText,
+			SaveProblem::TooLarge(MAX_READ_BACK_BYTES + 1),
+			SaveProblem::Empty,
+			SaveProblem::Rejected("a note cannot be empty".into()),
+		];
+		for problem in problems {
+			let described = problem.describe("nte_01000001");
+			assert!(described.contains("nte_01000001"), "{described}");
+		}
 	}
 }

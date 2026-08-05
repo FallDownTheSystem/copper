@@ -16,7 +16,7 @@ import { useNoteDisclosure } from './useNoteDisclosure'
 import { useNoteEditor } from './useNoteEditor'
 import { useNoteSearch } from './useNoteSearch'
 import { focusRowSoon, noteRow, rowElement, useSelection } from './useSelection'
-import { noteCountLabel, useStatusMessage } from './useStatusMessage'
+import { countMessage, useStatusMessage } from './useStatusMessage'
 import { useSpace } from './useSpace'
 
 const space = useSpace()
@@ -93,6 +93,28 @@ function isRedundantTarget(sectionId: string) {
 	return notes.length > 0 && notes.every((note) => note.section === sectionId)
 }
 
+/**
+ * Runs mutating actions one at a time, each reading the document the previous
+ * one produced.
+ *
+ * Every action resolves its own targets and positions from current state, so two
+ * that overlap in flight both reason about the document as it was *before*
+ * either ran. `Space` twice in quick succession sent `done: true` twice — a
+ * no-op that still pushed a second undo snapshot — instead of toggling back, and
+ * `Alt+Down` twice computed the same destination index twice and moved the note
+ * one position rather than two. Serialising is what makes each press see the
+ * result of the one before it.
+ *
+ * A rejection is swallowed for the *queue* only; the caller still sees it.
+ */
+let queue: Promise<unknown> = Promise.resolve()
+
+function serialize<T>(run: () => Promise<T>): Promise<T> {
+	const next = queue.then(run, run)
+	queue = next.catch(() => undefined)
+	return next
+}
+
 // --- copy --------------------------------------------------------------------
 
 async function copyBodies(build: (bodies: readonly string[]) => string) {
@@ -101,7 +123,12 @@ async function copyBodies(build: (bodies: readonly string[]) => string) {
 
 	const written = await clipboard.writeText(build(notes.map((note) => note.body)))
 	status.setMessage(
-		written ? noteCountLabel('Copied', notes.length) : 'Couldn’t write to the clipboard.',
+		written
+			? countMessage(notes.length, {
+					one: 'Copied 1 note',
+					many: (count) => `Copied ${count} notes`,
+				})
+			: 'Couldn’t write to the clipboard.',
 	)
 }
 
@@ -120,64 +147,84 @@ function copyAsList() {
  * undo. On a mixed selection everything becomes done; only when everything is
  * already done does it flip the other way.
  */
-async function toggleDone() {
-	const notes = targetNotes()
-	if (notes.length === 0) return
-	await space.setNotesDone(
-		notes.map((note) => note.id),
-		!notes.every((note) => note.done),
-	)
+function toggleDone() {
+	return serialize(async () => {
+		const notes = targetNotes()
+		if (notes.length === 0) return
+		await space.setNotesDone(
+			notes.map((note) => note.id),
+			!notes.every((note) => note.done),
+		)
+	})
 }
 
 // --- move to -----------------------------------------------------------------
 
-async function moveTo(sectionId: string) {
-	const ids = targetIds()
-	if (ids.length === 0) return
+function moveTo(sectionId: string) {
+	return serialize(async () => {
+		const ids = targetIds()
+		if (ids.length === 0) return
 
-	const result = await space.moveNotes(ids, sectionId)
-	if (!result) return
+		const applied = space.applied(await space.moveNotes(ids, sectionId))
+		// A superseded document means a fresher one is already on its way and this
+		// one was discarded; moving focus on the strength of it would be reasoning
+		// about a document nobody is looking at.
+		if (!applied) return
 
-	// They stay selected — `move_notes` preserves relative order and appends them
-	// to the end of the target — and focus lands on the first of them.
-	const first = ids[0]
-	if (first === undefined) return
-	selection.focusRow(noteRow(first))
-	focusRowSoon(noteRow(first))
+		// They stay selected — `move_notes` preserves relative order and appends
+		// them to the end of the target — and focus lands on the first of them.
+		const first = ids[0]
+		if (first === undefined) return
+		selection.focusRow(noteRow(first))
+		focusRowSoon(noteRow(first))
+	})
 }
 
 // --- merge -------------------------------------------------------------------
 
-async function merge() {
-	const ids = targetIds()
-	if (ids.length < 2) {
-		status.setMessage('Select two or more notes to merge.')
-		return
-	}
+function merge() {
+	return serialize(async () => {
+		const ids = targetIds()
+		if (ids.length < 2) {
+			status.setMessage('Select two or more notes to merge.')
+			return
+		}
 
-	const result = await space.mergeNotes(ids)
-	if (!result) return
+		const result = await space.mergeNotes(ids)
+		if (!space.applied(result)) return
 
-	// The survivor is whichever comes first in canonical order — task-003 decides
-	// that, and `ids` is already in canonical order, so this reads the answer
-	// rather than recomputing it.
-	const survivor = ids[0]
-	if (survivor === undefined) return
-	selection.select(survivor)
-	focusRowSoon(noteRow(survivor))
+		// **Read out of the returned document, not assumed from the request.** The
+		// survivor is whichever of the merged ids comes first in canonical order,
+		// and task-003 decides that against the document it actually merged — which
+		// after a conflict re-apply is the external one, where the order can differ
+		// from the one these ids were collected in. The survivor is simply the id
+		// that is still there.
+		const survivor = ids.find((id) => result?.value.notes.some((note) => note.id === id))
+		if (survivor === undefined) return
+		selection.select(survivor)
+		focusRowSoon(noteRow(survivor))
+	})
 }
 
 // --- delete ------------------------------------------------------------------
 
-async function deleteNotes() {
-	const ids = targetIds()
-	if (ids.length === 0) return
+function deleteNotes() {
+	return serialize(async () => {
+		const ids = targetIds()
+		if (ids.length === 0) return
 
-	const result = await space.deleteNotes(ids)
-	// Selection and focus are not fixed up here: task-004's reconciliation has
-	// already pruned the dead ids and moved focus to the nearest survivor. A
-	// second mechanism would only compete with it.
-	if (result) status.setMessage(`${noteCountLabel('Deleted', ids.length)} · Ctrl+Z to undo`)
+		const result = await space.deleteNotes(ids)
+		// Selection and focus are not fixed up here: task-004's reconciliation has
+		// already pruned the dead ids and moved focus to the nearest survivor. A
+		// second mechanism would only compete with it.
+		if (!result) return
+		status.setMessage(
+			countMessage(ids.length, {
+				one: 'Deleted 1 note · Ctrl+Z to undo',
+				many: (count) => `Deleted ${count} notes · Ctrl+Z to undo`,
+			}),
+		)
+	})
 }
 
 // --- reorder -----------------------------------------------------------------
@@ -206,27 +253,31 @@ function reorderBlockedBySearch(): boolean {
  * exactly the position it occupies in that final order. So this needs no diff
  * against the previous order and no knowledge of where the drag started.
  */
-async function finishDrag(noteId: string) {
-	if (reorderBlockedBySearch()) return
+function finishDrag(noteId: string) {
+	// The DOM is read *before* the queue, not inside it: it holds the result of a
+	// gesture that has already finished, and a mutation completing in the meantime
+	// would re-render the list out from under it.
+	if (reorderBlockedBySearch()) return Promise.resolve()
 	const row = rowElement(noteRow(noteId))
 	const group = row?.closest<HTMLElement>('[data-section-id]')
 	const sectionId = group?.dataset.sectionId
-	if (!group || sectionId === undefined) return
+	if (!group || sectionId === undefined) return Promise.resolve()
 
 	const index = [...group.querySelectorAll<HTMLElement>('[data-note-row]')].findIndex(
 		(element) => element.dataset.rowId === noteRow(noteId),
 	)
-	if (index === -1) return
+	if (index === -1) return Promise.resolve()
 
-	const note = space.noteById(noteId)
-	// A drag that changed nothing must not push an undo entry.
-	if (note && note.section === sectionId && positionOf(noteId) === index) return
+	return serialize(async () => {
+		const note = space.noteById(noteId)
+		// A drag that changed nothing must not push an undo entry.
+		if (note && note.section === sectionId && positionOf(noteId) === index) return
 
-	const result = await space.reorderNote(noteId, sectionId, index)
-	if (!result) return
+		if (!space.applied(await space.reorderNote(noteId, sectionId, index))) return
 
-	selection.select(noteId)
-	focusRowSoon(noteRow(noteId))
+		selection.select(noteId)
+		focusRowSoon(noteRow(noteId))
+	})
 }
 
 /** The note's index within its own section in the *document*, which is what a
@@ -244,32 +295,37 @@ function positionOf(noteId: string): number {
  * without a pointer. At a section boundary it crosses into the neighbouring
  * section rather than stopping, which is what the drag does too.
  */
-async function moveFocusedBy(delta: number) {
-	const noteId = selection.focusedNoteId.value
-	if (noteId === null || reorderBlockedBySearch()) return
+function moveFocusedBy(delta: number) {
+	// Positions are read inside the queue, so a held Alt+Down sees where the note
+	// landed on the previous press rather than recomputing the same destination.
+	return serialize(async () => {
+		const noteId = selection.focusedNoteId.value
+		if (noteId === null || reorderBlockedBySearch()) return
 
-	const groups = selection.visibleGroups.value
-	const groupIndex = groups.findIndex((group) => group.noteIds.includes(noteId))
-	const group = groups[groupIndex]
-	if (!group) return
+		const groups = selection.visibleGroups.value
+		const groupIndex = groups.findIndex((group) => group.noteIds.includes(noteId))
+		const group = groups[groupIndex]
+		if (!group) return
 
-	const at = group.noteIds.indexOf(noteId)
-	const next = at + delta
+		const at = group.noteIds.indexOf(noteId)
+		const next = at + delta
 
-	let sectionId = group.sectionId
-	let index = next
+		let sectionId = group.sectionId
+		let index = next
 
-	if (next < 0 || next >= group.noteIds.length) {
-		const neighbour = groups[groupIndex + delta]
-		if (!neighbour) return
-		sectionId = neighbour.sectionId
-		// Entering from above lands at the top; entering from below lands at the
-		// bottom — the note keeps travelling in the direction it was going.
-		index = delta > 0 ? 0 : neighbour.noteIds.length
-	}
+		if (next < 0 || next >= group.noteIds.length) {
+			const neighbour = groups[groupIndex + delta]
+			if (!neighbour) return
+			sectionId = neighbour.sectionId
+			// Entering from above lands at the top; entering from below lands at the
+			// bottom — the note keeps travelling in the direction it was going.
+			index = delta > 0 ? 0 : neighbour.noteIds.length
+		}
 
-	const result = await space.reorderNote(noteId, sectionId, index)
-	if (result) focusRowSoon(noteRow(noteId))
+		if (space.applied(await space.reorderNote(noteId, sectionId, index))) {
+			focusRowSoon(noteRow(noteId))
+		}
+	})
 }
 
 // --- expand and edit ---------------------------------------------------------
@@ -305,6 +361,12 @@ async function openInEditor() {
 	switch (outcome.kind) {
 		case 'opened':
 			return
+		case 'opened-with-retained-file':
+			// The handoff this replaced had a save Copper refused, so its file was
+			// kept rather than deleted. Saying where is the only way back to that
+			// text — the temp directory is not somewhere anyone would look.
+			status.setMessage(`Opened. The earlier unsaved version is still at ${outcome.path}`)
+			return
 		case 'no-editor':
 			status.setMessage(
 				'Couldn’t open an editor. Set the EDITOR environment variable to your editor’s path.',
@@ -321,7 +383,10 @@ async function openInEditor() {
 }
 
 async function stopHandoff(noteId: string) {
-	await handoff.stopHandoff(noteId)
+	const retained = await handoff.stopHandoff(noteId)
+	if (retained !== null) {
+		status.setMessage(`Stopped. The unsaved version is still at ${retained}`)
+	}
 }
 
 // --- undo --------------------------------------------------------------------
@@ -343,7 +408,12 @@ function announceResults() {
 		status.clear()
 		return
 	}
-	status.setMessage(noteCountLabel('Found', search.resultCount.value))
+	const count = search.resultCount.value
+	if (count === 0) {
+		status.setMessage('No notes match')
+		return
+	}
+	status.setMessage(countMessage(count, { one: '1 note matches', many: (n) => `${n} notes match` }))
 }
 
 export function useNoteActions() {

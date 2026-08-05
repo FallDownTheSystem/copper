@@ -81,6 +81,17 @@ const orders = computed(() => {
 	return { groups, rows, notes }
 })
 
+/** Every note in the document, filter or no filter. The set reconciliation
+ *  prunes against — "does this note still exist" is a different question from
+ *  "is this note on screen", and only the first one may remove a selection. */
+function documentNoteIds(): Set<string> {
+	const ids = new Set<string>()
+	for (const group of documentGroups.value) {
+		for (const id of group.noteIds) ids.add(id)
+	}
+	return ids
+}
+
 /** What the list renders, derived from the same walk as the traversal orders —
  *  so what is on screen and what the arrow keys reach can never disagree. */
 const visibleGroups = computed(() => orders.value.groups)
@@ -355,13 +366,24 @@ function captureScroll(): SelectionSnapshot['scroll'] {
 /**
  * Prunes what no longer exists and relocates focus, against both the snapshot
  * and the freshly synced document.
+ *
+ * **Pruning asks "does this note exist?", not "is it on screen?"** — so it runs
+ * against the whole document rather than the search-filtered orders. Using
+ * `visibleNoteIds` here meant that any document change landing while a query was
+ * active silently deleted every selected note the query happened to hide, which
+ * is exactly the behaviour the plan records as deliberately rejected: a query
+ * narrows what an action *targets*, never the selection itself.
+ *
+ * Focus relocation still runs on the filtered orders, and must: the roving
+ * `tabindex="0"` has to sit on a row that is actually rendered.
  */
 function reconcile(snap: SelectionSnapshot) {
+	const existing = documentNoteIds()
+
+	setSelection(selectedIds.value.filter((id) => existing.has(id)))
+	if (anchorId.value && !existing.has(anchorId.value)) anchorId.value = null
+
 	const live = new Set(visibleNoteIds.value)
-
-	setSelection(selectedIds.value.filter((id) => live.has(id)))
-	if (anchorId.value && !live.has(anchorId.value)) anchorId.value = null
-
 	const rows = rowIds.value
 	if (focusedId.value && rows.includes(focusedId.value)) {
 		// The row survived — possibly reordered or moved to another section. Focus

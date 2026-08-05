@@ -156,7 +156,9 @@ pub fn run() {
 			capture::shutdown(handle);
 			// Before the sweep: each live handoff applies or refuses whatever is on
 			// disk, so exiting is not a way to silently discard unsaved editor work.
-			editor::end_all(handle);
+			// The at-exit form skips the mid-write read retry, which would otherwise
+			// cost a debounce window per handoff on the way out.
+			editor::end_all_at_exit(handle);
 			editor::scavenge();
 		}
 	});

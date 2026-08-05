@@ -9,11 +9,13 @@ import PanelShell from './PanelShell.vue'
 import { useNoteEditor } from '@/composables/useNoteEditor'
 import { useNoteSearch } from '@/composables/useNoteSearch'
 import { useSelection } from '@/composables/useSelection'
+import { useSpace } from '@/composables/useSpace'
 import type { Space, StoreStatus } from '@/composables/useSpace'
 
 const editor = useNoteEditor()
 const search = useNoteSearch()
 const selection = useSelection()
+const space = useSpace()
 
 // happy-dom implements no Web Animations API, and auto-animate calls
 // `el.animate` from a MutationObserver callback — so a test that adds or removes
@@ -113,7 +115,17 @@ beforeEach(() => {
 	})
 })
 
+/** The mounted panel, so it can be torn down rather than merely detached. */
+let panel: ReturnType<typeof mount> | null = null
+
 afterEach(() => {
+	// Unmounted, not just wiped from the DOM. Clearing `body.innerHTML` leaves the
+	// app alive and re-rendering into detached nodes — and an open portalled menu
+	// with it, which then shows up as content outside a landmark in the axe run
+	// several tests later.
+	panel?.unmount()
+	panel = null
+
 	editor.cancel()
 	// Module-scoped by design, so it outlives the component tree exactly as it
 	// does in the app. A query left behind would filter the next test's list.
@@ -123,10 +135,10 @@ afterEach(() => {
 })
 
 async function mountPanel() {
-	const wrapper = mount(PanelShell, { attachTo: document.body })
+	panel = mount(PanelShell, { attachTo: document.body })
 	// Let the mount pull, reconciliation and the post-nextTick restore settle.
 	for (let i = 0; i < 6; i++) await new Promise((resolve) => setTimeout(resolve, 0))
-	return wrapper
+	return panel as ReturnType<typeof mount<typeof PanelShell>>
 }
 
 describe('the grid structure', () => {
@@ -326,6 +338,30 @@ describe('search', () => {
 		expect(search.query.value).toBe('')
 	})
 
+	it('does not let a document change destroy the hidden half of a selection', async () => {
+		// The regression: reconciliation pruned `selectedIds` against the
+		// *filtered* order, treating "not on screen" as "does not exist". Any
+		// document change landing while a query was active then silently dropped
+		// every selected note the query happened to hide — the exact behaviour the
+		// plan records as deliberately rejected, since a query is supposed to narrow
+		// what an action targets, never the selection itself.
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		selection.extendTo('nte_2')
+		expect(selection.selectedIds.value).toEqual(['nte_1', 'nte_2'])
+
+		await typeQuery(wrapper, 'first')
+		expect(selection.visibleNoteIds.value).toEqual(['nte_1'])
+
+		// Any applied document runs reconciliation.
+		await space.refresh()
+		for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+
+		search.clearQuery()
+		await wrapper.vm.$nextTick()
+		expect(selection.selectedIds.value).toEqual(['nte_1', 'nte_2'])
+	})
+
 	it('never changes the active section', async () => {
 		const wrapper = await mountPanel()
 		await typeQuery(wrapper, 'first')
@@ -353,6 +389,48 @@ describe('the Escape ladder', () => {
 		// selection rather than being swallowed.
 		await wrapper.trigger('keydown', { key: 'Escape' })
 		expect(selection.selectedIds.value).toEqual([])
+	})
+
+	it('declines the press entirely while a menu is open', async () => {
+		// The regression this exists for: the ladder assumed reka would have
+		// `preventDefault`ed the press by the time the shell saw it. It does not —
+		// reka listens on the window, and the shell is a DOM *ancestor* of the
+		// portalled content, so the press arrives here first. Escape then closed
+		// nothing and cleared the selection instead, and closing a submenu did both
+		// at once.
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+
+		await wrapper.find('[data-row-id="n:nte_1"]').trigger('contextmenu')
+		for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+
+		const content = document.querySelector<HTMLElement>('[data-slot="context-menu-content"]')
+		expect(content, 'the context menu did not open').not.toBeNull()
+
+		// Dispatched from inside the menu, exactly as the real press is.
+		content!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+		await wrapper.vm.$nextTick()
+
+		// The menu owns the press; the selection is untouched.
+		expect(selection.selectedIds.value).toEqual(['nte_1'])
+	})
+
+	it('leaves every other chord alone while a menu is open', async () => {
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+
+		await wrapper.find('[data-row-id="n:nte_1"]').trigger('contextmenu')
+		for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+
+		const content = document.querySelector<HTMLElement>('[data-slot="context-menu-content"]')
+		expect(content).not.toBeNull()
+
+		// Delete typed at an open menu used to delete the notes *and* leave the
+		// menu standing.
+		content!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))
+		await wrapper.vm.$nextTick()
+
+		expect(mocks.invoke).not.toHaveBeenCalledWith('delete_notes', expect.anything())
 	})
 })
 

@@ -47,7 +47,14 @@ async function commit() {
 function onKeydown(event: KeyboardEvent) {
 	// WebView2 reports keyCode 229 while an IME candidate is open, and accepting
 	// one with Enter must not commit the rename.
-	if (event.isComposing || event.keyCode === 229) return
+	//
+	// Escape is withheld from the shell's ladder rather than merely ignored: it
+	// closes the candidate window, and letting the press continue up would take a
+	// rung of the ladder while the user is still composing.
+	if (event.isComposing || event.keyCode === 229) {
+		if (event.key === 'Escape') event.stopPropagation()
+		return
+	}
 
 	if (event.key === 'Enter') {
 		event.preventDefault()
@@ -94,6 +101,7 @@ function onKeydown(event: KeyboardEvent) {
 							@input="setDraft(($event.target as HTMLInputElement).value)"
 							@keydown="onKeydown"
 							@blur="commit"
+							@contextmenu.stop
 						/>
 					</template>
 

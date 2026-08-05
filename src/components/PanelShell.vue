@@ -83,11 +83,17 @@ watch([hasQuery, resultCount], announceResults)
  *
  * Two rungs resolve above this and never reach it, which is why they are not
  * `if` branches: the inline editor and the section-rename field stop
- * propagation, and reka calls `preventDefault` for an open menu. A level with
- * nothing to do is skipped rather than consuming the press, so `Escape` in an
- * empty search field with notes selected clears the selection. With every level
- * exhausted the press is simply not consumed — Phase 7's panel-hide rung appends
- * here.
+ * propagation, and an open menu is declined by the `inOverlay` guard in the
+ * caller — reka does *not* `preventDefault` the press before this element sees
+ * it, so the guard is the menu rung rather than a convenience.
+ *
+ * A level with nothing to do is skipped rather than consuming the press, so
+ * `Escape` in an empty search field with notes selected clears the selection.
+ * With every level exhausted the press is simply not consumed — Phase 7's
+ * panel-hide rung appends here.
+ *
+ * The composer is a deliberate exception and not a rung: task-004 binds `Escape`
+ * there to "move focus to the last note", and it consumes the press itself.
  */
 function onEscape(event: KeyboardEvent) {
 	if (editingNoteId.value) {
@@ -114,14 +120,16 @@ function onEscape(event: KeyboardEvent) {
 function onShellKeydown(event: KeyboardEvent) {
 	if (event.defaultPrevented) return
 
+	// **Above the ladder, not below it.** An open menu owns the keyboard, and reka
+	// traps focus inside its content — so this is what makes the menu rung real.
+	// Reka listens on the window and does not `preventDefault` an `Escape` before
+	// this handler sees it: this element is a DOM *ancestor* of the portalled
+	// content, so the press bubbles here first. Left below, `Escape` cleared the
+	// selection while the menu stayed open, and closing a submenu did both at once.
+	if (inOverlay(event.target)) return
+
 	if (event.key === 'Escape') {
 		onEscape(event)
-		return
-	}
-
-	if (event.key === 'f' && (event.ctrlKey || event.metaKey)) {
-		event.preventDefault()
-		header.value?.focusSearch()
 		return
 	}
 
@@ -129,7 +137,15 @@ function onShellKeydown(event: KeyboardEvent) {
 	// three surfaces, not two: the composer, the inline editor **and the search
 	// input**. Leaving the search field off would let Ctrl+Z undo a note
 	// operation while the user is editing their query.
-	if (inTextSurface(event.target) || inOverlay(event.target)) return
+	if (inTextSurface(event.target)) return
+
+	// Below the guard: from inside an open menu this would otherwise yank focus
+	// out to the search field and leave the menu standing.
+	if (event.key === 'f' && (event.ctrlKey || event.metaKey)) {
+		event.preventDefault()
+		header.value?.focusSearch()
+		return
+	}
 
 	if (CHORDS.copy.matches(event)) {
 		// A live text selection means the user is copying text, not notes. Not

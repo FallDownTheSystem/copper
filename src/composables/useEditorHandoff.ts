@@ -22,6 +22,9 @@ type HandoffChangedPayload = { handoffs: HandoffState[] }
 /** Named by Rust; the messages are the frontend's to render. */
 export type OpenOutcome =
 	| { kind: 'opened' }
+	/** The handoff this replaced had a save Copper refused, so its temp file was
+	 *  kept rather than deleted. The path is the only way back to that text. */
+	| { kind: 'opened-with-retained-file'; path: string }
 	| { kind: 'no-editor' }
 	| { kind: 'at-capacity'; limit: number }
 	| { kind: 'error'; message: string }
@@ -101,13 +104,14 @@ async function reconcile(): Promise<void> {
 	}
 }
 
-async function stopHandoff(noteId: string): Promise<boolean> {
+/** Resolves to the retained temp-file path when the handoff's last save was
+ *  refused and its file was therefore kept, or `null` otherwise. */
+async function stopHandoff(noteId: string): Promise<string | null> {
 	try {
-		await invoke('editor_stop_handoff', { id: noteId })
-		return true
+		return await invoke<string | null>('editor_stop_handoff', { id: noteId })
 	} catch (error) {
 		console.error('[copper] could not end the editor handoff', error)
-		return false
+		return null
 	}
 }
 

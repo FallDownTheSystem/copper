@@ -24,9 +24,18 @@ function clear() {
 	if (message.value !== null) message.value = null
 }
 
-/** `Copied 1 note` / `Copied 3 notes` — whole strings, one per number. */
-export function noteCountLabel(verb: string, count: number) {
-	return count === 1 ? `${verb} 1 note` : `${verb} ${count} notes`
+/**
+ * Picks between whole messages, one per grammatical number.
+ *
+ * The point is that each caller writes out every form it needs — `Copied 1 note`
+ * and `Copied 3 notes` are two complete strings, not one fragment with a count
+ * glued to it. A shared `${verb} ${count} note(s)` helper is the thing this
+ * exists to prevent: it cannot express a language where the noun, the verb or
+ * the word order changes with the number, and it produces `note(s)` in the one
+ * it can.
+ */
+export function countMessage(count: number, forms: { one: string; many: (n: number) => string }) {
+	return count === 1 ? forms.one : forms.many(count)
 }
 
 export function useStatusMessage() {

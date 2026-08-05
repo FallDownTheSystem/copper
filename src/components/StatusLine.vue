@@ -1,5 +1,19 @@
 <script setup lang="ts">
 const { message, clear } = useStatusMessage()
+const { errorFor } = useSpace()
+
+/**
+ * Every action in this task reports a failed mutation on the `list` scope, and
+ * until now nothing rendered it: the failure reached the assertive live region
+ * for screen readers and was invisible to everyone else. It shares this band
+ * rather than getting a fourth surface — the panel cannot grow, and an error and
+ * a confirmation from the same action are never both true.
+ *
+ * The error wins when both are present: a confirmation left standing next to a
+ * failure would be the more misleading of the two.
+ */
+const listError = errorFor('list')
+const text = computed(() => listError.value ?? message.value)
 
 /**
  * Cleared on the next user action, not on a timer — which sits inside "prefer
@@ -23,9 +37,14 @@ useEventListener(window, 'pointerdown', clear, { capture: true })
 	     no space until it has something to say. -->
 	<p
 		role="status"
-		class="text-text-primary rounded-md px-2 py-1.5 text-meta"
-		:class="message ? 'border-separator bg-surface border shadow-sm' : 'sr-only'"
+		class="rounded-md px-2 py-1.5 text-meta"
+		:class="[
+			text ? 'bg-surface border shadow-sm' : 'sr-only',
+			listError
+				? 'text-text-primary border-destructive/40 bg-destructive/10'
+				: 'text-text-primary border-separator',
+		]"
 	>
-		{{ message ?? '' }}
+		{{ text ?? '' }}
 	</p>
 </template>
