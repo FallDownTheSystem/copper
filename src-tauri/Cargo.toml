@@ -81,7 +81,14 @@ tauri-plugin-opener = "2.5.4"
 # installer, the signature being verified during the download rather than during
 # the check, and `check()` hardcoding `timeout: None` into the `Update` it
 # returns. A minor bump could change any of them without changing a signature.
-tauri-plugin-updater = "=2.10.1"
+#
+# `zip` is one of the two default features and is dropped deliberately. It exists
+# for `createUpdaterArtifacts: "v1Compatible"`, which wraps the installer in a zip
+# for v1-era clients; this app sets `true` and ships the `-setup.exe` itself, so
+# the plugin's `extract_zip` branch is unreachable and the `zip` crate would be
+# compiled and linked for a path no release takes. `rustls-tls` has to be named
+# because dropping the defaults drops reqwest's TLS provider with them.
+tauri-plugin-updater = { version = "=2.10.1", default-features = false, features = ["rustls-tls"] }
 
 # --- store (task-003) ---
 # notify 8.2 is the current stable line; 9.x is still an unpromoted release

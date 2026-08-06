@@ -68,6 +68,8 @@ async function openSettings(stored: Partial<Settings> = {}) {
 				return SHORTCUTS
 			case 'get_autostart_enabled':
 				return false
+			case 'get_app_version':
+				return '0.1.0'
 			case 'update_settings':
 				return makeSettings({ ...stored, ...(args?.patch as Partial<Settings>) })
 			default:

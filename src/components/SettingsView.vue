@@ -127,8 +127,8 @@ const captureRowError = computed(() => captureError.value ?? shortcuts.value?.ca
  * The one line the Updates row says about itself.
  *
  * `null` for `idle` — nothing has been asked yet, so there is nothing to report —
- * and `null` for `error`, whose message goes through the row's own `error` slot
- * so it renders as an alert rather than as status.
+ * and `null` for `error`, whose message is rendered below as its own
+ * `role="alert"` paragraph rather than as status.
  */
 const updateStatusLine = computed(() => {
 	switch (updateStatus.value) {
@@ -154,9 +154,17 @@ const updateStatusLine = computed(() => {
 
 /** Check until there is something to install, then install. One button, because
  *  a second one would be disabled for the whole of its life until it wasn't. */
-const updateActionLabel = computed(() =>
-	canInstall.value ? `Install ${availableUpdate.value?.version}` : 'Check for updates',
-)
+const updateActionLabel = computed(() => {
+	const update = availableUpdate.value
+	return update ? `Install ${update.version}` : 'Check for updates'
+})
+
+/** One appearance for both update buttons. They are the same control in two
+ *  positions, so a copy each is what lets the disabled halves drift apart — and
+ *  one of them dimming while the other went grey would read as a bug rather than
+ *  as a busy state. */
+const updateButtonClass =
+	'panel-button outline-focus-ring hit-44 relative focus-visible:outline-2 focus-visible:-outline-offset-1 disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent'
 
 function onUpdateAction() {
 	void (canInstall.value ? installUpdate() : checkForUpdate())
@@ -346,7 +354,8 @@ const captureNote = computed(() => {
 							v-if="canRecheck"
 							type="button"
 							:disabled="updateBusy"
-							class="panel-button outline-focus-ring hit-44 relative mt-2 focus-visible:outline-2 focus-visible:-outline-offset-1 disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
+							class="mt-2"
+							:class="updateButtonClass"
 							@click="onRecheck"
 						>
 							Check again
@@ -358,7 +367,7 @@ const captureNote = computed(() => {
 					<button
 						type="button"
 						:disabled="updateBusy"
-						class="panel-button outline-focus-ring hit-44 relative focus-visible:outline-2 focus-visible:-outline-offset-1 disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
+						:class="updateButtonClass"
 						@click="onUpdateAction"
 					>
 						{{ updateActionLabel }}

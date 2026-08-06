@@ -98,6 +98,12 @@ const canRecheck = computed(() => status.value === 'error' && available.value !=
 const busy = computed(() => status.value === 'checking' || status.value === 'downloading')
 
 async function pullVersion() {
+	// Once per process rather than once per settings visit. The running version
+	// cannot change while this module is alive — an update replaces the process
+	// rather than reloading it — and `dispose` on leaving the view clears the
+	// memo, so without this every re-entry spends a round trip re-reading a
+	// constant. A read that failed leaves it `null` and is tried again next time.
+	if (currentVersion.value !== null) return
 	try {
 		currentVersion.value = await invoke<string>('get_app_version')
 	} catch (err) {

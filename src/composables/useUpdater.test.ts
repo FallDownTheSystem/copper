@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
+import { deferred } from '@/testing/deferred'
+
 /**
  * The parts of the update flow that cannot be read off the source: which state
  * survives a failure, which does not, and what the row is therefore able to offer
@@ -14,11 +16,20 @@ const mocks = vi.hoisted(() => ({
 	invoke: vi.fn<(command: string, args?: Record<string, unknown>) => Promise<unknown>>(),
 	listeners: new Map<string, (event: { payload: unknown }) => void>(),
 	unlisten: vi.fn(),
+	/** Registrations attempted, which the map cannot report: a second listen on
+	 *  the same channel overwrites the first entry rather than adding one. */
+	listenCount: 0,
+	/** Held open only by the dispose-mid-registration case, which needs the gap
+	 *  between calling `listen()` and its promise settling to be wide enough to
+	 *  act in. Null everywhere else, so registration resolves as it always did. */
+	listenGate: null as Promise<void> | null,
 }))
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 vi.mock('@tauri-apps/api/event', () => ({
 	listen: async (event: string, handler: (event: { payload: unknown }) => void) => {
+		if (mocks.listenGate) await mocks.listenGate
+		mocks.listenCount++
 		mocks.listeners.set(event, handler)
 		return mocks.unlisten
 	},
@@ -29,16 +40,6 @@ const UPDATE = {
 	currentVersion: '0.1.0',
 	notes: 'Fixes the thing.',
 	date: '2026-08-05',
-}
-
-function deferred<T>() {
-	let resolve!: (value: T) => void
-	let reject!: (reason?: unknown) => void
-	const promise = new Promise<T>((res, rej) => {
-		resolve = res
-		reject = rej
-	})
-	return { promise, resolve, reject }
 }
 
 /** One module graph per case: every ref in this adapter is module-scoped. */
@@ -54,9 +55,20 @@ function emitProgress(payload: { downloaded: number; total: number | null }) {
 	mocks.listeners.get('update://progress')?.({ payload })
 }
 
+/** One approved update in hand: the state the install cases and the progress
+ *  cases both start from, so it means the same thing in each. */
+async function withAvailableUpdate() {
+	mocks.invoke.mockResolvedValueOnce(UPDATE)
+	const updater = await freshModule()
+	await updater.checkForUpdate()
+	return updater
+}
+
 beforeEach(() => {
 	mocks.invoke.mockReset()
 	mocks.unlisten.mockReset()
+	mocks.listenGate = null
+	mocks.listenCount = 0
 })
 
 describe('checking', () => {
@@ -119,13 +131,6 @@ describe('checking', () => {
 })
 
 describe('installing', () => {
-	async function withAvailableUpdate() {
-		mocks.invoke.mockResolvedValueOnce(UPDATE)
-		const updater = await freshModule()
-		await updater.checkForUpdate()
-		return updater
-	}
-
 	/** The whole point of the retained `Update`: a failed download must leave the
 	 *  row offering the same install, not a fresh check. */
 	it('keeps the approved version installable after a failed download', async () => {
@@ -188,9 +193,7 @@ describe('installing', () => {
 
 describe('progress', () => {
 	async function downloading() {
-		mocks.invoke.mockResolvedValueOnce(UPDATE)
-		const updater = await freshModule()
-		await updater.checkForUpdate()
+		const updater = await withAvailableUpdate()
 		await updater.initialize()
 
 		const held = deferred<unknown>()
@@ -243,6 +246,35 @@ describe('progress', () => {
 		expect(mocks.listeners.has('update://progress')).toBe(true)
 
 		updater.dispose()
+		expect(mocks.unlisten).toHaveBeenCalledTimes(1)
+	})
+
+	/**
+	 * The settings view opened and closed inside the `listen()` round trip, which
+	 * is the one window `dispose` cannot see: it takes down the unlisteners, and
+	 * there are none yet. The registration that lands afterwards has to take
+	 * itself down, or the next visit adds a second listener to the same channel
+	 * and the progress bar is driven twice per event.
+	 */
+	it('unregisters a listener that arrives after dispose, and re-registers only one', async () => {
+		mocks.invoke.mockResolvedValue('0.1.0')
+		const gate = deferred<void>()
+		mocks.listenGate = gate.promise
+		const updater = await freshModule()
+
+		const started = updater.initialize()
+		updater.dispose()
+		expect(mocks.unlisten).not.toHaveBeenCalled()
+
+		mocks.listenGate = null
+		gate.resolve()
+		await started
+		expect(mocks.unlisten).toHaveBeenCalledTimes(1)
+
+		await updater.initialize()
+		// Two registered across the two attempts, one of them unregistered: exactly
+		// one listener is live, which is the state a leak would break.
+		expect(mocks.listenCount).toBe(2)
 		expect(mocks.unlisten).toHaveBeenCalledTimes(1)
 	})
 })

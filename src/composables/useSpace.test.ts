@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 import type { Space, StoreStatus, SubmitResult } from './useSpace'
+import { deferred } from '@/testing/deferred'
 
 /**
  * The IPC seam is mocked at the two Tauri entry points, which is the whole
@@ -27,16 +28,6 @@ vi.mock('@tauri-apps/api/event', () => ({
 		return () => mocks.handlers.delete(name)
 	},
 }))
-
-function deferred<T>() {
-	let resolve!: (value: T) => void
-	let reject!: (reason?: unknown) => void
-	const promise = new Promise<T>((res, rej) => {
-		resolve = res
-		reject = rej
-	})
-	return { promise, resolve, reject }
-}
 
 function makeSpace(id: string, noteIds: string[]): Space {
 	return {

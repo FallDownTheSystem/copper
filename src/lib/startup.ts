@@ -16,7 +16,12 @@
  *
  * The unlisteners are stored *before* the pull is awaited, deliberately: a
  * `dispose` racing a slow first pull has to be able to take down a registration
- * that already exists.
+ * that already exists. A `dispose` racing the *registration* has the opposite
+ * problem — there is nothing to take down yet — so the attempt carries a
+ * generation and a continuation that finds itself stale unregisters what it just
+ * collected rather than storing it. Without that, a view opened and closed
+ * inside the `listen()` round trip leaks the listener, and the next visit
+ * registers a second one and drives the first with doubled events.
  *
  * `useCaptureNotice` deliberately does not use this. Its `initialize` is the one
  * that must be retryable — a failure there leaves the keyboard hook disarmed for
@@ -41,11 +46,24 @@ export function createStartup(
 ): Startup {
 	let promise: Promise<void> | null = null
 	let unlisteners: UnlistenFn[] = []
+	/** Which attempt is current. Only `dispose` moves it on. */
+	let generation = 0
 
 	return {
 		initialize() {
 			promise ??= (async () => {
-				unlisteners = await register()
+				const attempt = generation
+				const registered = await register()
+				// A `dispose` landed while the listens were still in flight, so it
+				// found an empty list and this registration is already orphaned —
+				// nothing else holds it and nothing else will take it down. The pull
+				// is skipped for the same reason: its result would be written on
+				// behalf of a startup the caller has already abandoned.
+				if (attempt !== generation) {
+					for (const unlisten of registered) unlisten()
+					return
+				}
+				unlisteners = registered
 				await pull()
 			})()
 
@@ -53,6 +71,7 @@ export function createStartup(
 		},
 
 		dispose() {
+			generation++
 			for (const unlisten of unlisteners) unlisten()
 			unlisteners = []
 			promise = null

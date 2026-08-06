@@ -386,10 +386,10 @@ pub fn run() {
 /// covers those.
 fn teardown(handle: &tauri::AppHandle) {
 	static DONE: std::sync::Once = std::sync::Once::new();
-	DONE.call_once(|| teardown_once(handle));
+	DONE.call_once(|| teardown_steps(handle));
 }
 
-fn teardown_once(handle: &tauri::AppHandle) {
+fn teardown_steps(handle: &tauri::AppHandle) {
 	// Before anything slow, because it is the one step the user can see. Windows
 	// normally reaps a notification icon when its owner window is destroyed, but
 	// `std::process::exit(0)` destroys nothing — so on the update path the icon

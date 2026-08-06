@@ -197,8 +197,7 @@ pub async fn check_for_update(app: AppHandle) -> Result<Option<UpdateInfo>, Stri
 #[tauri::command]
 pub async fn install_update(app: AppHandle) -> Result<(), String> {
 	let _in_flight = InFlight::acquire(&app).ok_or(BUSY)?;
-	let mut retained = Retained::take(&app).ok_or(NOTHING_PENDING)?;
-	retained.bound_download(DOWNLOAD_TIMEOUT);
+	let retained = Retained::take(&app).ok_or(NOTHING_PENDING)?;
 
 	let result = retained
 		.update()
@@ -255,10 +254,10 @@ pub async fn get_app_version(app: AppHandle) -> String {
 /// Propagating the poison would turn one panic into an updater that can never run
 /// again.
 fn pending(app: &AppHandle) -> std::sync::MutexGuard<'_, Option<Update>> {
-	let state = app.state::<PendingUpdate>();
-	// The guard borrows the `Mutex`, which lives in managed state for the life of
-	// the app rather than in the `State` wrapper, so it outlives this frame.
-	let state: &PendingUpdate = state.inner();
+	// Through `inner()`: the guard borrows the `Mutex`, which lives in managed
+	// state for the life of the app rather than in the `State` wrapper, so it
+	// outlives this frame.
+	let state: &PendingUpdate = app.state::<PendingUpdate>().inner();
 	state
 		.0
 		.lock()
@@ -297,9 +296,15 @@ struct Retained {
 
 impl Retained {
 	fn take(app: &AppHandle) -> Option<Self> {
-		take_pending(app).map(|update| Self {
-			app: app.clone(),
-			update: Some(update),
+		take_pending(app).map(|mut update| {
+			// Capped here rather than by the caller: the plugin leaves the artifact
+			// download untimed, and this guard is the only way an `Update` reaches a
+			// download at all.
+			update.timeout = Some(DOWNLOAD_TIMEOUT);
+			Self {
+				app: app.clone(),
+				update: Some(update),
+			}
 		})
 	}
 
@@ -307,13 +312,6 @@ impl Retained {
 		self.update
 			.as_ref()
 			.expect("the retained update is present until the guard is consumed or dropped")
-	}
-
-	/// Caps the artifact download, which the plugin otherwise leaves untimed.
-	fn bound_download(&mut self, timeout: std::time::Duration) {
-		if let Some(update) = self.update.as_mut() {
-			update.timeout = Some(timeout);
-		}
 	}
 
 	/// Disarms the put-back: the update is installed and must not be offered

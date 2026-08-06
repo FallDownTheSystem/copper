@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
+import { deferred } from '@/testing/deferred'
+
 /**
  * The reordering rules, which are the only thing in this module that cannot be
  * read off the source.
@@ -37,16 +39,6 @@ const SHORTCUTS = {
 	captureRegistered: true,
 	captureError: null,
 	captureFallback: null,
-}
-
-function deferred<T>() {
-	let resolve!: (value: T) => void
-	let reject!: (reason?: unknown) => void
-	const promise = new Promise<T>((res, rej) => {
-		resolve = res
-		reject = rej
-	})
-	return { promise, resolve, reject }
 }
 
 /** One module graph per case: the generations, the settings copy and the error
