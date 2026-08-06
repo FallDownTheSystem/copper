@@ -549,27 +549,31 @@ function restoreDom(snap: SelectionSnapshot) {
 	else document.querySelector<HTMLElement>('[data-composer]')?.focus()
 }
 
-/** Comfortably past auto-animate's insert animation, which this exists for:
- *  `duration: 150` in NoteSection, which the library runs at ×1.5 for an added
- *  element. */
-const SETTLE_MS = 400
+/** Frames of an unchanged `scrollHeight` before the list counts as settled. */
+const STABLE_FRAMES = 5
+/** Hard stop, so a list that never stops changing cannot hold the pin forever. */
+const SETTLE_CAP_MS = 2000
 
 /**
- * Re-asserted every frame until the list settles, because the pin's own target
- * keeps moving after it lands.
+ * Re-asserted every frame until the list stops changing height, because the
+ * pin's own target keeps moving after it lands.
  *
  * auto-animate scales a newly inserted row from `.98` to `1` across its entry
  * animation, and a transformed box still contributes to its scroll container's
  * *scrollable overflow* — so `scrollHeight` climbs for the whole animation.
- * Measured in WebView2 at 175% scaling: the pin landed correctly at 0.43px from
- * the bottom, then the list grew 13px over the next 150ms and stayed there,
- * which is exactly the gap the scrollbar showed. A single extra frame cannot
- * cover a 225ms animation, and widening the slack would only have hidden it.
+ * Clamping a freshly measured note shrinks and regrows the list several times on
+ * top of that. Measured in WebView2 at 175% scaling: the pin landed correctly,
+ * then the list grew and left `scrollTop` 12.57px below its true maximum, with
+ * the new note's own bottom flush against the viewport and the list's 12px
+ * bottom padding stranded below it — exactly the gap on the scrollbar.
  *
- * The loop re-reads the predicate every frame rather than re-pinning blind. A
- * scroll event is dispatched in the frame's scroll steps, which run *before*
- * animation frame callbacks, so a reader who scrolls away has already released
- * the latch by the time the next pass runs.
+ * The exit condition is the list holding still, not a duration. A fixed window
+ * was tried and is what left that 12.57px: the growth outran it whenever the
+ * first frames after a launch were slow. `scrollHeight` is read once per frame
+ * on a container that is being written to anyway, so this costs no extra layout.
+ *
+ * The loop re-reads `pinning` every frame rather than re-pinning blind, and a
+ * reader's gesture clears it — so they take the list back mid-settle.
  */
 function pinToBottom(region: HTMLElement) {
 	region.scrollTop = region.scrollHeight
@@ -577,15 +581,38 @@ function pinToBottom(region: HTMLElement) {
 	if (typeof requestAnimationFrame !== 'function') return
 
 	pinning = true
-	const deadline = Date.now() + SETTLE_MS
+	const cap = Date.now() + SETTLE_CAP_MS
+	let lastHeight = -1
+	let stable = 0
+
 	const settle = () => {
-		// `pinning` is cleared by a reader's own gesture, which is what lets them
-		// take the list back mid-settle.
 		if (!pinning || !region.isConnected) return
 		region.scrollTop = region.scrollHeight
-		if (Date.now() < deadline) requestAnimationFrame(settle)
-		else pinning = false
+
+		const height = region.scrollHeight
+		if (height === lastHeight) stable++
+		else {
+			lastHeight = height
+			stable = 0
+		}
+
+		// Holding still is not the same as being finished. auto-animate's entry
+		// keyframes park the row at `scale(.98)` until the animation's halfway
+		// point, so the list sits perfectly still for ~110ms and only then grows —
+		// and a stability test on its own exits during that plateau. Asking the
+		// running animations instead of guessing a duration is what makes this
+		// exact.
+		const running = region
+			.getAnimations?.({ subtree: true })
+			.some((animation) => animation.playState === 'running')
+
+		if ((stable >= STABLE_FRAMES && !running) || Date.now() >= cap) {
+			pinning = false
+			return
+		}
+		requestAnimationFrame(settle)
 	}
+
 	requestAnimationFrame(settle)
 }
 
