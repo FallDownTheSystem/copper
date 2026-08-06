@@ -6,6 +6,9 @@ const {
 	canMerge,
 	canMoveTo,
 	canExpandTarget,
+	canOpenAttachment,
+	attachmentActionLabel,
+	openAttachment,
 	everyTargetDone,
 	copyNotes,
 	copyAsList,
@@ -74,6 +77,14 @@ const {
 		<ContextMenuItem class="min-h-6" @select="openInEditor">
 			Edit in editor
 			<ContextMenuShortcut>{{ CHORDS.openInEditor.display }}</ContextMenuShortcut>
+		</ContextMenuItem>
+
+		<!-- Rendered even with nothing to open, like Expand and Merge Notes, so the
+		     menu does not change shape between openings. The label names what will
+		     happen — an image opens, everything else is revealed — rather than
+		     saying "Open" and then doing something else. -->
+		<ContextMenuItem :disabled="!canOpenAttachment" class="min-h-6" @select="openAttachment">
+			{{ attachmentActionLabel }}
 		</ContextMenuItem>
 
 		<ContextMenuSeparator />

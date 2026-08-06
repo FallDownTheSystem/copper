@@ -20,7 +20,8 @@ use std::time::{Duration, Instant};
 use copper_lib::store::commands::{submit, SubmitOutcome, SubmitResult};
 use copper_lib::store::error::StoreError;
 use copper_lib::store::events::{ChangeReason, EventSink, RecordingSink, StoreEvent};
-use copper_lib::store::model::{Note, Section, Space};
+use copper_lib::attachments;
+use copper_lib::store::model::{Attachment, Note, Section, Space};
 use copper_lib::store::settings::Settings;
 use copper_lib::store::{self, atomic, format, ops, settings, SharedStore, Store, StoreStatus};
 
@@ -91,13 +92,13 @@ impl Harness {
 	fn add(&self, body: &str) -> Result<String, StoreError> {
 		let body = body.to_string();
 		store::lock(&self.shared)
-			.mutate(|doc| ops::add_note(doc, &body, None))
+			.mutate(|doc| ops::add_note(doc, &body, None, &[]))
 			.map(|(id, _)| id)
 	}
 
 	/// The composer's submit, through the same function the command calls.
 	fn submit(&self, body: &str) -> Result<SubmitResult, StoreError> {
-		submit(&self.shared, body)
+		submit(&self.shared, body, &[])
 	}
 
 	fn section_named(&self, name: &str) -> Option<String> {
@@ -181,6 +182,7 @@ fn golden_doc() -> Space {
 				body: "**Negation in inherited configs.** The moment a config can extend a base, \
 				       every list-valued option needs a way to say \"not this one\"."
 					.into(),
+				attachments: Vec::new(),
 				created: "2026-07-30T14:02:11Z".into(),
 				updated: "2026-07-30T14:02:11Z".into(),
 			},
@@ -190,6 +192,7 @@ fn golden_doc() -> Space {
 				order: 0,
 				done: true,
 				body: "Line one.\n\nLine two, indented:\n\tvalue = 1".into(),
+				attachments: Vec::new(),
 				created: "2026-07-30T14:05:00Z".into(),
 				updated: "2026-07-30T14:08:12Z".into(),
 			},
@@ -429,7 +432,7 @@ fn every_structural_operation_leaves_an_undo_that_restores_exactly() {
 
 	let operations: Vec<(&str, Operation)> = vec![
 		("add", {
-			Box::new(|doc: &mut Space| ops::add_note(doc, "gamma", None).map(|_| ()))
+			Box::new(|doc: &mut Space| ops::add_note(doc, "gamma", None, &[]).map(|_| ()))
 		}),
 		("done", {
 			let ids = vec![first.clone()];
@@ -787,7 +790,7 @@ fn a_failed_operation_writes_nothing_and_pushes_no_snapshot() {
 fn external_note(harness: &Harness, body: &str) -> String {
 	let mut doc = format::from_json(&harness.text()).unwrap();
 	let section = doc.active_section.clone();
-	ops::add_note(&mut doc, body, Some(&section)).unwrap();
+	ops::add_note(&mut doc, body, Some(&section), &[]).unwrap();
 	let text = format::to_git_json(&doc).unwrap();
 	external_write(&harness.path(), &text);
 	text
@@ -913,7 +916,7 @@ fn a_write_landing_before_the_watch_registers_is_reconciled() {
 	let path = store::lock(&shared).active_path().unwrap().to_path_buf();
 	let mut doc = format::from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
 	let section = doc.active_section.clone();
-	ops::add_note(&mut doc, "written into the gap", Some(&section)).unwrap();
+	ops::add_note(&mut doc, "written into the gap", Some(&section), &[]).unwrap();
 	external_write(&path, &format::to_git_json(&doc).unwrap());
 
 	let produced = store::attach_watcher(&shared);
@@ -998,7 +1001,7 @@ fn an_external_write_during_the_backoff_is_not_overwritten() {
 		drop(lock);
 		let mut doc = format::from_json(&std::fs::read_to_string(&writer_path).unwrap()).unwrap();
 		let section = doc.active_section.clone();
-		ops::add_note(&mut doc, "theirs, during the backoff", Some(&section)).unwrap();
+		ops::add_note(&mut doc, "theirs, during the backoff", Some(&section), &[]).unwrap();
 		external_write(&writer_path, &format::to_git_json(&doc).unwrap());
 	});
 
@@ -1037,7 +1040,7 @@ fn three_exhausted_attempts_change_nothing() {
 		let mut external = base.clone();
 		external.name = format!("generation {}", generation.fetch_add(1, Ordering::SeqCst));
 		external_write(&write_path, &format::to_git_json(&external).unwrap());
-		ops::add_note(doc, "should never land", None).map(|_| ())
+		ops::add_note(doc, "should never land", None, &[]).map(|_| ())
 	});
 
 	let err = result.unwrap_err();
@@ -1558,6 +1561,7 @@ fn one_mutate_cycle_on_a_five_hundred_note_document_is_not_quadratic() {
 			order: index / 5,
 			done: index % 3 == 0,
 			body: format!("Note number {index} with a body long enough to be realistic."),
+			attachments: Vec::new(),
 			created: "2026-07-30T14:00:00Z".into(),
 			updated: "2026-07-30T14:00:00Z".into(),
 		});
@@ -1704,6 +1708,7 @@ fn a_watcher_reload_survives_a_transient_sharing_violation() {
 		order: 900,
 		done: false,
 		body: "written while the file was about to be held".to_owned(),
+		attachments: Vec::new(),
 		created: "2026-08-05T12:00:00Z".to_owned(),
 		updated: "2026-08-05T12:00:00Z".to_owned(),
 	});
@@ -1727,5 +1732,335 @@ fn a_watcher_reload_survives_a_transient_sharing_violation() {
 	assert!(
 		!harness.status().errored,
 		"a transient hold left the space marked unreadable"
+	);
+}
+
+// --- attachments (task-011) --------------------------------------------------
+
+/// Ingests bytes into the harness's own space, returning the metadata the
+/// document will carry. The real path, not a hand-built `Attachment`: these
+/// tests are about what `ingest` and the document do together.
+fn attach(harness: &Harness, bytes: &[u8], name: &str) -> Attachment {
+	attachments::ingest(&harness.path(), bytes, name).unwrap()
+}
+
+/// A 2×2 PNG whose bytes depend on `seed`, so two calls with different seeds
+/// hash differently and one with the same seed hashes identically.
+fn png(seed: u8) -> Vec<u8> {
+	let mut buffer = std::io::Cursor::new(Vec::new());
+	image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+		2,
+		2,
+		image::Rgb([seed, seed / 2, 7]),
+	))
+	.write_to(&mut buffer, image::ImageFormat::Png)
+	.unwrap();
+	buffer.into_inner()
+}
+
+fn blobs(space: &Path) -> Vec<String> {
+	let mut names: Vec<String> = std::fs::read_dir(attachments::assets_dir(space))
+		.map(|entries| {
+			entries
+				.flatten()
+				.map(|entry| entry.file_name().to_string_lossy().into_owned())
+				.collect()
+		})
+		.unwrap_or_default();
+	names.sort();
+	names
+}
+
+/// Puts `files` on an existing note, through the ordinary write pipeline.
+fn set_attachments(harness: &Harness, id: &str, files: Vec<Attachment>) {
+	let id = id.to_string();
+	store::lock(&harness.shared)
+		.mutate(|doc| {
+			doc.note_mut(&id)
+				.ok_or_else(|| StoreError::NotFound(id.clone()))?
+				.attachments = files.clone();
+			Ok(())
+		})
+		.unwrap();
+}
+
+/// AC5. The one assertion that keeps every earlier phase's on-disk contract
+/// intact: a document with no attachments must not gain so much as a key.
+///
+/// `skip_serializing_if` is what does it, and this is the test that fails if
+/// somebody removes it — the golden fixture test above would fail too, but this
+/// one says *why*.
+#[test]
+fn a_document_without_attachments_gains_no_key() {
+	let text = format::to_git_json(&golden_doc()).unwrap();
+	assert!(
+		!text.contains("attachments"),
+		"a note with no attachments serialised an attachments key"
+	);
+	assert_eq!(text, golden_text(), "the golden fixture is no longer byte-identical");
+}
+
+/// The field's placement is not cosmetic: key order is struct declaration
+/// order, so moving it changes every `.copper` file the next time it is
+/// written, and the diff-minimality guarantee is measured against that order.
+#[test]
+fn attachments_serialise_between_body_and_created() {
+	let harness = Harness::new();
+	let file = attach(&harness, &png(1), "shot.png");
+	let id = harness.add("with a file").unwrap();
+	set_attachments(&harness, &id, vec![file]);
+
+	let text = harness.text();
+	let note = text.split(&id).nth(1).expect("the note is in the document");
+	let positions: Vec<usize> = ["body", "attachments", "created", "updated"]
+		.into_iter()
+		.map(|key| {
+			note.find(&format!("\"{key}\""))
+				.unwrap_or_else(|| panic!("{key} is missing from the note"))
+		})
+		.collect();
+	assert!(
+		positions.windows(2).all(|pair| pair[0] < pair[1]),
+		"attachments is not between body and created: {positions:?}"
+	);
+}
+
+/// AC6. Attaching a file to one note may only touch that note's lines.
+#[test]
+fn adding_an_attachment_touches_only_that_note() {
+	let harness = Harness::new();
+	harness.add("first").unwrap();
+	let target = harness.add("second").unwrap();
+	harness.add("third").unwrap();
+	let before = harness.text();
+
+	let file = attach(&harness, &png(2), "shot.png");
+	set_attachments(&harness, &target, vec![file.clone()]);
+	let after = harness.text();
+
+	let before_lines: Vec<&str> = before.lines().collect();
+	// Every line the after-text does not share with the before-text has to belong
+	// to the attachment that was added, and to nothing else in the document.
+	let added: Vec<&str> = after
+		.lines()
+		.filter(|line| !before_lines.contains(line))
+		.collect();
+	assert!(!added.is_empty(), "nothing changed at all");
+	for line in &added {
+		let trimmed = line.trim();
+		let belongs = trimmed.starts_with("\"attachments\"")
+			|| trimmed.starts_with("\"id\"")
+			|| trimmed.starts_with("\"file\"")
+			|| trimmed.starts_with("\"name\"")
+			|| trimmed.starts_with("\"mime\"")
+			|| trimmed.starts_with("\"bytes\"")
+			|| trimmed.starts_with("\"width\"")
+			|| trimmed.starts_with("\"height\"")
+			|| trimmed == "{"
+			|| trimmed == "}"
+			|| trimmed == "],";
+		assert!(belongs, "a line outside the attachment changed: {line:?}");
+	}
+	// The other two notes survive verbatim, including the commas around them.
+	for body in ["\"body\": \"first\",", "\"body\": \"third\","] {
+		assert_eq!(
+			before.matches(body).count(),
+			after.matches(body).count(),
+			"another note's body changed"
+		);
+	}
+	assert!(after.contains(&file.file));
+}
+
+/// AC12, and the reason `sweep` exists at all: deleting a note must not delete
+/// bytes, or undo restores a note whose attachments are gone.
+#[test]
+fn deleting_a_note_leaves_its_blobs_and_undo_restores_them() {
+	let harness = Harness::new();
+	let file = attach(&harness, &png(3), "shot.png");
+	let id = harness.add("has a file").unwrap();
+	set_attachments(&harness, &id, vec![file.clone()]);
+	assert_eq!(blobs(&harness.path()), [file.file.clone()]);
+
+	store::lock(&harness.shared)
+		.mutate(|doc| ops::delete_notes(doc, &[id.clone()]))
+		.unwrap();
+	assert!(harness.doc().note(&id).is_none());
+	assert_eq!(
+		blobs(&harness.path()),
+		[file.file.clone()],
+		"deleting a note deleted its bytes, so the undo below cannot work"
+	);
+
+	let restored = store::lock(&harness.shared).undo().unwrap().unwrap();
+	let note = restored.note(&id).expect("undo restored the note");
+	assert_eq!(note.attachments, vec![file.clone()]);
+	assert!(
+		attachments::assets_dir(&harness.path()).join(&file.file).is_file(),
+		"the restored note points at bytes that are not there"
+	);
+}
+
+/// AC14. Survivor first, then the others in canonical order, de-duplicated by
+/// the content hash — and all of it as one undoable step.
+#[test]
+fn merging_concatenates_attachments_survivor_first_and_deduplicates() {
+	let harness = Harness::new();
+	let shared_file = attach(&harness, &png(4), "shared.png");
+	let only_first = attach(&harness, &png(5), "first.png");
+	let only_second = attach(&harness, &png(6), "second.png");
+
+	let first = harness.add("first note").unwrap();
+	let second = harness.add("second note").unwrap();
+	set_attachments(&harness, &first, vec![only_first.clone(), shared_file.clone()]);
+	set_attachments(&harness, &second, vec![shared_file.clone(), only_second.clone()]);
+
+	// Argument order deliberately reversed: the survivor is decided by document
+	// order, not by which id was listed first.
+	store::lock(&harness.shared)
+		.mutate(|doc| ops::merge_notes(doc, &[second.clone(), first.clone()]))
+		.unwrap();
+
+	let merged = harness.doc();
+	let survivor = merged.note(&first).expect("the first note survives a merge");
+	assert_eq!(
+		survivor
+			.attachments
+			.iter()
+			.map(|attachment| attachment.file.as_str())
+			.collect::<Vec<_>>(),
+		[
+			only_first.file.as_str(),
+			shared_file.file.as_str(),
+			only_second.file.as_str()
+		],
+		"the merged list is not survivor-first, or the shared file was duplicated"
+	);
+	assert!(merged.note(&second).is_none());
+
+	// One undoable step: a single Ctrl+Z puts both notes back with their own
+	// lists, rather than taking two presses.
+	store::lock(&harness.shared).undo().unwrap().unwrap();
+	let back = harness.doc();
+	assert_eq!(back.note(&first).unwrap().attachments.len(), 2);
+	assert_eq!(back.note(&second).unwrap().attachments.len(), 2);
+}
+
+/// AC21. Content addressing makes a write of identical bytes idempotent, so
+/// concurrent ingests of the same file all succeed and leave one blob — the
+/// `commit_new` collision is the success signal, not an error.
+#[test]
+fn concurrent_ingests_of_identical_bytes_all_succeed_and_write_one_file() {
+	let harness = Harness::new();
+	let path = harness.path();
+	let bytes = png(7);
+
+	// Four rather than a larger burst. The property is that concurrent writers
+	// interleave and all succeed, which four demonstrate as well as forty — and
+	// this file also holds tests that time a writer against the store's backoff
+	// (`an_external_write_during_the_backoff_is_not_overwritten`), which a pile of
+	// threads competing for the same cores can push outside its window.
+	let stored: Vec<String> = std::thread::scope(|scope| {
+		let handles: Vec<_> = (0..4)
+			.map(|index| {
+				let path = path.clone();
+				let bytes = bytes.clone();
+				scope.spawn(move || attachments::ingest(&path, &bytes, &format!("shot{index}.png")))
+			})
+			.collect();
+		handles
+			.into_iter()
+			.map(|handle| handle.join().unwrap().expect("a racing ingest failed").file)
+			.collect()
+	});
+
+	assert_eq!(stored.len(), 4);
+	assert!(
+		stored.windows(2).all(|pair| pair[0] == pair[1]),
+		"identical bytes produced different names: {stored:?}"
+	);
+	assert_eq!(blobs(&path), [stored[0].clone()]);
+}
+
+/// The watch is registered on the space file's *directory*, and this task adds
+/// a subdirectory the app writes into. The filename filter is what stops a blob
+/// write from being read as an external document change — and a spurious reload
+/// would clear the undo stack, which is exactly what AC12 depends on.
+#[test]
+fn writing_a_blob_does_not_look_like_an_external_document_change() {
+	let harness = Harness::new();
+	let id = harness.add("a note that stays put").unwrap();
+	harness.sink.take();
+
+	attach(&harness, &png(8), "shot.png");
+	// Creating the directory itself is an event in the watched directory, so a
+	// second write proves the steady state as well as the first.
+	attach(&harness, &png(9), "another.png");
+	settle();
+
+	assert!(
+		harness.sink.take().is_empty(),
+		"a blob write was reported as an external change"
+	);
+	assert!(harness.status().can_undo, "a spurious reload cleared the undo stack");
+	assert!(harness.doc().note(&id).is_some());
+}
+
+/// A `# Name` line and a pending attachment are a contradiction, and it is
+/// refused rather than resolved silently in either direction — dropping the
+/// files destroys work the tray still shows, and forcing a note hides the
+/// section the user asked for.
+#[test]
+fn a_section_directive_carrying_attachments_is_refused() {
+	let harness = Harness::new();
+	let file = attach(&harness, &png(10), "shot.png");
+
+	let err = submit(&harness.shared, "# Research", std::slice::from_ref(&file)).unwrap_err();
+
+	assert_eq!(err.kind(), "invalid");
+	assert!(harness.section_named("Research").is_none(), "a section was created anyway");
+	assert!(
+		attachments::assets_dir(&harness.path()).join(&file.file).is_file(),
+		"a refused submission destroyed the bytes"
+	);
+
+	// The same attachment on an ordinary body goes through, so the refusal is
+	// about the contradiction and not about attachments.
+	let result = submit(&harness.shared, "with a file", std::slice::from_ref(&file)).unwrap();
+	assert_eq!(result.outcome, SubmitOutcome::Note);
+	let note = result.space.note(result.note_id.as_deref().unwrap()).unwrap();
+	assert_eq!(note.attachments, vec![file]);
+}
+
+/// The document is hand-editable and this list made a round trip through IPC,
+/// so `add_note` re-validates it rather than trusting that `ingest` minted it.
+#[test]
+fn submitting_an_attachment_with_an_escaping_file_name_is_refused() {
+	let harness = Harness::new();
+	let mut file = attach(&harness, &png(11), "shot.png");
+	file.file = r"..\..\Windows\System32\config\SAM".into();
+
+	let err = submit(&harness.shared, "a note", std::slice::from_ref(&file)).unwrap_err();
+
+	assert_eq!(err.kind(), "invalid");
+	assert!(harness.doc().notes.is_empty(), "the note was created anyway");
+}
+
+/// The per-note cap is enforced where the document is written, not only in the
+/// UI that counts the tray.
+#[test]
+fn a_note_cannot_be_created_with_more_attachments_than_the_cap() {
+	let harness = Harness::new();
+	let files: Vec<Attachment> = (0..=attachments::ATTACHMENT_MAX_PER_NOTE)
+		.map(|index| attach(&harness, &png(20 + index as u8), &format!("shot{index}.png")))
+		.collect();
+
+	let err = submit(&harness.shared, "too many", &files).unwrap_err();
+
+	assert_eq!(err.kind(), "invalid");
+	assert!(harness.doc().notes.is_empty());
+	assert!(
+		submit(&harness.shared, "just enough", &files[1..]).is_ok(),
+		"the cap itself was refused"
 	);
 }

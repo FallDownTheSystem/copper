@@ -10,6 +10,7 @@
 
 import { buildCopyMarkdown, buildListMarkdown } from '@/lib/noteMarkdown'
 
+import { useAttachments } from './useAttachments'
 import { useSystemClipboard } from './useSystemClipboard'
 import { useEditorHandoff } from './useEditorHandoff'
 import { useNoteDisclosure } from './useNoteDisclosure'
@@ -34,6 +35,7 @@ const editor = useNoteEditor()
 const handoff = useEditorHandoff()
 const disclosure = useNoteDisclosure()
 const status = useStatusMessage()
+const attachments = useAttachments()
 
 /**
  * **The one target rule, used by every action in this file.**
@@ -413,6 +415,46 @@ async function openInEditor() {
 	}
 }
 
+// --- attachments -------------------------------------------------------------
+
+/**
+ * The focused note's attachments, in document order.
+ *
+ * The *focused* note rather than the target set, for the same reason `Expand`
+ * and `Edit` are: opening files has no meaningful batch form, and a menu item
+ * that launched five viewers at once from a multi-select would be a surprise
+ * nobody asked for.
+ */
+function focusedAttachments() {
+	const id = focusedTarget()
+	return id === null ? [] : (space.noteById(id)?.attachments ?? [])
+}
+
+const canOpenAttachment = computed(() => focusedAttachments().length > 0)
+
+/**
+ * The item names what will happen, matching how `Mark as Done` flips rather
+ * than describing state.
+ *
+ * Read off `mime` because this is a *label*, and a label may be wrong in a way
+ * an action may not: Rust re-sniffs the bytes before deciding, so a file whose
+ * recorded mime lies gets revealed rather than launched however this reads.
+ */
+const attachmentActionLabel = computed(() => {
+	const first = focusedAttachments()[0]
+	return first?.mime.startsWith('image/') ? 'Open Attachment' : 'Reveal in Explorer'
+})
+
+/** Opens the first attachment. A note with several is the uncommon case, and
+ *  the menu is not the place to disambiguate — the cards themselves are, and
+ *  each opens on double-click or Enter. */
+async function openAttachment() {
+	const first = focusedAttachments()[0]
+	if (!first) return
+	const failure = await attachments.openAttachment(first.file)
+	if (failure) status.setMessage(failure)
+}
+
 async function stopHandoff(noteId: string) {
 	const retained = await handoff.stopHandoff(noteId)
 	if (retained !== null) {
@@ -453,6 +495,9 @@ export function useNoteActions() {
 		canMerge,
 		canMoveTo,
 		canExpandTarget,
+		canOpenAttachment,
+		attachmentActionLabel,
+		openAttachment,
 		isRedundantTarget,
 		copyNotes,
 		copyAsList,

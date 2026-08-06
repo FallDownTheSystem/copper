@@ -135,9 +135,20 @@ pub struct CommitFailure {
 /// realistically lose a sharing race, so every failure at this step is the
 /// permanent kind (the directory does not exist, or is not writable).
 pub fn prepare(dir: &Path, text: &str) -> Result<Prepared> {
+	prepare_bytes(dir, text.as_bytes())
+}
+
+/// The same, for content that is not text.
+///
+/// Task-011's attachment blobs go through this. It is the *same* write path
+/// rather than a second one deliberately: a blob and a document have identical
+/// requirements — a temp file in the destination's own directory, content on
+/// the platter before the rename — and the only difference is that one of them
+/// is not UTF-8.
+pub fn prepare_bytes(dir: &Path, bytes: &[u8]) -> Result<Prepared> {
 	let mut file = NamedTempFile::new_in(dir)
 		.map_err(|err| io_err(dir, "create a temporary file in", &err))?;
-	file.write_all(text.as_bytes())
+	file.write_all(bytes)
 		.map_err(|err| io_err(file.path(), "write", &err))?;
 	file.as_file()
 		.sync_all()

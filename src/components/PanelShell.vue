@@ -336,6 +336,10 @@ function onContextMenu(event: MouseEvent) {
 		     `pointer-events: auto` inline on the open menu. -->
 		<div ref="portalHost" class="pointer-events-none absolute inset-0 z-30 empty:hidden" />
 
+		<!-- Panel-wide, so a drop anywhere attaches — including over the list, which
+		     is where a pointer carrying a file naturally ends up. -->
+		<DropTarget />
+
 		<!-- Measured, never shown. -->
 		<div
 			ref="clampProbe"

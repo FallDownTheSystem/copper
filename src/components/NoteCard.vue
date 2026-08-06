@@ -22,6 +22,11 @@ const { focusedId, isSelected, select } = useSelection()
 const { isHandingOff, isConflicted } = useEditorHandoff()
 const { stopHandoff } = useNoteActions()
 const { hasQuery } = useNoteSearch()
+const { setMessage } = useStatusMessage()
+
+/** The field is omitted from the document when empty, so it arrives undefined
+ *  on every note written before this feature existed. */
+const attachments = computed(() => props.note.attachments ?? [])
 
 const selected = computed(() => isSelected(props.note.id))
 const focused = computed(() => focusedId.value === props.rowId)
@@ -125,6 +130,25 @@ function onContextMenu() {
 						</span>
 						<NoteEditor v-if="editing" :row-id="rowId" />
 						<NoteBody v-else :note="note" :class="note.done ? 'note-done' : ''" />
+
+						<!-- Below the Markdown body, inside the same `min-w-0` chain — a
+						     filename is a long unbreakable token and would otherwise widen
+						     the document, which the panel must never scroll horizontally.
+						     Hidden while the inline editor is open: the editor replaces the
+						     body, and leaving the cards under it would imply they are part
+						     of what is being edited. -->
+						<ul
+							v-if="!editing && attachments.length > 0"
+							class="mt-1.5 flex min-w-0 flex-col gap-1"
+						>
+							<li v-for="attachment in attachments" :key="attachment.id" class="min-w-0">
+								<AttachmentCard
+									:attachment="attachment"
+									:tab-index="descendantTabIndex"
+									@message="setMessage"
+								/>
+							</li>
+						</ul>
 
 						<!-- Icon plus text, never colour alone. The control that ends the
 						     handoff sits next to it because a handoff the user cannot end is

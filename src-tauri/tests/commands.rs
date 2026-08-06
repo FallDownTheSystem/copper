@@ -52,7 +52,7 @@ const COMMANDS: [&str; 21] = [
 ];
 
 /// The commands later phases added beside the store's twenty.
-const EXTRA_COMMANDS: [&str; 21] = [
+const EXTRA_COMMANDS: [&str; 26] = [
 	"clipboard_write_text",
 	"editor_handoffs",
 	"editor_open_note",
@@ -81,12 +81,26 @@ const EXTRA_COMMANDS: [&str; 21] = [
 	"get_autostart_enabled",
 	"set_autostart_enabled",
 	"hide_panel",
+	// Task-011. Note what is *not* here: nothing for `tauri-plugin-fs`, which
+	// stays excluded, and nothing for the asset protocol — thumbnails travel as
+	// bytes over these commands precisely so that no capability scope has to widen
+	// as spaces move around the filesystem.
+	"attach_paste",
+	"attach_pick",
+	"attach_paths",
+	"attachment_thumb",
+	"attachment_open",
 ];
 
 /// Spec 8.1c. Every argument name in the whole surface.
-const PARAMETERS: [&str; 16] = [
+const PARAMETERS: [&str; 19] = [
 	"patch", "path", "name", "body", "section", "id", "ids", "done", "index", "text", "theme",
 	"chord", "trigger", "token", "target", "enabled",
+	// Task-011. `paths` is the plural of one already here and `file` is the
+	// content-addressed bare filename, deliberately not spelled `fileName` — a
+	// two-word parameter would have one spelling in Rust and another in
+	// JavaScript, which is the whole failure this list exists to prevent.
+	"attachments", "paths", "file",
 ];
 
 const SOURCE: &str = include_str!("../src/store/commands.rs");
@@ -94,7 +108,7 @@ const SOURCE: &str = include_str!("../src/store/commands.rs");
 /// Command *wrappers* live next to the module they serve; only the registration
 /// is central, because Tauri accepts one `invoke_handler` and the closure
 /// `generate_handler!` builds consumes the `Invoke` it is handed.
-const OTHER_SOURCES: [&str; 7] = [
+const OTHER_SOURCES: [&str; 8] = [
 	include_str!("../src/clipboard.rs"),
 	include_str!("../src/editor.rs"),
 	include_str!("../src/spaces/mod.rs"),
@@ -102,6 +116,7 @@ const OTHER_SOURCES: [&str; 7] = [
 	include_str!("../src/theme.rs"),
 	include_str!("../src/autostart.rs"),
 	include_str!("../src/panel.rs"),
+	include_str!("../src/attachments/commands.rs"),
 ];
 
 const REGISTRY: &str = include_str!("../src/commands.rs");

@@ -17,12 +17,13 @@
 
 use std::collections::HashSet;
 
+use crate::attachments::{is_bare_filename, ATTACHMENT_MAX_PER_NOTE};
 use crate::entry::normalise_name;
 
 use super::error::{Result, StoreError};
 use super::format::{normalise, now_rfc3339};
 use super::ids;
-use super::model::{Note, Section, Space};
+use super::model::{Attachment, Note, Section, Space};
 
 // --- shared validation -------------------------------------------------------
 
@@ -120,9 +121,46 @@ fn group_len(space: &Space, section: &str) -> i64 {
 
 // --- notes -------------------------------------------------------------------
 
+/// The attachment list a note may be created with, checked before anything is
+/// mutated.
+///
+/// This is the boundary attachments cross on their way in from the frontend, so
+/// it is where `file` is re-validated. The values were minted by `ingest` and so
+/// cannot be bad — but they made a round trip through IPC to get here, and the
+/// rule this module tree enforces is that a name is checked wherever it is
+/// *received*, not wherever it was produced.
+fn clean_attachments(attachments: &[Attachment]) -> Result<Vec<Attachment>> {
+	if attachments.len() > ATTACHMENT_MAX_PER_NOTE {
+		return Err(StoreError::Invalid(format!(
+			"a note can carry {ATTACHMENT_MAX_PER_NOTE} attachments and this one has {}",
+			attachments.len()
+		)));
+	}
+	if let Some(bad) = attachments
+		.iter()
+		.find(|attachment| !is_bare_filename(&attachment.file))
+	{
+		return Err(StoreError::Invalid(format!(
+			"{:?} is not a valid attachment file name",
+			bad.file
+		)));
+	}
+	Ok(attachments.to_vec())
+}
+
 /// Appends a note to `section`, or to the active section when none is given.
-pub fn add_note(space: &mut Space, body: &str, section: Option<&str>) -> Result<String> {
+///
+/// `attachments` is a slice rather than an owned `Vec` because ops are `Fn` and
+/// have to survive being re-applied to a freshly re-read document after a write
+/// conflict; a moved-in `Vec` would make this `FnOnce`.
+pub fn add_note(
+	space: &mut Space,
+	body: &str,
+	section: Option<&str>,
+	attachments: &[Attachment],
+) -> Result<String> {
 	let body = clean_body(body)?;
+	let attachments = clean_attachments(attachments)?;
 	let section = match section {
 		Some(id) => {
 			require_section(space, id)?;
@@ -139,6 +177,7 @@ pub fn add_note(space: &mut Space, body: &str, section: Option<&str>) -> Result<
 		section,
 		done: false,
 		body,
+		attachments,
 		created: now.clone(),
 		updated: now,
 	});
@@ -296,12 +335,29 @@ pub fn merge_notes(space: &mut Space, ids: &[String]) -> Result<()> {
 		.join("\n\n");
 	let done = positions.iter().all(|&position| space.notes[position].done);
 
+	// Survivor first, then the others in canonical order, de-duplicated by the
+	// content hash — so merging two notes that both hold the same screenshot
+	// produces one entry, matching what attaching it twice to one note would.
+	// Deliberately **not** capped at `ATTACHMENT_MAX_PER_NOTE`: the cap governs
+	// what may be attached, and applying it here would make a merge either fail or
+	// silently drop files the user still has, which is worse than a long list.
+	let mut attachments: Vec<Attachment> = Vec::new();
+	let mut seen: HashSet<String> = HashSet::new();
+	for &position in &positions {
+		for attachment in &space.notes[position].attachments {
+			if seen.insert(attachment.file.clone()) {
+				attachments.push(attachment.clone());
+			}
+		}
+	}
+
 	// The survivor is first in canonical order and keeps its id, section, order
 	// and created — a merge produces an older note with more in it, not a new one.
 	let survivor = space.notes[positions[0]].id.clone();
 	let note = &mut space.notes[positions[0]];
 	note.done = done;
 	note.body = body;
+	note.attachments = attachments;
 	note.updated = now_rfc3339();
 
 	space
@@ -487,6 +543,7 @@ mod tests {
 					order: offset,
 					done: false,
 					body: format!("{section} note {offset}"),
+					attachments: Vec::new(),
 					created: "2026-07-30T14:00:00Z".into(),
 					updated: "2026-07-30T14:00:00Z".into(),
 				});
@@ -514,7 +571,7 @@ mod tests {
 	#[test]
 	fn add_note_appends_to_the_active_section() {
 		let mut space = space();
-		let id = add_note(&mut space, "fresh", None).unwrap();
+		let id = add_note(&mut space, "fresh", None, &[]).unwrap();
 
 		let note = space.note(&id).unwrap();
 		assert_eq!(note.section, "sec_aaaaaaaa");
@@ -526,28 +583,28 @@ mod tests {
 	#[test]
 	fn add_note_targets_a_named_section() {
 		let mut space = space();
-		let id = add_note(&mut space, "fresh", Some("sec_bbbbbbbb")).unwrap();
+		let id = add_note(&mut space, "fresh", Some("sec_bbbbbbbb"), &[]).unwrap();
 		assert_eq!(space.note(&id).unwrap().section, "sec_bbbbbbbb");
 	}
 
 	#[test]
 	fn add_note_trims_trailing_whitespace_and_keeps_leading() {
 		let mut space = space();
-		let id = add_note(&mut space, "    indented code   \n\n", None).unwrap();
+		let id = add_note(&mut space, "    indented code   \n\n", None, &[]).unwrap();
 		assert_eq!(space.note(&id).unwrap().body, "    indented code");
 	}
 
 	#[test]
 	fn add_note_rejects_an_empty_body() {
 		let mut space = space();
-		let err = add_note(&mut space, "   \n\t ", None).unwrap_err();
+		let err = add_note(&mut space, "   \n\t ", None, &[]).unwrap_err();
 		assert_eq!(err.kind(), "invalid");
 	}
 
 	#[test]
 	fn add_note_rejects_an_unknown_section() {
 		let mut space = space();
-		let err = add_note(&mut space, "fresh", Some("sec_nope")).unwrap_err();
+		let err = add_note(&mut space, "fresh", Some("sec_nope"), &[]).unwrap_err();
 		assert_eq!(err.kind(), "not-found");
 		assert_eq!(space.notes.len(), 5);
 	}

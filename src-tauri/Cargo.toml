@@ -86,6 +86,28 @@ thiserror = "2"
 # plugin hands back a path and every read and write still goes through the store.
 tauri-plugin-dialog = "2.7.2"
 
+# --- attachments (task-011) ---
+# `infer` and `sha2` are already in the tree beneath Tauri, so these two ranges
+# are chosen to resolve to the copies that are there rather than to the newest
+# releases: `infer` is at 0.22 and `sha2` at 0.11, and asking for either would
+# add a second copy of a crate the binary already links. The same
+# single-version rule the `windows` pin exists for, applied one level down.
+infer = "0.19"
+sha2 = "0.10"
+# Genuinely new, and the only large one. The feature set is narrowed to the
+# formats attachments can actually be: default features pull in every decoder
+# `image` has, most of a megabyte of code for TIFF, DDS, EXR and HDR that no
+# clipboard paste or file drop in this app will ever produce. `bmp` is not
+# cosmetic — a clipboard DIB is a BMP body without its file header, and
+# prepending one is how a paste is decoded at all.
+image = { version = "0.25.10", default-features = false, features = [
+	"png",
+	"jpeg",
+	"gif",
+	"webp",
+	"bmp",
+] }
+
 [profile.release]
 # The no-unwrap()-in-setup() reasoning in lib.rs is about release behaviour, so
 # the release profile has to actually be the one described. Panic hooks still run

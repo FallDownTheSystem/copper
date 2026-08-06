@@ -28,7 +28,8 @@
 				"minimizable": false,
 				"closable": false,
 				"center": true,
-				"shadow": true
+				"shadow": true,
+				"dragDropEnabled": true
 			}
 		],
 		"security": {

@@ -9,6 +9,7 @@
 export {}
 declare global {
   const EffectScope: typeof import('vue').EffectScope
+  const MAX_PER_NOTE: typeof import('./composables/useAttachments').MAX_PER_NOTE
   const applied: typeof import('./composables/useSpace').applied
   const asyncComputed: typeof import('@vueuse/core').asyncComputed
   const autoResetRef: typeof import('@vueuse/core').autoResetRef
@@ -44,6 +45,7 @@ declare global {
   const extendRef: typeof import('@vueuse/core').extendRef
   const focusRowSoon: typeof import('./composables/useSelection').focusRowSoon
   const focusableIn: typeof import('./composables/useInteractionMode').focusableIn
+  const formatBytes: typeof import('./composables/useAttachments').formatBytes
   const getCurrentInstance: typeof import('vue').getCurrentInstance
   const getCurrentScope: typeof import('vue').getCurrentScope
   const getCurrentWatcher: typeof import('vue').getCurrentWatcher
@@ -141,6 +143,7 @@ declare global {
   const useArrayUnique: typeof import('@vueuse/core').useArrayUnique
   const useAsyncQueue: typeof import('@vueuse/core').useAsyncQueue
   const useAsyncState: typeof import('@vueuse/core').useAsyncState
+  const useAttachments: typeof import('./composables/useAttachments').useAttachments
   const useAttrs: typeof import('vue').useAttrs
   const useAutoSize: typeof import('./composables/useAutoSize').useAutoSize
   const useBase64: typeof import('@vueuse/core').useBase64
@@ -336,6 +339,9 @@ declare global {
   export type { Component, Slot, Slots, ComponentPublicInstance, ComputedRef, DirectiveBinding, ExtractDefaultPropTypes, ExtractPropTypes, ExtractPublicPropTypes, InjectionKey, PropType, Ref, ShallowRef, MaybeRef, MaybeRefOrGetter, VNode, WritableComputedRef } from 'vue'
   import('vue')
   // @ts-ignore
+  export type { Attachment, Preview } from './composables/useAttachments'
+  import('./composables/useAttachments')
+  // @ts-ignore
   export type { CaptureNotice } from './composables/useCaptureNotice'
   import('./composables/useCaptureNotice')
   // @ts-ignore
@@ -370,6 +376,7 @@ declare module 'vue' {
   interface GlobalComponents {}
   interface ComponentCustomProperties {
     readonly EffectScope: UnwrapRef<typeof import('vue')['EffectScope']>
+    readonly MAX_PER_NOTE: UnwrapRef<typeof import('./composables/useAttachments')['MAX_PER_NOTE']>
     readonly applied: UnwrapRef<typeof import('./composables/useSpace')['applied']>
     readonly asyncComputed: UnwrapRef<typeof import('@vueuse/core')['asyncComputed']>
     readonly autoResetRef: UnwrapRef<typeof import('@vueuse/core')['autoResetRef']>
@@ -405,6 +412,7 @@ declare module 'vue' {
     readonly extendRef: UnwrapRef<typeof import('@vueuse/core')['extendRef']>
     readonly focusRowSoon: UnwrapRef<typeof import('./composables/useSelection')['focusRowSoon']>
     readonly focusableIn: UnwrapRef<typeof import('./composables/useInteractionMode')['focusableIn']>
+    readonly formatBytes: UnwrapRef<typeof import('./composables/useAttachments')['formatBytes']>
     readonly getCurrentInstance: UnwrapRef<typeof import('vue')['getCurrentInstance']>
     readonly getCurrentScope: UnwrapRef<typeof import('vue')['getCurrentScope']>
     readonly getCurrentWatcher: UnwrapRef<typeof import('vue')['getCurrentWatcher']>
@@ -502,6 +510,7 @@ declare module 'vue' {
     readonly useArrayUnique: UnwrapRef<typeof import('@vueuse/core')['useArrayUnique']>
     readonly useAsyncQueue: UnwrapRef<typeof import('@vueuse/core')['useAsyncQueue']>
     readonly useAsyncState: UnwrapRef<typeof import('@vueuse/core')['useAsyncState']>
+    readonly useAttachments: UnwrapRef<typeof import('./composables/useAttachments')['useAttachments']>
     readonly useAttrs: UnwrapRef<typeof import('vue')['useAttrs']>
     readonly useAutoSize: UnwrapRef<typeof import('./composables/useAutoSize')['useAutoSize']>
     readonly useBase64: UnwrapRef<typeof import('@vueuse/core')['useBase64']>

@@ -6,15 +6,18 @@ import PanelShell from './PanelShell.vue'
 // Statically imported, like PanelShell itself: a dynamic import after
 // `vi.resetModules()` would resolve a *second* instance of a module whose state
 // is module-scoped by design, and the component tree would not share it.
+import { useAttachments, type Attachment } from '@/composables/useAttachments'
+import { useInteractionMode } from '@/composables/useInteractionMode'
 import { useNoteActions } from '@/composables/useNoteActions'
 import { useNoteEditor } from '@/composables/useNoteEditor'
 import { useNoteSearch } from '@/composables/useNoteSearch'
 import { useSections } from '@/composables/useSections'
-import { useSelection } from '@/composables/useSelection'
+import { noteRow, takeRow, useSelection } from '@/composables/useSelection'
 import { useSpace } from '@/composables/useSpace'
 import type { Space, StoreStatus } from '@/composables/useSpace'
 
 const actions = useNoteActions()
+const interaction = useInteractionMode()
 const editor = useNoteEditor()
 const search = useNoteSearch()
 const sections = useSections()
@@ -61,6 +64,13 @@ vi.mock('@tauri-apps/api/event', () => ({
 	emit: async () => {},
 }))
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: mocks.openUrl }))
+// The drop target subscribes on mount. `getCurrentWebview` reaches into
+// `window.__TAURI_INTERNALS__` for the current window's label, which does not
+// exist outside the real webview — so the whole module is stubbed rather than
+// the internals faked, which would be a second, worse copy of Tauri's shape.
+vi.mock('@tauri-apps/api/webview', () => ({
+	getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
+}))
 
 const SPACE: Space = {
 	id: 'spc_1',
@@ -602,7 +612,7 @@ describe('the composer submit', () => {
 		// Rust consumes rather than the composer.
 		for (const body of ['# Research', '## Research', '#Research', '\\# Research', '  x  ']) {
 			await submit(wrapper, body)
-			expect(mocks.invoke).toHaveBeenCalledWith('submit_entry', { body })
+			expect(mocks.invoke).toHaveBeenCalledWith('submit_entry', { body, attachments: [] })
 		}
 
 		expect(mocks.invoke).not.toHaveBeenCalledWith('add_note', expect.anything())
@@ -812,7 +822,10 @@ describe('the section switcher', () => {
 
 		// The *same* path as the `# Name` directive, so the duplicate-name rule, the
 		// whitespace collapsing and the length cap are inherited rather than copied.
-		expect(mocks.invoke).toHaveBeenCalledWith('submit_entry', { body: '# Reading' })
+		expect(mocks.invoke).toHaveBeenCalledWith('submit_entry', {
+			body: '# Reading',
+			attachments: [],
+		})
 	})
 
 	it('matches on the name the store will keep, not the one that was typed', async () => {
@@ -845,7 +858,10 @@ describe('the section switcher', () => {
 		expect(row.textContent).toContain('Create section “Deep Reading”')
 		row.click()
 		await settle(4)
-		expect(mocks.invoke).toHaveBeenCalledWith('submit_entry', { body: '# Deep Reading' })
+		expect(mocks.invoke).toHaveBeenCalledWith('submit_entry', {
+			body: '# Deep Reading',
+			attachments: [],
+		})
 	})
 
 	it('activates the row reka has highlighted, not always the first', async () => {
@@ -1169,6 +1185,405 @@ describe('axe', () => {
 			// Colour contrast needs a real layout and paint; it is verified by hand
 			// over a black and a white desktop, because translucency shifts every
 			// ratio with whatever is behind the panel.
+			rules: { 'color-contrast': { enabled: false } },
+		})
+
+		expect(
+			results.violations.map((violation) => `${violation.id}: ${violation.nodes.length} node(s)`),
+		).toEqual([])
+	}, 30_000)
+})
+
+describe('attachments', () => {
+	const PNG: Attachment = {
+		id: 'att_1',
+		file: '3f9a1c0e7b2d5481.png',
+		name: 'Screenshot 2026-08-04 141233.png',
+		mime: 'image/png',
+		bytes: 184_320,
+		width: 1280,
+		height: 720,
+	}
+	const PDF: Attachment = {
+		id: 'att_2',
+		file: 'c1d40ab97e6f2235.pdf',
+		name: 'spec.pdf',
+		mime: 'application/pdf',
+		bytes: 2048,
+	}
+
+	const attachments = useAttachments()
+
+	/** A one-pixel PNG's worth of bytes. Only the length matters — the component
+	 *  hands it to `URL.createObjectURL`, which happy-dom stubs. */
+	const THUMB_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47]).buffer
+
+	/**
+	 * `baseInvoke` plus the attachment surface. Written as an override rather
+	 * than a replacement so a test that only cares about pasting still gets the
+	 * document, the status and the settings.
+	 */
+	let attachmentOverrides: Record<string, unknown> = {}
+
+	function withAttachmentCommands(overrides: Record<string, unknown> = {}) {
+		// Merged rather than replaced: `installWithAttachments` calls this again to
+		// swap the document, and a replacement would silently drop the preview
+		// behaviour the test had just set up — leaving every card in the state the
+		// default produces and the assertion failing for the wrong reason.
+		attachmentOverrides = { ...attachmentOverrides, ...overrides }
+		const active = attachmentOverrides
+		mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+			if (command in active) {
+				const value = active[command]
+				return typeof value === 'function' ? value(args) : value
+			}
+			// The default for every preview: the blob is there and has no picture.
+			// A test that wants a thumbnail or a missing file overrides it.
+			if (command === 'attachment_thumb') return new ArrayBuffer(0)
+			if (command === 'attach_paste' || command === 'attach_pick' || command === 'attach_paths') {
+				return []
+			}
+			if (command === 'attachment_open') return null
+			return baseInvoke(command)
+		})
+	}
+
+	/** A document whose first note carries `files`. */
+	function documentWith(files: Attachment[]): Space {
+		return {
+			...SPACE,
+			notes: SPACE.notes.map((note, index) =>
+				index === 0 ? { ...note, attachments: files } : note,
+			),
+		}
+	}
+
+	/**
+	 * `installDocument`, but with the attachment surface still answering.
+	 *
+	 * The shared helper deliberately narrows the mock to three commands so that
+	 * nothing else is reachable while it is installed — which for these tests
+	 * would make every preview request throw and render every card unavailable,
+	 * including the ones that are supposed to work.
+	 */
+	async function installWithAttachments(next: Space, overrides: Record<string, unknown> = {}) {
+		withAttachmentCommands({ ...overrides, get_active_space: next })
+		await space.refresh()
+		await settle(3)
+	}
+
+	async function composerPaste(wrapper: Awaited<ReturnType<typeof mountPanel>>) {
+		await wrapper.find('#composer').trigger('paste')
+		await settle(3)
+	}
+
+	/**
+	 * Cleared going *in* rather than coming out, and the difference is not
+	 * stylistic.
+	 *
+	 * A nested `afterEach` runs before the outer one, so it fires while the panel
+	 * is still mounted — and clearing the preview cache is a reactive change,
+	 * which re-renders every card, which asks for its preview again. Those
+	 * requests land on whatever mock the teardown has installed by then and
+	 * refill the cache with answers from the wrong test, so the next test finds a
+	 * cached preview and never calls the command it is asserting on.
+	 */
+	beforeEach(() => {
+		attachments.clearPending()
+		attachments.clearPreviews()
+		attachmentOverrides = {}
+	})
+
+	// --- the pending tray ---
+
+	/** AC1. */
+	it('shows a pasted attachment in the tray with its name, size and count chip', async () => {
+		withAttachmentCommands({ attach_paste: [PNG] })
+		const wrapper = await mountPanel()
+
+		await composerPaste(wrapper)
+
+		const tray = wrapper.find('[aria-label="Add a note"]')
+		expect(tray.text()).toContain('Attached 1 file')
+		expect(tray.text()).toContain(PNG.name)
+		expect(tray.text()).toContain('180 KB')
+	})
+
+	it('pluralises the chip and removes one item at a time', async () => {
+		withAttachmentCommands({ attach_paste: [PNG, PDF] })
+		const wrapper = await mountPanel()
+
+		await composerPaste(wrapper)
+		expect(wrapper.text()).toContain('Attached 2 files')
+
+		await wrapper.find(`[aria-label="Remove ${PDF.name}"]`).trigger('click')
+		await settle(1)
+
+		expect(wrapper.text()).toContain('Attached 1 file')
+		expect(wrapper.text()).not.toContain(PDF.name)
+	})
+
+	/** AC4. Rust answers with an empty list when the clipboard carries text, and
+	 *  the composer must then leave the native paste alone rather than treating
+	 *  the empty answer as a failure. */
+	it('creates no attachment when the clipboard carries text', async () => {
+		withAttachmentCommands({ attach_paste: [] })
+		const wrapper = await mountPanel()
+
+		await composerPaste(wrapper)
+
+		expect(mocks.invoke).toHaveBeenCalledWith('attach_paste')
+		expect(wrapper.text()).not.toContain('Attached')
+	})
+
+	/** AC11. A refusal is reported by name on the composer's own error surface,
+	 *  and it does not empty a tray that already has something in it. */
+	it('reports a refused file without losing what is already attached', async () => {
+		withAttachmentCommands({
+			attach_paste: [PNG],
+			attach_pick: () => {
+				throw { kind: 'invalid', message: 'huge.bin is 12.0 MB and the limit is 10.0 MB' }
+			},
+		})
+		const wrapper = await mountPanel()
+		await composerPaste(wrapper)
+
+		await wrapper.find('[aria-label="Attach files"]').trigger('click')
+		await settle(3)
+
+		expect(wrapper.text()).toContain('huge.bin is 12.0 MB')
+		expect(wrapper.text()).toContain('Attached 1 file')
+	})
+
+	/** AC2. The tray is emptied only after the store accepted the submission,
+	 *  and its contents travel with the body. */
+	it('submits the pending attachments with the note and then clears the tray', async () => {
+		withAttachmentCommands({ attach_paste: [PNG, PDF] })
+		const wrapper = await mountPanel()
+		await composerPaste(wrapper)
+
+		const composer = wrapper.find('#composer')
+		await composer.setValue('with two files')
+		await composer.trigger('keydown', { key: 'Enter' })
+		await settle(4)
+
+		expect(mocks.invoke).toHaveBeenCalledWith('submit_entry', {
+			body: 'with two files',
+			attachments: [PNG, PDF],
+		})
+		expect(wrapper.text()).not.toContain('Attached')
+	})
+
+	it('keeps the tray when the submission fails', async () => {
+		withAttachmentCommands({
+			attach_paste: [PNG],
+			submit_entry: () => {
+				throw { kind: 'io', message: 'the space could not be written' }
+			},
+		})
+		const wrapper = await mountPanel()
+		await composerPaste(wrapper)
+
+		const composer = wrapper.find('#composer')
+		await composer.setValue('will not land')
+		await composer.trigger('keydown', { key: 'Enter' })
+		await settle(4)
+
+		// Clearing here would drop the only reference to a blob the sweep will
+		// eventually collect, which is the one way this surface can lose a file.
+		expect(wrapper.text()).toContain('Attached 1 file')
+		expect(wrapper.text()).toContain('the space could not be written')
+		expect((composer.element as HTMLTextAreaElement).value).toBe('will not land')
+	})
+
+	// --- rendering in a note ---
+
+	/** AC7. */
+	it('renders an image as a preview card and a pdf as a file chip', async () => {
+		withAttachmentCommands({
+			attachment_thumb: (args?: Record<string, unknown>) =>
+				args?.file === PNG.file ? THUMB_BYTES : new ArrayBuffer(0),
+		})
+		await mountPanel()
+		await installWithAttachments(documentWith([PNG, PDF]))
+
+		const cards = document.querySelectorAll<HTMLElement>(
+			'[data-note-row] button[aria-label^="Open"]',
+		)
+		expect(cards).toHaveLength(2)
+		expect(cards[0]?.textContent).toContain(PNG.name)
+		expect(cards[0]?.querySelector('img')).not.toBeNull()
+		// A file with no preview is not a broken image: it renders a glyph and
+		// stays enabled, because the blob is there.
+		expect(cards[1]?.textContent).toContain(PDF.name)
+		expect(cards[1]?.querySelector('img')).toBeNull()
+		expect(cards[1]?.hasAttribute('disabled')).toBe(false)
+	})
+
+	/** AC8. A missing blob says so, and the rest of the note still renders. */
+	it('renders a missing attachment as unavailable with its cause', async () => {
+		withAttachmentCommands({
+			attachment_thumb: () => {
+				throw { kind: 'not-found', message: 'could not read 3f9a1c0e7b2d5481.png' }
+			},
+		})
+		await mountPanel()
+		await installWithAttachments(documentWith([PNG]))
+
+		const card = document.querySelector<HTMLElement>(
+			'[data-note-row] button[aria-label*="unavailable"]',
+		)
+		expect(card).not.toBeNull()
+		expect(card?.textContent).toContain('could not read 3f9a1c0e7b2d5481.png')
+		expect(card?.hasAttribute('disabled')).toBe(true)
+		// The note itself is untouched.
+		expect(document.body.textContent).toContain('first note')
+	})
+
+	/** One request per content hash, however many cards point at it — the same
+	 *  screenshot on two notes is one blob and one preview. */
+	it('requests a preview once per content hash', async () => {
+		withAttachmentCommands()
+		await mountPanel()
+		const twice: Space = {
+			...SPACE,
+			notes: SPACE.notes.map((note) => ({ ...note, attachments: [PNG] })),
+		}
+		await installWithAttachments(twice)
+
+		const requests = mocks.invoke.mock.calls.filter(([command]) => command === 'attachment_thumb')
+		expect(requests).toHaveLength(1)
+	})
+
+	/** AC17's keyboard half. Cards are tabbable only inside task-004's
+	 *  interaction mode, like every other in-card control. */
+	it('makes cards tabbable only in interaction mode, and opens on Enter', async () => {
+		withAttachmentCommands()
+		await mountPanel()
+		await installWithAttachments(documentWith([PDF]))
+
+		const card = document.querySelector<HTMLElement>('button[aria-label^="Open"]')
+		expect(card?.getAttribute('tabindex')).toBe('-1')
+
+		const row = document.querySelector<HTMLElement>('[data-note-row]')
+		row?.focus()
+		interaction.enter(row!.dataset.rowId!)
+		await settle(2)
+		expect(card?.getAttribute('tabindex')).toBe('0')
+
+		card?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+		await settle(2)
+		expect(mocks.invoke).toHaveBeenCalledWith('attachment_open', { file: PDF.file })
+	})
+
+	it('opens on double-click and not on a single click', async () => {
+		withAttachmentCommands()
+		await mountPanel()
+		await installWithAttachments(documentWith([PNG]))
+
+		const card = document.querySelector<HTMLElement>('button[aria-label^="Open"]')
+		card?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+		await settle(2)
+		expect(mocks.invoke).not.toHaveBeenCalledWith('attachment_open', expect.anything())
+
+		card?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+		await settle(2)
+		expect(mocks.invoke).toHaveBeenCalledWith('attachment_open', { file: PNG.file })
+	})
+
+	/** AC20. `Copy` and `Copy as List` are about bodies; a local file path means
+	 *  nothing to whatever the text is pasted into. */
+	it('copies body text only, byte-identically to a note without attachments', async () => {
+		withAttachmentCommands()
+		await mountPanel()
+
+		await installWithAttachments(SPACE)
+		selection.select('nte_1')
+		await actions.copyNotes()
+		const withoutFiles = mocks.invoke.mock.calls.filter(
+			([command]) => command === 'clipboard_write_text',
+		)
+
+		await installWithAttachments(documentWith([PNG, PDF]))
+		selection.select('nte_1')
+		await actions.copyNotes()
+		const all = mocks.invoke.mock.calls.filter(([command]) => command === 'clipboard_write_text')
+
+		expect(all).toHaveLength(withoutFiles.length + 1)
+		expect(all.at(-1)?.[1]).toEqual(withoutFiles.at(-1)?.[1])
+		expect(JSON.stringify(all.at(-1)?.[1])).not.toContain(PNG.file)
+	})
+
+	/** AC16. The panel is 390 × 660 and fixed, so nothing added inside a note row
+	 *  may widen the document — a filename is one long unbreakable token, which
+	 *  is exactly the shape that does. */
+	it('does not let a long filename widen the document', async () => {
+		withAttachmentCommands()
+		await mountPanel()
+		await installWithAttachments(
+			documentWith([{ ...PNG, name: `${'unbreakable-filename'.repeat(20)}.png` }]),
+		)
+
+		// happy-dom lays nothing out and reports zero for every box, so this
+		// asserts the *mechanism* rather than the pixels. The filename has to
+		// truncate, and every flex ancestor between it and the note row has to be
+		// allowed below its content width — a flex item defaults to
+		// `min-width: auto`, which is what lets one unbreakable token push the grid
+		// wider than the panel and make the document scroll sideways.
+		const name = [...document.querySelectorAll<HTMLElement>('[data-note-row] span')].find(
+			(element) =>
+				element.textContent?.trim().startsWith('unbreakable-filename') &&
+				element.children.length === 0,
+		)
+		expect(name?.className).toContain('truncate')
+
+		const row = document.querySelector<HTMLElement>('[data-note-row]')
+		expect(row).not.toBeNull()
+		for (let element = name?.parentElement; element && element !== row;) {
+			expect(
+				element.className,
+				`${element.tagName}.${element.className} can be pushed wider than the panel`,
+			).toMatch(/min-w-0|shrink-0/)
+			element = element.parentElement
+		}
+	})
+
+	// --- the context menu ---
+
+	it('names the attachment action after what it will do, and disables it with none', async () => {
+		withAttachmentCommands()
+		await mountPanel()
+
+		await installWithAttachments(SPACE)
+		selection.select('nte_1')
+		takeRow(noteRow('nte_1'))
+		await settle(1)
+		expect(actions.canOpenAttachment.value).toBe(false)
+
+		await installWithAttachments(documentWith([PDF]))
+		selection.select('nte_1')
+		takeRow(noteRow('nte_1'))
+		await settle(1)
+		expect(actions.canOpenAttachment.value).toBe(true)
+		// A non-image is revealed, never launched.
+		expect(actions.attachmentActionLabel.value).toBe('Reveal in Explorer')
+
+		await installWithAttachments(documentWith([PNG]))
+		selection.select('nte_1')
+		takeRow(noteRow('nte_1'))
+		await settle(1)
+		expect(actions.attachmentActionLabel.value).toBe('Open Attachment')
+	})
+
+	/** AC17's axe half, over a note carrying attachments and a populated tray at
+	 *  the same time. */
+	it('reports no axe violations with a populated tray and a note carrying files', async () => {
+		withAttachmentCommands({ attach_paste: [PNG, PDF] })
+		const wrapper = await mountPanel()
+		await installWithAttachments(documentWith([PNG, PDF]), { attach_paste: [PNG, PDF] })
+		await composerPaste(wrapper)
+
+		const results = await axe.run(document.body, {
 			rules: { 'color-contrast': { enabled: false } },
 		})
 

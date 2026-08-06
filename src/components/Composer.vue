@@ -2,16 +2,20 @@
 import { useAutoSize } from '@/composables/useAutoSize'
 import { noteRow, takeRow } from '@/composables/useSelection'
 
-const { spaceName, submitEntry, errorFor, clearActionError } = useSpace()
+const { spaceName, submitEntry, errorFor, clearActionError, reportActionError } = useSpace()
 
 const composerError = errorFor('composer')
 const { visibleNoteIds } = useSelection()
 const { switcherOpen } = useSections()
+const { pending, pasteAttachment, pickAttachments, removePending } = useAttachments()
 
 const textarea = useTemplateRef<HTMLTextAreaElement>('textarea')
 
 const value = ref('')
-const pending = ref(false)
+/** Named for the request rather than for the tray beside it: `pending` is the
+ *  pending-attachment list now, and one word meaning two things in one file is
+ *  how a submit guard silently stops guarding. */
+const submitting = ref(false)
 const composing = ref(false)
 /** Bumped on every keystroke and captured at submit, so a result that lands
  *  after the user typed more cannot clear newer input. */
@@ -71,6 +75,38 @@ function onInput(event: Event) {
 	scheduleAutoSize()
 }
 
+/** Reported on the composer's own surface, next to the field and the tray the
+ *  message is about. */
+function report(message: string | null) {
+	if (message) reportActionError('composer', message)
+}
+
+/**
+ * `Ctrl+V`, which may or may not be an attachment.
+ *
+ * **The native paste is deliberately not prevented.** Deciding needs a round
+ * trip to Rust and a `paste` handler is synchronous, so preventing first would
+ * mean re-implementing text insertion here — losing the field's native undo
+ * stack and its IME behaviour — for a keystroke that is text the overwhelming
+ * majority of the time.
+ *
+ * Letting it run is safe rather than merely convenient: Rust reports an
+ * attachment only when the clipboard carries **no** `CF_UNICODETEXT`, because
+ * text always wins. So in exactly the cases this handles, the native paste had
+ * nothing to insert and inserted nothing.
+ */
+async function onPaste() {
+	const outcome = await pasteAttachment()
+	if (!outcome.handled) return
+	report(outcome.message)
+	focus()
+}
+
+async function pick() {
+	report(await pickAttachments())
+	focus()
+}
+
 async function submit() {
 	// Emptiness is tested on the trimmed value, but the *untrimmed* value is what
 	// is submitted: leading whitespace is significant Markdown — indented code
@@ -78,14 +114,15 @@ async function submit() {
 	if (value.value.trim().length === 0) return
 	// A submit already in flight blocks a second, so holding Enter cannot create
 	// duplicates.
-	if (pending.value) return
+	if (submitting.value) return
 
 	const submitted = value.value
+	const attachments = [...pending.value]
 	const submittedRevision = revision
-	pending.value = true
+	submitting.value = true
 
-	const result = await submitEntry(submitted)
-	pending.value = false
+	const result = await submitEntry(submitted, attachments)
+	submitting.value = false
 
 	// Nothing is cleared optimistically, and a success must not destroy newer
 	// input: the field is only cleared if it is unchanged since the request went
@@ -93,6 +130,13 @@ async function submit() {
 	if (result && submittedRevision === revision) {
 		value.value = ''
 		scheduleAutoSize()
+	}
+	// The tray is cleared on success alone, and unconditionally on the revision
+	// check — unlike the text, an attachment cannot be "newer input": adding one
+	// during a submit would have to go through `pending`, which was copied above,
+	// so anything added since is still in the tray and must survive.
+	if (result) {
+		for (const attachment of attachments) removePending(attachment.id)
 	}
 	// Focus stays here either way, so consecutive captures need no mouse.
 	focus()
@@ -153,24 +197,40 @@ function onKeydown(event: KeyboardEvent) {
 			<ActiveSectionChip @closed="onSwitcherClosed" />
 		</div>
 
+		<AttachmentTray />
+
 		<label for="composer" class="sr-only">New note</label>
-		<textarea
-			id="composer"
-			ref="textarea"
-			name="note"
-			data-composer
-			rows="1"
-			autocomplete="off"
-			:value="value"
-			:placeholder="placeholder"
-			:aria-busy="pending"
-			class="border-separator bg-surface-hover text-text-primary placeholder:text-text-disabled outline-focus-ring max-h-[5lh] min-h-8 w-full min-w-0 resize-none select-text rounded-md border px-2 py-1.5 text-body focus-visible:outline-2 focus-visible:-outline-offset-1"
-			:class="supportsFieldSizing ? 'field-sizing-content' : ''"
-			@input="onInput"
-			@keydown="onKeydown"
-			@compositionstart="composing = true"
-			@compositionend="composing = false"
-		/>
+		<!-- The field and the paperclip share a row so the button does not cost a
+		     line of a panel that cannot grow, and `items-end` keeps it on the last
+		     line as the field grows to its five-line cap. -->
+		<div class="flex min-w-0 items-end gap-1.5">
+			<textarea
+				id="composer"
+				ref="textarea"
+				name="note"
+				data-composer
+				rows="1"
+				autocomplete="off"
+				:value="value"
+				:placeholder="placeholder"
+				:aria-busy="submitting"
+				class="border-separator bg-surface-hover text-text-primary placeholder:text-text-disabled outline-focus-ring max-h-[5lh] min-h-8 w-full min-w-0 flex-1 resize-none select-text rounded-md border px-2 py-1.5 text-body focus-visible:outline-2 focus-visible:-outline-offset-1"
+				:class="supportsFieldSizing ? 'field-sizing-content' : ''"
+				@input="onInput"
+				@keydown="onKeydown"
+				@paste="onPaste"
+				@compositionstart="composing = true"
+				@compositionend="composing = false"
+			/>
+			<button
+				type="button"
+				aria-label="Attach files"
+				class="text-text-secondary hover:text-text-primary hover:bg-surface-hover outline-focus-ring hit-44 relative mb-0.5 grid size-7 shrink-0 place-items-center rounded-md transition-colors duration-fast focus-visible:outline-2"
+				@click="pick"
+			>
+				<IconLucidePaperclip class="size-4" aria-hidden="true" focusable="false" />
+			</button>
+		</div>
 
 		<p v-if="composerError" class="text-destructive mt-1 text-meta">{{ composerError }}</p>
 	</form>

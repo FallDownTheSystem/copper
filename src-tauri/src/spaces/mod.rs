@@ -180,7 +180,7 @@ pub fn open_space_at(app: &AppHandle, path: &Path) -> Reply<ActivateOutcome> {
 		return Err(refusal(*reason, message));
 	}
 
-	end_handoffs_before_switching(app)?;
+	leave_current_space(app)?;
 
 	let doc = store::open_space(&state, path)?;
 	// The row agrees with what just happened without waiting for another probe.
@@ -208,6 +208,27 @@ pub fn open_space_at(app: &AppHandle, path: &Path) -> Reply<ActivateOutcome> {
 ///
 /// Must be called with the activation guard held, so nothing can create a handoff
 /// between the teardown and the document swap.
+/// Everything the outgoing space is owed before another one takes its place.
+///
+/// One function rather than two calls at each of the two switch sites, because
+/// the ordering between the halves is not arbitrary and a site that only
+/// remembered one of them would be silently wrong. Editor handoffs come first
+/// and can refuse the transition; the attachment sweep comes after, is
+/// best-effort, and can refuse nothing.
+///
+/// **The sweep runs here and at startup, and nowhere else.** Never during a
+/// session: the undo stack is session-scoped, and collecting the blobs of a
+/// note deleted a minute ago would leave `Ctrl+Z` restoring a note whose
+/// attachments no longer exist.
+fn leave_current_space(app: &AppHandle) -> Reply<()> {
+	end_handoffs_before_switching(app)?;
+	// After `end_all`, so a handoff still writing back cannot have its note's
+	// attachments collected out from under it, and after the store lock is
+	// released, which `sweep_active_space` takes care of itself.
+	crate::attachments::commands::sweep_active_space(app);
+	Ok(())
+}
+
 fn end_handoffs_before_switching(app: &AppHandle) -> Reply<()> {
 	let retained = editor::end_all(app);
 	if retained.is_empty() {
@@ -390,7 +411,7 @@ pub async fn create_space_interactive(app: AppHandle) -> Reply<ActivateOutcome> 
 	// this, `create_space` replaces the active document while a handoff keyed by
 	// `note_id` is still live, which is the exact cross-space write A27 exists to
 	// prevent.
-	end_handoffs_before_switching(&app)?;
+	leave_current_space(&app)?;
 	// `create_space` opens what it created, updates `recents` and emits its one
 	// `settings-changed`. Opening again would be a redundant second load and a
 	// second recents touch. If the create succeeds and the open half then fails,
@@ -449,12 +470,43 @@ fn panel_window(app: &AppHandle) -> Reply<WebviewWindow> {
 /// `set_parent` is not optional. The panel is `alwaysOnTop`, so a dialog with no
 /// owner window opens *behind* it and reads as a hang — the app appears frozen
 /// with no visible dialog. An owned dialog is always drawn above its owner.
+fn parented_dialog(window: &WebviewWindow) -> tauri_plugin_dialog::FileDialogBuilder<tauri::Wry> {
+	window.dialog().file().set_parent(window)
+}
+
 fn app_dialog(window: &WebviewWindow) -> tauri_plugin_dialog::FileDialogBuilder<tauri::Wry> {
-	window
-		.dialog()
-		.file()
-		.set_parent(window)
-		.add_filter("Copper Space", &["copper"])
+	parented_dialog(window).add_filter("Copper Space", &["copper"])
+}
+
+/// Task-011's paperclip picker, sharing this layer's dialog plumbing rather
+/// than growing a second copy of it.
+///
+/// It lives here, next to `pick_and_open_space`, because `set_parent` and the
+/// `spawn_blocking` wrapper are the two things every dialog in this app has to
+/// get right, and a second module opening dialogs is a second place to get them
+/// wrong. **No extension filter**: an attachment can be anything, and the type
+/// that matters is sniffed from the bytes at ingest rather than taken from a
+/// dialog's idea of it.
+pub async fn pick_attachment_files(app: &AppHandle) -> Reply<Vec<PathBuf>> {
+	let window = panel_window(app)?;
+
+	let picked = tauri::async_runtime::spawn_blocking(move || {
+		parented_dialog(&window)
+			.set_title("Attach Files")
+			.blocking_pick_files()
+	})
+	.await
+	.map_err(|err| StoreError::Io(format!("the file dialog could not be opened: {err}")))?;
+
+	picked
+		.unwrap_or_default()
+		.into_iter()
+		.map(|location| {
+			location
+				.into_path()
+				.map_err(|err| StoreError::Invalid(format!("that location is not a file path: {err}")))
+		})
+		.collect()
 }
 
 /// The `blocking_*` dialog calls are documented as not for the main thread, and
@@ -603,6 +655,12 @@ pub fn start_dispatcher(app: &AppHandle, cold: Request) {
 	// Initialised here so the first menu open does not pay for it, and so the
 	// availability sink exists before anything can produce a result.
 	let _ = executor(app);
+	// The startup half of the sweep policy, and this is the right moment for it:
+	// `apply_cold_launch` has already opened whatever the command line named, so
+	// the space being collected is the one the user is about to look at. It runs
+	// before anything can add a note, so no blob it could collect is one this
+	// session created.
+	crate::attachments::commands::sweep_active_space(app);
 	dispatch::start(Arc::new(AppLaunchHost(app.clone())));
 }
 

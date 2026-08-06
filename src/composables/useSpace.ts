@@ -34,6 +34,9 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { DeepReadonly } from 'vue'
 
+import { errorMessage } from '@/lib/rustError'
+
+import { useAttachments, type Attachment } from './useAttachments'
 import { emptySnapshot, noteRow, useSelection } from './useSelection'
 import { useMarkdown } from './useMarkdown'
 import { useNoteDisclosure } from './useNoteDisclosure'
@@ -51,6 +54,9 @@ export type Note = {
 	order: number
 	done: boolean
 	body: string
+	/** Absent on a note with none — the field is omitted from the document
+	 *  entirely, which is what keeps every pre-task-011 file byte-identical. */
+	attachments?: Attachment[]
 	created: string
 	updated: string
 }
@@ -198,15 +204,12 @@ const sectionEditor = useSectionEditor()
  *  document's own list, and the two are different things. */
 const sectionState = useSections()
 const handoff = useEditorHandoff()
+const attachments = useAttachments()
 
-/** Exported for the adapter beside this one — `useSpaces` — so one shape of Rust
- *  error is unwrapped in one place rather than two. */
-export function errorMessage(error: unknown): string {
-	if (error && typeof error === 'object' && 'message' in error) {
-		return String((error as { message: unknown }).message)
-	}
-	return String(error)
-}
+/** Re-exported for the adapters beside this one, which have always taken it from
+ *  here. It moved to `lib/` when `useAttachments` needed it too — importing it
+ *  from an adapter this module imports would close a cycle. */
+export { errorMessage }
 
 /**
  * The single assignment point.
@@ -232,6 +235,11 @@ function applyDocument(
 		selection.resetForNewSpace()
 		disclosure.reset()
 		markdown.clearCache()
+		// Content hashes never go stale, so this is not the cache-invalidation the
+		// others are — it is a *revoke*. The blobs live in the previous space's
+		// assets directory, and holding object URLs for bytes no note can reference
+		// any more would leak them for the life of the process.
+		attachments.clearPreviews()
 		// Collapse and the switcher are document-scoped: section ids mean something
 		// else now, and an open switcher is closed rather than re-pointed.
 		sectionState.reset()
@@ -548,11 +556,14 @@ async function mutate<T>(
  * like a directive" would be a second copy of the rule and the first thing to go
  * stale.
  */
-async function submitEntry(body: string) {
+async function submitEntry(body: string, attachments: Attachment[] = []) {
 	// No `section` argument: the store already defaults to `activeSection`, and
 	// sending our own view of it would race an external change to it.
+	//
+	// `attachments` carries metadata only — the blobs were written at paste, drop
+	// or pick time — so this stays the fast metadata-only write it was before.
 	const result = await mutate(
-		() => invoke<SubmitResult>('submit_entry', { body }),
+		() => invoke<SubmitResult>('submit_entry', { body, attachments }),
 		(value) => value.space,
 		{
 			// `section-created` is an ordinary structural mutation, so `canUndo` is

@@ -11,6 +11,7 @@ use uuid::Uuid;
 pub const SPACE: &str = "spc";
 pub const SECTION: &str = "sec";
 pub const NOTE: &str = "nte";
+pub const ATTACHMENT: &str = "att";
 
 /// `<prefix>_<8 hex chars>` — the shortest form that still satisfies spec 1.3.
 pub fn new_id(prefix: &str) -> String {

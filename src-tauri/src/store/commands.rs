@@ -37,7 +37,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::entry::{classify, Entry};
 
 use super::error::StoreError;
-use super::model::Space;
+use super::model::{Attachment, Space};
 use super::settings::{Settings, SettingsPatch};
 use super::{lock, ops, SharedStore, StoreStatus};
 
@@ -124,7 +124,7 @@ pub async fn add_note(
 	section: Option<String>,
 	state: State<'_, SharedStore>,
 ) -> Reply<AddNoteResult> {
-	let (note_id, space) = lock(&state).mutate(|doc| ops::add_note(doc, &body, section.as_deref()))?;
+	let (note_id, space) = lock(&state).mutate(|doc| ops::add_note(doc, &body, section.as_deref(), &[]))?;
 	Ok(AddNoteResult { space, note_id })
 }
 
@@ -135,9 +135,21 @@ pub async fn add_note(
 /// reaches: a captured selection whose whole body is `# Name` is an ordinary
 /// note (Open Question 1, answered 2026-08-05). Inline section creation is a
 /// composer affordance, so it lives on the composer's command.
+/// `attachments` is the one parameter this task adds, and it is optional so that
+/// every existing caller — and every future one that has nothing to attach —
+/// keeps working unchanged. Single word, per spec 8.1c, so Tauri's snake↔camel
+/// conversion stays a no-op and the contract has one spelling.
+///
+/// The blobs are already on disk by the time this runs: ingestion happens at
+/// paste, drop and pick time so the composer tray can show real metadata
+/// immediately, which makes submit a metadata-only document write.
 #[tauri::command]
-pub async fn submit_entry(body: String, state: State<'_, SharedStore>) -> Reply<SubmitResult> {
-	submit(&state, &body)
+pub async fn submit_entry(
+	body: String,
+	attachments: Option<Vec<Attachment>>,
+	state: State<'_, SharedStore>,
+) -> Reply<SubmitResult> {
+	submit(&state, &body, &attachments.unwrap_or_default())
 }
 
 /// The body of [`submit_entry`], as a plain function over the shared store.
@@ -147,12 +159,12 @@ pub async fn submit_entry(body: String, state: State<'_, SharedStore>) -> Reply<
 /// cannot construct a `State`, and asserting the snapshot behaviour by
 /// re-implementing the command in the test would prove only that the test agrees
 /// with itself.
-pub fn submit(shared: &SharedStore, body: &str) -> Reply<SubmitResult> {
+pub fn submit(shared: &SharedStore, body: &str, attachments: &[Attachment]) -> Reply<SubmitResult> {
 	let mut guard = lock(shared);
 
 	let name = match classify(body) {
 		Entry::Note { body } => {
-			let (note_id, space) = guard.mutate(|doc| ops::add_note(doc, body, None))?;
+			let (note_id, space) = guard.mutate(|doc| ops::add_note(doc, body, None, attachments))?;
 			// Read back off the document rather than tracked through the op: the
 			// store defaults an unaddressed note to `activeSection`, and re-deriving
 			// that here would be a second copy of a rule that can change.
@@ -169,6 +181,20 @@ pub fn submit(shared: &SharedStore, body: &str) -> Reply<SubmitResult> {
 		}
 		Entry::Section { name } => name,
 	};
+
+	// A `# Name` line creates a section, and a section holds no files — so a
+	// submission that is both is refused rather than resolved one way or the
+	// other. Silently dropping the attachments would destroy work the tray still
+	// shows; silently making it a note would create a note the user did not ask
+	// for and hide the section they did. A refusal clears nothing, so the pending
+	// tray survives and either fix is one keystroke away.
+	if !attachments.is_empty() {
+		return Err(StoreError::Invalid(
+			"a section heading cannot carry attachments — remove them, or add the files to a note \
+			 instead"
+				.into(),
+		));
+	}
 
 	// Creating a section is structural and undoable; resolving a duplicate name to
 	// one that already exists only moves `activeSection`, and must push nothing —

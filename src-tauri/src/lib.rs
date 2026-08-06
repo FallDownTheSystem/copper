@@ -1,3 +1,7 @@
+/// Public because the store's ops validate attachment file names through it and
+/// the spaces layer calls its sweep, and both must reach the same one
+/// implementation rather than keeping a second copy of the rule.
+pub mod attachments;
 mod autostart;
 mod capture;
 mod clipboard;

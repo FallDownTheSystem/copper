@@ -357,7 +357,7 @@ fn single_instance_is_the_literal_first_plugin() {
 /// asserted structurally: every call that replaces the active document is
 /// preceded by the teardown, under the guard that makes the pair indivisible.
 #[test]
-fn every_document_swap_ends_editor_handoffs_first() {
+fn every_document_swap_leaves_the_current_space_first() {
 	let code = code(SPACES);
 	for swap in ["store::open_space(", "store::create_space("] {
 		let at = code
@@ -365,14 +365,60 @@ fn every_document_swap_ends_editor_handoffs_first() {
 			.unwrap_or_else(|| panic!("{swap} is no longer called; this test needs rewriting"));
 		let before = &code[..at];
 		let teardown = before
-			.rfind("end_handoffs_before_switching(")
-			.unwrap_or_else(|| panic!("{swap} runs without ending editor handoffs first"));
+			.rfind("leave_current_space(")
+			.unwrap_or_else(|| panic!("{swap} runs without leaving the outgoing space first"));
 		let guard = before
 			.rfind("activation()")
 			.unwrap_or_else(|| panic!("{swap} runs without the activation guard held"));
 		assert!(
 			guard < teardown,
-			"{swap} ends handoffs before taking the guard, so an activation can interleave"
+			"{swap} leaves the current space before taking the guard, so an activation can interleave"
+		);
+	}
+}
+
+/// Task-011 put a second thing in the teardown, so the ordering *inside* it is
+/// now load-bearing too: the attachment sweep must run after `editor::end_all`,
+/// or a handoff still writing its note back could have that note's attachments
+/// collected out from under it.
+#[test]
+fn leaving_a_space_ends_handoffs_before_it_sweeps_attachments() {
+	let code = code(SPACES);
+	let body = code
+		.split("fn leave_current_space(")
+		.nth(1)
+		.expect("leave_current_space is gone; this test needs rewriting");
+	let handoffs = body
+		.find("end_handoffs_before_switching(")
+		.expect("leaving a space no longer ends editor handoffs");
+	let sweep = body
+		.find("sweep_active_space(")
+		.expect("leaving a space no longer collects unreferenced attachments");
+	assert!(
+		handoffs < sweep,
+		"the attachment sweep runs before editor handoffs have ended"
+	);
+}
+
+/// The sweep policy in one assertion: space close and startup, and nowhere
+/// else. A third caller would almost certainly be a mid-session one, which is
+/// what makes an undo unrestorable — the stack is session-scoped, so collecting
+/// a deleted note's blobs during a session silently breaks `Ctrl+Z`.
+#[test]
+fn attachments_are_only_swept_when_leaving_a_space_and_at_startup() {
+	let code = code(SPACES);
+	assert_eq!(
+		code.matches("sweep_active_space(").count(),
+		2,
+		"the sweep is called from somewhere other than leave_current_space and start_dispatcher"
+	);
+	for caller in ["fn leave_current_space(", "fn start_dispatcher("] {
+		let body = code.split(caller).nth(1).expect("caller is gone");
+		assert!(
+			body.split("\nfn ")
+				.next()
+				.is_some_and(|scope| scope.contains("sweep_active_space(")),
+			"{caller} no longer sweeps"
 		);
 	}
 }

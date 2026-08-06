@@ -25,6 +25,7 @@
 //! clipboard history before a fallback capture comes back excluded, because
 //! Copper cannot preserve metadata it has no way to read.
 
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -66,6 +67,15 @@ const SNAPSHOT_FORMAT_SIZE_LIMIT: usize = 4 * 1024 * 1024;
 /// A misbehaving clipboard owner must not be able to spin the enumeration
 /// forever.
 const MAX_ENUMERATED_FORMATS: usize = 256;
+/// The ceiling on a clipboard payload [`read_attachment`] will copy out.
+///
+/// Deliberately larger than `attachments::ATTACHMENT_MAX_BYTES`, not equal to
+/// it: a DIB is uncompressed, so a screenshot that lands well under the 10 MiB
+/// attachment limit once it is PNG-encoded arrives here several times that
+/// size. Matching the two would refuse ordinary screenshots for being large in
+/// a representation the user never sees. This bound exists to stop an absurd
+/// allocation, and the real limit is applied to the encoded bytes at ingest.
+const ATTACHMENT_READ_LIMIT: usize = 128 * 1024 * 1024;
 
 // --- format ids --------------------------------------------------------------
 // Defined locally rather than imported: windows-rs puts the `CF_*` constants
@@ -452,6 +462,118 @@ pub fn read_text() -> Result<(Option<String>, u32)> {
 		FormatBytes::TooLarge | FormatBytes::Unreadable => None,
 	};
 	Ok((decode_text(bytes), sequence_number()))
+}
+
+/// What the clipboard holds that could become an attachment.
+///
+/// The two arms are genuinely different things and are kept apart rather than
+/// normalised into one: a `CF_HDROP` is a *file paste* — the user copied
+/// something in Explorer — and it keeps the original filenames, whereas a
+/// bitmap has no name and no file behind it at all.
+#[derive(Debug, Clone)]
+pub enum ClipboardAttachment {
+	/// Raw device-independent bitmap bytes, exactly as the clipboard holds them:
+	/// a BMP body with no `BITMAPFILEHEADER`.
+	///
+	/// Deliberately **not** encoded here. This module is the Win32 boundary and
+	/// nothing else; teaching it about PNG would give it an image-codec
+	/// dependency and a second reason to change. `attachments::thumb` owns the
+	/// conversion, and the rule that a DIB never reaches disk as one.
+	Dib(Vec<u8>),
+	/// Files copied in Explorer, which route to the same path a drop does.
+	Files(Vec<PathBuf>),
+}
+
+/// The clipboard's attachable content, or `None` when there is none.
+///
+/// **Text always wins.** `CF_UNICODETEXT` being present returns `None` before
+/// anything else is considered, so pasting a copied code snippet can never
+/// silently become a screenshot — Windows puts a bitmap on the clipboard
+/// alongside text more often than one would like, and the failure would be
+/// silent and confusing in exactly the surface where text is the whole point.
+///
+/// Preference order after that is `CF_DIBV5`, `CF_DIB`, then `CF_HDROP`. V5
+/// first because it carries an alpha channel that the older header cannot
+/// describe.
+///
+/// One session for the whole decision, like [`snapshot`]: asking "is there
+/// text?" in one session and "is there an image?" in another leaves a window in
+/// which the answer changes between them, and the caller would act on a
+/// clipboard that never existed. This is still the only module that opens the
+/// clipboard, and still through [`Session::open_read`].
+pub fn read_attachment() -> Result<Option<ClipboardAttachment>> {
+	let _session = Session::open_read()?;
+
+	if has_format(CF_UNICODETEXT) {
+		return Ok(None);
+	}
+
+	for format in [CF_DIBV5, CF_DIB] {
+		if let FormatBytes::Bytes(bytes) = read_format_bytes(format, ATTACHMENT_READ_LIMIT) {
+			return Ok(Some(ClipboardAttachment::Dib(bytes)));
+		}
+	}
+
+	if let FormatBytes::Bytes(bytes) = read_format_bytes(CF_HDROP, ATTACHMENT_READ_LIMIT) {
+		let paths = parse_hdrop(&bytes);
+		if !paths.is_empty() {
+			return Ok(Some(ClipboardAttachment::Files(paths)));
+		}
+	}
+
+	Ok(None)
+}
+
+/// Whether the clipboard advertises a format, without copying its payload.
+///
+/// `IsClipboardFormatAvailable` is not used: it works outside a session and
+/// would therefore answer about a *different* moment than the reads beside it.
+fn has_format(format: u32) -> bool {
+	// SAFETY: called only with the clipboard open. A null or failed handle means
+	// the format is not really there, which is the answer either way.
+	unsafe { GetClipboardData(format) }.is_ok_and(|handle| !handle.is_invalid())
+}
+
+/// Decodes a `DROPFILES` block into paths.
+///
+/// Parsed by hand rather than through `DragQueryFileW`, which would pull the
+/// whole `Win32_UI_Shell` surface in for one call over a structure that is four
+/// fixed fields and a double-NUL-terminated string list. The offset is read from
+/// `pFiles` rather than assumed to be 20, because that is what the field is for.
+///
+/// `fWide` is honoured: a producer may still hand over ANSI, and reading those
+/// bytes as UTF-16 would yield paths made of nonsense rather than no paths at
+/// all.
+fn parse_hdrop(bytes: &[u8]) -> Vec<PathBuf> {
+	let Some(offset) = bytes.get(0..4).map(|head| {
+		u32::from_le_bytes(head.try_into().expect("a four-byte slice")) as usize
+	}) else {
+		return Vec::new();
+	};
+	let wide = bytes
+		.get(16..20)
+		.map(|flag| u32::from_le_bytes(flag.try_into().expect("a four-byte slice")) != 0)
+		.unwrap_or(false);
+	let Some(list) = bytes.get(offset..) else {
+		return Vec::new();
+	};
+
+	if wide {
+		let units: Vec<u16> = list
+			.chunks_exact(2)
+			.map(|pair| u16::from_ne_bytes([pair[0], pair[1]]))
+			.collect();
+		units
+			.split(|&unit| unit == 0)
+			.filter(|part| !part.is_empty())
+			.map(|part| PathBuf::from(String::from_utf16_lossy(part)))
+			.collect()
+	} else {
+		list.split(|&byte| byte == 0)
+			.filter(|part| !part.is_empty())
+			.map(|part| PathBuf::from(String::from_utf8_lossy(part).into_owned()))
+			.collect()
+	}
 }
 
 /// What one format's payload turned out to be.
@@ -866,6 +988,70 @@ mod tests {
 		assert!(!is_ignorable(private, formats));
 	}
 
+	// --- CF_HDROP ---
+
+	fn dropfiles(paths: &[&str], wide: bool) -> Vec<u8> {
+		let mut bytes = Vec::new();
+		bytes.extend_from_slice(&20u32.to_le_bytes());
+		bytes.extend_from_slice(&0i32.to_le_bytes());
+		bytes.extend_from_slice(&0i32.to_le_bytes());
+		bytes.extend_from_slice(&0u32.to_le_bytes());
+		bytes.extend_from_slice(&u32::from(wide).to_le_bytes());
+		for path in paths {
+			if wide {
+				bytes.extend(utf16_bytes(path, true));
+			} else {
+				bytes.extend_from_slice(path.as_bytes());
+				bytes.push(0);
+			}
+		}
+		// The list's own terminator, on top of the last string's.
+		if wide {
+			bytes.extend_from_slice(&0u16.to_ne_bytes());
+		} else {
+			bytes.push(0);
+		}
+		bytes
+	}
+
+	#[test]
+	fn a_wide_drop_list_decodes_to_every_path() {
+		let paths = parse_hdrop(&dropfiles(&[r"C:\a\one.png", r"D:\two.pdf"], true));
+		assert_eq!(
+			paths,
+			vec![PathBuf::from(r"C:\a\one.png"), PathBuf::from(r"D:\two.pdf")]
+		);
+	}
+
+	/// Read as UTF-16 an ANSI list decodes to nonsense rather than to nothing,
+	/// which is the failure worth having a test for.
+	#[test]
+	fn an_ansi_drop_list_is_decoded_as_ansi() {
+		let paths = parse_hdrop(&dropfiles(&[r"C:\a\one.png"], false));
+		assert_eq!(paths, vec![PathBuf::from(r"C:\a\one.png")]);
+	}
+
+	#[test]
+	fn the_offset_is_read_from_the_structure_rather_than_assumed() {
+		let mut bytes = dropfiles(&[r"C:\a.png"], true);
+		// Pad the structure and re-point `pFiles`, exactly as a producer using a
+		// larger header would.
+		bytes.splice(20..20, std::iter::repeat_n(0u8, 8));
+		bytes[0..4].copy_from_slice(&28u32.to_le_bytes());
+		assert_eq!(parse_hdrop(&bytes), vec![PathBuf::from(r"C:\a.png")]);
+	}
+
+	#[test]
+	fn a_truncated_or_empty_drop_list_yields_no_paths() {
+		assert!(parse_hdrop(&[]).is_empty());
+		assert!(parse_hdrop(&[0u8; 3]).is_empty());
+		assert!(parse_hdrop(&dropfiles(&[], true)).is_empty());
+		// An offset past the end of the block.
+		let mut bytes = dropfiles(&[r"C:\a.png"], true);
+		bytes[0..4].copy_from_slice(&9999u32.to_le_bytes());
+		assert!(parse_hdrop(&bytes).is_empty());
+	}
+
 	#[test]
 	fn cf_bitmap_is_not_in_the_allow_list() {
 		// It is a GDI handle, not HGLOBAL-backed: a byte copy restores nothing.
@@ -959,6 +1145,96 @@ mod tests {
 			read_text().expect("read").0.as_deref(),
 			Some("what the user copied afterwards"),
 			"the newer content must survive"
+		);
+	}
+
+	/// A minimal 24-bit `BI_RGB` DIB: 40-byte header, 2×2 pixels, no palette.
+	fn sample_dib() -> Vec<u8> {
+		let mut dib = Vec::new();
+		dib.extend_from_slice(&40u32.to_le_bytes());
+		dib.extend_from_slice(&2i32.to_le_bytes());
+		dib.extend_from_slice(&2i32.to_le_bytes());
+		dib.extend_from_slice(&1u16.to_le_bytes());
+		dib.extend_from_slice(&24u16.to_le_bytes());
+		for _ in 0..6 {
+			dib.extend_from_slice(&0u32.to_le_bytes());
+		}
+		// Two rows of two BGR pixels, each padded to a four-byte boundary.
+		dib.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0, 0]);
+		dib.extend_from_slice(&[0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0, 0]);
+		dib
+	}
+
+	fn read_under_session(format: u32) -> Option<Vec<u8>> {
+		let _session = Session::open_read().expect("open");
+		match read_format_bytes(format, usize::MAX) {
+			FormatBytes::Bytes(bytes) => Some(bytes),
+			_ => None,
+		}
+	}
+
+	/// The regression task-005's capture fallback depends on: adding an image
+	/// *reader* must not change what the snapshot copies or what the restore puts
+	/// back. An image clipboard has to survive the round trip byte for byte, or a
+	/// `Ctrl+C` fallback capture silently destroys the user's screenshot.
+	#[test]
+	#[ignore = "touches the real clipboard"]
+	fn a_capture_round_trip_restores_an_image_clipboard_byte_identically() {
+		let dib = sample_dib();
+		write_excluded(&[(CF_DIB, dib.clone())], None).expect("seed");
+		let snapshot = snapshot().expect("snapshot");
+		assert!(!snapshot.is_lossy(), "a plain DIB clipboard was reported as lossy");
+
+		write_text_private("what a fallback capture leaves behind").expect("overwrite");
+		restore(&snapshot, sequence_number()).expect("restore");
+
+		let restored = read_under_session(CF_DIB).expect("CF_DIB is back");
+		// GlobalAlloc rounds the block up, so the restored payload may carry slack
+		// past the end; the bitmap itself has to match exactly.
+		assert_eq!(&restored[..dib.len()], &dib[..]);
+	}
+
+	/// AC4 at the Win32 boundary: text wins, and it wins *before* any image
+	/// format is even looked at.
+	#[test]
+	#[ignore = "touches the real clipboard"]
+	fn read_attachment_declines_a_clipboard_that_also_carries_text() {
+		let dib = sample_dib();
+		let mut wide: Vec<u16> = "a copied code snippet".encode_utf16().collect();
+		wide.push(0);
+		let text: Vec<u8> = wide.iter().flat_map(|unit| unit.to_ne_bytes()).collect();
+
+		write_excluded(&[(CF_UNICODETEXT, text), (CF_DIB, dib)], None).expect("seed");
+
+		assert!(
+			read_attachment().expect("read").is_none(),
+			"an image was taken from a clipboard that also carried text"
+		);
+	}
+
+	/// **Windows synthesizes `CF_DIBV5` from a `CF_DIB`**, so a clipboard seeded
+	/// with the older format comes back through the reader as a 124-byte-header
+	/// V5 bitmap rather than as the bytes that went in. That is the preference
+	/// order working as intended, and it is why this asserts on the *image* the
+	/// payload decodes to rather than on the payload itself.
+	///
+	/// It is also the only place the DIB→PNG conversion meets a header Windows
+	/// wrote rather than one this file built, which is what makes it worth the
+	/// round trip: a `bfOffBits` that double-counted a V5 header's channel masks
+	/// would decode the masks as pixels and pass every hand-built fixture.
+	#[test]
+	#[ignore = "touches the real clipboard"]
+	fn read_attachment_returns_a_decodable_bitmap_when_there_is_no_text() {
+		write_excluded(&[(CF_DIB, sample_dib())], None).expect("seed");
+
+		let Some(ClipboardAttachment::Dib(bytes)) = read_attachment().expect("read") else {
+			panic!("expected a bitmap");
+		};
+
+		let png = crate::attachments::thumb::dib_to_png(&bytes).expect("the payload must decode");
+		assert_eq!(
+			crate::attachments::thumb::dimensions(&png, "image/png"),
+			(Some(2), Some(2))
 		);
 	}
 
