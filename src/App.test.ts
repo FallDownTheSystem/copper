@@ -219,4 +219,43 @@ describe('the settings view', () => {
 
 		expect(wrapper.find('#panel-search').exists()).toBe(true)
 	})
+
+	/**
+	 * Escape is bound to the view's root, and `document.body` is an *ancestor* of
+	 * that root rather than a descendant — so a press with focus left on the body
+	 * never reaches the handler at all. Both entry paths leave it there: the `...`
+	 * menu's trigger is unmounted as the list leaves, and the tray's event moves
+	 * nothing. Without this the view opened unusable by keyboard, and the earlier
+	 * Escape test only passed because it dispatched from the Back button.
+	 */
+	it('moves focus into the view on open, so Escape works on arrival', async () => {
+		const wrapper = await mountApp()
+		useView().showSettings()
+		await settle()
+
+		const back = wrapper.find('[aria-label="Back to notes"]')
+		expect(document.activeElement).toBe(back.element)
+
+		// Dispatched where focus actually is, rather than at a chosen element.
+		document.activeElement?.dispatchEvent(
+			new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+		)
+		await settle()
+
+		expect(wrapper.find('#panel-search').exists()).toBe(true)
+	})
+
+	it('leaves focus somewhere real on the way back to the list', async () => {
+		// The return path has the same problem in reverse: `AnimatePresence`
+		// remounts the whole list tree, and a panel whose focus sits on the body has
+		// no working Escape ladder and no working in-panel chords.
+		const wrapper = await mountApp()
+		useView().showSettings()
+		await settle()
+		useView().showList()
+		await settle()
+
+		expect(document.activeElement).not.toBe(document.body)
+		expect(wrapper.element.contains(document.activeElement)).toBe(true)
+	})
 })

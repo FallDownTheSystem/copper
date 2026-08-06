@@ -58,11 +58,9 @@ const chips = computed(() => (doubleTap.value ? [doubleTap.value] : props.value.
 
 const canReset = computed(() => props.value !== props.defaultValue)
 
-const announcement = computed(() => {
-	if (props.error) return props.error
-	if (recording.value) return 'Recording. Press the keys you want.'
-	return ''
-})
+const recordingAnnouncement = computed(() =>
+	recording.value ? 'Recording. Press the keys you want.' : '',
+)
 
 /** The field itself takes focus, because the button that opened it has just
  *  unmounted and nothing else would move focus into a control that did not exist
@@ -96,10 +94,14 @@ async function edit() {
 						<span v-if="doubleTap" class="text-text-secondary text-meta">double-tap</span>
 					</div>
 
-					<div class="ml-auto flex shrink-0 items-center gap-1">
+					<!-- `gap-2`, not `gap-1`: these two carry 44px hit areas, and expanded
+					     areas must never overlap or each makes part of the other
+					     unhittable. Eight pixels is what puts their centres far enough
+					     apart for two 44px boxes to clear each other. -->
+					<div class="ml-auto flex shrink-0 items-center gap-2">
 						<button
 							type="button"
-							class="panel-button outline-focus-ring focus-visible:outline-2 focus-visible:-outline-offset-1"
+							class="panel-button outline-focus-ring hit-44 relative focus-visible:outline-2 focus-visible:-outline-offset-1"
 							@click="edit"
 						>
 							Edit
@@ -111,7 +113,7 @@ async function edit() {
 							type="button"
 							aria-label="Reset to default"
 							title="Reset to default"
-							class="text-text-secondary hover:bg-surface-hover outline-focus-ring grid size-8 place-items-center rounded-md transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
+							class="text-text-secondary hover:bg-surface-hover outline-focus-ring hit-44 relative grid size-8 place-items-center rounded-md transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
 							@click="resetShortcut(target)"
 						>
 							<IconLucideRotateCcw class="size-4" aria-hidden="true" focusable="false" />
@@ -147,7 +149,7 @@ async function edit() {
 						<span class="text-text-disabled text-meta">Esc to cancel</span>
 						<button
 							type="button"
-							class="panel-button outline-focus-ring focus-visible:outline-2 focus-visible:-outline-offset-1"
+							class="panel-button outline-focus-ring hit-44 relative focus-visible:outline-2 focus-visible:-outline-offset-1"
 							@click="cancel"
 						>
 							Cancel
@@ -170,10 +172,14 @@ async function edit() {
 
 			<p v-else-if="note" class="text-text-secondary mt-1.5 text-meta text-pretty">{{ note }}</p>
 
-			<!-- Pre-rendered and empty. Injecting an element and its text together
-			     does not announce; only a text change inside a live region already in
-			     the accessibility tree does. -->
-			<span class="sr-only" :role="error ? 'alert' : 'status'">{{ announcement }}</span>
+			<!-- Two permanent regions, not one node swapping its role. Changing `role`
+			     re-registers the live region, and an announcement written in the same
+			     tick can be dropped on the floor — which is worst for the alert, the
+			     one message that matters most. Both are pre-rendered and empty:
+			     injecting an element and its text together does not announce, only a
+			     text change inside a region already in the accessibility tree does. -->
+			<span class="sr-only" role="status">{{ recordingAnnouncement }}</span>
+			<span class="sr-only" role="alert">{{ error ?? '' }}</span>
 		</template>
 	</SettingsRow>
 </template>

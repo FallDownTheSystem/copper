@@ -195,10 +195,23 @@ fn with_panel<M: Manager<tauri::Wry>>(
 	}
 }
 
+/// Brings a hidden panel back, checking first that it can be seen.
+///
+/// **The one reveal-from-hidden path.** Placement has to be validated here rather
+/// than at each caller: a display unplugged while Copper was hidden leaves the
+/// saved position pointing at nothing, and a reveal that skipped the check would
+/// bring the panel back where the user cannot reach it — with the tray, the
+/// supposed recovery surface, unable to help. Every path that reveals goes
+/// through this, so none of them can be the one that forgets.
+fn reveal_reachable(window: &WebviewWindow) -> tauri::Result<()> {
+	ensure_reachable(window);
+	reveal(window)
+}
+
 /// Reveals the panel, or logs why it could not be reached.
 pub fn reveal_or_log<M: Manager<tauri::Wry>>(app: &M) {
 	crate::capture::panel_revealed_by_user(app);
-	with_panel(app, "reveal", reveal);
+	with_panel(app, "reveal", reveal_reachable);
 }
 
 /// Hides the panel, or logs why it could not be reached.
@@ -230,7 +243,7 @@ pub fn toggle_or_log<M: Manager<tauri::Wry>>(app: &M) {
 			// they in fact just closed it would hand a live notice episode a window
 			// it does not own, and the notice would then leave the panel up.
 			crate::capture::panel_revealed_by_user(app);
-			reveal(window)
+			reveal_reachable(window)
 		}
 	});
 }
@@ -257,8 +270,7 @@ pub fn summon_or_log(app: &AppHandle) {
 		}
 
 		crate::capture::panel_revealed_by_user(app);
-		ensure_reachable(window);
-		reveal(window)
+		reveal_reachable(window)
 	});
 }
 
@@ -403,6 +415,25 @@ fn monitor_rects(window: &WebviewWindow) -> Vec<MonitorRect> {
 		.unwrap_or_default()
 }
 
+/// Where the panel goes when the saved position is unusable, and the scale to
+/// compute it at.
+///
+/// `monitors` is the list that has already been proved non-empty, and it is the
+/// last resort here for a reason: giving up because the *cursor* could not be
+/// located would leave the panel wherever Tauri put it, which is the outcome this
+/// whole validation exists to prevent. A display we can enumerate is a display we
+/// can place on, so an unreadable cursor costs the user a preferred screen rather
+/// than a reachable window. Its scale is unknown at that point, so 1.0 stands in
+/// — a wrong scale can only shift the default placement, never make it unreachable.
+fn fallback_position(window: &WebviewWindow, monitors: &[MonitorRect]) -> Option<PanelPosition> {
+	if let Some(monitor) = current_monitor(window) {
+		return Some(default_position(rect_of(&monitor), monitor.scale_factor()));
+	}
+	monitors
+		.first()
+		.map(|rect| default_position(*rect, 1.0))
+}
+
 /// The grab rectangle at the scale of whichever monitor the position lands on.
 ///
 /// The saved position is physical, and on a 150% display the panel is half again
@@ -437,9 +468,7 @@ pub fn restore_position(window: &WebviewWindow, saved: Option<PanelPosition>) {
 		return;
 	}
 
-	let Some(fallback) = current_monitor(window)
-		.map(|monitor| default_position(rect_of(&monitor), monitor.scale_factor()))
-	else {
+	let Some(fallback) = fallback_position(window, &monitors) else {
 		return;
 	};
 
@@ -469,9 +498,7 @@ fn ensure_reachable(window: &WebviewWindow) {
 	if monitors.is_empty() {
 		return;
 	}
-	let Some(fallback) = current_monitor(window)
-		.map(|monitor| default_position(rect_of(&monitor), monitor.scale_factor()))
-	else {
+	let Some(fallback) = fallback_position(window, &monitors) else {
 		return;
 	};
 
@@ -489,8 +516,14 @@ const POSITION_DEBOUNCE: Duration = Duration::from_millis(500);
 /// The debounce behind `WindowEvent::Moved`.
 ///
 /// A drag emits a move per frame, and each one would otherwise be an atomic
-/// rewrite of `settings.json`. One writer thread per drag rather than one per
-/// frame, and the store's own change-guard makes a redundant flush free.
+/// rewrite of `settings.json`. This collapses a burst of movement into one writer
+/// thread rather than one per frame, and the store's own change-guard makes a
+/// redundant flush free.
+///
+/// Two writers can overlap briefly — `scheduled` is cleared *before* the write, so
+/// that a move arriving during it schedules a fresh pass rather than being
+/// swallowed — and `flush_position` holding `pending` across the whole take-and-
+/// write is what makes that safe rather than a lost update.
 #[derive(Default)]
 pub struct PositionState {
 	pending: Mutex<Option<PanelPosition>>,
@@ -549,7 +582,14 @@ pub fn flush_position(app: &AppHandle) {
 	let Some(state) = app.try_state::<PositionState>() else {
 		return;
 	};
-	let Some(position) = state.pending.lock().ok().and_then(|mut pending| pending.take()) else {
+	// The guard is held across the write, not merely across the take. Dropped
+	// between the two, an exit flush arriving in that window would find an empty
+	// slot, return, and let the process exit before the write it was waiting on had
+	// landed — losing exactly the drag-then-quit this function exists to catch.
+	let Ok(mut pending) = state.pending.lock() else {
+		return;
+	};
+	let Some(position) = pending.take() else {
 		return;
 	};
 

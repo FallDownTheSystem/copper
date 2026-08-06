@@ -39,6 +39,30 @@ const MODIFIER_ORDER = ['Ctrl', 'Alt', 'Shift', 'Super']
  *  not offered as a bare trigger at all. */
 const DOUBLE_TAPPABLE = new Set(['Shift', 'Ctrl', 'Alt'])
 
+/**
+ * The keys a chord may consist of with no modifier at all.
+ *
+ * F13–F24 exist for exactly this: no keyboard emits them by accident and nothing
+ * else is listening for them. Every other single key — F1–F12 very much included,
+ * since they are live in almost every application — would be taken from the whole
+ * machine by a global binding. Rust refuses these too; this is the layer that
+ * stops one being sent at all.
+ */
+const BARE_KEYS = new Set([
+	'F13',
+	'F14',
+	'F15',
+	'F16',
+	'F17',
+	'F18',
+	'F19',
+	'F20',
+	'F21',
+	'F22',
+	'F23',
+	'F24',
+])
+
 /** `KeyK` and `Digit1` are what the parser accepts; `K` and `1` are what a person
  *  reads, and the parser accepts those too. */
 function mainKeyLabel(code: string): string {
@@ -56,6 +80,18 @@ let token: number | null = null
 let held: string[] = []
 let sawMainKey = false
 
+/**
+ * Bumped by everything that opens or closes a session.
+ *
+ * `start` has to await the lease before it can install any state, and the view
+ * can be left inside that await — an unmount, a panel hide, an Escape. Without a
+ * generation to compare against, the continuation installed a recording session
+ * over a view that had already gone, and reopening settings showed a row stuck
+ * mid-recording that no keystroke would answer.
+ */
+let session = 0
+
+/** Leaves `session` alone: it is what tells a superseded `start` to stand down. */
 function reset() {
 	isRecording.value = false
 	pending.value = []
@@ -73,9 +109,18 @@ function reset() {
  * rebinding triggers the old action instead of being recorded.
  */
 async function start(which: ShortcutTarget): Promise<boolean> {
-	const { beginRecording } = useSettings()
+	const mine = ++session
+	const { beginRecording, cancelRecording } = useSettings()
 	const leased = await beginRecording()
 	if (leased === null) return false
+
+	// Something ended the session while the lease was in flight. Installing the
+	// state now would show a recording row nobody opened — and the lease is real
+	// and held by Rust, so it has to be handed back rather than dropped.
+	if (mine !== session) {
+		await cancelRecording()
+		return false
+	}
 
 	reset()
 	token = leased
@@ -85,12 +130,16 @@ async function start(which: ShortcutTarget): Promise<boolean> {
 }
 
 async function cancel(): Promise<void> {
+	// Ahead of the early return, so a `start` still awaiting its lease is
+	// superseded and gives the lease straight back.
+	session += 1
 	if (!isRecording.value) return
 	reset()
 	await useSettings().cancelRecording()
 }
 
 async function commit(chord: string): Promise<void> {
+	session += 1
 	const held = token
 	const which = target.value
 	reset()
@@ -140,6 +189,12 @@ function onKeydown(event: KeyboardEvent) {
 		return
 	}
 
+	// A bare key is not a binding. Ignored rather than committed, so the session
+	// stays open and the next attempt — the same key with a modifier — simply
+	// works; committing it would spend a round trip to be told what is already
+	// known here.
+	if (held.length === 0 && !BARE_KEYS.has(event.code)) return
+
 	// A chord settles on the first non-modifier press, with whatever is held —
 	// waiting for the key-up would leave the user staring at an unchanged row
 	// while they let go.
@@ -162,13 +217,28 @@ function onKeyup(event: KeyboardEvent) {
 	event.preventDefault()
 	event.stopPropagation()
 
-	if (target.value !== 'capture' || sawMainKey) return
-
 	const modifier = MODIFIERS[event.code]
-	if (!modifier || held.length !== 1 || held[0] !== modifier) return
-	if (!DOUBLE_TAPPABLE.has(modifier)) return
+	if (!modifier) return
 
-	void commit(`${modifier} ${modifier}`)
+	// The double-tap decision comes first, because it is about the modifier being
+	// released and has to see `held` as it was before the removal below.
+	if (
+		target.value === 'capture' &&
+		!sawMainKey &&
+		held.length === 1 &&
+		held[0] === modifier &&
+		DOUBLE_TAPPABLE.has(modifier)
+	) {
+		void commit(`${modifier} ${modifier}`)
+		return
+	}
+
+	// A modifier the user has let go of is not part of the chord they are
+	// building. Without this, pressing and releasing Ctrl and then pressing K
+	// committed `Ctrl+K` — a chord nobody held — and the stale chip stayed on
+	// screen saying so.
+	held = held.filter((name) => name !== modifier)
+	pending.value = MODIFIER_ORDER.filter((name) => held.includes(name))
 }
 
 export function useShortcutRecorder() {

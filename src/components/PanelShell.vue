@@ -77,6 +77,20 @@ onMounted(() => {
 	// Fire and forget: until it resolves, fences render unhighlighted and the
 	// panel is fully usable.
 	void ensureHighlighter()
+
+	// Focus has to be inside this root or the shell's keydown handler — the
+	// Escape ladder and every in-panel chord — never sees a press: `document.body`
+	// is an *ancestor* of this element, not a descendant, so a press there does not
+	// bubble down here. It matters most on the way back from the settings view,
+	// which unmounts and remounts this tree and would otherwise return the user to
+	// a panel their keyboard could not reach.
+	//
+	// Only when focus is nowhere in particular, so nothing that already has it is
+	// robbed — including the composer, which claims focus on the empty state a tick
+	// later.
+	if (document.activeElement === null || document.activeElement === document.body) {
+		root.value?.focus()
+	}
 })
 
 // Focus the composer only when the empty state actually renders — never during
@@ -249,7 +263,8 @@ function onContextMenu(event: MouseEvent) {
 <template>
 	<div
 		ref="root"
-		class="relative grid h-full min-h-0 w-full grid-rows-[auto_1fr_auto] select-none font-sans text-body"
+		tabindex="-1"
+		class="relative grid h-full min-h-0 w-full grid-rows-[auto_1fr_auto] outline-none select-none font-sans text-body"
 		@keydown="onShellKeydown"
 		@contextmenu="onContextMenu"
 	>

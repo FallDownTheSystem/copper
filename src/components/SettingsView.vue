@@ -24,6 +24,8 @@ const autostartError = errorFor('autostart')
 const summonError = errorFor('summon')
 const captureError = errorFor('capture')
 
+const back = useTemplateRef<HTMLButtonElement>('back')
+
 /**
  * Pulled on open, not only at startup. Two reasons, and each would be a stale
  * value on its own: a summon chord that failed to register during `setup()` is
@@ -32,6 +34,15 @@ const captureError = errorFor('capture')
  */
 onMounted(() => {
 	void refresh()
+
+	// Focus has to be moved deliberately, or Escape does not work on arrival.
+	// Neither entry path leaves it anywhere useful: the `...` menu's trigger is
+	// unmounted by `AnimatePresence` as the list leaves, and the tray's
+	// `open-settings` lands focus on `document.body` — which is an *ancestor* of
+	// this root, so a press there never bubbles down to the handler below. The
+	// Back button rather than the root: it is a visible, obvious starting point,
+	// and it is where a keyboard user wants to be anyway.
+	void nextTick(() => back.value?.focus())
 })
 
 /**
@@ -81,8 +92,11 @@ const captureNote = computed(() => {
 </script>
 
 <template>
+	<!-- `tabindex="-1"` so the container can hold focus itself if a control it owns
+	     ever unmounts under one. It is not in the tab order and shows no ring. -->
 	<div
-		class="flex h-full min-h-0 w-full flex-col select-none font-sans text-body"
+		tabindex="-1"
+		class="flex h-full min-h-0 w-full flex-col outline-none select-none font-sans text-body"
 		@keydown="onEscape"
 	>
 		<!-- The drag region is the header's centre column only. The attribute is not
@@ -95,6 +109,7 @@ const captureNote = computed(() => {
 			<!-- 32px visually, 44px to the pointer: the expander is a pseudo-element,
 			     so the hit area grows without the button growing. -->
 			<button
+				ref="back"
 				type="button"
 				aria-label="Back to notes"
 				class="text-text-secondary hover:bg-surface-hover active:bg-surface-active outline-focus-ring hit-44 relative grid size-8 place-items-center rounded-md transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
@@ -126,9 +141,14 @@ const captureNote = computed(() => {
 
 			<SettingsSection title="Shortcuts">
 				<template v-if="shortcuts">
+					<!-- The description names no keys. The spec's copy was "Double-tap
+					     Shift to save your current selection, anywhere.", which stops
+					     being true the moment the binding is changed — and the chips
+					     directly below it already say which keys, correctly. A row that
+					     contradicts its own control is worse than one that says less. -->
 					<ShortcutRecorder
 						label="Capture"
-						description="Double-tap Shift to save your current selection, anywhere."
+						description="Save whatever you have selected, from any app."
 						target="capture"
 						:value="shortcuts.capture"
 						:default-value="shortcuts.defaults.capture"

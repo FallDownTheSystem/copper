@@ -114,6 +114,64 @@ describe('recording a summon chord', () => {
 		expect(committed()).toBeNull()
 	})
 
+	it('drops a modifier once it is released', async () => {
+		// The bug this covers: `held` only ever grew, so a Ctrl pressed and released
+		// on the way to Shift+K committed `Ctrl+Shift+K` — a chord nobody held.
+		const recorder = await freshRecorder()
+		await recorder.start('summon')
+
+		press(recorder, 'ControlLeft')
+		press(recorder, 'ShiftLeft')
+		release(recorder, 'ControlLeft')
+
+		// And the display follows, rather than leaving a chip for a key that is up.
+		expect([...recorder.pending.value]).toEqual(['Shift'])
+
+		press(recorder, 'KeyK')
+		await Promise.resolve()
+
+		expect(committed()).toBe('Shift+K')
+	})
+
+	it('refuses a key with no modifier, and keeps recording so the next try works', async () => {
+		// A bare binding would be taken from every other app on the machine. Rust
+		// refuses it too; this is the layer that stops it being sent at all.
+		const recorder = await freshRecorder()
+		await recorder.start('summon')
+
+		press(recorder, 'KeyK')
+		await Promise.resolve()
+
+		expect(committed()).toBeNull()
+		expect(recorder.isRecording.value).toBe(true)
+
+		press(recorder, 'ControlLeft')
+		press(recorder, 'KeyK')
+		await Promise.resolve()
+		expect(committed()).toBe('Ctrl+K')
+	})
+
+	it('allows the high function keys bare, since that is what they are for', async () => {
+		const recorder = await freshRecorder()
+		await recorder.start('summon')
+
+		press(recorder, 'F13')
+		await Promise.resolve()
+
+		expect(committed()).toBe('F13')
+	})
+
+	it('still refuses F1 to F12, which every other app is listening for', async () => {
+		const recorder = await freshRecorder()
+		await recorder.start('summon')
+
+		press(recorder, 'F5')
+		await Promise.resolve()
+
+		expect(committed()).toBeNull()
+		expect(recorder.isRecording.value).toBe(true)
+	})
+
 	it('never treats a bare modifier as a binding', async () => {
 		// A summon chord needs a main key; releasing Shift on its own must not
 		// commit `Shift Shift`, which is a *capture* shape.
@@ -215,6 +273,34 @@ describe('leaving the recorder', () => {
 
 		expect(press(recorder, 'ControlLeft').defaultPrevented).toBe(true)
 		expect(press(recorder, 'KeyF').defaultPrevented).toBe(true)
+	})
+
+	it('stands down when the session ends while the lease is still in flight', async () => {
+		// The window that unmounting the settings view falls into: `start` cannot
+		// install any state until Rust hands back a token, and the view can be gone
+		// by then. Installing it anyway left a recording row nobody opened, still
+		// showing on the next visit and answering no keystroke.
+		let release: (token: number) => void = () => {}
+		mocks.invoke.mockImplementation(async (command: string) => {
+			if (command === 'begin_shortcut_recording') {
+				return new Promise<number>((resolve) => {
+					release = resolve
+				})
+			}
+			return null
+		})
+		const recorder = await freshRecorder()
+
+		const pending = recorder.start('summon')
+		// The view goes away mid-await, exactly as `onBeforeUnmount` does.
+		await recorder.cancel()
+		release(7)
+
+		expect(await pending).toBe(false)
+		expect(recorder.isRecording.value).toBe(false)
+		// And the lease Rust really did hand out is given straight back, rather than
+		// left open until the watchdog notices.
+		expect(mocks.invoke).toHaveBeenCalledWith('cancel_shortcut_recording')
 	})
 
 	it('records nothing when the lease could not be taken', async () => {

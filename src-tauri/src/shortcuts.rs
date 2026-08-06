@@ -130,6 +130,11 @@ struct Registry {
 	capture: CaptureBinding,
 	/// Live only while the keyboard hook is down.
 	fallback: Option<Shortcut>,
+	/// Why the insurance chord is not available, when it was needed and could not
+	/// be had. Surfaced as the capture row's error, because from the user's side
+	/// that is exactly what it is: a hook that will not install *and* no chord
+	/// standing in for it means capture does not work at all.
+	fallback_error: Option<String>,
 	/// Registrations `unregister` refused to retire.
 	///
 	/// Not merely loggable: a chord that would not retire still summons the panel,
@@ -162,11 +167,18 @@ impl Registry {
 				text: DEFAULT_CAPTURE_TRIGGER.to_owned(),
 			},
 			fallback: None,
+			fallback_error: None,
 			stale: Vec::new(),
 			lease: None,
 		}
 	}
 }
+
+/// What the capture row says when the hook is down and the insurance chord could
+/// not be registered either.
+const FALLBACK_UNAVAILABLE: &str =
+	"Copper couldn't install its keyboard hook, and the shortcut that stands in for it was \
+	 refused too. Bind capture to a key combination instead.";
 
 /// The one serialising lock over every shortcut mutation.
 ///
@@ -275,10 +287,41 @@ pub fn validate_summon_chord(text: &str) -> Result<Shortcut, ShellError> {
 		))
 	})?;
 
-	match reserved_reason(&chord, text) {
-		Some(why) => Err(ShellError::Reserved(why)),
-		None => Ok(chord),
+	// Before the bare-key rule below, not after: `PrintScreen` is reserved whether
+	// or not it carries a modifier, and "Windows keeps this for screenshots" tells
+	// the user something the generic "add a modifier" does not.
+	if let Some(why) = reserved_reason(&chord, text) {
+		return Err(ShellError::Reserved(why));
 	}
+
+	if chord.mods.is_empty() && !bindable_bare(chord.key) {
+		return Err(ShellError::InvalidChord(format!(
+			"{text} on its own would be taken from every other app on the machine. Hold Ctrl, Alt \
+			 or Shift with it."
+		)));
+	}
+
+	Ok(chord)
+}
+
+/// The keys a global binding may claim with no modifier at all.
+///
+/// **F13–F24 only, and F1–F12 deliberately not.** The high function keys exist
+/// for precisely this: no keyboard emits them by accident, and nothing else is
+/// listening for them. F1–F12 are live in almost every application — binding a
+/// bare F5 globally takes Refresh away from every browser on the machine — so
+/// they are treated like any other single key and need a modifier.
+fn bindable_bare(key: Code) -> bool {
+	matches!(
+		key,
+		Code::F13
+			| Code::F14 | Code::F15
+			| Code::F16 | Code::F17
+			| Code::F18 | Code::F19
+			| Code::F20 | Code::F21
+			| Code::F22 | Code::F23
+			| Code::F24
+	)
 }
 
 /// The double-tap families Copper offers.
@@ -495,8 +538,13 @@ pub struct ShortcutState {
 fn snapshot(app: &AppHandle, registry: &Registry) -> ShortcutState {
 	let (capture_registered, capture_error) = match &registry.capture {
 		// Nothing to register: the hook either recognises the double-tap or it is
-		// not installed, and the fallback chord below is what covers the latter.
-		CaptureBinding::DoubleTap { .. } => (capture::hook_installed(app), None),
+		// not installed, and the fallback chord is what covers the latter. A
+		// fallback that could not be had is therefore a *capture* failure, since
+		// between the two of them nothing on the machine can trigger one.
+		CaptureBinding::DoubleTap { .. } => (
+			capture::hook_installed(app) || registry.fallback.is_some(),
+			registry.fallback_error.clone(),
+		),
 		CaptureBinding::Chord(binding) => (binding.registered, binding.error.clone()),
 	};
 
@@ -664,23 +712,38 @@ fn ensure_fallback(app: &AppHandle, registry: &mut Registry) {
 				Ok(()) => {
 					CANONICAL_CAPTURE.store(chord.id(), Ordering::Relaxed);
 					registry.fallback = Some(chord);
+					registry.fallback_error = None;
 					diagnostics::log(&format!(
 						"[copper] shortcuts: the keyboard hook is unavailable; capture is reachable \
 						 through {FALLBACK_CAPTURE_CHORD}"
 					));
 				}
-				Err(err) => diagnostics::log_error(&format!(
-					"[copper] shortcuts: the fallback capture chord could not be registered: {err}"
-				)),
+				Err(err) => {
+					// Recorded, not merely logged. Logging alone left the settings view
+					// saying capture was fine while nothing on the machine could trigger
+					// one.
+					registry.fallback_error = Some(FALLBACK_UNAVAILABLE.to_owned());
+					diagnostics::log_error(&format!(
+						"[copper] shortcuts: the fallback capture chord could not be registered: \
+						 {err}"
+					));
+				}
 			},
-			Err(err) => diagnostics::log_error(&format!(
-				"[copper] shortcuts: the fallback capture chord is not parseable: {err}"
-			)),
+			Err(err) => {
+				registry.fallback_error = Some(FALLBACK_UNAVAILABLE.to_owned());
+				diagnostics::log_error(&format!(
+					"[copper] shortcuts: the fallback capture chord is not parseable: {err}"
+				));
+			}
 		},
 		(false, Some(chord)) => {
 			registry.fallback = None;
+			registry.fallback_error = None;
 			retire(app, registry, chord);
 		}
+		// Nothing wanted and nothing held: any complaint left over from a previous
+		// pass no longer describes anything.
+		(false, None) => registry.fallback_error = None,
 		_ => {}
 	}
 }
@@ -719,19 +782,40 @@ pub fn shutdown(app: &AppHandle) {
 /// in the *middle*, while the old chord is still live — done afterwards, a write
 /// failure would leave the runtime on the new chord and the file on the old one.
 pub fn set_summon(app: &AppHandle, text: &str) -> Result<ShortcutState, ShellError> {
-	let chord = validate_summon_chord(text)?;
 	let mut registry = registry();
-	retry_stale(app, &mut registry);
+	set_summon_locked(app, &mut registry, text)?;
+	Ok(snapshot(app, &registry))
+}
 
-	// Compared against what is *actually registered*, not against the stored
-	// string. Re-submitting the live binding is an idempotent success; re-submitting
-	// one that is stored but not registered — the startup-failure case — is a retry
-	// and has to fall through.
+/// The body, taking a guard the caller already holds.
+///
+/// `commit_recording` needs the token check, the rebind and the lease restore to
+/// happen under **one** acquisition. Releasing the lock between them made the
+/// token a check-then-act: a superseding `begin` landing in that window left the
+/// stale commit free to write and to close the newer session.
+fn set_summon_locked(
+	app: &AppHandle,
+	registry: &mut Registry,
+	text: &str,
+) -> Result<(), ShellError> {
+	let chord = validate_summon_chord(text)?;
+	retry_stale(app, registry);
+
+	// Same-role idempotency compares against what is *actually registered*.
+	// Re-submitting the live binding is an idempotent success; re-submitting one
+	// that is stored but not registered — the startup-failure case — is a retry and
+	// has to fall through.
 	if registry.summon.chord == chord && registry.summon.registered {
-		return Ok(snapshot(app, &registry));
+		return Ok(());
 	}
 
-	if capture_holds(&registry, chord) {
+	// Cross-role exclusivity compares the **configured** chord and deliberately
+	// does not consult `registered`. Every rebind arrives inside a recording lease,
+	// which is exactly when everything is unregistered — so a guard that asked
+	// whether the other binding was live could never fire, the OS would accept the
+	// duplicate, and `persist` would write the same chord into both fields. The
+	// next launch then registers summon first and capture fails for good.
+	if capture_claims(registry, chord) {
 		return Err(ShellError::Reserved(format!(
 			"{} is already Copper's capture shortcut. Choose a different one.",
 			display_chord(&chord)
@@ -748,8 +832,10 @@ pub fn set_summon(app: &AppHandle, text: &str) -> Result<ShortcutState, ShellErr
 
 	if let Err(err) = persist(app, registry.capture.text(), &text) {
 		// Nothing durable happened, so nothing may stay changed. The old chord was
-		// never retired and is still the one that summons the panel.
-		let _ = app.global_shortcut().unregister(chord);
+		// never retired and is still the one that summons the panel. Rolled back
+		// through `retire` rather than a bare `unregister`, so a chord the OS refuses
+		// to give up is recorded and retried instead of left claimed by nobody.
+		retire(app, registry, chord);
 		return Err(err);
 	}
 
@@ -765,18 +851,25 @@ pub fn set_summon(app: &AppHandle, text: &str) -> Result<ShortcutState, ShellErr
 	// the "previous" chord *is* this one, and retiring it would unregister what was
 	// just registered.
 	if previous.registered && previous.chord != chord {
-		retire(app, &mut registry, previous.chord);
+		retire(app, registry, previous.chord);
 	}
 
 	tray::report_summon(app, true);
-	Ok(snapshot(app, &registry))
+	Ok(())
 }
 
-fn capture_holds(registry: &Registry, chord: Shortcut) -> bool {
+/// Whether the capture binding is configured to this chord, live or not.
+fn capture_claims(registry: &Registry, chord: Shortcut) -> bool {
 	match &registry.capture {
-		CaptureBinding::Chord(binding) => binding.registered && binding.chord == chord,
+		CaptureBinding::Chord(binding) => binding.chord == chord,
 		CaptureBinding::DoubleTap { .. } => registry.fallback == Some(chord),
 	}
+}
+
+/// The mirror of [`capture_claims`], and `registered` is absent for the same
+/// reason.
+fn summon_claims(registry: &Registry, chord: Shortcut) -> bool {
+	registry.summon.chord == chord
 }
 
 /// Rebinds the capture trigger.
@@ -786,37 +879,50 @@ fn capture_holds(registry: &Registry, chord: Shortcut) -> bool {
 /// disagree. A conventional chord has a registration that can fail, so it follows
 /// the summon ordering instead.
 pub fn set_capture(app: &AppHandle, text: &str) -> Result<ShortcutState, ShellError> {
-	let trigger = validate_capture_trigger(text)?;
 	let mut registry = registry();
-	retry_stale(app, &mut registry);
+	set_capture_locked(app, &mut registry, text)?;
+	Ok(snapshot(app, &registry))
+}
+
+/// The body, taking a guard the caller already holds — see [`set_summon_locked`].
+fn set_capture_locked(
+	app: &AppHandle,
+	registry: &mut Registry,
+	text: &str,
+) -> Result<(), ShellError> {
+	let trigger = validate_capture_trigger(text)?;
+	retry_stale(app, registry);
 
 	match trigger {
 		CaptureTrigger::DoubleTap(family) => {
 			let text = double_tap_text(family);
-			if registry.capture.text() == text {
-				return Ok(snapshot(app, &registry));
-			}
-			persist(app, &text, &registry.summon.text)?;
-			let previous = registry.capture.clone();
-			apply_capture_locally(&mut registry, trigger);
-			if let CaptureBinding::Chord(binding) = previous {
-				CANONICAL_CAPTURE.store(NO_CHORD, Ordering::Relaxed);
-				if binding.registered {
-					retire(app, &mut registry, binding.chord);
+			// Not an early return. A re-submit or a Reset that lands on the binding
+			// already stored still has work to do below: the insurance chord may be
+			// stored-but-dead, and returning here is what made it unretryable.
+			if registry.capture.text() != text {
+				persist(app, &text, &registry.summon.text)?;
+				let previous = registry.capture.clone();
+				apply_capture_locally(registry, trigger);
+				if let CaptureBinding::Chord(binding) = previous {
+					CANONICAL_CAPTURE.store(NO_CHORD, Ordering::Relaxed);
+					if binding.registered {
+						retire(app, registry, binding.chord);
+					}
 				}
 			}
 			// The hook may be down, in which case the double-tap needs the insurance
 			// chord that a conventional binding did not.
-			ensure_fallback(app, &mut registry);
+			ensure_fallback(app, registry);
 		}
 		CaptureTrigger::Chord(chord) => {
 			let text = display_chord(&chord);
 			if let CaptureBinding::Chord(binding) = &registry.capture {
 				if binding.chord == chord && binding.registered {
-					return Ok(snapshot(app, &registry));
+					return Ok(());
 				}
 			}
-			if registry.summon.registered && registry.summon.chord == chord {
+			// The configured chord, not the live one — see `capture_claims`.
+			if summon_claims(registry, chord) {
 				return Err(ShellError::Reserved(format!(
 					"{text} is already Copper's summon shortcut. Choose a different one."
 				)));
@@ -828,12 +934,12 @@ pub fn set_capture(app: &AppHandle, text: &str) -> Result<ShortcutState, ShellEr
 			})?;
 
 			if let Err(err) = persist(app, &text, &registry.summon.text) {
-				let _ = app.global_shortcut().unregister(chord);
+				retire(app, registry, chord);
 				return Err(err);
 			}
 
 			let previous = registry.capture.clone();
-			apply_capture_locally(&mut registry, trigger);
+			apply_capture_locally(registry, trigger);
 			if let CaptureBinding::Chord(binding) = &mut registry.capture {
 				binding.registered = true;
 			}
@@ -841,16 +947,16 @@ pub fn set_capture(app: &AppHandle, text: &str) -> Result<ShortcutState, ShellEr
 
 			if let CaptureBinding::Chord(binding) = previous {
 				if binding.registered && binding.chord != chord {
-					retire(app, &mut registry, binding.chord);
+					retire(app, registry, binding.chord);
 				}
 			}
 			// The fallback exists to keep a *double-tap* reachable; a chord binding
 			// does not need it and having both would claim a hotkey for nothing.
-			ensure_fallback(app, &mut registry);
+			ensure_fallback(app, registry);
 		}
 	}
 
-	Ok(snapshot(app, &registry))
+	Ok(())
 }
 
 // --- the recording lease -----------------------------------------------------
@@ -878,39 +984,72 @@ pub fn begin_recording(app: &AppHandle) -> Result<u64, ShellError> {
 		return Ok(token);
 	}
 
-	let summon = registry.summon.registered;
-	let capture = matches!(&registry.capture, CaptureBinding::Chord(binding) if binding.registered);
-	let fallback = registry.fallback.is_some();
+	// Each outcome is recorded rather than assumed. A chord the OS refuses to give
+	// up is still intercepting `WM_HOTKEY`, so the keystroke never reaches the
+	// webview — and a session opened over it is a recording box that silently
+	// ignores the very chord the user is trying to replace.
+	let mut suspended = Lease {
+		token,
+		summon: false,
+		capture: false,
+		fallback: false,
+	};
+	let mut blocked = false;
 
-	// `registered` means "live right now", so it goes false while suspended. Any
-	// other reading breaks the setters: re-submitting the chord that is currently
-	// bound would look unchanged, return early, and leave it unregistered when the
-	// lease is released.
-	if summon {
-		let _ = app.global_shortcut().unregister(registry.summon.chord);
-		registry.summon.registered = false;
-		CANONICAL_SUMMON.store(NO_CHORD, Ordering::Relaxed);
+	// `registered` means "live right now", so it goes false only where the chord
+	// actually came down. Any other reading breaks the setters: re-submitting the
+	// chord that is currently bound would look unchanged, return early, and leave
+	// it unregistered when the lease is released.
+	if registry.summon.registered {
+		if app
+			.global_shortcut()
+			.unregister(registry.summon.chord)
+			.is_ok()
+		{
+			suspended.summon = true;
+			registry.summon.registered = false;
+			CANONICAL_SUMMON.store(NO_CHORD, Ordering::Relaxed);
+		} else {
+			blocked = true;
+		}
 	}
 	if let CaptureBinding::Chord(binding) = &mut registry.capture {
 		if binding.registered {
-			let _ = app.global_shortcut().unregister(binding.chord);
-			binding.registered = false;
+			if app.global_shortcut().unregister(binding.chord).is_ok() {
+				suspended.capture = true;
+				binding.registered = false;
+				CANONICAL_CAPTURE.store(NO_CHORD, Ordering::Relaxed);
+			} else {
+				blocked = true;
+			}
 		}
 	}
 	if let Some(chord) = registry.fallback {
-		let _ = app.global_shortcut().unregister(chord);
-	}
-	if capture || fallback {
-		CANONICAL_CAPTURE.store(NO_CHORD, Ordering::Relaxed);
+		if app.global_shortcut().unregister(chord).is_ok() {
+			suspended.fallback = true;
+			CANONICAL_CAPTURE.store(NO_CHORD, Ordering::Relaxed);
+		} else {
+			blocked = true;
+		}
 	}
 
-	registry.lease = Some(Lease {
-		token,
-		summon,
-		capture,
-		fallback,
-	});
+	registry.lease = Some(suspended);
 	LEASE_OPEN.store(true, Ordering::Relaxed);
+
+	if blocked {
+		// Put back whatever did come down, then refuse. Reusing the restore path
+		// rather than unwinding by hand is what keeps the two in step.
+		restore_lease(app, &mut registry, None);
+		diagnostics::log_error(
+			"[copper] shortcuts: a live chord would not unregister, so no recording session was \
+			 opened",
+		);
+		return Err(ShellError::RegistrationFailed(
+			"Copper couldn't free its current shortcuts to record over them. Try again."
+				.to_owned(),
+		));
+	}
+
 	arm_watchdog(app, token);
 	Ok(token)
 }
@@ -982,6 +1121,12 @@ fn restore_lease(app: &AppHandle, registry: &mut Registry, replaced: Option<Role
 		if let Some(chord) = registry.fallback {
 			if register(app, chord, Role::Capture).is_ok() {
 				CANONICAL_CAPTURE.store(chord.id(), Ordering::Relaxed);
+			} else {
+				// Forgotten rather than kept, so `ensure_fallback` treats it as absent
+				// and registers it again on the next pass. Held here, it would look
+				// live forever while claiming nothing.
+				registry.fallback = None;
+				registry.fallback_error = Some(FALLBACK_UNAVAILABLE.to_owned());
 			}
 		}
 	}
@@ -1007,43 +1152,46 @@ pub fn commit_recording(
 	target: &str,
 	chord: &str,
 ) -> Result<ShortcutState, ShellError> {
+	// One acquisition for the token check, the rebind and the restore. Released
+	// between any two of them, the token becomes a check-then-act: a superseding
+	// `begin` landing in the gap would leave this stale commit free to write, and
+	// to close the newer session on its way out.
+	let mut registry = registry();
+
+	match &registry.lease {
+		Some(lease) if lease.token == token => {}
+		_ => {
+			return Err(ShellError::StaleToken(
+				"That recording has already finished. Try again.".to_owned(),
+			))
+		}
+	}
+
+	// Validated inside the session rather than before it. Returning early on an
+	// unrecognised target would leave every chord suspended until the watchdog or
+	// a panel hide noticed — a nonsense argument must not cost the user their
+	// shortcuts.
 	let role = match target {
 		"summon" => Role::Summon,
 		"capture" => Role::Capture,
 		other => {
-			return Err(ShellError::Invalid(format!(
-				"{other} is not a shortcut Copper can rebind."
-			)))
+			let message = format!("{other} is not a shortcut Copper can rebind.");
+			restore_lease(app, &mut registry, None);
+			return Err(ShellError::Invalid(message));
 		}
 	};
 
-	{
-		let registry = registry();
-		match &registry.lease {
-			Some(lease) if lease.token == token => {}
-			_ => {
-				return Err(ShellError::StaleToken(
-					"That recording has already finished. Try again.".to_owned(),
-				))
-			}
-		}
-	}
-
-	// The lock is released between the check above and the setters below because
-	// they take it themselves; a superseding `begin` in that window can only make
-	// the token stale, which the setters' own outcome then reflects.
 	let outcome = match role {
-		Role::Summon => set_summon(app, chord),
-		Role::Capture => set_capture(app, chord),
+		Role::Summon => set_summon_locked(app, &mut registry, chord),
+		Role::Capture => set_capture_locked(app, &mut registry, chord),
 	};
 
-	let mut registry = registry();
 	// Whatever happened, the session is over: on success the other bindings come
 	// back and the replaced one is already live; on failure everything comes back
 	// exactly as it was, which is what makes a refused chord a no-op rather than a
 	// lockout.
 	restore_lease(app, &mut registry, outcome.is_ok().then_some(role));
-	outcome.map(|_| snapshot(app, &registry))
+	outcome.map(|()| snapshot(app, &registry))
 }
 
 /// The main-thread-safe way to end a session — see the module note on the lock.
@@ -1156,6 +1304,66 @@ mod tests {
 		);
 		assert_eq!(validate_summon_chord("Nonsense").unwrap_err().kind(), "invalid-chord");
 		assert_eq!(validate_summon_chord("").unwrap_err().kind(), "invalid-chord");
+	}
+
+	#[test]
+	fn a_single_key_with_no_modifier_is_refused() {
+		// Binding one globally takes that key away from every application on the
+		// machine, so the recorder refuses it too — this is the half that cannot be
+		// bypassed.
+		for chord in ["K", "Space", "F5", "F12", "ArrowUp", "Digit1"] {
+			let err = validate_summon_chord(chord).unwrap_err();
+			assert_eq!(err.kind(), "invalid-chord", "{chord} was accepted bare");
+		}
+	}
+
+	#[test]
+	fn the_high_function_keys_are_the_one_bare_exception() {
+		// F13–F24 exist for exactly this: no keyboard emits them by accident and
+		// nothing else is listening for them.
+		for chord in ["F13", "F19", "F24"] {
+			assert!(validate_summon_chord(chord).is_ok(), "{chord} was refused");
+		}
+		// And they are still fine with modifiers, which is the ordinary case.
+		assert!(validate_summon_chord("Ctrl+F13").is_ok());
+	}
+
+	/// The guard that was inert. Both rebinds arrive inside a recording lease,
+	/// which is precisely when every binding is unregistered — so a check that
+	/// consulted `registered` could never fire, and the same chord ended up
+	/// persisted into both fields.
+	#[test]
+	fn cross_role_exclusivity_ignores_whether_the_other_binding_is_live() {
+		let mut registry = Registry::shipped();
+		let chord = validate_summon_chord("Ctrl+Alt+C").unwrap();
+		registry.capture = CaptureBinding::Chord(Binding {
+			text: display_chord(&chord),
+			chord,
+			// Suspended, exactly as `begin_recording` leaves it.
+			registered: false,
+			error: None,
+		});
+
+		assert!(
+			capture_claims(&registry, chord),
+			"a suspended capture chord still claims its binding"
+		);
+		assert!(!capture_claims(&registry, registry.summon.chord));
+
+		// And the mirror, for a summon binding that is stored but not registered.
+		registry.summon.registered = false;
+		assert!(summon_claims(&registry, registry.summon.chord));
+	}
+
+	#[test]
+	fn a_double_tap_binding_claims_only_its_insurance_chord() {
+		let mut registry = Registry::shipped();
+		let fallback = Shortcut::from_str(FALLBACK_CAPTURE_CHORD).unwrap();
+		assert!(!capture_claims(&registry, fallback));
+
+		registry.fallback = Some(fallback);
+		assert!(capture_claims(&registry, fallback));
+		assert!(!capture_claims(&registry, registry.summon.chord));
 	}
 
 	#[test]
