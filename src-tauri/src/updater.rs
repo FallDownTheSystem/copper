@@ -197,13 +197,11 @@ pub async fn check_for_update(app: AppHandle) -> Result<Option<UpdateInfo>, Stri
 #[tauri::command]
 pub async fn install_update(app: AppHandle) -> Result<(), String> {
 	let _in_flight = InFlight::acquire(&app).ok_or(BUSY)?;
-	let Some(mut update) = take_pending(&app) else {
-		return Err(NOTHING_PENDING.into());
-	};
+	let mut retained = Retained::take(&app).ok_or(NOTHING_PENDING)?;
+	retained.bound_download(DOWNLOAD_TIMEOUT);
 
-	update.timeout = Some(DOWNLOAD_TIMEOUT);
-
-	let result = update
+	let result = retained
+		.update()
 		.download_and_install(
 			{
 				let app = app.clone();
@@ -227,15 +225,10 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
 		)
 		.await;
 
-	if let Err(error) = result {
-		// Put the *same* update back rather than leaving the slot empty: a retry
-		// after a corrupted artifact or a dropped connection then reuses the version
-		// the user already approved, with no second manifest request and no chance
-		// of being handed a different one.
-		store_pending(&app, update);
-		return Err(install_failed(error));
-	}
-
+	// `retained` puts the update back on the way out unless this disarms it, so
+	// the error path needs nothing of its own.
+	result.map_err(install_failed)?;
+	retained.installed();
 	Ok(())
 }
 
@@ -278,6 +271,67 @@ fn store_pending(app: &AppHandle, update: Update) {
 
 fn take_pending(app: &AppHandle) -> Option<Update> {
 	pending(app).take()
+}
+
+/// The approved `Update`, out of [`PendingUpdate`] for the length of an install
+/// and put back unless the install actually consumed it.
+///
+/// Restoring on the error path alone is not enough, which is the whole reason
+/// this is a guard rather than two calls. Tauri may **drop** a command future —
+/// a WebView reload part-way through a multi-minute download is the realistic
+/// way that happens — and a plain `take` would then strand the approved update
+/// in a local that is about to be dropped. The pending slot would be empty with
+/// nothing having failed, so nothing would put it back, and the settings row
+/// would keep offering an install that Rust can no longer perform. This is the
+/// discipline [`InFlight`] applies to the gate, applied to the value.
+///
+/// Defence in depth rather than the only protection: the row also offers a
+/// "check again" action out of the error state, so a stranded update is
+/// recoverable by hand either way.
+struct Retained {
+	app: AppHandle,
+	/// `None` only after [`Self::installed`] has consumed the guard, or inside
+	/// `Drop` — neither of which is observable from a method call below.
+	update: Option<Update>,
+}
+
+impl Retained {
+	fn take(app: &AppHandle) -> Option<Self> {
+		take_pending(app).map(|update| Self {
+			app: app.clone(),
+			update: Some(update),
+		})
+	}
+
+	fn update(&self) -> &Update {
+		self.update
+			.as_ref()
+			.expect("the retained update is present until the guard is consumed or dropped")
+	}
+
+	/// Caps the artifact download, which the plugin otherwise leaves untimed.
+	fn bound_download(&mut self, timeout: std::time::Duration) {
+		if let Some(update) = self.update.as_mut() {
+			update.timeout = Some(timeout);
+		}
+	}
+
+	/// Disarms the put-back: the update is installed and must not be offered
+	/// again. Unreachable on Windows, where the plugin exits the process from
+	/// inside the install rather than returning — but the guard's contract should
+	/// not depend on that, or a platform where it does return would keep offering
+	/// an install that has already happened.
+	fn installed(mut self) {
+		self.update = None;
+	}
+}
+
+impl Drop for Retained {
+	fn drop(&mut self) {
+		if let Some(update) = self.update.take() {
+			store_pending(&self.app, update);
+		}
+	}
 }
 
 fn emit_progress(app: &AppHandle, progress: Progress) {

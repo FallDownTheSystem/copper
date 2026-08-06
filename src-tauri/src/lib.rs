@@ -369,16 +369,27 @@ pub fn run() {
 /// is shared rather than inlined — an abrupt exit runs no destructors at all, so
 /// anything left only to `Drop` is simply lost on the update path.
 ///
-/// Idempotent throughout, so the two callers cannot double up on a build where
-/// both happen to fire. Every step is already individually idempotent — the
-/// position flush takes its pending value, `capture::shutdown` guards on a flag,
-/// `scavenge` deletes a tree that may already be gone — and that is a property to
-/// preserve when adding to this list, not a coincidence.
+/// **Runs exactly once, and the second caller waits for the first.** Per-step
+/// idempotence is not enough on its own, because the two callers are on
+/// different threads: the updater's hook runs on the async runtime while a Quit
+/// from the tray runs on the main thread, and a download lasting minutes makes
+/// that interleaving real rather than theoretical. Idempotent steps would each
+/// individually survive it, but the *ordering between* them would not — the
+/// second caller could reach `cleanup_before_exit()` and let the plugin exit the
+/// process while the first was still inside the position flush. `Once` blocks
+/// the loser until the winner is done, which is the property actually needed.
+/// The steps stay individually idempotent anyway; that is worth preserving when
+/// adding to this list rather than relying on this guard alone.
 ///
 /// **Not a crash hook.** None of this runs on a panic-abort, a Task Manager kill,
 /// or an uninstall started from Windows. The startup `editor::scavenge` is what
 /// covers those.
 fn teardown(handle: &tauri::AppHandle) {
+	static DONE: std::sync::Once = std::sync::Once::new();
+	DONE.call_once(|| teardown_once(handle));
+}
+
+fn teardown_once(handle: &tauri::AppHandle) {
 	// Before anything slow, because it is the one step the user can see. Windows
 	// normally reaps a notification icon when its owner window is destroyed, but
 	// `std::process::exit(0)` destroys nothing — so on the update path the icon

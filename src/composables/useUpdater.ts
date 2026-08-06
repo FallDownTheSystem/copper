@@ -79,6 +79,20 @@ const percentage = computed(() => {
  */
 const canInstall = computed(() => available.value !== null)
 
+/**
+ * Whether the row should also offer a plain re-check.
+ *
+ * The escape from a retained update that will never install. `canInstall` alone
+ * is a one-way door: if the endpoint's manifest changed under us — the artifact
+ * was replaced, or the release was pulled and re-cut — the retained `Update`
+ * points at a download that fails every time, and the row would keep offering
+ * that same install for the life of the process with no way back to a check.
+ *
+ * Only in the `error` state. Offering it beside a perfectly good pending install
+ * would just be two buttons for one decision.
+ */
+const canRecheck = computed(() => status.value === 'error' && available.value !== null)
+
 /** True while a command is in flight, which is what disables the button — the
  *  Rust side would otherwise have to reject a concurrent call the UI allowed. */
 const busy = computed(() => status.value === 'checking' || status.value === 'downloading')
@@ -176,6 +190,7 @@ export function useUpdater() {
 		progress: readonly(progress),
 		percentage,
 		canInstall,
+		canRecheck,
 		busy,
 		error: readonly(error),
 		initialize,

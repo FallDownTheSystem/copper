@@ -1,7 +1,12 @@
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
   The release manifest. Identical to tauri-build's stock manifest except for the
   trustInfo block, which is the whole point of it.
+
+  No XML declaration, deliberately, and upstream's stock manifest has none
+  either. tauri-winres emits the manifest into the .rc file a line at a time,
+  each line wrapped in spaces — so a declaration would arrive somewhere other
+  than the very start of the document, where XML requires it, and would survive
+  only on the parser's willingness to overlook that.
 
   uiAccess="true" is what lets Copper read a selection out of a window running
   elevated — an administrator PowerShell, a code editor started as administrator.

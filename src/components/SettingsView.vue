@@ -33,6 +33,7 @@ const {
 	available: availableUpdate,
 	percentage,
 	canInstall,
+	canRecheck,
 	busy: updateBusy,
 	error: updateError,
 	initialize: startUpdater,
@@ -159,6 +160,10 @@ const updateActionLabel = computed(() =>
 
 function onUpdateAction() {
 	void (canInstall.value ? installUpdate() : checkForUpdate())
+}
+
+function onRecheck() {
+	void checkForUpdate()
 }
 
 /** Standing conditions rather than failed actions: the keyboard hook is down and
@@ -293,10 +298,13 @@ const captureNote = computed(() => {
 			</SettingsSection>
 
 			<SettingsSection title="Updates">
+				<!-- The error is rendered below rather than through `SettingsRow`'s own
+				     `error` prop, which would place it after this slot. The recovery
+				     button has to come *after* the message that explains why it is
+				     there. -->
 				<SettingsRow
 					label="Version"
 					:description="currentVersion ? `Copper ${currentVersion}` : 'Reading the version…'"
-					:error="updateError"
 				>
 					<template #below>
 						<!-- Two copies on purpose, and only one of them is in the
@@ -322,6 +330,27 @@ const captureNote = computed(() => {
 						>
 							{{ availableUpdate.notes }}
 						</p>
+
+						<p v-if="updateError" class="text-text-primary mt-1.5 text-meta" role="alert">
+							{{ updateError }}
+						</p>
+
+						<!-- The way out of an update that will never install. The retained
+						     update is reused on retry precisely so a second manifest request
+						     is unnecessary — but if the release was re-cut under us, that
+						     same download fails every time and Install alone is a one-way
+						     door. Checking again discards it. Placed here rather than beside
+						     the Install button because two `hit-44` controls sitting flush
+						     would overlap each other's hit areas. -->
+						<button
+							v-if="canRecheck"
+							type="button"
+							:disabled="updateBusy"
+							class="panel-button outline-focus-ring hit-44 relative mt-2 focus-visible:outline-2 focus-visible:-outline-offset-1 disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
+							@click="onRecheck"
+						>
+							Check again
+						</button>
 					</template>
 
 					<!-- Disabled while a command is in flight, so the UI cannot issue the

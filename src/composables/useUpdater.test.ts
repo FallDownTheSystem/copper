@@ -141,6 +141,40 @@ describe('installing', () => {
 		expect(updater.progress.value).toBeNull()
 	})
 
+	/**
+	 * The escape hatch from the rule above. Reusing the retained update is right
+	 * for a corrupted download or a dropped connection, but not for a release
+	 * that was re-cut under us — that download fails every time, and without a
+	 * second action the row would offer the same doomed install for the life of
+	 * the process.
+	 */
+	it('offers a re-check alongside the retry, and the re-check discards the stale update', async () => {
+		const updater = await withAvailableUpdate()
+		mocks.invoke.mockRejectedValueOnce("Copper couldn't install the update: signature")
+		await updater.installUpdate()
+
+		expect(updater.canInstall.value).toBe(true)
+		expect(updater.canRecheck.value).toBe(true)
+
+		mocks.invoke.mockResolvedValueOnce(null)
+		await updater.checkForUpdate()
+
+		expect(updater.status.value).toBe('upToDate')
+		expect(updater.available.value).toBeNull()
+		expect(updater.canInstall.value).toBe(false)
+		expect(updater.canRecheck.value).toBe(false)
+	})
+
+	/** Two buttons for one decision is not a recovery path. A pending install
+	 *  that has not failed offers exactly one action. */
+	it('does not offer a re-check while the pending install is still good', async () => {
+		const updater = await withAvailableUpdate()
+
+		expect(updater.status.value).toBe('available')
+		expect(updater.canInstall.value).toBe(true)
+		expect(updater.canRecheck.value).toBe(false)
+	})
+
 	it('does nothing when no update has been approved', async () => {
 		mocks.invoke.mockResolvedValue(null)
 		const updater = await freshModule()
