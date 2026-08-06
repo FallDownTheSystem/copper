@@ -321,6 +321,22 @@ function syncDocument(space: SpaceView | null) {
  */
 let stuckToBottom = true
 let trackedRegion: HTMLElement | null = null
+/** Set while `pinToBottom` is driving the region, so the scroll events its own
+ *  writes and the reflows around them produce are not mistaken for a reader. */
+let pinning = false
+
+/**
+ * The gestures that mean *the reader* is scrolling, as opposed to the list
+ * reflowing underneath them.
+ *
+ * This distinction is load-bearing. Clamping a note that has just been measured
+ * shrinks and regrows the list several times over ~180ms, and every one of those
+ * steps fires a `scroll` event; treating those as a reader gave up the pin
+ * halfway through the cascade and left the list short. `keydown` is included and
+ * reaches this element from a focused row, while the composer sits outside the
+ * region — so submitting a note never cancels its own pin.
+ */
+const RELEASE_EVENTS = ['wheel', 'touchmove', 'keydown', 'pointerdown'] as const
 
 function scrollRegion() {
 	if (typeof document === 'undefined') return null
@@ -328,9 +344,19 @@ function scrollRegion() {
 	if (region && region !== trackedRegion) {
 		trackedRegion = region
 		stuckToBottom = atBottom(region)
-		// Passive: the handler only reads. Never removed, because this is the
+		// Passive: these handlers only read. Never removed, because this is the
 		// panel's one scroll surface and it outlives every document.
-		region.addEventListener('scroll', () => (stuckToBottom = atBottom(region)), { passive: true })
+		region.addEventListener(
+			'scroll',
+			() => {
+				if (pinning) return
+				stuckToBottom = atBottom(region)
+			},
+			{ passive: true },
+		)
+		for (const name of RELEASE_EVENTS) {
+			region.addEventListener(name, () => (pinning = false), { passive: true })
+		}
 	}
 	return region
 }
@@ -523,25 +549,44 @@ function restoreDom(snap: SelectionSnapshot) {
 	else document.querySelector<HTMLElement>('[data-composer]')?.focus()
 }
 
+/** Comfortably past auto-animate's insert animation, which this exists for:
+ *  `duration: 150` in NoteSection, which the library runs at ×1.5 for an added
+ *  element. */
+const SETTLE_MS = 400
+
 /**
- * Pinned twice: once against the patched DOM, once on the following frame.
+ * Re-asserted every frame until the list settles, because the pin's own target
+ * keeps moving after it lands.
  *
- * A row's height is not final when the document is patched. A note long enough
- * to trip the clamp gains its `Show more` control from the disclosure's
- * `ResizeObserver` pass, which lands after this one and grew the measured list
- * by another dozen pixels. The second pass re-reads the flag rather than
- * re-pinning blind, so a reader who scrolled away inside that frame keeps their
- * position — scroll steps run before resize-observer steps, so the pin's own
- * scroll event has already been accounted for by then.
+ * auto-animate scales a newly inserted row from `.98` to `1` across its entry
+ * animation, and a transformed box still contributes to its scroll container's
+ * *scrollable overflow* — so `scrollHeight` climbs for the whole animation.
+ * Measured in WebView2 at 175% scaling: the pin landed correctly at 0.43px from
+ * the bottom, then the list grew 13px over the next 150ms and stayed there,
+ * which is exactly the gap the scrollbar showed. A single extra frame cannot
+ * cover a 225ms animation, and widening the slack would only have hidden it.
+ *
+ * The loop re-reads the predicate every frame rather than re-pinning blind. A
+ * scroll event is dispatched in the frame's scroll steps, which run *before*
+ * animation frame callbacks, so a reader who scrolls away has already released
+ * the latch by the time the next pass runs.
  */
 function pinToBottom(region: HTMLElement) {
 	region.scrollTop = region.scrollHeight
 	stuckToBottom = true
 	if (typeof requestAnimationFrame !== 'function') return
-	requestAnimationFrame(() => {
-		if (!isStuckToBottom(region)) return
+
+	pinning = true
+	const deadline = Date.now() + SETTLE_MS
+	const settle = () => {
+		// `pinning` is cleared by a reader's own gesture, which is what lets them
+		// take the list back mid-settle.
+		if (!pinning || !region.isConnected) return
 		region.scrollTop = region.scrollHeight
-	})
+		if (Date.now() < deadline) requestAnimationFrame(settle)
+		else pinning = false
+	}
+	requestAnimationFrame(settle)
 }
 
 function restoreScroll(anchor: ScrollAnchor) {
@@ -565,8 +610,10 @@ function resetForNewSpace() {
 	setSelection([])
 	focusedId.value = null
 	anchorId.value = null
-	// A different space opens at its end, exactly as a fresh load does.
+	// A different space opens at its end, exactly as a fresh load does, and any
+	// pin still settling belongs to the document that just went away.
 	stuckToBottom = true
+	pinning = false
 }
 
 /**

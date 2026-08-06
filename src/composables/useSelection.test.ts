@@ -343,6 +343,37 @@ describe('the scroll anchor', () => {
 		expect(selection.snapshot().scroll).toEqual({ kind: 'bottom' })
 	})
 
+	it('ignores the scroll events the list’s own reflow produces', () => {
+		// Measured in WebView2: clamping a freshly measured note shrinks and regrows
+		// the list several times over ~180ms, and every step fires a scroll event.
+		// Treating those as a reader gave up the pin halfway through the cascade and
+		// left the list 7px short, which then classified the next capture as
+		// scrolled-up and killed stickiness for good.
+		const metrics = { scrollTop: 380, scrollHeight: 500, clientHeight: 120 }
+		const region = mountRegion(metrics)
+		const snapshot = selection.snapshot()
+		selection.restoreDom(snapshot)
+
+		metrics.scrollHeight = 700
+		region.dispatchEvent(new Event('scroll'))
+
+		expect(selection.snapshot().scroll).toEqual({ kind: 'bottom' })
+	})
+
+	it('hands the list back on a reader’s own gesture mid-settle', () => {
+		const metrics = { scrollTop: 380, scrollHeight: 500, clientHeight: 120 }
+		const region = mountRegion(metrics)
+		region.innerHTML = '<div data-row-id="n:n1"></div>'
+		selection.restoreDom(selection.snapshot())
+
+		// A wheel, unlike a reflow, is the reader taking the list back.
+		region.dispatchEvent(new Event('wheel'))
+		metrics.scrollTop = 40
+		region.dispatchEvent(new Event('scroll'))
+
+		expect(selection.snapshot().scroll).toEqual({ kind: 'note', noteId: 'n1', offset: 0 })
+	})
+
 	it('re-pins to the bottom after the list grew, so the new note is on screen', () => {
 		const metrics = { scrollTop: 380, scrollHeight: 500, clientHeight: 120 }
 		mountRegion(metrics)
