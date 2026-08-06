@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useAutoSize } from '@/composables/useAutoSize'
 import { noteRow, takeRow } from '@/composables/useSelection'
+import { isComposing } from '@/lib/chords'
 
 const { spaceName, submitEntry, errorFor, clearActionError, reportActionError } = useSpace()
 
@@ -161,9 +162,10 @@ function focusLastNote() {
 
 function onKeydown(event: KeyboardEvent) {
 	// Before anything else: an IME candidate confirmed with Enter must insert
-	// text, not submit the note. WebView2 still reports keyCode 229 while
-	// composing.
-	if (event.isComposing || event.keyCode === 229 || composing.value) return
+	// text, not submit the note. The local flag is the third term because the
+	// composition events reach this field directly and outlive an individual
+	// keypress.
+	if (isComposing(event) || composing.value) return
 
 	if (event.key === 'Enter') {
 		// Deviation from the form convention, and a deliberate one: the composer is

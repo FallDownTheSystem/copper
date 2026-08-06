@@ -14,7 +14,9 @@
  */
 
 import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { listen } from '@tauri-apps/api/event'
+
+import { createStartup } from '@/lib/startup'
 
 export type HandoffState = { noteId: string; conflicted: boolean }
 type HandoffChangedPayload = { handoffs: HandoffState[] }
@@ -34,9 +36,6 @@ export type OpenOutcome =
 
 const handoffs = ref<HandoffState[]>([])
 
-let initPromise: Promise<void> | null = null
-let unlisteners: UnlistenFn[] = []
-
 const activeHandoffIds = computed(() => new Set(handoffs.value.map((entry) => entry.noteId)))
 const conflictedHandoffIds = computed(
 	() => new Set(handoffs.value.filter((entry) => entry.conflicted).map((entry) => entry.noteId)),
@@ -51,34 +50,30 @@ function isConflicted(noteId: string) {
 }
 
 /**
- * Registers the listener, then pulls once.
- *
  * The pull is not redundant: Rust scavenges `%TEMP%\Copper` before any handoff
  * can be registered, so at mount the list is empty — but a reload of the webview
  * with the process still running is not, and Tauri replays no events.
  */
-function initialize(): Promise<void> {
-	initPromise ??= (async () => {
-		unlisteners = [
-			await listen<HandoffChangedPayload>(
-				'editor-handoff-changed',
-				(event) => (handoffs.value = event.payload.handoffs),
-			),
-		]
+const startup = createStartup(
+	async () => [
+		await listen<HandoffChangedPayload>(
+			'editor-handoff-changed',
+			(event) => (handoffs.value = event.payload.handoffs),
+		),
+	],
+	async () => {
 		try {
 			handoffs.value = await invoke<HandoffState[]>('editor_handoffs')
 		} catch (error) {
 			console.error('[copper] could not read editor handoffs', error)
 		}
-	})()
+	},
+)
 
-	return initPromise
-}
+const { initialize } = startup
 
 function dispose() {
-	for (const unlisten of unlisteners) unlisten()
-	unlisteners = []
-	initPromise = null
+	startup.dispose()
 	handoffs.value = []
 }
 

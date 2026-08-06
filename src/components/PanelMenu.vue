@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { isComposing } from '@/lib/chords'
 import { normaliseSectionName } from '@/lib/sectionName'
 
 /**
@@ -132,9 +133,7 @@ async function submitSection() {
 }
 
 function onSectionKeydown(event: KeyboardEvent) {
-	// WebView2 reports keyCode 229 while an IME candidate is open, and accepting
-	// one with Enter must not submit the name.
-	if (event.isComposing || event.keyCode === 229) return
+	if (isComposing(event)) return
 
 	if (event.key === 'Enter') {
 		event.preventDefault()
@@ -187,42 +186,38 @@ function onSectionInput(event: Event) {
 						:aria-current="entry.active ? 'true' : undefined"
 						@select="openSpace(entry.path)"
 					>
-						<!-- Fixed-width slot, hidden rather than absent, so marking the active
-						     row shifts no text. -->
-						<span
-							aria-hidden="true"
-							class="bg-accent-ring mt-1.5 size-1.5 shrink-0 rounded-full"
-							:class="entry.active ? 'opacity-100' : 'opacity-0'"
-						/>
-						<span class="min-w-0 flex-1">
-							<span
-								class="block truncate"
-								:class="[
-									entry.active ? 'text-accent-text font-semibold' : 'text-text-primary',
-									entry.availability.state === 'unavailable' ? 'text-text-disabled' : '',
-								]"
-							>
-								{{ entry.name }}
+						<!-- `mt-1.5` on the dot: this row is two lines tall, so a dot centred on
+						     the whole row would sit beside the path rather than the name. -->
+						<ActiveMarker :active="entry.active" label="active space" class="mt-1.5">
+							<span class="min-w-0 flex-1">
+								<span
+									class="block truncate"
+									:class="[
+										entry.active ? 'text-accent-text font-semibold' : 'text-text-primary',
+										entry.availability.state === 'unavailable' ? 'text-text-disabled' : '',
+									]"
+								>
+									{{ entry.name }}
+								</span>
+								<span class="text-text-disabled block truncate text-meta">
+									{{ entry.displayPath }}
+								</span>
+								<!-- The non-colour half of the availability cue; the active one's twin
+								     is the marker's own. Dimming alone would carry the distinction. -->
+								<span
+									v-if="entry.availability.state === 'pending'"
+									class="text-text-disabled block text-meta"
+								>
+									Checking…
+								</span>
+								<span
+									v-else-if="entry.availability.state !== 'available'"
+									class="text-text-secondary block text-meta"
+								>
+									{{ entry.availability.message }}
+								</span>
 							</span>
-							<span class="text-text-disabled block truncate text-meta">
-								{{ entry.displayPath }}
-							</span>
-							<!-- The non-colour half of both cues: dimming alone would carry the
-							     whole distinction, and colour alone would carry the active one. -->
-							<span v-if="entry.active" class="sr-only">(active space)</span>
-							<span
-								v-if="entry.availability.state === 'pending'"
-								class="text-text-disabled block text-meta"
-							>
-								Checking…
-							</span>
-							<span
-								v-else-if="entry.availability.state !== 'available'"
-								class="text-text-secondary block text-meta"
-							>
-								{{ entry.availability.message }}
-							</span>
-						</span>
+						</ActiveMarker>
 					</DropdownMenuItem>
 
 					<!-- Disabled rather than hidden on the active entry: removal would

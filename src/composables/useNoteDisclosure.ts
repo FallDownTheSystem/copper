@@ -15,8 +15,14 @@
  *  amounts on content that does not actually overflow. */
 const EPSILON_PX = 1
 
-const expandable = ref(new Set<string>())
-const expanded = ref(new Set<string>())
+/** Shallow because nothing here mutates a Set in place: every change below
+ *  builds a replacement and assigns it. A deep `ref` wraps each Set in a
+ *  reactive proxy and makes every `has()` register a per-key dependency —
+ *  bookkeeping for a mutation that never happens, paid once per note per
+ *  `ResizeObserver` callback, and redundant besides: replacing the ref already
+ *  notifies everything reading it. */
+const expandable = shallowRef(new Set<string>())
+const expanded = shallowRef(new Set<string>())
 
 /**
  * `--note-clamp` resolved to pixels.

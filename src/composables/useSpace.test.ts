@@ -244,7 +244,17 @@ describe('local mutations', () => {
 })
 
 describe('status handling is keyed on the command, not on the document', () => {
-	it('sets canUndo even when the returned document was superseded', async () => {
+	/**
+	 * The store carried the mutation out either way — supersession is a decision
+	 * this side of the boundary makes about a stale *document* — so the undo
+	 * state still has to be updated. It is **asked for** rather than assumed.
+	 *
+	 * What overtook this document may have been an external reload, and a reload
+	 * clears both stacks (spec 4.6). That is exactly what this arranges: an
+	 * optimistic `canUndo: true` on this path would light up an Undo control with
+	 * nothing behind it.
+	 */
+	it('asks the store for the undo state when the document was superseded', async () => {
 		const space = await freshModule()
 		await space.initialize()
 		await flush()
@@ -258,15 +268,16 @@ describe('status handling is keyed on the command, not on the document', () => {
 		respond('get_active_space', () => makeSpace('spc_1', ['n1', 'external']))
 		emit('space-changed', { id: 'spc_1', path: 'p', reason: 'external' })
 		await flush()
+		const before = callsTo('get_status')
 
 		done.resolve(makeSpace('spc_1', ['n1']))
 		await pending
 		await flush()
 
-		// The store carried the mutation out regardless — supersession is a
-		// decision this side of the boundary makes about a stale *document*, so
-		// there is something to undo either way.
-		expect(space.storeStatus.value.canUndo).toBe(true)
+		expect(callsTo('get_status')).toBe(before + 1)
+		// The store's answer — an empty stack, because the reload cleared it — not
+		// the mutation's optimistic one.
+		expect(space.storeStatus.value.canUndo).toBe(false)
 	})
 
 	it('re-pulls status after a superseded edit_note', async () => {

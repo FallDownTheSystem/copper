@@ -40,7 +40,12 @@ export function rowSectionId(key: string | null): string | null {
 	return key?.startsWith(SECTION_ROW) ? key.slice(SECTION_ROW.length) : null
 }
 
-const selectedIds = ref<string[]>([])
+/** Shallow for the same reason `documentGroups` below is: `setSelection` is the
+ *  only writer and it always replaces the array wholesale, so a deep `ref` pays
+ *  a get trap and a dependency registration per id to observe a mutation that
+ *  never happens — on a list that reaches 200 and is re-read by `selectedSet`,
+ *  `isSelected` and every reconciliation. */
+const selectedIds = shallowRef<string[]>([])
 const focusedId = ref<string | null>(null)
 const anchorId = ref<string | null>(null)
 
@@ -738,7 +743,10 @@ function nearestRow(formerRows: string[], formerKey: string, rows: string[]): st
 
 export function useSelection() {
 	return {
-		selectedIds: readonly(selectedIds),
+		// `shallowReadonly`, not `readonly`: the deep form re-proxies the array on
+		// every `.value` read, which is exactly the cost the `shallowRef` above
+		// removes.
+		selectedIds: shallowReadonly(selectedIds),
 		focusedId: readonly(focusedId),
 		focusedNoteId,
 		anchorId: readonly(anchorId),

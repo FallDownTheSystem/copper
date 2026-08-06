@@ -103,13 +103,13 @@ pub struct OpenSpace {
 	/// the watch.
 	watcher: Option<SpaceWatcher>,
 	/// The document on disk is unreadable or unparseable. Blocks mutations.
-	doc_error: Option<String>,
-	/// The watch could not be registered. Does **not** block mutations.
 	///
-	/// Separate from `doc_error` deliberately (spec 3.7a): the two have opposite
-	/// consequences, and one conflated field would make an unwatchable space
-	/// read-only — precisely the outcome spec 3.7 exists to prevent.
-	watch_error: Option<String>,
+	/// The **only** error state an open space carries, and deliberately so (spec
+	/// 3.7a): a failed watch registration is reported through the `store-error`
+	/// event and leaves `watcher` empty, and is never recorded here. Conflating
+	/// the two would make an unwatchable space read-only, which is precisely the
+	/// outcome spec 3.7 exists to prevent.
+	doc_error: Option<String>,
 }
 
 impl OpenSpace {
@@ -127,7 +127,6 @@ impl OpenSpace {
 			undo: UndoStack::default(),
 			watcher: None,
 			doc_error: None,
-			watch_error: None,
 		})
 	}
 }
@@ -213,10 +212,9 @@ impl Store {
 		StoreStatus {
 			path: open.map(|open| path_string(&open.path)),
 			errored: open.is_some_and(|open| open.doc_error.is_some()),
-			// Read from the live debouncer rather than from `watch_error.is_none()`
-			// so the window between bootstrap and `attach_watcher` reports honestly.
-			// The two agree everywhere else: a watcher is only ever installed when
-			// registration succeeded.
+			// Read from the live debouncer rather than from a remembered
+			// registration outcome, so the window between bootstrap and
+			// `attach_watcher` reports honestly.
 			//
 			// This reflects the *registration outcome* only. A watch broken later —
 			// by deleting the watched directory, say — is not detectable, and spec
@@ -576,14 +574,9 @@ impl Store {
 		match watch::spawn_watcher(weak, &open.path) {
 			Ok(watcher) => {
 				open.watcher = Some(watcher);
-				open.watch_error = None;
 				None
 			}
-			Err(err) => {
-				let event = StoreEvent::error(&err);
-				open.watch_error = Some(err.message());
-				Some(event)
-			}
+			Err(err) => Some(StoreEvent::error(&err)),
 		}
 	}
 

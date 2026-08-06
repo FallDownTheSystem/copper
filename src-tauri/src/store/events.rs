@@ -111,17 +111,6 @@ pub trait EventSink: Send + Sync {
 	fn emit(&self, event: &StoreEvent);
 }
 
-/// Discards everything.
-///
-/// Not a testing convenience — it is what `bootstrap` would need in order to
-/// emit, and the reason it never gets one. Kept for callers that legitimately
-/// have no frontend, such as the store's own filesystem tests.
-pub struct NullSink;
-
-impl EventSink for NullSink {
-	fn emit(&self, _event: &StoreEvent) {}
-}
-
 /// Keeps every event for a test to inspect.
 ///
 /// Public rather than `#[cfg(test)]`: the filesystem and watcher tests live in

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useAutoSize } from '@/composables/useAutoSize'
 import { focusRowSoon } from '@/composables/useSelection'
+import { isComposing } from '@/lib/chords'
 
 const props = defineProps<{ rowId: string }>()
 
@@ -63,15 +64,12 @@ async function commit() {
 }
 
 function onKeydown(event: KeyboardEvent) {
-	// WebView2 still reports keyCode 229 during composition, and a Japanese,
-	// Chinese or Korean user accepting a candidate would otherwise commit.
-	//
 	// `stopPropagation` even while composing: the press has to be *withheld* from
 	// the shell's Escape ladder, not merely ignored here. Escape closes an IME
 	// candidate window, and letting that press continue up would take the ladder's
 	// first rung — cancelling the edit — and destroy the draft the user was
 	// midway through composing into.
-	if (event.isComposing || event.keyCode === 229) {
+	if (isComposing(event)) {
 		if (event.key === 'Escape') event.stopPropagation()
 		return
 	}

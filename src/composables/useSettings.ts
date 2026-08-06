@@ -16,9 +16,18 @@
  */
 
 import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { listen } from '@tauri-apps/api/event'
 
-import { errorMessage, type Settings } from './useSpace'
+import { errorMessage } from '@/lib/rustError'
+import { createStartup } from '@/lib/startup'
+
+// Type-only, and it has to stay that way. `useSounds` imports this module and
+// `useAttachments` imports `useSounds`, so a *value* import of `useSpace` here
+// closes the cycle `useAttachments → useSounds → useSettings → useSpace →
+// useAttachments` — and `useSpace` calls `useAttachments()` at module scope, so
+// whichever of the two is entered first evaluates against a half-built module.
+// `errorMessage` is taken from `lib/` above for exactly this reason.
+import type { Settings } from './useSpace'
 
 export type ThemePreference = 'system' | 'light' | 'dark'
 
@@ -63,9 +72,6 @@ const settings = ref<Settings | null>(null)
 const shortcuts = ref<ShortcutState | null>(null)
 const autostartEnabled = ref(false)
 const errors = ref<Partial<Record<SettingsScope, string>>>({})
-
-let initPromise: Promise<void> | null = null
-let unlisteners: UnlistenFn[] = []
 
 const theme = computed<ThemePreference>(() => {
 	const stored = settings.value?.theme
@@ -142,36 +148,53 @@ async function refresh(): Promise<void> {
 }
 
 /**
- * Listen, then pull — in that order, and "listen" means awaited registration.
- * `listen()` returns a promise, so calling it earlier in source order than the
- * pull still leaves the window where an event fires between them and is lost.
- *
  * Both listeners re-pull rather than trusting a payload: one code path for
  * "something changed elsewhere, re-read the truth" beats reconciling two payload
  * shapes from two emitters.
  */
-function initialize(): Promise<void> {
-	initPromise ??= (async () => {
-		unlisteners = await Promise.all([
+const { initialize, dispose } = createStartup(
+	() =>
+		Promise.all([
 			listen('settings-changed', () => void pullSettings()),
 			// Its own event, not `settings-changed`. Autostart lives in the Windows
 			// registry and deliberately not in `settings.json`, so a listener that
 			// responded by re-pulling `get_settings` would learn nothing at all.
 			listen('autostart-changed', () => void pullAutostart()),
-		])
-		await refresh()
-	})()
-
-	return initPromise
-}
-
-function dispose() {
-	for (const unlisten of unlisteners) unlisten()
-	unlisteners = []
-	initPromise = null
-}
+		]),
+	refresh,
+)
 
 // --- setters -----------------------------------------------------------------
+
+/**
+ * A request generation for one piece of state a setter writes.
+ *
+ * Two writes to the same state can be in flight at once — the sounds and motion
+ * switches are one click apart — and nothing makes them resolve in issue order.
+ * The loser would then apply its older answer over the newer one: a `Settings`
+ * object taken before the newer write, or a rejection that puts back an error
+ * the newer call had already cleared. `useSpace.mutate`'s issued-generation
+ * check is the same idea; this is the form it takes where there is no document
+ * to be superseded.
+ *
+ * **One counter per state, not one for the module.** A theme write and a
+ * shortcut rebind land in different refs, so letting either supersede the other
+ * would drop an answer that nothing is coming to replace — the row would keep
+ * showing the old binding with the rebind actually applied in Rust.
+ */
+type Writes = { issue: () => number; current: (token: number) => boolean }
+
+function generations(): Writes {
+	let latest = 0
+	return {
+		issue: () => ++latest,
+		current: (token: number) => token === latest,
+	}
+}
+
+const settingsWrites = generations()
+const shortcutWrites = generations()
+const autostartWrites = generations()
 
 /**
  * The shape every setter here shares: clear this row's message, invoke, apply the
@@ -180,22 +203,31 @@ function dispose() {
  * is none of here.
  */
 async function attempt<T>(
+	writes: Writes,
 	scope: SettingsScope,
 	run: () => Promise<T>,
 	apply: (value: T) => void,
 ): Promise<boolean> {
 	clear(scope)
+	const issued = writes.issue()
 	try {
-		apply(await run())
+		const value = await run()
+		// Superseded. Reported as the success it was — the command did go through —
+		// but its answer is stale and applying it is the reordering above.
+		if (writes.current(issued)) apply(value)
 		return true
 	} catch (error) {
-		fail(scope, error)
+		// The same rule for the failure half, and it is the half that shows: a
+		// stale rejection would put back an error the newer call has cleared, next
+		// to a row that is no longer in that state.
+		if (writes.current(issued)) fail(scope, error)
 		return false
 	}
 }
 
 function setTheme(next: ThemePreference): Promise<boolean> {
 	return attempt(
+		settingsWrites,
 		'theme',
 		() => invoke<Settings>('set_theme_preference', { theme: next }),
 		(value) => {
@@ -213,6 +245,7 @@ function setTheme(next: ThemePreference): Promise<boolean> {
  */
 function patchSettings(scope: PreferenceScope, patch: Partial<Settings>): Promise<boolean> {
 	return attempt(
+		settingsWrites,
 		scope,
 		() => invoke<Settings>('update_settings', { patch }),
 		(value) => {
@@ -231,6 +264,7 @@ function setMotion(preference: MotionPreference): Promise<boolean> {
 
 function setAutostart(enabled: boolean): Promise<boolean> {
 	return attempt(
+		autostartWrites,
 		'autostart',
 		() => invoke<boolean>('set_autostart_enabled', { enabled }),
 		// The answer is what the registry now says, not what was asked for.
@@ -263,6 +297,7 @@ function commitRecording(token: number, target: ShortcutTarget, chord: string): 
 	// A failure changed nothing, so nothing changes on screen except the message:
 	// the row keeps showing the binding that is still live.
 	return attempt(
+		shortcutWrites,
 		target,
 		() => invoke<ShortcutState>('commit_shortcut_recording', { token, target, chord }),
 		(value) => {
@@ -289,6 +324,7 @@ async function resetShortcut(target: ShortcutTarget): Promise<boolean> {
 	const command = target === 'summon' ? 'set_summon_shortcut' : 'set_capture_trigger'
 	const args = target === 'summon' ? { chord: fallback } : { trigger: fallback }
 	return attempt(
+		shortcutWrites,
 		target,
 		() => invoke<ShortcutState>(command, args),
 		(value) => {

@@ -1,5 +1,5 @@
 import { mount } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 import App from './App.vue'
 import { useSettings } from '@/composables/useSettings'
@@ -21,15 +21,26 @@ vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }))
 
 // happy-dom implements no Web Animations API; auto-animate calls `el.animate`
 // from a MutationObserver callback and throws out of band without this.
+//
+// Torn down again below: `restoreMocks` does not reach a plain assignment to a
+// host prototype, so a stub left in place would hand every later suite in the
+// worker a fake WAAPI they never asked for.
 const elementPrototype = Element.prototype as unknown as Record<string, unknown>
-elementPrototype.animate ??= () => ({
-	playState: 'finished',
-	finished: Promise.resolve(),
-	cancel: () => {},
-	addEventListener: (name: string, handler: () => void) => {
-		if (name === 'finish') queueMicrotask(handler)
-	},
-	removeEventListener: () => {},
+const stubbedAnimate = elementPrototype.animate === undefined
+if (stubbedAnimate) {
+	elementPrototype.animate = () => ({
+		playState: 'finished',
+		finished: Promise.resolve(),
+		cancel: () => {},
+		addEventListener: (name: string, handler: () => void) => {
+			if (name === 'finish') queueMicrotask(handler)
+		},
+		removeEventListener: () => {},
+	})
+}
+
+afterAll(() => {
+	if (stubbedAnimate) Reflect.deleteProperty(elementPrototype, 'animate')
 })
 
 const SETTINGS = {
@@ -54,12 +65,25 @@ const SHORTCUTS = {
 /** The handlers `listen` was given, so a Rust-originated event can be delivered. */
 const listeners = new Map<string, (event: { payload: unknown }) => void>()
 
-/** The whole startup responder, with the stored settings overridable — the motion
- *  preference is the only field any case here varies. */
-function respond(settings: Record<string, unknown> = SETTINGS) {
+/**
+ * The whole startup responder, with the two tables a case here varies.
+ *
+ * Overridden rather than replaced, and that distinction is the point: a case
+ * that rewrote `mockImplementation` wholesale silently dropped
+ * `get_active_space` along with everything else it did not name, and then
+ * asserted against a panel whose document load had failed.
+ */
+function respond(
+	overrides: {
+		settings?: Record<string, unknown>
+		shortcuts?: Record<string, unknown>
+	} = {},
+) {
+	const settings = overrides.settings ?? SETTINGS
+	const shortcuts = overrides.shortcuts ?? SHORTCUTS
 	mocks.invoke.mockImplementation(async (command: string) => {
 		if (command === 'get_settings') return settings
-		if (command === 'get_shortcut_state') return SHORTCUTS
+		if (command === 'get_shortcut_state') return shortcuts
 		if (command === 'get_autostart_enabled') return false
 		if (command === 'get_status') {
 			return {
@@ -122,6 +146,15 @@ async function mountApp() {
 	return app
 }
 
+/** Mounted with the settings view open and settled, which is where most of the
+ *  cases below start. */
+async function mountSettings() {
+	const wrapper = await mountApp()
+	useView().showSettings()
+	await settle()
+	return wrapper
+}
+
 /**
  * The transitioning view's inline transform, sampled across the whole swap.
  *
@@ -155,7 +188,7 @@ describe('the view transition', () => {
 	 * transition.
 	 */
 	it('drops the slide when the motion setting is off', async () => {
-		respond({ ...SETTINGS, motion: 'off' })
+		respond({ settings: { ...SETTINGS, motion: 'off' } })
 		const wrapper = await mountApp()
 
 		expect(
@@ -214,9 +247,7 @@ describe('the view switch', () => {
 
 describe('the settings view', () => {
 	it('renders every group and pulls their state on open', async () => {
-		const wrapper = await mountApp()
-		useView().showSettings()
-		await settle()
+		const wrapper = await mountSettings()
 
 		for (const heading of ['Theme', 'Shortcuts', 'Startup']) {
 			expect(wrapper.text()).toContain(heading)
@@ -231,9 +262,7 @@ describe('the settings view', () => {
 	it('renders the theme choice as one radio group rather than three toggles', async () => {
 		// reka's ToggleGroup announces three independent pressed buttons even in
 		// single-select mode. This is the assertion that keeps it a RadioGroup.
-		const wrapper = await mountApp()
-		useView().showSettings()
-		await settle()
+		const wrapper = await mountSettings()
 
 		const group = wrapper.find('[role="radiogroup"]')
 		expect(group.exists()).toBe(true)
@@ -242,9 +271,7 @@ describe('the settings view', () => {
 	})
 
 	it('gives the autostart switch the row label as its accessible name', async () => {
-		const wrapper = await mountApp()
-		useView().showSettings()
-		await settle()
+		const wrapper = await mountSettings()
 
 		// Named rather than taken as the first switch on the surface: task-012 added
 		// two more above it, and "the first one" silently became a different row.
@@ -257,26 +284,21 @@ describe('the settings view', () => {
 	it('shows a startup registration failure against the summon row', async () => {
 		// Pulled, never pushed: `setup()` runs before the webview exists, so there is
 		// no event this could have been told by.
-		mocks.invoke.mockImplementation(async (command: string) => {
-			if (command === 'get_shortcut_state') {
-				return { ...SHORTCUTS, summonRegistered: false, summonError: "Windows wouldn't accept it" }
-			}
-			if (command === 'get_settings') return SETTINGS
-			if (command === 'get_autostart_enabled') return false
-			return null
+		respond({
+			shortcuts: {
+				...SHORTCUTS,
+				summonRegistered: false,
+				summonError: "Windows wouldn't accept it",
+			},
 		})
 
-		const wrapper = await mountApp()
-		useView().showSettings()
-		await settle()
+		const wrapper = await mountSettings()
 
 		expect(wrapper.text()).toContain("Windows wouldn't accept it")
 	})
 
 	it('returns to the list on Escape', async () => {
-		const wrapper = await mountApp()
-		useView().showSettings()
-		await settle()
+		const wrapper = await mountSettings()
 
 		await wrapper.find('[aria-label="Back to notes"]').trigger('keydown', { key: 'Escape' })
 		await settle()
@@ -293,9 +315,7 @@ describe('the settings view', () => {
 	 * Escape test only passed because it dispatched from the Back button.
 	 */
 	it('moves focus into the view on open, so Escape works on arrival', async () => {
-		const wrapper = await mountApp()
-		useView().showSettings()
-		await settle()
+		const wrapper = await mountSettings()
 
 		const back = wrapper.find('[aria-label="Back to notes"]')
 		expect(document.activeElement).toBe(back.element)
@@ -313,9 +333,7 @@ describe('the settings view', () => {
 		// The return path has the same problem in reverse: `AnimatePresence`
 		// remounts the whole list tree, and a panel whose focus sits on the body has
 		// no working Escape ladder and no working in-panel chords.
-		const wrapper = await mountApp()
-		useView().showSettings()
-		await settle()
+		const wrapper = await mountSettings()
 		useView().showList()
 		await settle()
 

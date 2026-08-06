@@ -326,10 +326,46 @@ fn code(source: &str) -> String {
 		.join("\n")
 }
 
+/// Whether `line` opens a top-level `fn`, its modifiers included.
+///
+/// The modifiers are what makes this more than a `starts_with("fn ")`. A scope
+/// that ended only at a bare `fn` ran straight through the next
+/// `pub(crate) fn` and read a neighbouring function's body as if it were part
+/// of the one being measured — which is a test that quietly stops asserting
+/// what it says it asserts.
+///
+/// Indentation is the other half: an `impl` block's methods and a nested
+/// closure are inside the scope, not boundaries of it.
+fn opens_a_fn(line: &str) -> bool {
+	let mut rest = line;
+	loop {
+		if rest.starts_with("fn ") {
+			return true;
+		}
+		let Some((word, tail)) = rest.split_once(' ') else {
+			return false;
+		};
+		if !matches!(word, "pub" | "pub(crate)" | "pub(super)" | "async" | "unsafe" | "const") {
+			return false;
+		}
+		rest = tail;
+	}
+}
+
 /// The text from `body` up to the next top-level `fn`, so an assertion about
 /// "inside this function" cannot silently read the one after it.
+///
+/// `body` always starts part-way through a function, so its first line is never
+/// itself a boundary.
 fn until_next_fn(body: &str) -> &str {
-	&body[..body.find("\nfn ").unwrap_or(body.len())]
+	let mut offset = 0;
+	for line in body.split_inclusive('\n') {
+		if offset > 0 && opens_a_fn(line) {
+			return &body[..offset];
+		}
+		offset += line.len();
+	}
+	body
 }
 
 /// A document swap's offset, paired with the teardown it belongs to. Both

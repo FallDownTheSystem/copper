@@ -13,6 +13,7 @@
  * It is a destination picker, not a view of the filtered list.
  */
 
+import { isComposing } from '@/lib/chords'
 import { normaliseSectionName } from '@/lib/sectionName'
 
 /**
@@ -105,9 +106,9 @@ function highlighted(): HTMLElement | null {
  * row, and ArrowLeft belongs to the caret whenever there is text to move over.
  */
 function onKeydown(event: KeyboardEvent) {
-	// WebView2 reports keyCode 229 while an IME candidate is open; accepting one
-	// with Enter must not choose a section.
-	if (event.isComposing || event.keyCode === 229) {
+	// Stopped rather than merely ignored: the press has to be withheld from
+	// reka's own typeahead as well, or composing a name steals focus onto a row.
+	if (isComposing(event)) {
 		event.stopPropagation()
 		return
 	}
@@ -180,24 +181,16 @@ function onKeydown(event: KeyboardEvent) {
 			:aria-current="section.id === activeSection ? 'true' : undefined"
 			@select.prevent="choose(section.id)"
 		>
-			<!-- Fixed-width slot, hidden rather than absent, so activating a section
-			     shifts no text. -->
-			<span
-				aria-hidden="true"
-				class="bg-accent-ring size-1.5 shrink-0 rounded-full"
-				:class="section.id === activeSection ? 'opacity-100' : 'opacity-0'"
-			/>
-			<span
-				class="min-w-0 flex-1 truncate"
-				:class="
-					section.id === activeSection ? 'text-accent-text font-semibold' : 'text-text-primary'
-				"
-			>
-				{{ section.name }}
-			</span>
-			<!-- The non-colour half of the cue: colour alone would carry the whole
-			     distinction. -->
-			<span v-if="section.id === activeSection" class="sr-only">(active section)</span>
+			<ActiveMarker :active="section.id === activeSection" label="active section">
+				<span
+					class="min-w-0 flex-1 truncate"
+					:class="
+						section.id === activeSection ? 'text-accent-text font-semibold' : 'text-text-primary'
+					"
+				>
+					{{ section.name }}
+				</span>
+			</ActiveMarker>
 		</DropdownMenuItem>
 
 		<DropdownMenuItem

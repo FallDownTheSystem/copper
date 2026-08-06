@@ -87,6 +87,27 @@ export const CHORDS = {
 } as const satisfies Record<string, Chord>
 
 /**
+ * A keypress that belongs to an IME composition, and therefore to the text
+ * surface rather than to any chord.
+ *
+ * Both halves are needed. `isComposing` is the standard signal; WebView2 also
+ * reports the legacy `keyCode` 229 while a candidate window is open, and a
+ * Japanese, Chinese or Korean user accepting a candidate with Enter would
+ * otherwise submit the note, commit the edit or choose a section instead.
+ *
+ * Every text surface in the panel asks this, which is why it lives beside the
+ * chord table rather than in one of them: five hand-written copies of a
+ * two-term predicate is five places for the second term to go missing.
+ *
+ * It takes a `KeyboardEvent` specifically. A `FocusEvent` carries neither
+ * field, so a blur handler that needs the same answer has to track the flag on
+ * its own session — see `useNoteEditor`.
+ */
+export function isComposing(event: KeyboardEvent): boolean {
+	return event.isComposing || event.keyCode === 229
+}
+
+/**
  * The three text-editing surfaces. No in-panel chord fires while one of them has
  * focus, so `Ctrl+Z` undoes typing rather than a note operation and `Ctrl+C`
  * copies the selected query text rather than the notes.

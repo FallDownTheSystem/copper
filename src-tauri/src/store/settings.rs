@@ -274,14 +274,12 @@ impl Settings {
 		self.active_space = 0;
 	}
 
-	/// Drops `path` from `recents`, reporting whether anything changed.
+	/// Drops `path` from `recents`.
 	///
 	/// Leaves `active_space` alone — the caller knows which space is actually
 	/// open and re-points it (spec 6.7).
-	pub fn forget_recent(&mut self, path: &str) -> bool {
-		let before = self.recents.len();
+	pub fn forget_recent(&mut self, path: &str) {
 		self.recents.retain(|entry| !same_path(entry, path));
-		self.recents.len() != before
 	}
 
 	/// Re-points `active_space` at `path`, or clamps to 0 when it is gone.
@@ -838,14 +836,18 @@ mod tests {
 	}
 
 	#[test]
-	fn forget_recent_reports_whether_it_changed_anything() {
+	fn forget_recent_drops_the_entry_however_it_is_spelled() {
 		let mut settings = Settings::default();
 		settings.touch_recent("C:\\a.copper");
 		settings.touch_recent("C:\\b.copper");
 
-		assert!(settings.forget_recent("c:\\A.COPPER"));
+		settings.forget_recent("c:\\A.COPPER");
 		assert_eq!(settings.recents, ["C:\\b.copper"]);
-		assert!(!settings.forget_recent("C:\\never-there.copper"));
+
+		// A path that was never there leaves the list alone rather than failing:
+		// the desired end state already holds.
+		settings.forget_recent("C:\\never-there.copper");
+		assert_eq!(settings.recents, ["C:\\b.copper"]);
 	}
 
 	#[test]

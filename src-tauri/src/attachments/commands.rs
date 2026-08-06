@@ -17,7 +17,7 @@
 
 use std::path::{Path, PathBuf};
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
 use crate::spaces;
 use crate::store::error::{Result, StoreError};
@@ -309,27 +309,15 @@ pub async fn attachment_open(
 /// is what keeps a failed open from collecting a still-live space's blobs. This
 /// one sweeps whatever is already open when the process starts.
 ///
-/// **No store lock is held for it.** The path and the document are cloned out
-/// under the guard and the guard is dropped before the directory is touched,
-/// following task-006's two-lock discipline: a sweep holding the store mutex
-/// would stall every capture for the length of a directory walk, and on a slow
-/// network share that is not a short time.
+/// **No store lock is held for it**, and the detach half is the switch path's
+/// own — a second copy of "clone the path and document out, then drop the
+/// guard" is a second place for the two-lock discipline to be got wrong.
 ///
 /// Never during a session either way. The undo stack is session-scoped, so a
 /// mid-session sweep would silently turn a restorable `Ctrl+Z` into a note whose
 /// attachments no longer exist.
 pub fn sweep_active_space(app: &AppHandle) {
-	let state = app.state::<SharedStore>();
-	let held = {
-		let guard = store::lock(&state);
-		guard
-			.active_path()
-			.map(Path::to_path_buf)
-			.zip(guard.active_space().ok())
-	};
-	if let Some((path, doc)) = held {
-		super::sweep(&path, &doc);
-	}
+	spaces::sweep_detached(spaces::detach_for_sweep(app));
 }
 
 #[cfg(test)]

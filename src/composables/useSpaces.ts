@@ -24,7 +24,9 @@
  */
 
 import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { listen } from '@tauri-apps/api/event'
+
+import { createStartup } from '@/lib/startup'
 
 import { errorMessage, type Space } from './useSpace'
 
@@ -69,9 +71,6 @@ type AvailabilityChanged = {
 // --- module-scope state ------------------------------------------------------
 
 const recents = ref<RecentEntry[]>([])
-
-let initPromise: Promise<void> | null = null
-let unlisteners: UnlistenFn[] = []
 
 /**
  * Serialised through a promise tail, because response order is not request
@@ -142,28 +141,14 @@ async function onSettingsChanged() {
 	await Promise.all([refresh(), useSpace().refresh()])
 }
 
-/**
- * Listen, then pull — in that order, and "listen" means awaited registration.
- * `listen()` returns a promise, so calling it earlier in source order than the
- * pull still leaves the window where an event fires between them and is lost.
- */
-function initialize(): Promise<void> {
-	initPromise ??= (async () => {
-		unlisteners = await Promise.all([
+const { initialize, dispose } = createStartup(
+	() =>
+		Promise.all([
 			listen<AvailabilityChanged>('spaces-availability-changed', (event) => patch(event.payload)),
 			listen('settings-changed', () => void onSettingsChanged()),
-		])
-		await refresh()
-	})()
-
-	return initPromise
-}
-
-function dispose() {
-	for (const unlisten of unlisteners) unlisten()
-	unlisteners = []
-	initPromise = null
-}
+		]),
+	refresh,
+)
 
 /** Called when the `...` menu opens and on an explicit retry. The only thing
  *  that starts probes, which is why listing can stay a pure read. */

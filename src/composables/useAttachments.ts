@@ -101,6 +101,11 @@ let running = 0
  */
 let generation = 0
 
+/** One object rather than a fresh literal per read: `previewFor` is called from
+ *  a card's computed, and a new identity on every evaluation is a new value for
+ *  everything downstream of it. */
+const LOADING: Preview = { state: 'loading' }
+
 const pendingCount = computed(() => pending.value.length)
 const hasPending = computed(() => pending.value.length > 0)
 
@@ -160,11 +165,17 @@ async function loadPreview(file: string) {
  * The queue is drained rather than scheduled: each finishing request starts the
  * next, so the in-flight count is exactly the number of decodes the backend is
  * being asked for.
+ *
+ * **Called from a watcher, never from a read.** It writes the cache, and the
+ * card that wants a preview reaches it through a computed — so asking for one
+ * as a side effect of reading it would mean writing reactive state during a
+ * computed's evaluation. `AttachmentCard` watches its own `file` instead, which
+ * keeps the pair as inseparable as the old single call did without the write.
  */
-function enqueuePreview(file: string) {
+function requestPreview(file: string) {
 	if (requested.has(file)) return
 	requested.add(file)
-	setPreview(file, { state: 'loading' })
+	setPreview(file, LOADING)
 	waiting.push(file)
 	pump()
 }
@@ -181,17 +192,10 @@ function pump() {
 	}
 }
 
-/**
- * The preview for `file`, requesting it on first ask.
- *
- * Reading and requesting are one call deliberately: a card that had to remember
- * to call a separate `load` in `onMounted` is a card that renders a permanent
- * spinner the day someone forgets.
- */
+/** The preview for `file`, or `loading` while there is none. A pure read — see
+ *  [`requestPreview`] for the half that asks. */
 function previewFor(file: string): Preview {
-	const known = previews.value.get(file)
-	if (!known) enqueuePreview(file)
-	return known ?? { state: 'loading' }
+	return previews.value.get(file) ?? LOADING
 }
 
 /**
@@ -336,6 +340,7 @@ export function useAttachments() {
 		hasPending,
 		pendingLabel,
 		previewFor,
+		requestPreview,
 		clearPreviews,
 		pasteAttachment,
 		pickAttachments,

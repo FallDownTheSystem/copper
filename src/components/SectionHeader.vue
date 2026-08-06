@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { focusRowSoon, takeRow } from '@/composables/useSelection'
 import type { Section } from '@/composables/useSpace'
+import { isComposing } from '@/lib/chords'
 
 const props = defineProps<{
 	section: Section
@@ -64,13 +65,10 @@ async function commit() {
 }
 
 function onKeydown(event: KeyboardEvent) {
-	// WebView2 reports keyCode 229 while an IME candidate is open, and accepting
-	// one with Enter must not commit the rename.
-	//
 	// Escape is withheld from the shell's ladder rather than merely ignored: it
 	// closes the candidate window, and letting the press continue up would take a
 	// rung of the ladder while the user is still composing.
-	if (event.isComposing || event.keyCode === 229) {
+	if (isComposing(event)) {
 		if (event.key === 'Escape') event.stopPropagation()
 		return
 	}
@@ -158,19 +156,20 @@ function onKeydown(event: KeyboardEvent) {
 								:class="active ? 'text-accent-text' : 'text-text-secondary'"
 								@click="emit('activate')"
 							>
-								<!-- Fixed-width slot, hidden rather than absent, so activating a
-								     section shifts no text. -->
-								<span
-									aria-hidden="true"
-									class="bg-accent-ring size-1.5 shrink-0 rounded-full transition-opacity duration-fast"
-									:class="active ? 'opacity-100' : 'opacity-0'"
-								/>
-								<span class="truncate text-label uppercase" :class="active ? 'font-semibold' : ''">
-									{{ section.name }}
-								</span>
-								<!-- The non-colour half of the active cue: colour alone would carry
-								     the whole distinction. -->
-								<span v-if="active" class="sr-only">(active section)</span>
+								<!-- The only one of the three markers that cross-fades: this row is on
+								     screen while it changes, unlike the two inside menus. -->
+								<ActiveMarker
+									:active="active"
+									label="active section"
+									class="transition-opacity duration-fast"
+								>
+									<span
+										class="truncate text-label uppercase"
+										:class="active ? 'font-semibold' : ''"
+									>
+										{{ section.name }}
+									</span>
+								</ActiveMarker>
 							</button>
 						</h2>
 						<span aria-hidden="true" class="bg-separator h-px min-w-0 flex-1" />

@@ -1,6 +1,6 @@
 import { mount } from '@vue/test-utils'
 import axe from 'axe-core'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 import PanelShell from './PanelShell.vue'
 // Statically imported, like PanelShell itself: a dynamic import after
@@ -37,22 +37,35 @@ const space = useSpace()
 // Reached through an index signature rather than as `Element.prototype.animate`:
 // the typed property is a method, and both reading it and narrowing on it upset
 // the linter for reasons that have nothing to do with a stub.
+//
+// Torn down again below. `restoreMocks` does not reach a plain assignment to a
+// host prototype, so a stub left in place would outlive this file and hand every
+// later suite in the worker a fake WAAPI they never asked for — which is exactly
+// the kind of environment difference that makes one suite pass only when another
+// ran first.
 const elementPrototype = Element.prototype as unknown as Record<string, unknown>
-elementPrototype.animate ??= () => {
-	const finishHandlers: (() => void)[] = []
-	queueMicrotask(() => {
-		for (const handler of finishHandlers) handler()
-	})
-	return {
-		playState: 'finished',
-		finished: Promise.resolve(),
-		cancel: () => {},
-		removeEventListener: () => {},
-		addEventListener: (name: string, handler: () => void) => {
-			if (name === 'finish') finishHandlers.push(handler)
-		},
+const stubbedAnimate = elementPrototype.animate === undefined
+if (stubbedAnimate) {
+	elementPrototype.animate = () => {
+		const finishHandlers: (() => void)[] = []
+		queueMicrotask(() => {
+			for (const handler of finishHandlers) handler()
+		})
+		return {
+			playState: 'finished',
+			finished: Promise.resolve(),
+			cancel: () => {},
+			removeEventListener: () => {},
+			addEventListener: (name: string, handler: () => void) => {
+				if (name === 'finish') finishHandlers.push(handler)
+			},
+		}
 	}
 }
+
+afterAll(() => {
+	if (stubbedAnimate) Reflect.deleteProperty(elementPrototype, 'animate')
+})
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), openUrl: vi.fn() }))
 

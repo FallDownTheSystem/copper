@@ -31,10 +31,11 @@
  */
 
 import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { listen } from '@tauri-apps/api/event'
 import type { DeepReadonly } from 'vue'
 
 import { errorMessage } from '@/lib/rustError'
+import { createStartup } from '@/lib/startup'
 
 import { useAttachments, type Attachment } from './useAttachments'
 import { emptySnapshot, noteRow, useSelection } from './useSelection'
@@ -197,8 +198,6 @@ let refreshQueued = false
 /** Long enough for a checkout's unlink-and-rewrite window to close, short
  *  enough not to read as a hang. */
 const REFRESH_RETRY_MS = 60
-let initPromise: Promise<void> | null = null
-let unlisteners: UnlistenFn[] = []
 
 const selection = useSelection()
 const markdown = useMarkdown()
@@ -484,31 +483,17 @@ async function retry() {
 	}
 }
 
-/**
- * Idempotent, and it **awaits** registration before the first pull.
- *
- * `listen()` returns a promise and registration is not complete when it returns,
- * so "register handlers first" means awaiting all of them — calling them in
- * source order above the pull leaves exactly the lost-event window the rule
- * exists to close.
- */
-function initialize(): Promise<void> {
-	initPromise ??= (async () => {
-		unlisteners = await Promise.all([
+/** `load()` rather than a plain pull, because task-003 §8A.3 makes startup three
+ *  calls: the document, the status only `get_status` carries, and the settings
+ *  copy the panel reads. */
+const { initialize, dispose } = createStartup(
+	() =>
+		Promise.all([
 			listen<SpaceChangedPayload>('space-changed', (event) => void onSpaceChanged(event.payload)),
 			listen<StoreErrorPayload>('store-error', (event) => void onStoreError(event.payload)),
-		])
-		await load()
-	})()
-
-	return initPromise
-}
-
-function dispose() {
-	for (const unlisten of unlisteners) unlisten()
-	unlisteners = []
-	initPromise = null
-}
+		]),
+	load,
+)
 
 // --- mutations ---------------------------------------------------------------
 
@@ -541,15 +526,20 @@ async function mutate<T>(
 
 	const applied = applyDocument(toSpace(result), issued, { animate: true })
 
-	// Keyed on the command resolving, not on the document being applied: the
-	// store carried the mutation out either way, and supersession is a decision
-	// this side of the boundary makes about a stale *document*. Skipping the
-	// status update there left `canUndo` false after a real, undoable change.
-	if (options.repullStatus?.(result)) {
+	// The status is updated on every path, superseded or not: the store carried
+	// the mutation out either way, and skipping it left `canUndo` false after a
+	// real, undoable change. What differs is *how* it is learned.
+	if (options.repullStatus?.(result) || !applied) {
 		// `edit_note`, `set_active_section`, and `submit_entry` when it only
 		// activated an existing section, take no undo snapshot of their own — but a
 		// write that had to be re-applied over an external change clears both stacks
 		// and emits nothing, and a re-pull is the only way to learn about it.
+		//
+		// Supersession takes this path for a sharper reason. The document that
+		// overtook this one may have been an *external* reload, and a reload clears
+		// both stacks (spec 4.6) — so the optimistic `canUndo: true` below would
+		// light up an Undo control with nothing behind it. Asking the store is the
+		// only way to tell that case from a merely reordered response.
 		await pullStatus()
 	} else {
 		// Deterministic for an ordinary structural mutation, so no round trip.

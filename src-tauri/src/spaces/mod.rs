@@ -219,7 +219,11 @@ fn leave_current_space(app: &AppHandle) -> Reply<Option<(PathBuf, Space)>> {
 /// Taken **before** the swap because afterwards the store no longer holds the
 /// outgoing document, and used **after** it because until the swap succeeds the
 /// outgoing space might still be the one the user is looking at.
-fn detach_for_sweep(app: &AppHandle) -> Option<(PathBuf, Space)> {
+///
+/// The guard is dropped before the caller touches the directory, per task-006's
+/// two-lock discipline: a sweep holding the store mutex would stall every
+/// capture for the length of a directory walk.
+pub(crate) fn detach_for_sweep(app: &AppHandle) -> Option<(PathBuf, Space)> {
 	let state = app.state::<SharedStore>();
 	let guard = store::lock(&state);
 	guard
@@ -232,7 +236,7 @@ fn detach_for_sweep(app: &AppHandle) -> Option<(PathBuf, Space)> {
 ///
 /// Best-effort and silent: the user asked to change space, not to tidy a
 /// directory, and a failure here must not colour a switch that worked.
-fn sweep_detached(outgoing: Option<(PathBuf, Space)>) {
+pub(crate) fn sweep_detached(outgoing: Option<(PathBuf, Space)>) {
 	if let Some((path, doc)) = outgoing {
 		crate::attachments::sweep(&path, &doc);
 	}

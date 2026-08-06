@@ -79,12 +79,7 @@ watch(recording, (open) => {
 			<div class="mt-2 flex min-h-9 items-center gap-2">
 				<template v-if="!recording">
 					<div class="flex min-w-0 flex-wrap items-center gap-1">
-						<template v-for="(chip, index) in chips" :key="`${chip}-${index}`">
-							<span v-if="index > 0" class="text-text-disabled text-meta" aria-hidden="true">
-								+
-							</span>
-							<KbdChip :label="chip" />
-						</template>
+						<KbdChord :keys="chips" />
 						<!-- Plain text, never a chip: "double-tap" is an interaction, and
 						     chip styling would claim it is a key you can press. -->
 						<span v-if="doubleTap" class="text-text-secondary text-meta">double-tap</span>
@@ -130,14 +125,7 @@ watch(recording, (open) => {
 						@keydown="onKeydown"
 						@keyup="onKeyup"
 					>
-						<template v-if="pending.length > 0">
-							<template v-for="(chip, index) in pending" :key="`${chip}-${index}`">
-								<span v-if="index > 0" class="text-text-disabled text-meta" aria-hidden="true">
-									+
-								</span>
-								<KbdChip :label="chip" />
-							</template>
-						</template>
+						<KbdChord v-if="pending.length > 0" :keys="pending" />
 						<span v-else class="text-text-secondary text-meta">Press the keys you want…</span>
 					</div>
 

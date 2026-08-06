@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    ActiveMarker: typeof import('./components/ActiveMarker.vue')['default']
     ActiveSectionChip: typeof import('./components/ActiveSectionChip.vue')['default']
     AttachmentCard: typeof import('./components/AttachmentCard.vue')['default']
     AttachmentTray: typeof import('./components/AttachmentTray.vue')['default']
@@ -71,6 +72,7 @@ declare module 'vue' {
     IconLucideTriangleAlert: typeof import('~icons/lucide/triangle-alert')['default']
     IconLucideX: typeof import('~icons/lucide/x')['default']
     KbdChip: typeof import('./components/KbdChip.vue')['default']
+    KbdChord: typeof import('./components/KbdChord.vue')['default']
     MoveToSubmenu: typeof import('./components/MoveToSubmenu.vue')['default']
     NoteBody: typeof import('./components/NoteBody.vue')['default']
     NoteCard: typeof import('./components/NoteCard.vue')['default']
