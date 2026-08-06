@@ -2,10 +2,11 @@
 import { useAutoSize } from '@/composables/useAutoSize'
 import { focusRowSoon, noteRow } from '@/composables/useSelection'
 
-const { spaceName, addNote, errorFor, clearActionError } = useSpace()
+const { spaceName, submitEntry, errorFor, clearActionError } = useSpace()
 
 const composerError = errorFor('composer')
 const { visibleNoteIds, focusRow } = useSelection()
+const { switcherOpen } = useSections()
 
 const textarea = useTemplateRef<HTMLTextAreaElement>('textarea')
 
@@ -27,6 +28,42 @@ function focus() {
 
 defineExpose({ focus })
 
+/**
+ * Where the caret was when the section switcher opened, or null if the composer
+ * did not have focus at the time.
+ *
+ * Switching a destination must cost nothing: the half-typed line stays, and so
+ * does the position in it. Recorded rather than trusted to survive the blur,
+ * because "focus returns to the composer with its caret preserved" is a promise
+ * worth holding explicitly rather than one that happens to be true of Chromium.
+ *
+ * Null is also the signal that the switcher was opened by clicking the chip, in
+ * which case reka's own close-focus — back to the chip — is the right answer and
+ * is left alone.
+ */
+let caret: { start: number; end: number } | null = null
+
+watch(switcherOpen, (open) => {
+	if (!open) return
+	const field = textarea.value
+	caret =
+		field && document.activeElement === field
+			? { start: field.selectionStart, end: field.selectionEnd }
+			: null
+})
+
+function onSwitcherClosed(event: Event) {
+	if (!caret) return
+	// Declines reka's return-to-trigger only when there is somewhere better to go.
+	event.preventDefault()
+	const { start, end } = caret
+	caret = null
+	const field = textarea.value
+	if (!field) return
+	field.focus()
+	field.setSelectionRange(start, end)
+}
+
 function onInput(event: Event) {
 	value.value = (event.target as HTMLTextAreaElement).value
 	revision++
@@ -47,7 +84,7 @@ async function submit() {
 	const submittedRevision = revision
 	pending.value = true
 
-	const result = await addNote(submitted)
+	const result = await submitEntry(submitted)
 	pending.value = false
 
 	// Nothing is cleared optimistically, and a success must not destroy newer
@@ -110,6 +147,13 @@ function onKeydown(event: KeyboardEvent) {
 		class="border-separator border-t px-3 py-2"
 		@submit.prevent="submit"
 	>
+		<!-- Above the field, in a row it never shares, so activating a section
+		     shifts nothing. The placeholder below still names the *space*, which is
+		     task-004's rule and is upheld rather than amended. -->
+		<div class="mb-1.5 flex min-w-0">
+			<ActiveSectionChip @closed="onSwitcherClosed" />
+		</div>
+
 		<label for="composer" class="sr-only">New note</label>
 		<textarea
 			id="composer"

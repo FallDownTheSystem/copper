@@ -15,6 +15,7 @@
  */
 
 import { useNoteSearch } from './useNoteSearch'
+import { useSections } from './useSections'
 import type { SpaceView } from './useSpace'
 
 /** Row keys are prefixed rather than raw ids: note ids and section ids are only
@@ -54,6 +55,7 @@ const anchorId = ref<string | null>(null)
 const documentGroups = shallowRef<{ sectionId: string; noteIds: string[] }[]>([])
 
 const { matchedIds } = useNoteSearch()
+const { isCollapsed } = useSections()
 
 /**
  * Both orders are filtered, and filtering only one of them is the single easiest
@@ -64,6 +66,14 @@ const { matchedIds } = useNoteSearch()
  *
  * A section with no surviving note is dropped entirely, header included, which is
  * what makes a result's origin visible without a dozen empty headings.
+ *
+ * **Collapse is applied in this same walk, and has to be.** `visibleGroups` is
+ * what the list renders, so a section filtered out here is one whose rows are not
+ * in the DOM — which is exactly the condition the arrow keys and the roving
+ * `tabindex` must agree about. Its *header* stays, unlike a search miss: it is the
+ * control that expands it again. And unlike a search miss, collapsing never
+ * touches the selection — `reconcile` prunes against the whole document, so a
+ * selected note inside a collapsed section is still a target for `Ctrl+C`.
  */
 const orders = computed(() => {
 	const matched = matchedIds.value
@@ -75,9 +85,10 @@ const orders = computed(() => {
 		const members = matched ? group.noteIds.filter((id) => matched.has(id)) : group.noteIds
 		if (matched && members.length === 0) continue
 
-		groups.push({ sectionId: group.sectionId, noteIds: members })
+		const shown = isCollapsed(group.sectionId) ? [] : members
+		groups.push({ sectionId: group.sectionId, noteIds: shown })
 		rows.push(sectionRow(group.sectionId))
-		for (const id of members) {
+		for (const id of shown) {
 			rows.push(noteRow(id))
 			notes.push(id)
 		}

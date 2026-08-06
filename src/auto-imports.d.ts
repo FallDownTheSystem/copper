@@ -257,6 +257,7 @@ declare global {
   const useScroll: typeof import('@vueuse/core').useScroll
   const useScrollLock: typeof import('@vueuse/core').useScrollLock
   const useSectionEditor: typeof import('./composables/useSectionEditor').useSectionEditor
+  const useSections: typeof import('./composables/useSections').useSections
   const useSelection: typeof import('./composables/useSelection').useSelection
   const useSessionStorage: typeof import('@vueuse/core').useSessionStorage
   const useSettings: typeof import('./composables/useSettings').useSettings
@@ -349,7 +350,7 @@ declare global {
   export type { ThemePreference, ShortcutState, ShortcutTarget, SettingsScope } from './composables/useSettings'
   import('./composables/useSettings')
   // @ts-ignore
-  export type { Note, Section, Space, StoreStatus, Settings, SpaceView, NoteView, ChangeReason, SpaceChangedPayload, StoreErrorPayload, AddNoteResult, LoadState, ActionErrorScope, ActionError, MutationResult } from './composables/useSpace'
+  export type { Note, Section, Space, StoreStatus, Settings, SpaceView, NoteView, ChangeReason, SpaceChangedPayload, StoreErrorPayload, SubmitOutcome, SubmitResult, LoadState, ActionErrorScope, ActionError, MutationResult } from './composables/useSpace'
   import('./composables/useSpace')
   // @ts-ignore
   export type { UnavailableReason, Availability, RecentEntry, ActivateOutcome } from './composables/useSpaces'
@@ -613,6 +614,7 @@ declare module 'vue' {
     readonly useScroll: UnwrapRef<typeof import('@vueuse/core')['useScroll']>
     readonly useScrollLock: UnwrapRef<typeof import('@vueuse/core')['useScrollLock']>
     readonly useSectionEditor: UnwrapRef<typeof import('./composables/useSectionEditor')['useSectionEditor']>
+    readonly useSections: UnwrapRef<typeof import('./composables/useSections')['useSections']>
     readonly useSelection: UnwrapRef<typeof import('./composables/useSelection')['useSelection']>
     readonly useSessionStorage: UnwrapRef<typeof import('@vueuse/core')['useSessionStorage']>
     readonly useSettings: UnwrapRef<typeof import('./composables/useSettings')['useSettings']>

@@ -21,8 +21,16 @@ const emit = defineEmits<{
 }>()
 
 const { noteById, listAnimated } = useSpace()
+const { isCollapsed } = useSections()
 
 const dragging = ref(false)
+
+/** Read here rather than passed as a prop, like selection and focus: a prop
+ *  would put it in the parent's render dependencies and rebuild every section on
+ *  every toggle. The rows themselves are already gone by the time this is true —
+ *  `useSelection` filters them out of the one walk the list is rendered from —
+ *  so this only decides what stands in their place. */
+const collapsed = computed(() => isCollapsed(props.section.id))
 
 /**
  * One drag parent per section, which is why sections are a component at all:
@@ -144,10 +152,11 @@ onMounted(() => {
 			@toggle-done="emit('toggleDone', note.id)"
 		/>
 
-		<!-- Only the *active* empty section says so. The general empty state is
-		     additive; the headers stay visible either way, because hiding where a
-		     capture will land is worst exactly when the list is empty. -->
-		<div v-if="order.length === 0 && active" role="row">
+		<!-- Only the *active* empty section says so, and never while it is merely
+		     collapsed: the notes are there, they are folded away. The general empty
+		     state is additive; the headers stay visible either way, because hiding
+		     where a capture will land is worst exactly when the list is empty. -->
+		<div v-if="order.length === 0 && active && !collapsed" role="row">
 			<div role="gridcell" class="text-text-secondary px-3 py-1 text-meta">
 				No notes in this section yet.
 			</div>

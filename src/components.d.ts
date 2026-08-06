@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    ActiveSectionChip: typeof import('./components/ActiveSectionChip.vue')['default']
     CaptureNotice: typeof import('./components/CaptureNotice.vue')['default']
     Composer: typeof import('./components/Composer.vue')['default']
     ContextMenu: typeof import('./components/ui/context-menu/ContextMenu.vue')['default']
@@ -45,10 +46,13 @@ declare module 'vue' {
     EditorRecoveryRow: typeof import('./components/EditorRecoveryRow.vue')['default']
     IconLucideAlertCircle: typeof import('~icons/lucide/alert-circle')['default']
     IconLucideChevronLeft: typeof import('~icons/lucide/chevron-left')['default']
+    IconLucideChevronRight: typeof import('~icons/lucide/chevron-right')['default']
+    IconLucideChevronsUpDown: typeof import('~icons/lucide/chevrons-up-down')['default']
     IconLucideEllipsis: typeof import('~icons/lucide/ellipsis')['default']
     IconLucideFilePlus: typeof import('~icons/lucide/file-plus')['default']
     IconLucideFolderOpen: typeof import('~icons/lucide/folder-open')['default']
     IconLucideGripVertical: typeof import('~icons/lucide/grip-vertical')['default']
+    IconLucideListTree: typeof import('~icons/lucide/list-tree')['default']
     IconLucideMonitor: typeof import('~icons/lucide/monitor')['default']
     IconLucideMoon: typeof import('~icons/lucide/moon')['default']
     IconLucidePlus: typeof import('~icons/lucide/plus')['default']
@@ -73,6 +77,7 @@ declare module 'vue' {
     SearchEmptyState: typeof import('./components/SearchEmptyState.vue')['default']
     SectionContextMenu: typeof import('./components/SectionContextMenu.vue')['default']
     SectionHeader: typeof import('./components/SectionHeader.vue')['default']
+    SectionSwitcher: typeof import('./components/SectionSwitcher.vue')['default']
     SettingsRow: typeof import('./components/SettingsRow.vue')['default']
     SettingsSection: typeof import('./components/SettingsSection.vue')['default']
     SettingsView: typeof import('./components/SettingsView.vue')['default']

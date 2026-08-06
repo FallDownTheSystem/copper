@@ -22,6 +22,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
 		store::commands::open_space,
 		store::commands::create_space,
 		store::commands::add_note,
+		store::commands::submit_entry,
 		store::commands::edit_note,
 		store::commands::set_notes_done,
 		store::commands::delete_notes,

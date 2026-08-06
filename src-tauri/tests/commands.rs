@@ -18,14 +18,16 @@
 //! instead, and every result shape is checked through serde, which is the same
 //! code that runs over the real boundary.
 
-use copper_lib::store::commands::AddNoteResult;
+use copper_lib::store::commands::{AddNoteResult, SubmitOutcome, SubmitResult};
 use copper_lib::store::error::StoreError;
 use copper_lib::store::model::{Section, Space};
 use copper_lib::store::settings::Settings;
 use copper_lib::store::StoreStatus;
 
-/// Spec 8.1, verbatim. Twenty.
-const COMMANDS: [&str; 20] = [
+/// Spec 8.1's twenty, plus `submit_entry` — the composer's submit, added by
+/// task-010 so that inline `# Name` section creation could be classified above
+/// the store without `add_note` ever parsing a body.
+const COMMANDS: [&str; 21] = [
 	"get_settings",
 	"update_settings",
 	"get_status",
@@ -33,6 +35,7 @@ const COMMANDS: [&str; 20] = [
 	"open_space",
 	"create_space",
 	"add_note",
+	"submit_entry",
 	"edit_note",
 	"set_notes_done",
 	"delete_notes",
@@ -200,8 +203,8 @@ fn every_defined_command_is_registered_and_matches_the_documented_twenty() {
 	);
 	assert_eq!(
 		store_defined.len(),
-		20,
-		"the store's own surface is no longer twenty commands"
+		21,
+		"the store's own surface is no longer spec 8.1's twenty plus submit_entry"
 	);
 }
 
@@ -249,8 +252,49 @@ fn space() -> Space {
 	}
 }
 
-/// The only camelCase conversion in the whole surface, and therefore the only
-/// one that can be got wrong silently.
+/// The three shapes `submit_entry` can return, and the discriminant spelling the
+/// frontend branches on. A `noteId` that arrived on a section outcome would move
+/// the roving focus onto a note that was never created.
+#[test]
+fn submit_entry_returns_a_kebab_case_outcome_and_a_nullable_note_id() {
+	let note = serde_json::to_value(SubmitResult {
+		space: space(),
+		outcome: SubmitOutcome::Note,
+		note_id: Some("nte_00000001".into()),
+		section_id: "sec_00000001".into(),
+	})
+	.unwrap();
+
+	assert_eq!(note["outcome"], "note");
+	assert_eq!(note["noteId"], "nte_00000001");
+	assert_eq!(note["sectionId"], "sec_00000001");
+	assert_eq!(note.as_object().unwrap().len(), 4, "submit_entry grew a field");
+	assert!(note.get("note_id").is_none(), "the snake_case spelling leaked over IPC");
+	assert!(note.get("section_id").is_none(), "the snake_case spelling leaked over IPC");
+
+	for (outcome, spelling) in [
+		(SubmitOutcome::SectionCreated, "section-created"),
+		(SubmitOutcome::SectionActivated, "section-activated"),
+	] {
+		let payload = serde_json::to_value(SubmitResult {
+			space: space(),
+			outcome,
+			note_id: None,
+			section_id: "sec_00000001".into(),
+		})
+		.unwrap();
+
+		assert_eq!(payload["outcome"], spelling);
+		// Present and null, not absent: the frontend reads the field rather than
+		// testing for its existence.
+		assert!(payload["noteId"].is_null());
+		assert_eq!(payload.as_object().unwrap().len(), 4);
+	}
+}
+
+/// Still registered and still the capture path's shape, even though the panel
+/// now submits through `submit_entry`. A camelCase conversion is the kind of
+/// thing that can be got wrong silently.
 #[test]
 fn add_note_returns_note_id_in_camel_case() {
 	let payload = serde_json::to_value(AddNoteResult {

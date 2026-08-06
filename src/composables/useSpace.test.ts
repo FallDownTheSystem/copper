@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
-import type { Space, StoreStatus } from './useSpace'
+import type { Space, StoreStatus, SubmitResult } from './useSpace'
 
 /**
  * The IPC seam is mocked at the two Tauri entry points, which is the whole
@@ -54,6 +54,12 @@ function makeSpace(id: string, noteIds: string[]): Space {
 			updated: '2026-08-05T00:00:00Z',
 		})),
 	}
+}
+
+/** What `submit_entry` returns when the body was an ordinary note, which is
+ *  every case in this file — the two section outcomes have their own tests. */
+function noteResult(space: Space, noteId: string): SubmitResult {
+	return { space, outcome: 'note', noteId, sectionId: 'sec_a' }
 }
 
 const STATUS: StoreStatus = {
@@ -173,8 +179,8 @@ describe('local mutations', () => {
 		await space.initialize()
 		await flush()
 
-		respond('add_note', () => ({ space: makeSpace('spc_1', ['n1', 'n2']), noteId: 'n2' }))
-		await space.addNote('second')
+		respond('submit_entry', () => noteResult(makeSpace('spc_1', ['n1', 'n2']), 'n2'))
+		await space.submitEntry('second')
 		await flush()
 
 		// The regression test for the return-value contract: an adapter that waited
@@ -220,10 +226,10 @@ describe('local mutations', () => {
 		await space.initialize()
 		await flush()
 
-		respond('add_note', () => {
+		respond('submit_entry', () => {
 			throw { kind: 'unavailable', message: 'the space is unreadable' }
 		})
-		const result = await space.addNote('nope')
+		const result = await space.submitEntry('nope')
 
 		expect(result).toBeNull()
 		expect(space.actionError.value).toEqual({
@@ -348,16 +354,16 @@ describe('the single-in-flight coalesced refresh', () => {
 		await space.initialize()
 		await flush()
 
-		const add = deferred<{ space: Space; noteId: string }>()
-		respond('add_note', () => add.promise)
-		const pending = space.addNote('mine')
+		const add = deferred<SubmitResult>()
+		respond('submit_entry', () => add.promise)
+		const pending = space.submitEntry('mine')
 		await flush()
 
 		respond('get_active_space', () => makeSpace('spc_1', ['n1', 'external']))
 		emit('space-changed', { id: 'spc_1', path: 'p', reason: 'external' })
 		await flush()
 
-		add.resolve({ space: makeSpace('spc_1', ['n1', 'mine']), noteId: 'mine' })
+		add.resolve(noteResult(makeSpace('spc_1', ['n1', 'mine']), 'mine'))
 		await pending
 		await flush()
 
@@ -476,8 +482,8 @@ describe('status and the error banner', () => {
 		expect(space.storeStatus.value.errored).toBe(false)
 		expect(space.loadState.value).toBe('ready')
 
-		respond('add_note', () => ({ space: makeSpace('spc_1', ['n1', 'n2']), noteId: 'n2' }))
-		const result = await space.addNote('still writable')
+		respond('submit_entry', () => noteResult(makeSpace('spc_1', ['n1', 'n2']), 'n2'))
+		const result = await space.submitEntry('still writable')
 
 		expect(result).not.toBeNull()
 		expect(space.actionError.value).toBeNull()
@@ -581,8 +587,8 @@ describe('action errors are scoped to their surface', () => {
 		})
 		await space.updateNoteBody('n1', 'x')
 
-		respond('add_note', () => ({ space: makeSpace('spc_1', ['n1', 'n2']), noteId: 'n2' }))
-		await space.addNote('a new note')
+		respond('submit_entry', () => noteResult(makeSpace('spc_1', ['n1', 'n2']), 'n2'))
+		await space.submitEntry('a new note')
 		await flush()
 
 		expect(space.errorFor('editor').value).toBe('cannot write')

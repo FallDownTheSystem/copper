@@ -20,6 +20,7 @@ const {
 const { beginEdit } = useNoteEditor()
 const { interactionRowId, enter, reconcile } = useInteractionMode()
 const { hasQuery, resultCount } = useNoteSearch()
+const { setCollapsed } = useSections()
 const { toggleDone, finishDrag } = useNoteActions()
 
 /**
@@ -129,6 +130,18 @@ function onKeydown(event: KeyboardEvent) {
 			if (event.shiftKey) extendFocus(-1)
 			else moveFocus(-1)
 			syncDomFocus()
+			return
+		case 'ArrowLeft':
+		case 'ArrowRight':
+			// The disclosure idiom, and both keys are otherwise unbound here: the grid
+			// has one cell per row, so nothing horizontal traverses. Header rows only —
+			// on a note row these belong to whatever has the caret.
+			//
+			// Inert while a query is active, matching the control itself: search
+			// overrides collapse, so a press would change a state nothing is reading.
+			if (!sectionId || hasQuery.value) return
+			event.preventDefault()
+			setCollapsed(sectionId, event.key === 'ArrowLeft')
 			return
 		case 'Home':
 			event.preventDefault()

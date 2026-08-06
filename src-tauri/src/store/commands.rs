@@ -1,4 +1,5 @@
-//! The twenty commands Phase 3 codes against (spec 8.1), and nothing else.
+//! The twenty commands Phase 3 codes against (spec 8.1), plus the one task-010
+//! added — and nothing else.
 //!
 //! Registration lives in the crate's own `commands.rs`: Tauri accepts exactly
 //! one `invoke_handler`, and the closure `generate_handler!` builds consumes the
@@ -33,6 +34,8 @@ use std::path::Path;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
+use crate::entry::{classify, Entry};
+
 use super::error::StoreError;
 use super::model::Space;
 use super::settings::{Settings, SettingsPatch};
@@ -47,6 +50,34 @@ type Reply<T> = std::result::Result<T, StoreError>;
 pub struct AddNoteResult {
 	pub space: Space,
 	pub note_id: String,
+}
+
+/// Which of the three things a composer submission turned out to be.
+///
+/// Kebab-case on the wire, matching how `StoreError::kind` and `ShellError::kind`
+/// already spell a discriminant the frontend branches on.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SubmitOutcome {
+	Note,
+	SectionCreated,
+	SectionActivated,
+}
+
+/// What `submit_entry` gives back.
+///
+/// Richer than `AddNoteResult` because the caller cannot tell from the document
+/// alone what it just did: the panel puts the roving focus on a new note, and
+/// must **not** move it when the submission created or switched a section
+/// instead. `noteId` is null on both section outcomes; `sectionId` always names
+/// the section the submission concerned, so no follow-up round trip is needed.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitResult {
+	pub space: Space,
+	pub outcome: SubmitOutcome,
+	pub note_id: Option<String>,
+	pub section_id: String,
 }
 
 // --- settings and status -----------------------------------------------------
@@ -95,6 +126,71 @@ pub async fn add_note(
 ) -> Reply<AddNoteResult> {
 	let (note_id, space) = lock(&state).mutate(|doc| ops::add_note(doc, &body, section.as_deref()))?;
 	Ok(AddNoteResult { space, note_id })
+}
+
+/// The composer's submit, and the only entry point that reads a body as
+/// anything but opaque text.
+///
+/// `add_note` stays exactly as it was, and is what the capture path still
+/// reaches: a captured selection whose whole body is `# Name` is an ordinary
+/// note (Open Question 1, answered 2026-08-05). Inline section creation is a
+/// composer affordance, so it lives on the composer's command.
+#[tauri::command]
+pub async fn submit_entry(body: String, state: State<'_, SharedStore>) -> Reply<SubmitResult> {
+	submit(&state, &body)
+}
+
+/// The body of [`submit_entry`], as a plain function over the shared store.
+///
+/// Split out for the same reason [`super::append_capture`] is a module-level
+/// seam rather than command-only code: `cargo test` has no Tauri runtime and so
+/// cannot construct a `State`, and asserting the snapshot behaviour by
+/// re-implementing the command in the test would prove only that the test agrees
+/// with itself.
+pub fn submit(shared: &SharedStore, body: &str) -> Reply<SubmitResult> {
+	let mut guard = lock(shared);
+
+	let name = match classify(body) {
+		Entry::Note { body } => {
+			let (note_id, space) = guard.mutate(|doc| ops::add_note(doc, &body, None))?;
+			// Read back off the document rather than tracked through the op: the
+			// store defaults an unaddressed note to `activeSection`, and re-deriving
+			// that here would be a second copy of a rule that can change.
+			let section_id = space
+				.note(&note_id)
+				.map(|note| note.section.clone())
+				.unwrap_or_default();
+			return Ok(SubmitResult {
+				space,
+				outcome: SubmitOutcome::Note,
+				note_id: Some(note_id),
+				section_id,
+			});
+		}
+		Entry::Section { name } => name,
+	};
+
+	// The snapshot decision is taken from a read-only lookup *before* the mutate
+	// call, not from the op's own answer: activating a section that already exists
+	// must push nothing, matching `set_active_section`'s exclusion (spec 4.3), and
+	// by the time the op has run the snapshot is already on the stack.
+	let existed = guard.has_section_named(&name);
+	let ((section_id, created), space) = if existed {
+		guard.mutate_no_snapshot(|doc| ops::add_section_and_activate(doc, &name))?
+	} else {
+		guard.mutate(|doc| ops::add_section_and_activate(doc, &name))?
+	};
+
+	Ok(SubmitResult {
+		space,
+		outcome: if created {
+			SubmitOutcome::SectionCreated
+		} else {
+			SubmitOutcome::SectionActivated
+		},
+		note_id: None,
+		section_id,
+	})
 }
 
 #[tauri::command]

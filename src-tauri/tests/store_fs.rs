@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use copper_lib::store::commands::{submit, SubmitOutcome, SubmitResult};
 use copper_lib::store::error::StoreError;
 use copper_lib::store::events::{ChangeReason, EventSink, RecordingSink, StoreEvent};
 use copper_lib::store::model::{Note, Section, Space};
@@ -92,6 +93,19 @@ impl Harness {
 		store::lock(&self.shared)
 			.mutate(|doc| ops::add_note(doc, &body, None))
 			.map(|(id, _)| id)
+	}
+
+	/// The composer's submit, through the same function the command calls.
+	fn submit(&self, body: &str) -> Result<SubmitResult, StoreError> {
+		submit(&self.shared, body)
+	}
+
+	fn section_named(&self, name: &str) -> Option<String> {
+		self.doc()
+			.sections
+			.iter()
+			.find(|section| section.name == name)
+			.map(|section| section.id.clone())
 	}
 }
 
@@ -529,6 +543,132 @@ fn sixty_operations_leave_a_fifty_deep_stack() {
 	// Fifty undos took it back to ten notes, not to zero: the oldest ten
 	// snapshots were dropped.
 	assert_eq!(harness.doc().notes.len(), 10);
+}
+
+// --- submit_entry (task-010) --------------------------------------------------
+
+#[test]
+fn a_directive_creates_and_activates_a_section_in_one_undoable_step() {
+	let harness = Harness::new();
+	harness.add("keep me").unwrap();
+	let before_section = harness.doc().active_section.clone();
+	let before_notes = harness.doc().notes.len();
+
+	let result = harness.submit("# Research").unwrap();
+
+	assert_eq!(result.outcome, SubmitOutcome::SectionCreated);
+	assert!(result.note_id.is_none(), "a directive created a note");
+	assert_eq!(harness.doc().notes.len(), before_notes, "a directive created a note");
+	assert_eq!(harness.doc().active_section, result.section_id);
+	assert_eq!(harness.section_named("Research").as_deref(), Some(result.section_id.as_str()));
+
+	// **One** step, not two: the section and the activation are a single snapshot,
+	// so one press takes both back. Two sequential commands would need two.
+	assert!(store::lock(&harness.shared).undo().unwrap().is_some());
+	assert!(harness.section_named("Research").is_none(), "the section survived the undo");
+	assert_eq!(
+		harness.doc().active_section,
+		before_section,
+		"the previously active section was not restored"
+	);
+	// And it stops there: the note added before the directive is still present.
+	assert_eq!(harness.doc().notes.len(), before_notes);
+}
+
+#[test]
+fn a_duplicate_directive_activates_without_pushing_a_snapshot() {
+	let harness = Harness::new();
+	harness.submit("# Research").unwrap();
+	let research = harness.section_named("Research").unwrap();
+	// Something undoable, so an unwanted snapshot would be visible as an undo that
+	// restores the wrong thing rather than as an empty stack.
+	let note = harness.add("alpha").unwrap();
+	store::lock(&harness.shared)
+		.mutate_no_snapshot(|doc| ops::set_active_section(doc, &research))
+		.unwrap();
+	let other = harness
+		.doc()
+		.sections
+		.iter()
+		.find(|section| section.id != research)
+		.unwrap()
+		.id
+		.clone();
+	store::lock(&harness.shared)
+		.mutate_no_snapshot(|doc| ops::set_active_section(doc, &other))
+		.unwrap();
+
+	// Case and whitespace fold, so this is the same destination.
+	let result = harness.submit("#   research  ").unwrap();
+
+	assert_eq!(result.outcome, SubmitOutcome::SectionActivated);
+	assert_eq!(result.section_id, research);
+	assert_eq!(harness.doc().sections.len(), 2, "a second Research was created");
+	assert_eq!(harness.doc().active_section, research);
+
+	// No snapshot of its own, so one Ctrl+Z undoes whatever preceded it — the note.
+	assert!(store::lock(&harness.shared).undo().unwrap().is_some());
+	assert!(harness.doc().note(&note).is_none(), "the undo did not reach the note");
+}
+
+#[test]
+fn a_submission_that_is_not_a_directive_is_an_ordinary_note() {
+	let harness = Harness::new();
+
+	for body in ["# Research\n\nwith more text", "## Research", "#Research", "#", "\\# Research"] {
+		let result = harness.submit(body).unwrap();
+		assert_eq!(result.outcome, SubmitOutcome::Note, "{body:?} was treated as a directive");
+		let id = result.note_id.expect("a note outcome carries its id");
+		assert_eq!(
+			result.section_id, harness.doc().active_section,
+			"{body:?} landed outside the active section"
+		);
+		// Byte-identical to what was submitted, apart from the one documented
+		// rewrite: `\#` loses its backslash and nothing else changes.
+		let expected = body.strip_prefix('\\').unwrap_or(body);
+		assert_eq!(harness.doc().note(&id).unwrap().body, expected);
+	}
+
+	assert_eq!(harness.doc().sections.len(), 1, "a note submission created a section");
+}
+
+#[test]
+fn a_capture_never_honours_a_directive() {
+	let harness = Harness::new();
+	let sections = harness.doc().sections.len();
+
+	// Open Question 1, answered 2026-08-05: the capture path saves `# Name` as an
+	// ordinary note, exactly like any other capture. This is the assertion that
+	// keeps a future refactor from routing capture through `submit`.
+	let id = store::append_capture(&harness.shared, "# Research").unwrap();
+
+	assert_eq!(harness.doc().note(&id).unwrap().body, "# Research");
+	assert_eq!(harness.doc().sections.len(), sections);
+	assert!(harness.section_named("Research").is_none());
+}
+
+#[test]
+fn submit_entry_emits_nothing_on_any_of_its_three_paths() {
+	let harness = Harness::new();
+
+	// Spec 8.4: a frontend-invoked mutation's return value already describes the
+	// change, so an event would only duplicate it.
+	harness.submit("an ordinary note").unwrap();
+	harness.submit("# Research").unwrap();
+	harness.submit("# Research").unwrap();
+	harness.submit("   ").unwrap_err();
+
+	assert!(
+		harness.sink.events().is_empty(),
+		"submit_entry emitted: {:?}",
+		harness.sink.names()
+	);
+	settle();
+	assert!(
+		harness.sink.events().is_empty(),
+		"submit_entry's own write produced a watcher event: {:?}",
+		harness.sink.names()
+	);
 }
 
 #[test]

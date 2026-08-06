@@ -47,6 +47,19 @@ export const CHORDS = {
 		matches: (event) => ctrl(event) && event.shiftKey && letter(event, 'm'),
 	},
 	/**
+	 * The one chord that fires **from the composer**, and the documented exception
+	 * to the suppression rule below. "I am mid-thought, typing, and I want this and
+	 * the next five captures to go somewhere else" is the entire use case, so a
+	 * binding the composer swallowed would be a binding for nothing.
+	 *
+	 * `Ctrl+Shift+K` was considered and rejected: it is the browser devtools
+	 * console chord.
+	 */
+	switchSection: {
+		display: 'Ctrl+K',
+		matches: (event) => ctrl(event) && !event.shiftKey && letter(event, 'k'),
+	},
+	/**
 	 * Deliberately two things by context: on a focused card it starts the
 	 * `$EDITOR` handoff, inside the inline editor it commits the edit. The
 	 * editor's textarea is a text surface, so the shell's `inTextSurface` guard
@@ -83,6 +96,18 @@ export const CHORDS = {
  */
 export function inTextSurface(target: EventTarget | null): boolean {
 	return target instanceof HTMLElement && target.closest('input, textarea') !== null
+}
+
+/**
+ * The composer specifically, as opposed to the other two text surfaces.
+ *
+ * `Ctrl+K` is the only chord allowed through the guard above, and only from
+ * here: inside the inline note editor and the search input it stays suppressed,
+ * because neither is a place where "where does the next capture land" is the
+ * question being asked.
+ */
+export function inComposer(target: EventTarget | null): boolean {
+	return target instanceof HTMLElement && target.closest('[data-composer]') !== null
 }
 
 /**

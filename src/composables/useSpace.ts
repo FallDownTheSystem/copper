@@ -41,6 +41,7 @@ import { useNoteEditor } from './useNoteEditor'
 import { useEditorHandoff } from './useEditorHandoff'
 import { useNoteSearch } from './useNoteSearch'
 import { useSectionEditor } from './useSectionEditor'
+import { useSections } from './useSections'
 
 // --- the document, mirroring task-003 exactly --------------------------------
 
@@ -98,7 +99,20 @@ export type NoteView = DeepReadonly<Note>
 export type ChangeReason = 'external' | 'capture' | 'reload' | 'editor'
 export type SpaceChangedPayload = { id: string; path: string; reason: ChangeReason }
 export type StoreErrorPayload = { kind: string; message: string }
-export type AddNoteResult = { space: Space; noteId: string }
+/** What a composer submission turned out to be. `# Name` is classified in Rust,
+ *  above the store, so the composer path and the capture path cannot drift.
+ *
+ *  There is no type for `add_note` here any more: the panel submits through
+ *  `submit_entry`, and `add_note` is now reached only from Rust, by the capture
+ *  path. */
+export type SubmitOutcome = 'note' | 'section-created' | 'section-activated'
+export type SubmitResult = {
+	space: Space
+	outcome: SubmitOutcome
+	/** Null on both section outcomes — no note was created. */
+	noteId: string | null
+	sectionId: string
+}
 
 /** The *initial* pull only. Named `loadState`, not `status`: task-003 already
  *  owns `get_status`/`StoreStatus` and the collision reads as the same thing. */
@@ -180,6 +194,9 @@ const disclosure = useNoteDisclosure()
 const editor = useNoteEditor()
 const search = useNoteSearch()
 const sectionEditor = useSectionEditor()
+/** Named for the state rather than the module: `sections` below is the
+ *  document's own list, and the two are different things. */
+const sectionState = useSections()
 const handoff = useEditorHandoff()
 
 /** Exported for the adapter beside this one — `useSpaces` — so one shape of Rust
@@ -215,6 +232,14 @@ function applyDocument(
 		selection.resetForNewSpace()
 		disclosure.reset()
 		markdown.clearCache()
+		// Collapse and the switcher are document-scoped: section ids mean something
+		// else now, and an open switcher is closed rather than re-pointed.
+		sectionState.reset()
+	} else {
+		// Before the assignment, so a note landing in a collapsed section is on
+		// screen for the same flush the scroll pin measures. After it, `previous` is
+		// gone and there is nothing to diff against.
+		sectionState.revealNewNotes(space.value, next)
 	}
 
 	// A different document is reconciled against an *empty* snapshot, so it takes
@@ -469,7 +494,10 @@ function dispose() {
 async function mutate<T>(
 	run: () => Promise<T>,
 	toSpace: (result: T) => Space,
-	options: { scope: ActionErrorScope; repullStatus?: boolean },
+	// A predicate rather than a flag, because `submit_entry` cannot answer the
+	// question until it has run: creating a section is deterministically undoable,
+	// activating one takes no snapshot at all, and the outcome says which happened.
+	options: { scope: ActionErrorScope; repullStatus?: (result: T) => boolean },
 ): Promise<MutationResult<T> | null> {
 	// Only this surface's own error is cleared: a failure belongs to the text it
 	// left in place, and another surface's message is still explaining itself.
@@ -490,7 +518,7 @@ async function mutate<T>(
 	// store carried the mutation out either way, and supersession is a decision
 	// this side of the boundary makes about a stale *document*. Skipping the
 	// status update there left `canUndo` false after a real, undoable change.
-	if (options.repullStatus) {
+	if (options.repullStatus?.(result)) {
 		// `edit_note` and `set_active_section` take no undo snapshot of their own,
 		// but a write that had to be re-applied over an external change clears both
 		// stacks and emits nothing — a re-pull is the only way to learn about it.
@@ -507,17 +535,38 @@ async function mutate<T>(
 	return { value: result, applied }
 }
 
-async function addNote(body: string) {
+/**
+ * The composer's submit. Maps to `submit_entry`, **not** to `add_note`.
+ *
+ * `add_note` is still the command the capture path uses from Rust, and it is
+ * deliberately not this one: a captured selection whose whole body is `# Name`
+ * is an ordinary note, while the same text typed into the composer is a section
+ * directive. Both rules live in one Rust module, so the two paths cannot drift.
+ *
+ * Nothing here inspects the body. Asking the frontend whether a string "looks
+ * like a directive" would be a second copy of the rule and the first thing to go
+ * stale.
+ */
+async function submitEntry(body: string) {
 	// No `section` argument: the store already defaults to `activeSection`, and
 	// sending our own view of it would race an external change to it.
 	const result = await mutate(
-		() => invoke<AddNoteResult>('add_note', { body }),
+		() => invoke<SubmitResult>('submit_entry', { body }),
 		(value) => value.space,
-		{ scope: 'composer' },
+		{
+			// `section-created` is an ordinary structural mutation, so `canUndo` is
+			// deterministic. `section-activated` pushed no snapshot, and its effect on
+			// the stacks is not knowable from here.
+			scope: 'composer',
+			repullStatus: (value) => value.outcome === 'section-activated',
+		},
 	)
+
 	// The roving target follows the new note; DOM focus stays in the composer so
-	// consecutive captures need no mouse.
-	if (result?.applied) selection.focusRow(noteRow(result.value.noteId))
+	// consecutive captures need no mouse. Neither section outcome touches focus or
+	// the selection — the switch is visible in the chip and the header instead.
+	const { outcome, noteId } = result?.value ?? {}
+	if (result?.applied && outcome === 'note' && noteId) selection.focusRow(noteRow(noteId))
 	return result
 }
 
@@ -526,7 +575,7 @@ async function updateNoteBody(id: string, body: string) {
 	return mutate(
 		() => invoke<Space>('edit_note', { id, body }),
 		(value) => value,
-		{ scope: 'editor', repullStatus: true },
+		{ scope: 'editor', repullStatus: () => true },
 	)
 }
 
@@ -557,7 +606,7 @@ async function setActiveSection(id: string) {
 	return mutate(
 		() => invoke<Space>('set_active_section', { id }),
 		(value) => value,
-		{ scope: 'list', repullStatus: true },
+		{ scope: 'list', repullStatus: () => true },
 	)
 }
 
@@ -768,7 +817,7 @@ export function useSpace() {
 		refresh,
 		retry,
 		adopt,
-		addNote,
+		submitEntry,
 		updateNoteBody,
 		setNotesDone,
 		setActiveSection,

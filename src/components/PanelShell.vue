@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { invoke } from '@tauri-apps/api/core'
 
-import { CHORDS, inOverlay, inTextSurface } from '@/lib/chords'
+import { CHORDS, inComposer, inOverlay, inTextSurface } from '@/lib/chords'
 
 const {
 	loadState,
@@ -18,6 +18,7 @@ const { ensureHighlighter } = useMarkdown()
 // reads them from the composable itself rather than being handed them.
 const { setOverlayHost } = useOverlayHost()
 const { hasQuery, clearQuery, resultCount } = useNoteSearch()
+const { openSwitcher } = useSections()
 const { selectedIds, clear } = useSelection()
 const { editingNoteId, cancel } = useNoteEditor()
 const { interactionRowId, exit } = useInteractionMode()
@@ -114,6 +115,14 @@ watch([hasQuery, resultCount], announceResults)
  * caller — reka does *not* `preventDefault` the press before this element sees
  * it, so the guard is the menu rung rather than a convenience.
  *
+ * **The section switcher is one of those menus, and deliberately has no rung of
+ * its own here.** Task-010 asked for a rung above `cancel inline edit`; it would
+ * be dead code. Reka traps focus inside the open switcher, so every `Escape`
+ * arrives with a target inside it, resolves at the guard above, and closes the
+ * switcher without reaching this ladder at all — which is exactly the required
+ * behaviour, including leaving the selection and the query untouched. A rung
+ * that can never fire would only make a future reader think it did.
+ *
  * A level with nothing to do is skipped rather than consuming the press, so
  * `Escape` in an empty search field with notes selected clears the selection.
  * The last rung is Phase 7's and always has something to do: with nothing left
@@ -165,6 +174,22 @@ function onShellKeydown(event: KeyboardEvent) {
 
 	if (event.key === 'Escape') {
 		onEscape(event)
+		return
+	}
+
+	// **Above the suppression guard, and the only chord that is.** Task-006's rule
+	// is that no in-panel chord fires from a text surface; this is the documented
+	// exception, because switching where the next capture lands is a thing you do
+	// while typing the note before it. Still suppressed in the other two surfaces,
+	// and it cannot reach task-008's shortcut recorder at all — that lives in the
+	// settings view, which unmounts this tree, and it `preventDefault`s and
+	// consumes every key but Tab besides.
+	if (
+		CHORDS.switchSection.matches(event) &&
+		(!inTextSurface(event.target) || inComposer(event.target))
+	) {
+		event.preventDefault()
+		openSwitcher()
 		return
 	}
 

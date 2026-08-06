@@ -192,6 +192,20 @@ impl Store {
 		self.open.as_ref().map(|open| open.on_disk_text.as_str())
 	}
 
+	/// Whether a `# Name` directive would resolve to a section that already
+	/// exists, without cloning the document to find out.
+	///
+	/// `submit_entry` asks this **before** mutating, because the answer decides
+	/// which `mutate` variant runs: creating a section is snapshotted, merely
+	/// activating one is not (spec 4.3). Borrowing rather than going through
+	/// [`Store::active_space`] matters — that clones every note in the space to
+	/// read one name.
+	pub fn has_section_named(&self, name: &str) -> bool {
+		self.open
+			.as_ref()
+			.is_some_and(|open| ops::section_by_name(&open.doc, name).is_some())
+	}
+
 	pub fn active_space(&self) -> Result<Space> {
 		self.open
 			.as_ref()

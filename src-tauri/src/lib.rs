@@ -6,6 +6,9 @@ mod diagnostics;
 /// Public because `end_all` is the entry point Phase 6 calls on a space switch,
 /// and it must stay the only way another module ends every handoff at once.
 pub mod editor;
+/// Above the store, deliberately: it classifies a submitted string, and the
+/// store's "`body` is opaque" invariant depends on this living outside it.
+pub mod entry;
 mod panel;
 mod shortcuts;
 pub mod spaces;

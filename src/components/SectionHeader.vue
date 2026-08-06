@@ -10,13 +10,34 @@ const props = defineProps<{
 
 const emit = defineEmits<{ activate: [] }>()
 
-const { focusedId } = useSelection()
+const { focusedId, focusRow } = useSelection()
 const { renaming, draft, setDraft, endRename, cancelRename } = useSectionEditor()
 const { renameSection } = useSpace()
+const { isCollapsedStored, toggleCollapsed } = useSections()
+const { hasQuery } = useNoteSearch()
 
 const focused = computed(() => focusedId.value === props.rowId)
 const headingId = computed(() => `section-heading-${props.section.id}`)
 const editing = computed(() => renaming.value === props.section.id)
+
+/** The stored state, not the effective one: while a query is active every
+ *  section is expanded, but the control still has to say what pressing it does
+ *  to the state the query is overriding. */
+const collapsed = computed(() => isCollapsedStored(props.section.id))
+
+/**
+ * Moves the roving target onto this row as well as toggling.
+ *
+ * A click focuses the button it landed on, and the grid's key handler declines
+ * any press whose target is a button — so without this, expanding a section by
+ * mouse left the arrow keys inert until the user clicked somewhere else. The row
+ * is the grid's tab stop; the control inside it never is.
+ */
+function toggle() {
+	toggleCollapsed(props.section.id)
+	focusRow(props.rowId)
+	focusRowSoon(props.rowId)
+}
 
 const input = useTemplateRef<HTMLInputElement>('input')
 
@@ -106,6 +127,30 @@ function onKeydown(event: KeyboardEvent) {
 					</template>
 
 					<template v-else>
+						<!-- Withdrawn while a query is active rather than rendered inert.
+						     Search already decides what is on screen and overrides collapse
+						     entirely, so a control that rotated its chevron and changed
+						     nothing visible would read as broken. The stored state survives
+						     and comes back when the query clears; the fixed-width stand-in
+						     keeps the heading from shifting sideways in the meantime. -->
+						<button
+							v-if="!hasQuery"
+							type="button"
+							tabindex="-1"
+							:aria-expanded="!collapsed"
+							:aria-label="`${collapsed ? 'Expand' : 'Collapse'} ${section.name}`"
+							class="text-text-disabled hover:bg-surface-hover hover:text-text-secondary outline-focus-ring grid size-5 shrink-0 place-items-center rounded transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
+							@click="toggle"
+						>
+							<IconLucideChevronRight
+								class="size-3.5 transition-transform duration-fast"
+								:class="collapsed ? '' : 'rotate-90'"
+								aria-hidden="true"
+								focusable="false"
+							/>
+						</button>
+						<span v-else aria-hidden="true" class="size-5 shrink-0" />
+
 						<h2 :id="headingId" class="min-w-0 shrink-0">
 							<button
 								type="button"

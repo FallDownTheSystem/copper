@@ -245,6 +245,20 @@ function onSectionInput(event: Event) {
 
 			<DropdownMenuSeparator />
 
+			<!-- The section group. `Switch section` leads it because picking an
+			     existing destination is the common case and creating one is the
+			     exception — and both are the same list, since the submenu renders the
+			     component the composer's chip does rather than a second copy of it. -->
+			<DropdownMenuSub>
+				<DropdownMenuSubTrigger class="min-h-6">
+					<IconLucideListTree class="size-4" aria-hidden="true" focusable="false" />
+					Switch section
+				</DropdownMenuSubTrigger>
+				<DropdownMenuSubContent class="w-64 text-meta">
+					<SectionSwitcher @close="open = false" />
+				</DropdownMenuSubContent>
+			</DropdownMenuSub>
+
 			<!-- `@select.prevent` keeps the menu standing: the field it opens lives
 			     inside it. -->
 			<DropdownMenuItem v-if="!creatingSection" class="min-h-6" @select.prevent="beginSection">

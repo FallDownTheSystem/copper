@@ -17,6 +17,8 @@
 
 use std::collections::HashSet;
 
+use crate::entry::normalise_name;
+
 use super::error::{Result, StoreError};
 use super::format::{normalise, now_rfc3339};
 use super::ids;
@@ -324,6 +326,57 @@ pub fn add_section(space: &mut Space, name: &str) -> Result<String> {
 	space.active_section = id.clone();
 	normalise(space);
 	Ok(id)
+}
+
+/// The section a `# Name` directive means, if the document already has one.
+///
+/// Case-insensitive over [`normalise_name`]d names, so `Research`, `research`
+/// and `Deep   Research` all resolve the way the person typing them expects. The
+/// *first* match in document order wins: a hand-edited file may hold two
+/// sections that collide under this rule, and the directive has to name one of
+/// them deterministically.
+///
+/// Read-only and public because `submit_entry` consults it **before** mutating,
+/// to decide whether the operation is snapshotted (task-003 §4.3 excludes
+/// activation from the undo stack, exactly as `set_active_section` is excluded).
+pub fn section_by_name<'a>(space: &'a Space, name: &str) -> Option<&'a Section> {
+	let wanted = normalise_name(name).to_lowercase();
+	space
+		.sections
+		.iter()
+		.find(|section| normalise_name(&section.name).to_lowercase() == wanted)
+}
+
+/// Creates the named section and makes it active, or activates the one that
+/// already carries that name.
+///
+/// Both mutations happen inside **one** op rather than two sequential commands,
+/// so the whole thing is a single entry on the snapshot stack and one `Ctrl+Z`
+/// removes the section *and* restores the previously active one. Two commands
+/// would push two snapshots and take two presses.
+///
+/// Returns `(section_id, created)`. `created: false` means a duplicate name
+/// resolved to an existing section — a switch, not an error, and deliberately
+/// not announced as one: creating a second `Research` would produce two visually
+/// identical headers and make `Move to ▸` ambiguous.
+///
+/// Stays `Fn`-shaped like every other op, so `mutate` can re-apply it against a
+/// freshly re-read document after a write conflict.
+pub fn add_section_and_activate(space: &mut Space, name: &str) -> Result<(String, bool)> {
+	let name = clean_name(name)?;
+
+	if let Some(existing) = section_by_name(space, &name) {
+		let id = existing.id.clone();
+		space.active_section = id.clone();
+		normalise(space);
+		return Ok((id, false));
+	}
+
+	// `add_section` already appends *and* activates (spec 5.3), so the create arm
+	// is exactly it — reimplementing the push here would be a second place for the
+	// id-collision loop and the ordering to be got wrong.
+	let id = add_section(space, &name)?;
+	Ok((id, true))
 }
 
 pub fn rename_section(space: &mut Space, id: &str, name: &str) -> Result<()> {
@@ -784,6 +837,61 @@ mod tests {
 	fn add_section_rejects_an_empty_name() {
 		let mut space = space();
 		assert_eq!(add_section(&mut space, "   ").unwrap_err().kind(), "invalid");
+	}
+
+	// --- add_section_and_activate ---
+
+	#[test]
+	fn add_section_and_activate_creates_when_the_name_is_new() {
+		let mut space = space();
+		let (id, created) = add_section_and_activate(&mut space, "Gamma").unwrap();
+
+		assert!(created);
+		assert_eq!(space.active_section, id);
+		assert_eq!(space.sections.len(), 3);
+		assert_eq!(space.sections.last().unwrap().name, "Gamma");
+	}
+
+	#[test]
+	fn add_section_and_activate_resolves_a_duplicate_name_to_the_existing_section() {
+		let mut space = space();
+		let before = space.sections.clone();
+
+		// Case and surrounding whitespace both fold away.
+		for name in ["Beta", "beta", "  BETA  ", "\tBeta\n"] {
+			let (id, created) = add_section_and_activate(&mut space, name).unwrap();
+			assert!(!created, "{name:?} created a second section");
+			assert_eq!(id, "sec_bbbbbbbb");
+			assert_eq!(space.active_section, "sec_bbbbbbbb");
+		}
+		assert_eq!(space.sections, before, "resolving a duplicate changed the sections");
+	}
+
+	#[test]
+	fn add_section_and_activate_matches_across_collapsed_whitespace() {
+		let mut space = space();
+		add_section_and_activate(&mut space, "Deep Research").unwrap();
+		let (_, created) = add_section_and_activate(&mut space, "Deep    Research").unwrap();
+
+		assert!(!created);
+		assert_eq!(space.sections.len(), 3);
+	}
+
+	#[test]
+	fn add_section_and_activate_rejects_an_empty_name() {
+		let mut space = space();
+		let err = add_section_and_activate(&mut space, "   ").unwrap_err();
+
+		assert_eq!(err.kind(), "invalid");
+		assert_eq!(space.sections.len(), 2);
+	}
+
+	#[test]
+	fn section_by_name_reads_without_mutating() {
+		let space = space();
+		assert_eq!(section_by_name(&space, "alpha").unwrap().id, "sec_aaaaaaaa");
+		assert_eq!(section_by_name(&space, " ALPHA ").unwrap().id, "sec_aaaaaaaa");
+		assert!(section_by_name(&space, "Gamma").is_none());
 	}
 
 	#[test]
