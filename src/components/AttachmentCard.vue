@@ -11,13 +11,23 @@ const props = defineProps<{
 
 const emit = defineEmits<{ message: [string] }>()
 
-const { previewFor, requestPreview, openAttachment } = useAttachments()
+const { previewFor, requestPreview, previewEpoch, openAttachment } = useAttachments()
 
 // The ask, driven from a watcher rather than from the read below: `previewFor`
 // is consumed by a computed, and requesting as a side effect of reading would
 // write the preview cache during that computed's evaluation. `immediate` keeps
 // the two inseparable — a card cannot render without having asked.
-watch(() => props.attachment.file, requestPreview, { immediate: true })
+//
+// The epoch is the second dependency and is not optional. `clearPreviews`
+// revokes the cache under cards that are still mounted showing the same file,
+// which leaves them with no preview and nothing outstanding; watching the file
+// alone, a card in that state would sit on a spinner forever. Reading as a side
+// effect of rendering used to cover this for free, and this is what replaces it.
+watch(
+	() => [props.attachment.file, previewEpoch.value] as const,
+	([file]) => requestPreview(file),
+	{ immediate: true },
+)
 
 const preview = computed(() => previewFor(props.attachment.file))
 const unavailable = computed(() => preview.value.state === 'missing')

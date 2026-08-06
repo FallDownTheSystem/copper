@@ -90,21 +90,32 @@ const waiting: string[] = []
 let running = 0
 
 /**
- * Bumped by `clearPreviews`, and captured by every request in flight.
+ * Bumped by `clearPreviews`, captured by every request in flight, and **watched
+ * by every mounted card**. It does two jobs, and the second one is easy to
+ * lose.
  *
- * A space switch revokes the cache while requests against the *previous* space
- * are still outstanding. Without this token a response landing afterwards
- * writes into the new epoch's cache — and because the old space's blob is
- * genuinely absent from the new space's assets directory, what it writes is
- * `missing`. The result was a present attachment rendered permanently
+ * *Discarding.* A space switch revokes the cache while requests against the
+ * *previous* space are still outstanding. Without this token a response landing
+ * afterwards writes into the new epoch's cache — and because the old space's
+ * blob is genuinely absent from the new space's assets directory, what it
+ * writes is `missing`. The result was a present attachment rendered permanently
  * unavailable until the next switch.
+ *
+ * *Re-asking.* Revoking the cache leaves every mounted card with no preview and
+ * nothing outstanding, so something has to ask again. Back when the request was
+ * a side effect of reading, the next render did that on its own; now that the
+ * request comes from a watcher, this is the reactive input that makes a card
+ * notice. A `ref` rather than a plain counter for exactly that reason — and
+ * read as `.value` inside `loadPreview`, which is an async function and not an
+ * effect, so no dependency is tracked there.
  */
-let generation = 0
+const generation = ref(0)
 
-/** One object rather than a fresh literal per read: `previewFor` is called from
- *  a card's computed, and a new identity on every evaluation is a new value for
- *  everything downstream of it. */
-const LOADING: Preview = { state: 'loading' }
+/** One frozen object rather than a fresh literal per read: `previewFor` is
+ *  called from a card's computed, and a new identity on every evaluation is a
+ *  new value for everything downstream of it. Frozen because it is handed to
+ *  every card at once — a mutation would be seen by all of them. */
+const LOADING: Preview = Object.freeze({ state: 'loading' })
 
 const pendingCount = computed(() => pending.value.length)
 const hasPending = computed(() => pending.value.length > 0)
@@ -138,14 +149,14 @@ function setPreview(file: string, preview: Preview) {
  * image proves it with — one round trip per attachment, not two.
  */
 async function loadPreview(file: string) {
-	const issued = generation
+	const issued = generation.value
 	try {
 		const bytes = await invoke<ArrayBuffer>('attachment_thumb', { file })
 		// The cache this response was issued against has been revoked, so the
 		// answer describes a space nobody is looking at. Dropped rather than
 		// applied late — applying it is how a present attachment ends up marked
 		// unavailable in the space that replaced it.
-		if (issued !== generation) return
+		if (issued !== generation.value) return
 		if (bytes.byteLength === 0) {
 			setPreview(file, { state: 'ready', url: null })
 			return
@@ -154,7 +165,7 @@ async function loadPreview(file: string) {
 		objectUrls.add(url)
 		setPreview(file, { state: 'ready', url })
 	} catch (error) {
-		if (issued !== generation) return
+		if (issued !== generation.value) return
 		setPreview(file, { state: 'missing', reason: errorMessage(error) })
 	}
 }
@@ -209,7 +220,7 @@ function previewFor(file: string): Preview {
 function clearPreviews() {
 	// Before anything else: it is what makes an in-flight response drop itself
 	// rather than publish into the cache this is about to replace.
-	generation++
+	generation.value++
 	// Queued-but-not-started requests are simply dropped — they name blobs in a
 	// space that is no longer open.
 	waiting.length = 0
@@ -341,6 +352,9 @@ export function useAttachments() {
 		pendingLabel,
 		previewFor,
 		requestPreview,
+		/** Watch it alongside the file: bumping it is what tells a card whose
+		 *  preview was just revoked to ask again. */
+		previewEpoch: readonly(generation),
 		clearPreviews,
 		pasteAttachment,
 		pickAttachments,

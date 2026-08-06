@@ -1295,11 +1295,11 @@ describe('attachments', () => {
 	 * stylistic.
 	 *
 	 * A nested `afterEach` runs before the outer one, so it fires while the panel
-	 * is still mounted — and clearing the preview cache is a reactive change,
-	 * which re-renders every card, which asks for its preview again. Those
-	 * requests land on whatever mock the teardown has installed by then and
-	 * refill the cache with answers from the wrong test, so the next test finds a
-	 * cached preview and never calls the command it is asserting on.
+	 * is still mounted — and `clearPreviews` bumps the epoch every mounted card
+	 * watches, so every one of them asks again on the spot. Those requests land
+	 * on whatever mock the teardown has installed by then and refill the cache
+	 * with answers from the wrong test, so the next test finds a cached preview
+	 * and never calls the command it is asserting on.
 	 */
 	beforeEach(() => {
 		attachments.clearPending()
@@ -1624,15 +1624,23 @@ describe('attachments', () => {
 		await mountPanel()
 		await installWithAttachments(documentWith([PNG]))
 
+		const thumbRequests = () =>
+			mocks.invoke.mock.calls.filter(([command]) => command === 'attachment_thumb').length
+
 		// The request is in flight; the switch revokes the cache under it.
 		expect(release).toBeDefined()
+		expect(thumbRequests()).toBe(1)
 		attachments.clearPreviews()
 		release?.(THUMB_BYTES)
 		await settle(3)
 
-		// It published nothing — the card is back to asking, not stuck on a stale
-		// answer about a space nobody is looking at.
+		// It published nothing — not stuck on a stale answer about a space nobody
+		// is looking at.
 		expect(attachments.previewFor(PNG.file).state).toBe('loading')
+		// And "back to asking" is asserted rather than inferred from the state
+		// above, which a card that had simply given up would also report. The
+		// revoke bumps the epoch the card watches, so it issues a second request.
+		expect(thumbRequests()).toBe(2)
 	})
 
 	/** Two hundred notes carrying ten attachments each is two thousand image

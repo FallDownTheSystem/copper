@@ -326,6 +326,67 @@ fn code(source: &str) -> String {
 		.join("\n")
 }
 
+/// Every `.rs` file under `src/`, keyed by its path relative to `src/`, with
+/// comment lines and the `#[cfg(test)]` tail removed.
+///
+/// The `include_str!` constants above cover the four modules whose *ordering*
+/// matters. A census — "nothing anywhere else does this" — cannot be written
+/// against a hand-listed four, because the whole claim is about the files
+/// nobody thought to list.
+///
+/// The test tail goes because a unit test calling a function it is testing is
+/// not a caller in the sense any of these rules mean. Truncating at a
+/// column-zero `#[cfg(test)]` is exact for this crate, where every test module
+/// is the last item in its file.
+fn crate_sources() -> Vec<(String, String)> {
+	let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+	let mut sources = Vec::new();
+	let mut stack = vec![root.clone()];
+
+	while let Some(dir) = stack.pop() {
+		for entry in std::fs::read_dir(&dir).expect("src/ is unreadable") {
+			let path = entry.expect("unreadable directory entry").path();
+			if path.is_dir() {
+				stack.push(path);
+			} else if path.extension().is_some_and(|extension| extension == "rs") {
+				let name = path
+					.strip_prefix(&root)
+					.unwrap_or(&path)
+					.to_string_lossy()
+					.replace('\\', "/");
+				let text = std::fs::read_to_string(&path).expect("unreadable source file");
+				let body = text.split("\n#[cfg(test)]").next().unwrap_or(&text);
+				sources.push((name, code(body)));
+			}
+		}
+	}
+
+	sources.sort();
+	sources
+}
+
+/// Calls to the bare `attachments::sweep`, however it was brought into scope.
+///
+/// Matching the call rather than any one spelling of the path is the point: a
+/// `use crate::attachments::sweep;` followed by a bare `sweep(...)` is the way
+/// a new caller would slip past a check written against `crate::attachments::`.
+/// The two exclusions are the definition itself and longer names that merely
+/// end in the same word — `detach_for_sweep(` being the one that actually
+/// exists.
+fn calls_to_sweep(source: &str) -> usize {
+	source
+		.match_indices("sweep(")
+		.filter(|(at, _)| {
+			let before = &source[..*at];
+			!before.ends_with("fn ")
+				&& before
+					.chars()
+					.next_back()
+					.is_none_or(|previous| !previous.is_alphanumeric() && previous != '_')
+		})
+		.count()
+}
+
 /// Whether `line` opens a top-level `fn`, its modifiers included.
 ///
 /// The modifiers are what makes this more than a `starts_with("fn ")`. A scope
@@ -436,10 +497,15 @@ fn leaving_a_space_ends_handoffs_before_it_detaches_for_the_sweep() {
 		.split("fn leave_current_space(")
 		.nth(1)
 		.expect("leave_current_space is gone; this test needs rewriting");
-	let handoffs = body
+	// Bounded first, and every `find` below is against the bounded text. Both
+	// names are also *definitions* a dozen lines further down, so an unbounded
+	// search would match those and keep reporting a correct order for a teardown
+	// that had stopped calling either of them.
+	let scope = until_next_fn(body);
+	let handoffs = scope
 		.find("end_handoffs_before_switching(")
 		.expect("leaving a space no longer ends editor handoffs");
-	let detach = body
+	let detach = scope
 		.find("detach_for_sweep(")
 		.expect("leaving a space no longer captures the outgoing document");
 	assert!(
@@ -447,7 +513,7 @@ fn leaving_a_space_ends_handoffs_before_it_detaches_for_the_sweep() {
 		"the outgoing document is captured before editor handoffs have ended"
 	);
 	assert!(
-		!until_next_fn(body).contains("crate::attachments::sweep("),
+		!scope.contains("crate::attachments::sweep("),
 		"the sweep runs inside the teardown again, before the swap can fail"
 	);
 }
@@ -515,6 +581,42 @@ fn attachments_are_swept_only_after_a_swap_and_at_startup() {
 		.find("sweep_active_space(")
 		.expect("start_dispatcher no longer sweeps");
 	assert!(spawn < sweep, "the startup sweep runs inline on the setup path");
+}
+
+/// **The sweep primitive has exactly one caller in the whole crate**, and that
+/// is what turns `attachments::sweep`'s "at space close and at startup only,
+/// never mid-session" from a description into a rule.
+///
+/// The counts above are per-module and stay: they say each of the two swap
+/// sites and startup reaches the sweep through the right door, in the right
+/// order. This says there is no other door. A mid-session caller added anywhere
+/// else in the crate — the one that silently turns a restorable `Ctrl+Z` into a
+/// note whose attachments are gone — satisfies every other assertion in this
+/// file, because none of them looks outside `spaces/mod.rs`.
+#[test]
+fn the_sweep_primitive_has_exactly_one_caller_in_the_crate() {
+	let callers: Vec<String> = crate_sources()
+		.into_iter()
+		.filter(|(_, source)| calls_to_sweep(source) > 0)
+		.flat_map(|(name, source)| std::iter::repeat_n(name, calls_to_sweep(&source)))
+		.collect();
+
+	assert_eq!(
+		callers,
+		["spaces/mod.rs"],
+		"the sweep primitive is called from somewhere other than spaces::sweep_detached"
+	);
+
+	// And within that file it is `sweep_detached`, not merely somewhere.
+	let code = code(SPACES);
+	let body = code
+		.split("fn sweep_detached(")
+		.nth(1)
+		.expect("sweep_detached is gone; this test needs rewriting");
+	assert!(
+		calls_to_sweep(until_next_fn(body)) == 1,
+		"sweep_detached no longer calls the sweep primitive"
+	);
 }
 
 /// A30. Nothing switches the active space on its own, so the activate path may

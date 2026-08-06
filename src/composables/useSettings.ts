@@ -167,60 +167,111 @@ const { initialize, dispose } = createStartup(
 // --- setters -----------------------------------------------------------------
 
 /**
- * A request generation for one piece of state a setter writes.
+ * A request generation, guarding one thing an in-flight setter can reorder.
  *
- * Two writes to the same state can be in flight at once — the sounds and motion
- * switches are one click apart — and nothing makes them resolve in issue order.
- * The loser would then apply its older answer over the newer one: a `Settings`
- * object taken before the newer write, or a rejection that puts back an error
- * the newer call had already cleared. `useSpace.mutate`'s issued-generation
- * check is the same idea; this is the form it takes where there is no document
- * to be superseded.
+ * Two writes can be in flight at once — the sounds and motion switches are one
+ * click apart — and nothing makes them resolve in issue order. The loser would
+ * then apply its older answer over the newer one.
  *
- * **One counter per state, not one for the module.** A theme write and a
- * shortcut rebind land in different refs, so letting either supersede the other
- * would drop an answer that nothing is coming to replace — the row would keep
- * showing the old binding with the rebind actually applied in Rust.
+ * **`settle` compares against what has been applied, not against what has been
+ * issued**, and that distinction is load-bearing rather than pedantic. Merely
+ * *starting* a newer write must not discard an older answer: if the newer one
+ * goes on to reject, it applies nothing, and an older success thrown away on its
+ * behalf is a value that reached `settings.json` and never reached the screen.
+ * No `settings-changed` is emitted for a write the frontend itself made, so
+ * nothing would ever come to correct it. Advancing the mark only when something
+ * is actually applied makes the discard rule exactly "a newer answer already
+ * won" instead of "a newer question was asked".
  */
-type Writes = { issue: () => number; current: (token: number) => boolean }
+type Generation = {
+	issue: () => number
+	/** True when `token` is newer than anything already settled — and records it
+	 *  as the new mark. Has a side effect, so it is called once per outcome, at
+	 *  the moment of applying it. */
+	settle: (token: number) => boolean
+}
 
-function generations(): Writes {
-	let latest = 0
+function generations(): Generation {
+	let issued = 0
+	let settled = 0
 	return {
-		issue: () => ++latest,
-		current: (token: number) => token === latest,
+		issue: () => ++issued,
+		settle: (token: number) => {
+			if (token <= settled) return false
+			settled = token
+			return true
+		},
 	}
 }
 
+/**
+ * The value half: one counter per **ref a setter writes**.
+ *
+ * Not one for the module. A theme change and a shortcut rebind land in
+ * different refs, so letting either supersede the other would drop an answer
+ * nothing is coming to replace — the row would keep showing the old binding
+ * with the rebind actually applied in Rust.
+ */
 const settingsWrites = generations()
 const shortcutWrites = generations()
 const autostartWrites = generations()
+
+/**
+ * The message half: one counter per **row**, which is a different partition
+ * from the one above and has to be.
+ *
+ * `theme`, `sounds` and `motion` all write `settings.value`, so they share a
+ * value generation — but they are three separate rows with three separate
+ * error slots. Guarding a failure with the value counter meant a successful
+ * motion write suppressed a *sounds* failure that was still entirely valid, and
+ * the sounds row then showed nothing at all while its setting had not changed.
+ * The same held for the two shortcut rows and their Reset buttons.
+ *
+ * Written out per scope rather than built lazily, so adding a row to
+ * `SettingsScope` is a type error here rather than a missing guard at runtime.
+ */
+const rowWrites: Record<SettingsScope, Generation> = {
+	theme: generations(),
+	autostart: generations(),
+	sounds: generations(),
+	motion: generations(),
+	summon: generations(),
+	capture: generations(),
+}
 
 /**
  * The shape every setter here shares: clear this row's message, invoke, apply the
  * command's own return value, and report a failure against the row that produced
  * it. `useSpace`'s `mutate` is the same idea, minus the document machinery there
  * is none of here.
+ *
+ * The two guards are deliberately independent. A response can be too old to
+ * apply its value and still be the newest word on its own row — that is exactly
+ * the sounds-fails-while-motion-succeeds case — so the row's outcome is settled
+ * against `rowWrites` whatever the value guard decided.
  */
 async function attempt<T>(
-	writes: Writes,
+	writes: Generation,
 	scope: SettingsScope,
 	run: () => Promise<T>,
 	apply: (value: T) => void,
 ): Promise<boolean> {
 	clear(scope)
-	const issued = writes.issue()
+	const write = writes.issue()
+	const row = rowWrites[scope].issue()
+
 	try {
 		const value = await run()
-		// Superseded. Reported as the success it was — the command did go through —
-		// but its answer is stale and applying it is the reordering above.
-		if (writes.current(issued)) apply(value)
+		if (writes.settle(write)) apply(value)
+		// Cleared again on the way out, not only on the way in: an *older* call
+		// against this row may have rejected in the meantime and written a message
+		// that this success has just made untrue.
+		if (rowWrites[scope].settle(row)) clear(scope)
 		return true
 	} catch (error) {
-		// The same rule for the failure half, and it is the half that shows: a
-		// stale rejection would put back an error the newer call has cleared, next
-		// to a row that is no longer in that state.
-		if (writes.current(issued)) fail(scope, error)
+		// A rejection applies nothing, so it deliberately does not advance the
+		// value generation — an older success still has a claim on the ref.
+		if (rowWrites[scope].settle(row)) fail(scope, error)
 		return false
 	}
 }
@@ -307,8 +358,14 @@ function commitRecording(token: number, target: ShortcutTarget, chord: string): 
 }
 
 async function cancelRecording(): Promise<void> {
+	// Guarded like the two setters, because `shortcuts.value` has three writers
+	// and one invariant: the newest answer wins. That the recording lease makes a
+	// cancel and a commit mutually exclusive in *Rust* is not the same claim —
+	// it says nothing about the order their replies cross the boundary.
+	const write = shortcutWrites.issue()
 	try {
-		shortcuts.value = await invoke<ShortcutState>('cancel_shortcut_recording')
+		const value = await invoke<ShortcutState>('cancel_shortcut_recording')
+		if (shortcutWrites.settle(write)) shortcuts.value = value
 	} catch (error) {
 		console.error('[copper] could not cancel the shortcut recording', error)
 	}

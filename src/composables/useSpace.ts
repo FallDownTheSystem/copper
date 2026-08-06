@@ -543,6 +543,13 @@ async function mutate<T>(
 		await pullStatus()
 	} else {
 		// Deterministic for an ordinary structural mutation, so no round trip.
+		//
+		// The token bump makes this write take part in the same discard discipline
+		// a pull does. A `get_status` issued before it — an event handler's, say —
+		// can still be outstanding, and it was answered by a store that had not yet
+		// carried this mutation out; landing afterwards it would put `canUndo` back
+		// to false with nothing further coming to correct it.
+		statusToken++
 		storeStatus.value = { ...storeStatus.value, canUndo: true, canRedo: false }
 	}
 

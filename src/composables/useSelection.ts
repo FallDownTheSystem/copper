@@ -44,8 +44,13 @@ export function rowSectionId(key: string | null): string | null {
  *  only writer and it always replaces the array wholesale, so a deep `ref` pays
  *  a get trap and a dependency registration per id to observe a mutation that
  *  never happens — on a list that reaches 200 and is re-read by `selectedSet`,
- *  `isSelected` and every reconciliation. */
-const selectedIds = shallowRef<string[]>([])
+ *  `isSelected` and every reconciliation.
+ *
+ *  Typed `readonly` because that is what makes the claim above enforced rather
+ *  than merely stated: a `shallowRef<string[]>` lets `selectedIds.value.push()`
+ *  typecheck, and an in-place mutation is precisely the thing shallowness stops
+ *  anyone from seeing. */
+const selectedIds = shallowRef<readonly string[]>([])
 const focusedId = ref<string | null>(null)
 const anchorId = ref<string | null>(null)
 
