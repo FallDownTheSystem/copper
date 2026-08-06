@@ -180,9 +180,12 @@ pub fn open_space_at(app: &AppHandle, path: &Path) -> Reply<ActivateOutcome> {
 		return Err(refusal(*reason, message));
 	}
 
-	leave_current_space(app)?;
+	let outgoing = leave_current_space(app)?;
 
+	// `?` before the sweep: a failed open leaves the outgoing space active, and
+	// its blobs must survive that.
 	let doc = store::open_space(&state, path)?;
+	sweep_detached(outgoing);
 	// The row agrees with what just happened without waiting for another probe.
 	executor(app).record(&key, Availability::Available, Some(doc.name.clone()));
 	Ok(ActivateOutcome::changed(doc))
@@ -210,23 +213,49 @@ pub fn open_space_at(app: &AppHandle, path: &Path) -> Reply<ActivateOutcome> {
 /// between the teardown and the document swap.
 /// Everything the outgoing space is owed before another one takes its place.
 ///
-/// One function rather than two calls at each of the two switch sites, because
-/// the ordering between the halves is not arbitrary and a site that only
-/// remembered one of them would be silently wrong. Editor handoffs come first
-/// and can refuse the transition; the attachment sweep comes after, is
-/// best-effort, and can refuse nothing.
+/// Ends every live editor handoff — which can refuse the transition — and then
+/// hands back the outgoing space's path and document so the caller can sweep it
+/// **after** the swap has actually succeeded.
+///
+/// The return value is what makes that ordering possible, and the ordering is
+/// the point. Sweeping before the swap means a *failed* open leaves the
+/// outgoing space still active, its undo stack still alive, and the blobs its
+/// snapshots reference already collected — the exact "undo restores a note
+/// whose attachments are gone" outcome the whole no-delete-on-mutation rule
+/// exists to prevent. Sweeping the detached document afterwards cannot: by then
+/// nothing can undo into it.
 ///
 /// **The sweep runs here and at startup, and nowhere else.** Never during a
-/// session: the undo stack is session-scoped, and collecting the blobs of a
-/// note deleted a minute ago would leave `Ctrl+Z` restoring a note whose
-/// attachments no longer exist.
-fn leave_current_space(app: &AppHandle) -> Reply<()> {
+/// session, for the same reason.
+fn leave_current_space(app: &AppHandle) -> Reply<Option<(PathBuf, Space)>> {
 	end_handoffs_before_switching(app)?;
 	// After `end_all`, so a handoff still writing back cannot have its note's
-	// attachments collected out from under it, and after the store lock is
-	// released, which `sweep_active_space` takes care of itself.
-	crate::attachments::commands::sweep_active_space(app);
-	Ok(())
+	// attachments collected out from under it.
+	Ok(detach_for_sweep(app))
+}
+
+/// The active space's path and document, cloned out and the guard dropped.
+///
+/// Taken **before** the swap because afterwards the store no longer holds the
+/// outgoing document, and used **after** it because until the swap succeeds the
+/// outgoing space might still be the one the user is looking at.
+fn detach_for_sweep(app: &AppHandle) -> Option<(PathBuf, Space)> {
+	let state = app.state::<SharedStore>();
+	let guard = store::lock(&state);
+	guard
+		.active_path()
+		.map(Path::to_path_buf)
+		.zip(guard.active_space().ok())
+}
+
+/// Collects the outgoing space's orphans, once it really is outgoing.
+///
+/// Best-effort and silent: the user asked to change space, not to tidy a
+/// directory, and a failure here must not colour a switch that worked.
+fn sweep_detached(outgoing: Option<(PathBuf, Space)>) {
+	if let Some((path, doc)) = outgoing {
+		crate::attachments::sweep(&path, &doc);
+	}
 }
 
 fn end_handoffs_before_switching(app: &AppHandle) -> Reply<()> {
@@ -411,13 +440,14 @@ pub async fn create_space_interactive(app: AppHandle) -> Reply<ActivateOutcome> 
 	// this, `create_space` replaces the active document while a handoff keyed by
 	// `note_id` is still live, which is the exact cross-space write A27 exists to
 	// prevent.
-	leave_current_space(&app)?;
+	let outgoing = leave_current_space(&app)?;
 	// `create_space` opens what it created, updates `recents` and emits its one
 	// `settings-changed`. Opening again would be a redundant second load and a
 	// second recents touch. If the create succeeds and the open half then fails,
 	// the store leaves the file in place and the error says so — never a
 	// half-activated state.
 	let doc = store::create_space(&app.state::<SharedStore>(), &path, &name)?;
+	sweep_detached(outgoing);
 	executor(&app).record(
 		&comparison_key(&path),
 		Availability::Available,
@@ -655,12 +685,18 @@ pub fn start_dispatcher(app: &AppHandle, cold: Request) {
 	// Initialised here so the first menu open does not pay for it, and so the
 	// availability sink exists before anything can produce a result.
 	let _ = executor(app);
-	// The startup half of the sweep policy, and this is the right moment for it:
-	// `apply_cold_launch` has already opened whatever the command line named, so
-	// the space being collected is the one the user is about to look at. It runs
-	// before anything can add a note, so no blob it could collect is one this
-	// session created.
-	crate::attachments::commands::sweep_active_space(app);
+	// The startup half of the sweep policy. `apply_cold_launch` has already
+	// opened whatever the command line named, so the space being collected is the
+	// one the user is about to look at, and nothing has had a chance to add a
+	// note — so no blob it could collect is one this session created.
+	//
+	// **On its own thread, off the `setup()` path.** Nothing needs it finished
+	// before the panel exists, and enumerating an assets directory on a network
+	// share can take seconds — which would sit directly between launch and the
+	// first capture being possible. Detached deliberately: there is nothing to
+	// join, and a failure is already best-effort.
+	let handle = app.clone();
+	std::thread::spawn(move || crate::attachments::commands::sweep_active_space(&handle));
 	dispatch::start(Arc::new(AppLaunchHost(app.clone())));
 }
 

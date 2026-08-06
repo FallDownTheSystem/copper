@@ -162,6 +162,23 @@ pub async fn submit_entry(
 pub fn submit(shared: &SharedStore, body: &str, attachments: &[Attachment]) -> Reply<SubmitResult> {
 	let mut guard = lock(shared);
 
+	// The blobs have to be in **this** space's assets directory. Checked here
+	// rather than in `ops`, which is deliberately pure over the document — every
+	// op has to be re-appliable against a re-read document after a write
+	// conflict, and an op that touched the filesystem could not be.
+	//
+	// The case is a space switch with a loaded tray: bytes ingested against A
+	// live in `A.copper.assets\`, and writing them into B's document would leave
+	// references to files that will never exist there. The frontend clears the
+	// tray on a switch; this is the half that does not depend on it having done so.
+	if !attachments.is_empty() {
+		let space = guard
+			.active_path()
+			.map(std::path::Path::to_path_buf)
+			.ok_or_else(|| StoreError::Unavailable("no space is open".into()))?;
+		crate::attachments::commands::require_present(&space, attachments)?;
+	}
+
 	let name = match classify(body) {
 		Entry::Note { body } => {
 			let (note_id, space) = guard.mutate(|doc| ops::add_note(doc, body, None, attachments))?;

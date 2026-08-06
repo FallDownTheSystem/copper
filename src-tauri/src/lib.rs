@@ -345,10 +345,17 @@ pub fn run() {
 			panel::flush_position(handle);
 			shortcuts::shutdown(handle);
 			capture::shutdown(handle);
-			// Before the sweep: each live handoff applies or refuses whatever is on
+			// Before `scavenge`: each live handoff applies or refuses whatever is on
 			// disk, so exiting is not a way to silently discard unsaved editor work.
 			// The at-exit form skips the mid-write read retry, which would otherwise
 			// cost a debounce window per handoff on the way out.
+			//
+			// "Sweep" is deliberately not the word here. `scavenge` collects the
+			// editor's own temp directories; task-011's *attachment* sweep runs at
+			// space close and at startup only, and never at exit — a session that
+			// ends is a session whose undo stack ends with it, so there is nothing
+			// left to protect and nothing that needs collecting before the next
+			// launch does it.
 			editor::end_all_at_exit(handle);
 			editor::scavenge();
 		}

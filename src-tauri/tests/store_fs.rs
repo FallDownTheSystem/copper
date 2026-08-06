@@ -2064,3 +2064,165 @@ fn a_note_cannot_be_created_with_more_attachments_than_the_cap() {
 		"the cap itself was refused"
 	);
 }
+
+/// The MUST-FIX repro: ingest against space A, switch to B, submit.
+///
+/// The blob is in `A.copper.assets\`, so writing B's document with a reference
+/// to it would leave a note pointing at a file that is not, and never will be,
+/// beside it. The frontend clears the tray on a switch; this is the half that
+/// does not depend on the frontend having done so.
+#[test]
+fn attachments_ingested_against_another_space_are_refused_after_a_switch() {
+	let harness = Harness::new();
+	let first = harness.path();
+	let file = attach(&harness, &png(30), "shot.png");
+
+	// A second space in the same directory, opened the way the switcher does.
+	let second = first.with_file_name("other.copper");
+	std::fs::write(&second, format::to_git_json(&golden_doc()).unwrap()).unwrap();
+	store::open_space(&harness.shared, &second).unwrap();
+	assert_eq!(harness.path(), second);
+
+	let err = submit(&harness.shared, "a note", std::slice::from_ref(&file)).unwrap_err();
+
+	assert_eq!(err.kind(), "invalid");
+	assert!(err.message().contains("shot.png"), "{}", err.message());
+	assert!(
+		harness
+			.doc()
+			.notes
+			.iter()
+			.all(|note| note.attachments.is_empty()),
+		"a dangling attachment reference reached the document"
+	);
+	// And the blob is untouched under the space it belongs to.
+	assert!(attachments::assets_dir(&first).join(&file.file).is_file());
+
+	// Back in its own space the same attachment goes through, so the refusal is
+	// about *where* the blob is and not about the attachment.
+	store::open_space(&harness.shared, &first).unwrap();
+	assert!(submit(&harness.shared, "a note", std::slice::from_ref(&file)).is_ok());
+}
+
+/// A content-addressed name is not a capability. Sixteen hex characters is 64
+/// bits, and — far more mundanely — the occupant could be a directory or a file
+/// some other program left behind. Adopting it on the strength of the name
+/// alone would let a note reference bytes nobody checked.
+#[test]
+fn a_colliding_name_holding_different_bytes_fails_the_ingest() {
+	let harness = Harness::new();
+	let space = harness.path();
+	let bytes = png(31);
+	let expected = attachments::ingest(&space, &bytes, "shot.png").unwrap();
+
+	// Same name, different content — what a deliberate prefix collision produces.
+	let occupied = attachments::assets_dir(&space).join(&expected.file);
+	std::fs::write(&occupied, b"not the bytes that hash to this name").unwrap();
+
+	let err = attachments::ingest(&space, &bytes, "shot.png").unwrap_err();
+	assert_eq!(err.kind(), "io");
+	assert!(err.message().contains("already exists"), "{}", err.message());
+
+	// Identical bytes still succeed, so idempotent re-ingest is unaffected.
+	std::fs::write(&occupied, &bytes).unwrap();
+	assert_eq!(
+		attachments::ingest(&space, &bytes, "shot.png").unwrap().file,
+		expected.file
+	);
+}
+
+/// A directory sitting where a blob should be is not a blob.
+#[test]
+fn a_directory_occupying_a_blob_name_fails_rather_than_being_adopted() {
+	let harness = Harness::new();
+	let space = harness.path();
+	let bytes = png(32);
+	let name = attachments::ingest(&space, &bytes, "shot.png").unwrap().file;
+
+	let path = attachments::assets_dir(&space).join(&name);
+	std::fs::remove_file(&path).unwrap();
+	std::fs::create_dir(&path).unwrap();
+
+	assert!(attachments::ingest(&space, &bytes, "shot.png").is_err());
+	// And reading it refuses too, rather than following whatever it is.
+	assert!(attachments::read_blob(&space, &name).is_err());
+}
+
+/// A `.copper` space can arrive from a git remote, and git can create symlinks.
+/// A link inside the assets directory has a perfectly valid bare filename, so
+/// the name check alone would let a read or a shell launch follow it out.
+#[test]
+#[cfg_attr(
+	not(windows),
+	ignore = "symlink creation needs Developer Mode or elevation"
+)]
+fn a_symlink_in_the_assets_directory_is_refused_rather_than_followed() {
+	let harness = Harness::new();
+	let space = harness.path();
+	let name = attachments::ingest(&space, &png(33), "shot.png").unwrap().file;
+
+	let outside = space.with_file_name("secret.txt");
+	std::fs::write(&outside, b"not for the panel").unwrap();
+	let link = attachments::assets_dir(&space).join("linked.png");
+	// Creating a symlink needs Developer Mode or elevation; skip rather than fail
+	// the suite on a machine that has neither, since the property is a property
+	// of the code and not of this machine's privileges.
+	if std::os::windows::fs::symlink_file(&outside, &link).is_err() {
+		return;
+	}
+
+	let err = attachments::read_blob(&space, "linked.png").unwrap_err();
+	assert_eq!(err.kind(), "invalid");
+	// The real blob beside it still reads, so the refusal is about the link.
+	assert!(attachments::read_blob(&space, &name).is_ok());
+}
+
+/// Ids are identity: two entries sharing one give the note two rows the
+/// frontend keys identically, and make "remove this one" ambiguous.
+#[test]
+fn two_attachments_sharing_an_id_are_refused() {
+	let harness = Harness::new();
+	let one = attach(&harness, &png(34), "a.png");
+	let mut two = attach(&harness, &png(35), "b.png");
+	two.id = one.id.clone();
+
+	let err = submit(&harness.shared, "a note", &[one.clone(), two]).unwrap_err();
+	assert_eq!(err.kind(), "invalid");
+	assert!(harness.doc().notes.is_empty());
+
+	// Two entries pointing at the same *file* are fine and expected — that is
+	// AC3, the same screenshot attached twice.
+	let twice = Attachment {
+		id: "att_second".into(),
+		..one.clone()
+	};
+	assert!(submit(&harness.shared, "a note", &[one, twice]).is_ok());
+}
+
+/// `hex16` only ever emits lowercase, so two entries differing in case name the
+/// same file on Windows — which a hand-edited document can easily contain.
+#[test]
+fn merging_deduplicates_attachment_files_case_insensitively() {
+	let harness = Harness::new();
+	let file = attach(&harness, &png(36), "shot.png");
+	let shouty = Attachment {
+		id: "att_shouty".into(),
+		file: file.file.to_uppercase(),
+		..file.clone()
+	};
+
+	let first = harness.add("first note").unwrap();
+	let second = harness.add("second note").unwrap();
+	set_attachments(&harness, &first, vec![file.clone()]);
+	set_attachments(&harness, &second, vec![shouty]);
+
+	store::lock(&harness.shared)
+		.mutate(|doc| ops::merge_notes(doc, &[first.clone(), second.clone()]))
+		.unwrap();
+
+	assert_eq!(
+		harness.doc().note(&first).unwrap().attachments.len(),
+		1,
+		"the same file in two cases survived as two entries"
+	);
+}

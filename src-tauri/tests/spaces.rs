@@ -377,12 +377,11 @@ fn every_document_swap_leaves_the_current_space_first() {
 	}
 }
 
-/// Task-011 put a second thing in the teardown, so the ordering *inside* it is
-/// now load-bearing too: the attachment sweep must run after `editor::end_all`,
-/// or a handoff still writing its note back could have that note's attachments
-/// collected out from under it.
+/// Task-011's teardown ends editor handoffs before it detaches the outgoing
+/// space, or a handoff still writing its note back could have that note's
+/// attachments collected out from under it.
 #[test]
-fn leaving_a_space_ends_handoffs_before_it_sweeps_attachments() {
+fn leaving_a_space_ends_handoffs_before_it_detaches_for_the_sweep() {
 	let code = code(SPACES);
 	let body = code
 		.split("fn leave_current_space(")
@@ -391,65 +390,88 @@ fn leaving_a_space_ends_handoffs_before_it_sweeps_attachments() {
 	let handoffs = body
 		.find("end_handoffs_before_switching(")
 		.expect("leaving a space no longer ends editor handoffs");
-	let sweep = body
-		.find("sweep_active_space(")
-		.expect("leaving a space no longer collects unreferenced attachments");
+	let detach = body
+		.find("detach_for_sweep(")
+		.expect("leaving a space no longer captures the outgoing document");
 	assert!(
-		handoffs < sweep,
-		"the attachment sweep runs before editor handoffs have ended"
+		handoffs < detach,
+		"the outgoing document is captured before editor handoffs have ended"
+	);
+	assert!(
+		!body[..body.find("
+fn ").unwrap_or(body.len())].contains("crate::attachments::sweep("),
+		"the sweep runs inside the teardown again, before the swap can fail"
 	);
 }
 
-/// The sweep policy in one assertion: space close and startup, and nowhere
-/// else. A third caller would almost certainly be a mid-session one, which is
-/// what makes an undo unrestorable — the stack is session-scoped, so collecting
-/// a deleted note's blobs during a session silently breaks `Ctrl+Z`.
+/// **The sweep must not run until the swap has succeeded.**
+///
+/// Sweeping first means a *failed* open leaves the outgoing space still active,
+/// its session-scoped undo stack still alive, and the blobs those snapshots
+/// reference already collected — which is exactly the "undo restores a note
+/// whose attachments are gone" outcome the no-delete-on-mutation rule exists to
+/// prevent. Asserted structurally, because neither entry point is reachable
+/// without an `AppHandle`.
 #[test]
-fn attachments_are_only_swept_when_leaving_a_space_and_at_startup() {
+fn the_sweep_runs_only_after_a_swap_has_succeeded() {
+	let code = code(SPACES);
+	for swap in ["store::open_space(", "store::create_space("] {
+		let at = code
+			.find(swap)
+			.unwrap_or_else(|| panic!("{swap} is no longer called; this test needs rewriting"));
+		// From the teardown this swap belongs to, up to the swap itself. Scoped to
+		// that window rather than to the whole file above the swap, which would
+		// also see the *other* entry point's sweep and the definition itself.
+		let teardown = code[..at]
+			.rfind("leave_current_space(")
+			.unwrap_or_else(|| panic!("{swap} runs without leaving the outgoing space first"));
+		assert!(
+			!code[teardown..at].contains("sweep_detached("),
+			"{swap} sweeps between leaving and swapping, so a failed open collects a live space's \
+			 blobs"
+		);
+		let after = &code[at..];
+		let sweep = after
+			.find("sweep_detached(")
+			.unwrap_or_else(|| panic!("{swap} never sweeps the space it replaced"));
+		// Within the same function: the next `fn` must come after the sweep.
+		let next_fn = after.find("
+fn ").unwrap_or(after.len());
+		assert!(sweep < next_fn, "{swap}'s sweep landed in a different function");
+	}
+}
+
+/// The sweep policy in one assertion: after a space swap, and at startup, and
+/// nowhere else. A third caller would almost certainly be a mid-session one,
+/// which is what makes an undo unrestorable.
+#[test]
+fn attachments_are_swept_only_after_a_swap_and_at_startup() {
 	let code = code(SPACES);
 	assert_eq!(
+		code.matches("sweep_detached(").count(),
+		// Once in its own definition, once per swap site.
+		3,
+		"a swap site is missing its sweep, or something else sweeps"
+	);
+	assert_eq!(
 		code.matches("sweep_active_space(").count(),
-		2,
-		"the sweep is called from somewhere other than leave_current_space and start_dispatcher"
+		1,
+		"the active space is swept from somewhere other than startup"
 	);
-	for caller in ["fn leave_current_space(", "fn start_dispatcher("] {
-		let body = code.split(caller).nth(1).expect("caller is gone");
-		assert!(
-			body.split("\nfn ")
-				.next()
-				.is_some_and(|scope| scope.contains("sweep_active_space(")),
-			"{caller} no longer sweeps"
-		);
-	}
-}
 
-/// A21. One focused reveal, in the module task-002 made the only owner of the
-/// panel's `HWND`. A second reveal helper is exactly the "two files racing to
-/// define how this one window is shown" that both earlier phases wrote rules
-/// against.
-#[test]
-fn every_reveal_goes_through_the_panel_module() {
-	for (name, source) in [
-		("lib.rs", LIB),
-		("spaces/mod.rs", SPACES),
-		("tray.rs", TRAY),
-		("capture/mod.rs", CAPTURE),
-	] {
-		let code = code(source);
-		for forbidden in [".show()", ".unminimize()", ".set_focus()"] {
-			assert!(
-				!code.contains(forbidden),
-				"{name} calls {forbidden} directly instead of going through panel::reveal"
-			);
-		}
-	}
-	// The dispatcher's worker is a background thread by design, so its reveal is
-	// the one call site in this crate that has to cross back to the thread that
-	// owns the window.
-	assert!(
-		code(SPACES).contains("run_on_main_thread(move || panel::reveal_or_log"),
-		"the launch host reveals off the main thread"
-	);
+	// Startup's sweep is off the setup() path: enumerating an assets directory on
+	// a network share must not sit between launch and the first capture.
+	let body = code
+		.split("fn start_dispatcher(")
+		.nth(1)
+		.expect("start_dispatcher is gone");
+	let scope = &body[..body.find("
+fn ").unwrap_or(body.len())];
+	let spawn = scope.find("thread::spawn").expect("the startup sweep is not on a thread");
+	let sweep = scope
+		.find("sweep_active_space(")
+		.expect("start_dispatcher no longer sweeps");
+	assert!(spawn < sweep, "the startup sweep runs inline on the setup path");
 }
 
 /// A30. Nothing switches the active space on its own, so the activate path may

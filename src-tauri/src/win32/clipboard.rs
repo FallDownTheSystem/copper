@@ -509,16 +509,39 @@ pub fn read_attachment() -> Result<Option<ClipboardAttachment>> {
 	}
 
 	for format in [CF_DIBV5, CF_DIB] {
-		if let FormatBytes::Bytes(bytes) = read_format_bytes(format, ATTACHMENT_READ_LIMIT) {
-			return Ok(Some(ClipboardAttachment::Dib(bytes)));
+		match read_format_bytes(format, ATTACHMENT_READ_LIMIT) {
+			FormatBytes::Bytes(bytes) => return Ok(Some(ClipboardAttachment::Dib(bytes))),
+			// **Reported, not skipped.** Returning `None` here would be
+			// indistinguishable from "there was no image", so the composer would fall
+			// through to a native text paste that inserts nothing and the keystroke
+			// would do nothing at all, silently. The user pasted something; they are
+			// owed a reason it did not land.
+			FormatBytes::TooLarge => {
+				return Err(ClipboardError::Win32 {
+					op: "GetClipboardData",
+					code: 0,
+					message: "that image is too large to attach".to_owned(),
+				})
+			}
+			FormatBytes::Unreadable => continue,
 		}
 	}
 
-	if let FormatBytes::Bytes(bytes) = read_format_bytes(CF_HDROP, ATTACHMENT_READ_LIMIT) {
-		let paths = parse_hdrop(&bytes);
-		if !paths.is_empty() {
-			return Ok(Some(ClipboardAttachment::Files(paths)));
+	match read_format_bytes(CF_HDROP, ATTACHMENT_READ_LIMIT) {
+		FormatBytes::Bytes(bytes) => {
+			let paths = parse_hdrop(&bytes);
+			if !paths.is_empty() {
+				return Ok(Some(ClipboardAttachment::Files(paths)));
+			}
 		}
+		FormatBytes::TooLarge => {
+			return Err(ClipboardError::Win32 {
+				op: "GetClipboardData",
+				code: 0,
+				message: "that file list is too large to read".to_owned(),
+			})
+		}
+		FormatBytes::Unreadable => {}
 	}
 
 	Ok(None)

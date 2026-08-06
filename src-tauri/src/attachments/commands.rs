@@ -25,9 +25,39 @@ use crate::store::model::Attachment;
 use crate::store::{self, SharedStore};
 use crate::win32::clipboard::{self, ClipboardAttachment};
 
-use super::{ingest, read_blob, resolve, thumb, ATTACHMENT_MAX_BYTES};
+use super::{
+	ingest, read_blob, read_capped, read_prefix, resolve_existing, thumb, ATTACHMENT_MAX_BYTES,
+	SNIFF_PREFIX_BYTES,
+};
 
 type Reply<T> = std::result::Result<T, StoreError>;
+
+/// Refuses any attachment whose blob is not in **this** space's assets
+/// directory.
+///
+/// The check lives here rather than in `ops::clean_attachments` because ops are
+/// pure functions over the document — task-003 keeps all IO out of them so they
+/// can be re-applied against a re-read document after a write conflict — and
+/// this needs the filesystem. Here is where attachments cross IPC, which is the
+/// right boundary for it anyway.
+///
+/// The case it exists for is a space switch: blobs ingested against space A sit
+/// in `A.copper.assets\`, and submitting them after switching to B would write
+/// B's document with references to files that are not, and will never be, in
+/// `B.copper.assets\`. The frontend clears the tray on a switch, but "the UI
+/// clears it" is not a guarantee the document format can rest on.
+pub fn require_present(space: &Path, attachments: &[Attachment]) -> Result<()> {
+	for attachment in attachments {
+		resolve_existing(space, &attachment.file).map_err(|_| {
+			StoreError::Invalid(format!(
+				"{} is not in this space's attachments — it may have been attached before you \
+				 switched space",
+				attachment.name
+			))
+		})?;
+	}
+	Ok(())
+}
 
 /// The open space's path, or the reason there is nothing to attach to.
 ///
@@ -66,8 +96,11 @@ fn ingest_paths(space: &Path, paths: &[PathBuf]) -> Result<Vec<Attachment>> {
 				refused.push(format!("{name} is a folder"));
 				continue;
 			}
-			// Measured before the read, so an enormous file costs a `stat` rather
-			// than a full load into memory that is then thrown away.
+			// A cheap early refusal for the ordinary oversized file, so a 4 GB video
+			// costs a `stat` and not four gigabytes of reading. It is **not** the
+			// bound — the read below carries that, because a length read here can be
+			// stale by the time the read happens and is simply a lie for a pipe or a
+			// device.
 			Ok(metadata) if metadata.len() > ATTACHMENT_MAX_BYTES => {
 				refused.push(format!("{name} is too large"));
 				continue;
@@ -79,12 +112,12 @@ fn ingest_paths(space: &Path, paths: &[PathBuf]) -> Result<Vec<Attachment>> {
 			}
 		}
 
-		match std::fs::read(path).map_err(|err| StoreError::Io(err.to_string())) {
+		match read_capped(path, ATTACHMENT_MAX_BYTES, &name) {
 			Ok(bytes) => match ingest(space, &bytes, &name) {
 				Ok(attachment) => attached.push(attachment),
 				Err(err) => refused.push(err.message()),
 			},
-			Err(err) => refused.push(format!("{name}: {}", err.message())),
+			Err(err) => refused.push(err.message()),
 		}
 	}
 
@@ -102,23 +135,32 @@ fn ingest_paths(space: &Path, paths: &[PathBuf]) -> Result<Vec<Attachment>> {
 /// nothing attachable. That is the signal the frontend falls through to the
 /// native text paste on, and it has to be an ordinary outcome because it is the
 /// overwhelmingly common one.
+/// Off the async runtime's worker, in `spawn_blocking`. Every step here blocks:
+/// `OpenClipboard` retries with sleeps for up to a second, a `CF_HDROP` paste
+/// reads files, and a bitmap paste decodes and re-encodes an image. Parking a
+/// runtime worker for that is what makes the rest of the app feel stalled while
+/// a paste is in flight.
 #[tauri::command]
 pub async fn attach_paste(state: State<'_, SharedStore>) -> Reply<Vec<Attachment>> {
 	let space = space_path(&state)?;
 
-	let found = clipboard::read_attachment()
-		.map_err(|err| StoreError::Io(format!("the clipboard could not be read: {err}")))?;
+	tauri::async_runtime::spawn_blocking(move || {
+		let found = clipboard::read_attachment()
+			.map_err(|err| StoreError::Io(format!("the clipboard could not be read: {err}")))?;
 
-	match found {
-		None => Ok(Vec::new()),
-		Some(ClipboardAttachment::Files(paths)) => ingest_paths(&space, &paths),
-		Some(ClipboardAttachment::Dib(dib)) => {
-			// Encoded before storage: a DIB is not a portable file format and must
-			// never be written to disk as one.
-			let png = thumb::dib_to_png(&dib)?;
-			Ok(vec![ingest(&space, &png, "Pasted image.png")?])
+		match found {
+			None => Ok(Vec::new()),
+			Some(ClipboardAttachment::Files(paths)) => ingest_paths(&space, &paths),
+			Some(ClipboardAttachment::Dib(dib)) => {
+				// Encoded before storage: a DIB is not a portable file format and must
+				// never be written to disk as one.
+				let png = thumb::dib_to_png(&dib)?;
+				Ok(vec![ingest(&space, &png, "Pasted image.png")?])
+			}
 		}
-	}
+	})
+	.await
+	.map_err(|err| StoreError::Io(format!("the paste could not be completed: {err}")))?
 }
 
 /// The paperclip button.
@@ -186,38 +228,44 @@ pub async fn attachment_thumb(
 /// asymmetry is justified because images are the overwhelmingly common case and
 /// an image viewer is not an execution vector in that way.
 ///
-/// The path is **reconstructed** through [`super::resolve`] rather than taken
-/// from the document, and the type is re-sniffed from the bytes rather than
-/// read from `mime` — so neither half of the decision can be steered by editing
-/// the JSON.
+/// The path is **reconstructed** through [`super::resolve_existing`] rather than
+/// taken from the document, and the type is re-sniffed from the bytes rather
+/// than read from `mime` — so neither half of the decision can be steered by
+/// editing the JSON.
+///
+/// The sniff reads a bounded **prefix**, not the file. `infer` inspects a few
+/// hundred bytes at most, so loading a 10 MiB blob into memory to decide
+/// whether to launch it or reveal it was pure cost — and it is cost an attacker
+/// controls, since the blob's size is whatever they put in the directory.
+///
+/// In `spawn_blocking`: the read is disk IO and the opener launches a process.
 #[tauri::command]
 pub async fn attachment_open(
 	file: String,
 	app: AppHandle,
 	state: State<'_, SharedStore>,
 ) -> Reply<()> {
-	use tauri_plugin_opener::OpenerExt;
-
 	let space = space_path(&state)?;
-	let path = resolve(&space, &file)?;
-	if !path.is_file() {
-		return Err(StoreError::NotFound(format!(
-			"{file} is missing from this space's attachments"
-		)));
-	}
 
-	let is_image = std::fs::read(&path)
-		.ok()
-		.and_then(|bytes| infer::get(&bytes).map(|kind| kind.mime_type().to_string()))
-		.is_some_and(|mime| thumb::is_thumbnailable(&mime));
+	tauri::async_runtime::spawn_blocking(move || {
+		use tauri_plugin_opener::OpenerExt;
 
-	let target = path.to_string_lossy().to_string();
-	let opened = if is_image {
-		app.opener().open_path(target, None::<&str>)
-	} else {
-		app.opener().reveal_item_in_dir(&path)
-	};
-	opened.map_err(|err| StoreError::Io(format!("could not open {}: {err}", path.display())))
+		let path = resolve_existing(&space, &file)?;
+		let prefix = read_prefix(&path, SNIFF_PREFIX_BYTES)?;
+		let is_image = infer::get(&prefix)
+			.map(|kind| kind.mime_type())
+			.is_some_and(thumb::is_thumbnailable);
+
+		let target = path.to_string_lossy().to_string();
+		let opened = if is_image {
+			app.opener().open_path(target, None::<&str>)
+		} else {
+			app.opener().reveal_item_in_dir(&path)
+		};
+		opened.map_err(|err| StoreError::Io(format!("could not open {}: {err}", path.display())))
+	})
+	.await
+	.map_err(|err| StoreError::Io(format!("the file could not be opened: {err}")))?
 }
 
 /// Collects the open space's unreferenced blobs, with **no store lock held**.

@@ -145,6 +145,20 @@ fn clean_attachments(attachments: &[Attachment]) -> Result<Vec<Attachment>> {
 			bad.file
 		)));
 	}
+	// Ids are identity. Two entries sharing one would give the note two rows the
+	// frontend keys identically — Vue's `:key` would collide and render one of
+	// them — and would make "remove this attachment" ambiguous. Duplicate *files*
+	// are fine and expected: attaching the same screenshot twice is AC3.
+	let mut seen = HashSet::new();
+	if let Some(repeated) = attachments
+		.iter()
+		.find(|attachment| !seen.insert(attachment.id.as_str()))
+	{
+		return Err(StoreError::Invalid(format!(
+			"two attachments share the id {}",
+			repeated.id
+		)));
+	}
 	Ok(attachments.to_vec())
 }
 
@@ -341,11 +355,16 @@ pub fn merge_notes(space: &mut Space, ids: &[String]) -> Result<()> {
 	// Deliberately **not** capped at `ATTACHMENT_MAX_PER_NOTE`: the cap governs
 	// what may be attached, and applying it here would make a merge either fail or
 	// silently drop files the user still has, which is worse than a long list.
+	//
+	// Compared case-insensitively: `hex16` only ever emits lowercase, so two
+	// entries differing in case name the same file on Windows — which a
+	// hand-edited document can easily contain, and which a case-sensitive
+	// comparison would let through as two copies of one screenshot.
 	let mut attachments: Vec<Attachment> = Vec::new();
 	let mut seen: HashSet<String> = HashSet::new();
 	for &position in &positions {
 		for attachment in &space.notes[position].attachments {
-			if seen.insert(attachment.file.clone()) {
+			if seen.insert(attachment.file.to_lowercase()) {
 				attachments.push(attachment.clone());
 			}
 		}

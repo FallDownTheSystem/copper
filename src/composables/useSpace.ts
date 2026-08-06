@@ -240,6 +240,13 @@ function applyDocument(
 		// assets directory, and holding object URLs for bytes no note can reference
 		// any more would leak them for the life of the process.
 		attachments.clearPreviews()
+		// The pending tray goes with them, and for a sharper reason: its blobs were
+		// written into the *previous* space's assets directory, so submitting them
+		// here would write this document with references to files that are not, and
+		// never will be, beside it. Rust refuses that submission independently —
+		// but leaving the tray populated would mean showing files that cannot be
+		// attached and failing only when the user pressed Enter.
+		attachments.clearPending()
 		// Collapse and the switcher are document-scoped: section ids mean something
 		// else now, and an open switcher is closed rather than re-pointed.
 		sectionState.reset()

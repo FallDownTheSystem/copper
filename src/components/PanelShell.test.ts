@@ -1575,6 +1575,95 @@ describe('attachments', () => {
 		expect(actions.attachmentActionLabel.value).toBe('Open Attachment')
 	})
 
+	// --- switching space ---
+
+	/** A pending attachment's blob lives in the *previous* space's assets
+	 *  directory, so carrying the tray across a switch would show files that
+	 *  cannot be attached and fail only when the user pressed Enter. */
+	it('empties the pending tray when the space identity changes', async () => {
+		withAttachmentCommands({ attach_paste: [PNG] })
+		const wrapper = await mountPanel()
+		await composerPaste(wrapper)
+		expect(wrapper.text()).toContain('Attached 1 file')
+
+		await installWithAttachments({ ...SPACE, id: 'spc_other' })
+
+		expect(wrapper.text()).not.toContain('Attached')
+	})
+
+	/**
+	 * A response for the previous space must not publish into the new one's
+	 * cache.
+	 *
+	 * The old space's blob is genuinely absent from the new space's assets
+	 * directory, so what a late response writes is `missing` — and the card it
+	 * marks unavailable is a perfectly present attachment, which stays that way
+	 * until the next switch.
+	 */
+	it('discards a preview response issued before a space switch', async () => {
+		let release: ((value: ArrayBuffer) => void) | undefined
+		withAttachmentCommands({
+			attachment_thumb: () =>
+				new Promise<ArrayBuffer>((resolve) => {
+					release = resolve
+				}),
+		})
+		await mountPanel()
+		await installWithAttachments(documentWith([PNG]))
+
+		// The request is in flight; the switch revokes the cache under it.
+		expect(release).toBeDefined()
+		attachments.clearPreviews()
+		release?.(THUMB_BYTES)
+		await settle(3)
+
+		// It published nothing — the card is back to asking, not stuck on a stale
+		// answer about a space nobody is looking at.
+		expect(attachments.previewFor(PNG.file).state).toBe('loading')
+	})
+
+	/** Two hundred notes carrying ten attachments each is two thousand image
+	 *  decodes if nothing bounds them. The ceiling that matters is not the cost
+	 *  of one decode but how many are asked for at once. */
+	it('bounds how many previews are decoding at once', async () => {
+		let inFlight = 0
+		let peak = 0
+		const finish: (() => void)[] = []
+		withAttachmentCommands({
+			attachment_thumb: () => {
+				inFlight++
+				peak = Math.max(peak, inFlight)
+				return new Promise<ArrayBuffer>((resolve) => {
+					finish.push(() => {
+						inFlight--
+						resolve(new ArrayBuffer(0))
+					})
+				})
+			},
+		})
+		await mountPanel()
+
+		const many = Array.from({ length: 40 }, (_, index) => ({
+			...PDF,
+			id: `att_${index}`,
+			file: `${index.toString(16).padStart(16, '0')}.pdf`,
+		}))
+		await installWithAttachments(documentWith(many))
+
+		expect(peak).toBeGreaterThan(0)
+		expect(peak).toBeLessThanOrEqual(4)
+
+		// The queue drains rather than stalling: releasing what is in flight lets
+		// the rest through.
+		while (finish.length > 0) {
+			finish.splice(0).forEach((done) => done())
+			await settle(1)
+		}
+		expect(
+			mocks.invoke.mock.calls.filter(([command]) => command === 'attachment_thumb'),
+		).toHaveLength(many.length)
+	})
+
 	/** AC17's axe half, over a note carrying attachments and a populated tray at
 	 *  the same time. */
 	it('reports no axe violations with a populated tray and a note carrying files', async () => {

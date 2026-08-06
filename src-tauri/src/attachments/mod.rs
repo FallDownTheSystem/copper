@@ -52,8 +52,12 @@ use crate::store::model::{Attachment, Space};
 /// Per file. A drop or paste over this is refused by name, and the rest of a
 /// multi-file drop still proceeds.
 pub const ATTACHMENT_MAX_BYTES: u64 = 10 * 1024 * 1024;
-/// Per note, counted across the whole resulting list rather than per operation,
-/// so a merge cannot smuggle a note past the cap either.
+/// How many attachments one **submission** may carry.
+///
+/// Deliberately not enforced on `merge_notes`: merging two full notes produces
+/// a list of twenty, and applying the cap there would make the merge either
+/// fail or silently drop files the user still has, both worse than a long list.
+/// The cap governs what may be *attached*, not what a document may hold.
 pub const ATTACHMENT_MAX_PER_NOTE: usize = 10;
 /// How long an unreferenced blob is left alone before the sweep may take it.
 ///
@@ -80,9 +84,14 @@ pub fn assets_dir(space_path: &Path) -> PathBuf {
 
 /// Windows device names, which are reserved **with or without an extension** and
 /// in any case. `CON.png` opens the console, not a file.
-const RESERVED_DEVICE_NAMES: [&str; 22] = [
-	"CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-	"COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+/// `CONIN$` and `CONOUT$` are on the list because they are console devices like
+/// `CON`, and the superscript `COM¹`/`LPT²` forms are on it because Windows
+/// really does resolve those digits — a name that looks like ordinary text and
+/// opens a serial port is exactly the kind of thing this table exists for.
+const RESERVED_DEVICE_NAMES: [&str; 30] = [
+	"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6",
+	"COM7", "COM8", "COM9", "COM¹", "COM²", "COM³", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6",
+	"LPT7", "LPT8", "LPT9", "LPT¹", "LPT²", "LPT³",
 ];
 
 /// Whether `name` is a plain filename that can only ever mean a child of the
@@ -130,6 +139,68 @@ pub fn resolve(space_path: &Path, file: &str) -> Result<PathBuf> {
 	}
 	Ok(assets_dir(space_path).join(file))
 }
+
+/// [`resolve`], plus the checks that only make sense for a path something is
+/// about to *read* or hand to the shell.
+///
+/// `resolve` cannot make them itself: it is also the write path, where the file
+/// legitimately does not exist yet.
+///
+/// **`symlink_metadata`, not `metadata`.** A `.copper` space can arrive from a
+/// git remote, and git can create symlinks — so a `file` naming a link inside
+/// the assets directory would otherwise resolve to a bare filename, pass every
+/// check, and then read or launch whatever it points at. Following the link is
+/// the whole attack; refusing anything that is not a regular file removes it,
+/// and costs nothing real, because every blob this app writes is a regular file
+/// it created itself.
+pub fn resolve_existing(space_path: &Path, file: &str) -> Result<PathBuf> {
+	let path = resolve(space_path, file)?;
+	let metadata = std::fs::symlink_metadata(&path).map_err(|err| io_err(&path, "read", &err))?;
+	if !metadata.is_file() {
+		return Err(StoreError::Invalid(format!(
+			"{file} is not a file in this space's attachments"
+		)));
+	}
+	Ok(path)
+}
+
+/// Reads at most `limit` bytes, and fails rather than truncating if there are
+/// more.
+///
+/// A `metadata().len()` check followed by an unbounded `read` is a TOCTOU: the
+/// file can grow between the two, and on Windows a named pipe or a device
+/// reports a length of zero and then hands over as much as it likes. Reading
+/// `limit + 1` and refusing when the extra byte arrives makes the bound a
+/// property of the read itself.
+pub fn read_capped(path: &Path, limit: u64, name: &str) -> Result<Vec<u8>> {
+	use std::io::Read;
+
+	let file = std::fs::File::open(path).map_err(|err| io_err(path, "read", &err))?;
+	let mut bytes = Vec::new();
+	file.take(limit + 1)
+		.read_to_end(&mut bytes)
+		.map_err(|err| io_err(path, "read", &err))?;
+	if bytes.len() as u64 > limit {
+		return Err(too_large(name, bytes.len() as u64));
+	}
+	Ok(bytes)
+}
+
+/// The first `limit` bytes, for sniffing. A short file is not an error.
+pub fn read_prefix(path: &Path, limit: u64) -> Result<Vec<u8>> {
+	use std::io::Read;
+
+	let file = std::fs::File::open(path).map_err(|err| io_err(path, "read", &err))?;
+	let mut bytes = Vec::new();
+	file.take(limit)
+		.read_to_end(&mut bytes)
+		.map_err(|err| io_err(path, "read", &err))?;
+	Ok(bytes)
+}
+
+/// Enough for every magic number `infer` knows; the longest it inspects is a
+/// few hundred bytes.
+pub const SNIFF_PREFIX_BYTES: u64 = 8 * 1024;
 
 // --- ingest ------------------------------------------------------------------
 
@@ -225,11 +296,47 @@ fn write_blob(path: &Path, dir: &Path, bytes: &[u8]) -> Result<()> {
 		match prepared.commit_new(path) {
 			Ok(()) => atomic::Attempt::Done(()),
 			Err(failure) if failure.error.kind() == std::io::ErrorKind::AlreadyExists => {
-				atomic::Attempt::Done(())
+				match occupant_matches(path, bytes) {
+					Ok(()) => atomic::Attempt::Done(()),
+					Err(err) => atomic::Attempt::Failed(err),
+				}
 			}
 			Err(failure) => atomic::classify_commit_failure(path, failure, &mut held),
 		}
 	})
+}
+
+/// Whether the file already at `path` really is the one we were about to write.
+///
+/// The collision is *usually* the same screenshot attached twice, and treating
+/// it as success is what makes ingestion idempotent. But "usually" is not a
+/// security property: sixteen hex characters is 64 bits, so a prefix collision
+/// is engineerable, and — far more mundanely — the occupant could be a
+/// directory, a symlink, or a file some other program happened to leave there.
+/// Accepting any of those on the strength of the name alone would let a note
+/// reference bytes nobody checked.
+///
+/// So the occupant is verified: a regular file, the right length, the right
+/// bytes. Anything else fails the ingest rather than silently adopting it.
+fn occupant_matches(path: &Path, bytes: &[u8]) -> Result<()> {
+	let metadata = std::fs::symlink_metadata(path).map_err(|err| io_err(path, "read", &err))?;
+	let mismatch = || {
+		StoreError::Io(format!(
+			"{} already exists and is not the file being attached",
+			path.display()
+		))
+	};
+	if !metadata.is_file() || metadata.len() != bytes.len() as u64 {
+		return Err(mismatch());
+	}
+	// Compared in full rather than trusting the length: the length agreeing is
+	// what a deliberate collision would arrange first.
+	let existing = read_capped(path, bytes.len() as u64, "the existing attachment")?;
+	if existing == bytes {
+		Ok(())
+	} else {
+		Err(mismatch())
+	}
 }
 
 /// The first 16 hex characters of the digest.
@@ -250,12 +357,8 @@ fn hex16(digest: &[u8]) -> String {
 /// document: that field is hand-editable, and a decoder is exactly the wrong
 /// place to discover that it lied.
 pub fn read_blob(space_path: &Path, file: &str) -> Result<Vec<u8>> {
-	let path = resolve(space_path, file)?;
-	let metadata = std::fs::metadata(&path).map_err(|err| io_err(&path, "read", &err))?;
-	if metadata.len() > ATTACHMENT_MAX_BYTES {
-		return Err(too_large(file, metadata.len()));
-	}
-	std::fs::read(&path).map_err(|err| io_err(&path, "read", &err))
+	let path = resolve_existing(space_path, file)?;
+	read_capped(&path, ATTACHMENT_MAX_BYTES, file)
 }
 
 // --- sweep -------------------------------------------------------------------

@@ -69,6 +69,36 @@ const objectUrls = new Set<string>()
  *  one attachment issue one command rather than N. */
 const requested = new Set<string>()
 
+/**
+ * How many previews may be decoding at once.
+ *
+ * Each one is a full image decode in Rust, and the panel can hold two hundred
+ * notes carrying ten attachments each — so the ceiling that matters is not the
+ * cost of one decode but how many can be in flight together. Without a bound,
+ * scrolling a large space fires every request in one frame and asks the backend
+ * for two thousand simultaneous decodes.
+ *
+ * Four rather than one: previews are what the user is waiting to see, and
+ * serialising them entirely would make a screen of attachments fill in visibly
+ * one at a time.
+ */
+const MAX_CONCURRENT_PREVIEWS = 4
+
+const waiting: string[] = []
+let running = 0
+
+/**
+ * Bumped by `clearPreviews`, and captured by every request in flight.
+ *
+ * A space switch revokes the cache while requests against the *previous* space
+ * are still outstanding. Without this token a response landing afterwards
+ * writes into the new epoch's cache — and because the old space's blob is
+ * genuinely absent from the new space's assets directory, what it writes is
+ * `missing`. The result was a present attachment rendered permanently
+ * unavailable until the next switch.
+ */
+let generation = 0
+
 const pendingCount = computed(() => pending.value.length)
 const hasPending = computed(() => pending.value.length > 0)
 
@@ -94,12 +124,14 @@ function setPreview(file: string, preview: Preview) {
  * image proves it with — one round trip per attachment, not two.
  */
 async function loadPreview(file: string) {
-	if (requested.has(file)) return
-	requested.add(file)
-	setPreview(file, { state: 'loading' })
-
+	const issued = generation
 	try {
 		const bytes = await invoke<ArrayBuffer>('attachment_thumb', { file })
+		// The cache this response was issued against has been revoked, so the
+		// answer describes a space nobody is looking at. Dropped rather than
+		// applied late — applying it is how a present attachment ends up marked
+		// unavailable in the space that replaced it.
+		if (issued !== generation) return
 		if (bytes.byteLength === 0) {
 			setPreview(file, { state: 'ready', url: null })
 			return
@@ -108,7 +140,35 @@ async function loadPreview(file: string) {
 		objectUrls.add(url)
 		setPreview(file, { state: 'ready', url })
 	} catch (error) {
+		if (issued !== generation) return
 		setPreview(file, { state: 'missing', reason: errorMessage(error) })
+	}
+}
+
+/**
+ * Queues a preview request, at most [`MAX_CONCURRENT_PREVIEWS`] at a time.
+ *
+ * The queue is drained rather than scheduled: each finishing request starts the
+ * next, so the in-flight count is exactly the number of decodes the backend is
+ * being asked for.
+ */
+function enqueuePreview(file: string) {
+	if (requested.has(file)) return
+	requested.add(file)
+	setPreview(file, { state: 'loading' })
+	waiting.push(file)
+	pump()
+}
+
+function pump() {
+	while (running < MAX_CONCURRENT_PREVIEWS && waiting.length > 0) {
+		const next = waiting.shift()
+		if (next === undefined) return
+		running++
+		void loadPreview(next).finally(() => {
+			running--
+			pump()
+		})
 	}
 }
 
@@ -121,7 +181,7 @@ async function loadPreview(file: string) {
  */
 function previewFor(file: string): Preview {
 	const known = previews.value.get(file)
-	if (!known) void loadPreview(file)
+	if (!known) enqueuePreview(file)
 	return known ?? { state: 'loading' }
 }
 
@@ -134,6 +194,12 @@ function previewFor(file: string): Preview {
  * attachments in one space, and a space switch is what clears it.
  */
 function clearPreviews() {
+	// Before anything else: it is what makes an in-flight response drop itself
+	// rather than publish into the cache this is about to replace.
+	generation++
+	// Queued-but-not-started requests are simply dropped — they name blobs in a
+	// space that is no longer open.
+	waiting.length = 0
 	for (const url of objectUrls) URL.revokeObjectURL(url)
 	objectUrls.clear()
 	requested.clear()
