@@ -87,8 +87,7 @@ pub fn thumbnail(bytes: &[u8], mime: &str) -> Result<Vec<u8>> {
 	// half of the bomb defence and the one that gives a readable message; the
 	// limits handed to the decoder below are the half that holds when a header
 	// lies about what follows it.
-	let (width, height) = dimensions(bytes, mime);
-	if let (Some(width), Some(height)) = (width, height) {
+	if let (Some(width), Some(height)) = dimensions(bytes, mime) {
 		let pixels = u64::from(width) * u64::from(height);
 		if pixels > MAX_DECODED_PIXELS {
 			return Err(StoreError::Invalid(format!(
@@ -197,10 +196,11 @@ const FILE_HEADER_SIZE: u32 = 14;
 /// pixels.
 ///
 /// Getting that offset wrong is not a decode failure — it is a decode that
-/// succeeds and renders the palette as image data — so each of the three things
+/// succeeds and renders the palette as image data — so each of the two things
 /// that can sit between the header and the pixels is counted rather than
 /// assumed absent: the channel masks after a 40-byte header, and the colour
-/// table for any depth of 8 bits or fewer.
+/// table, which `biClrUsed` may declare at any depth and not only at eight bits
+/// or fewer.
 fn bmp_from_dib(dib: &[u8]) -> Result<Vec<u8>> {
 	let malformed = || StoreError::Invalid("the pasted image is not a readable bitmap".into());
 
@@ -460,7 +460,8 @@ mod tests {
 			let decoded = image::load_from_memory_with_format(&bmp, ImageFormat::Bmp).unwrap();
 			assert!(
 				!decoded.color().has_alpha(),
-				"a 32-bit bitmap (masked: {masked}) decoded with alpha; the retired repair may be 				 needed again"
+				"a 32-bit bitmap (masked: {masked}) decoded with alpha; the retired repair may be \
+				 needed again"
 			);
 		}
 	}
@@ -543,5 +544,4 @@ mod tests {
 			err.message()
 		);
 	}
-
 }

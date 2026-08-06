@@ -133,11 +133,19 @@ pub fn is_bare_filename(name: &str) -> bool {
 /// remembering to check.
 pub fn resolve(space_path: &Path, file: &str) -> Result<PathBuf> {
 	if !is_bare_filename(file) {
-		return Err(StoreError::Invalid(format!(
-			"{file:?} is not a valid attachment file name"
-		)));
+		return Err(invalid_file_name(file));
 	}
 	Ok(assets_dir(space_path).join(file))
+}
+
+/// The one wording for a `file` value that is not a bare filename.
+///
+/// The *check* happens in two places by design — here on the way to a path, and
+/// in `ops::clean_attachments` on the way into the document — because a name is
+/// validated wherever it is received. The *refusal* is spelled once, because two
+/// wordings of one rule read as two different problems.
+pub fn invalid_file_name(file: &str) -> StoreError {
+	StoreError::Invalid(format!("{file:?} is not a valid attachment file name"))
 }
 
 /// [`resolve`], plus the checks that only make sense for a path something is
@@ -173,26 +181,37 @@ pub fn resolve_existing(space_path: &Path, file: &str) -> Result<PathBuf> {
 /// `limit + 1` and refusing when the extra byte arrives makes the bound a
 /// property of the read itself.
 pub fn read_capped(path: &Path, limit: u64, name: &str) -> Result<Vec<u8>> {
-	use std::io::Read;
-
-	let file = std::fs::File::open(path).map_err(|err| io_err(path, "read", &err))?;
-	let mut bytes = Vec::new();
-	file.take(limit + 1)
-		.read_to_end(&mut bytes)
-		.map_err(|err| io_err(path, "read", &err))?;
+	// `limit + 1`: the extra byte arriving is the refusal signal, and it is what
+	// makes the bound a property of the read rather than of a length check.
+	let bytes = read_take(path, limit + 1)?;
 	if bytes.len() as u64 > limit {
-		return Err(too_large(name, bytes.len() as u64));
+		return Err(too_large(name, bytes.len() as u64, limit));
 	}
 	Ok(bytes)
 }
 
 /// The first `limit` bytes, for sniffing. A short file is not an error.
 pub fn read_prefix(path: &Path, limit: u64) -> Result<Vec<u8>> {
+	read_take(path, limit)
+}
+
+/// At most `take` bytes, however long the file claims to be.
+///
+/// The bound is applied by the reader itself, which is the point: a length read
+/// followed by an unbounded read is a TOCTOU, and on Windows a pipe or a device
+/// reports zero and then hands over as much as it likes.
+fn read_take(path: &Path, take: u64) -> Result<Vec<u8>> {
 	use std::io::Read;
 
 	let file = std::fs::File::open(path).map_err(|err| io_err(path, "read", &err))?;
-	let mut bytes = Vec::new();
-	file.take(limit)
+	// A capacity hint and nothing more — the `take` below is still the bound. A
+	// `Take<File>` does not inherit `File`'s `read_to_end` size hint, so without
+	// this a ten-megabyte blob is twenty reallocations and twice its own size in
+	// memcpy. Clamped to `take` so a lying length cannot reserve past what the
+	// read would accept.
+	let hint = file.metadata().map_or(0, |meta| meta.len().min(take)) as usize;
+	let mut bytes = Vec::with_capacity(hint + 1);
+	file.take(take)
 		.read_to_end(&mut bytes)
 		.map_err(|err| io_err(path, "read", &err))?;
 	Ok(bytes)
@@ -202,18 +221,38 @@ pub fn read_prefix(path: &Path, limit: u64) -> Result<Vec<u8>> {
 /// few hundred bytes.
 pub const SNIFF_PREFIX_BYTES: u64 = 8 * 1024;
 
+/// The mime the **bytes** say they are, never the extension and never the
+/// document's `mime` field.
+///
+/// The default carries as much weight as the sniff: an unrecognised type is
+/// `application/octet-stream`, which `thumb::is_thumbnailable` refuses — so a
+/// `.png` that is really an executable is neither decoded nor launched (AC22).
+/// One function, so the rule and its default cannot drift apart between the
+/// places that apply it.
+pub fn sniff_mime(bytes: &[u8]) -> &'static str {
+	infer::get(bytes).map_or("application/octet-stream", |kind| kind.mime_type())
+}
+
 // --- ingest ------------------------------------------------------------------
 
 /// Where the bytes came from, for the one message the caller shows on a refusal.
-fn too_large(name: &str, len: u64) -> StoreError {
+///
+/// The limit is a parameter rather than [`ATTACHMENT_MAX_BYTES`] read from here:
+/// `occupant_matches` reads with the *existing file's* length as its bound, and
+/// naming the ingest cap in that refusal would report a limit this read never
+/// applied.
+fn too_large(name: &str, len: u64, limit: u64) -> StoreError {
 	StoreError::Invalid(format!(
 		"{name} is {} and the limit is {} — it was not attached",
 		human_bytes(len),
-		human_bytes(ATTACHMENT_MAX_BYTES)
+		human_bytes(limit)
 	))
 }
 
-fn human_bytes(bytes: u64) -> String {
+/// Sizes in the units a person reading a refusal expects. `pub(crate)` for the
+/// clipboard's own too-large refusal, which applies a different ceiling and has
+/// to be able to name it in the same words.
+pub(crate) fn human_bytes(bytes: u64) -> String {
 	const MIB: u64 = 1024 * 1024;
 	const KIB: u64 = 1024;
 	if bytes >= MIB {
@@ -239,7 +278,7 @@ fn human_bytes(bytes: u64) -> String {
 pub fn ingest(space_path: &Path, bytes: &[u8], original_name: &str) -> Result<Attachment> {
 	let len = bytes.len() as u64;
 	if len > ATTACHMENT_MAX_BYTES {
-		return Err(too_large(original_name, len));
+		return Err(too_large(original_name, len, ATTACHMENT_MAX_BYTES));
 	}
 	if bytes.is_empty() {
 		return Err(StoreError::Invalid(format!("{original_name} is empty")));
@@ -346,7 +385,8 @@ fn occupant_matches(path: &Path, bytes: &[u8]) -> Result<()> {
 /// stays readable in Explorer — which is half the reason the sidecar is a real
 /// directory rather than a container.
 fn hex16(digest: &[u8]) -> String {
-	digest.iter().take(8).map(|byte| format!("{byte:02x}")).collect()
+	let head: [u8; 8] = digest[..8].try_into().expect("a SHA-256 digest is 32 bytes");
+	format!("{:016x}", u64::from_be_bytes(head))
 }
 
 // --- reading -----------------------------------------------------------------

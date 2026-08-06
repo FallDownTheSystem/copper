@@ -135,6 +135,18 @@ pub enum ClipboardError {
 	/// write, so the write was abandoned rather than performed. Not a failure —
 	/// it is the guard that stops a restore from clobbering a fresh user copy.
 	Superseded { expected: u32, actual: u32 },
+	/// A decision Copper made about clipboard content, already worded as a whole
+	/// sentence.
+	///
+	/// Distinct from [`ClipboardError::Win32`] because nothing failed: the call
+	/// returned, the content is there, and Copper declined it — for being over a
+	/// limit, or for being advertised and then withheld. Reported through `Win32`
+	/// with a `code` of zero, as it was, every one of these reached the user as
+	/// "GetClipboardData failed: 0x00000000 that image is too large to attach",
+	/// which names an API the user has never heard of and a failure that did not
+	/// happen. The `Display` here is the sentence and nothing else, so a caller
+	/// can surface it unwrapped.
+	Refused(String),
 	Win32 {
 		op: &'static str,
 		code: i32,
@@ -157,6 +169,7 @@ impl std::fmt::Display for ClipboardError {
 				"the clipboard changed before the write (expected sequence {expected}, found \
 				 {actual}); write abandoned"
 			),
+			ClipboardError::Refused(message) => write!(f, "{message}"),
 			ClipboardError::Win32 { op, code, message } => {
 				write!(f, "{op} failed: 0x{code:08X} {message}")
 			}
@@ -470,7 +483,10 @@ pub fn read_text() -> Result<(Option<String>, u32)> {
 /// normalised into one: a `CF_HDROP` is a *file paste* — the user copied
 /// something in Explorer — and it keeps the original filenames, whereas a
 /// bitmap has no name and no file behind it at all.
-#[derive(Debug, Clone)]
+///
+/// Not `Clone`, deliberately: a `Dib` can be up to [`ATTACHMENT_READ_LIMIT`],
+/// and the only thing any caller should do with one is move it.
+#[derive(Debug)]
 pub enum ClipboardAttachment {
 	/// Raw device-independent bitmap bytes, exactly as the clipboard holds them:
 	/// a BMP body with no `BITMAPFILEHEADER`.
@@ -517,11 +533,7 @@ pub fn read_attachment() -> Result<Option<ClipboardAttachment>> {
 			// would do nothing at all, silently. The user pasted something; they are
 			// owed a reason it did not land.
 			FormatBytes::TooLarge => {
-				return Err(ClipboardError::Win32 {
-					op: "GetClipboardData",
-					code: 0,
-					message: "that image is too large to attach".to_owned(),
-				})
+				return Err(too_large_to_take("that image is too large to attach"))
 			}
 			FormatBytes::Unreadable => continue,
 		}
@@ -535,16 +547,25 @@ pub fn read_attachment() -> Result<Option<ClipboardAttachment>> {
 			}
 		}
 		FormatBytes::TooLarge => {
-			return Err(ClipboardError::Win32 {
-				op: "GetClipboardData",
-				code: 0,
-				message: "that file list is too large to read".to_owned(),
-			})
+			return Err(too_large_to_take("that list of copied files is too large to read"))
 		}
 		FormatBytes::Unreadable => {}
 	}
 
 	Ok(None)
+}
+
+/// A refusal that names the ceiling it applied.
+///
+/// The size belongs in the message because [`ATTACHMENT_READ_LIMIT`] is not the
+/// attachment limit the user was told about — it is deliberately much larger —
+/// so "too large" without a number sends someone looking for a 10 MB file that
+/// is not the problem.
+fn too_large_to_take(what: &str) -> ClipboardError {
+	ClipboardError::Refused(format!(
+		"{what} (over {})",
+		crate::attachments::human_bytes(ATTACHMENT_READ_LIMIT as u64)
+	))
 }
 
 /// Whether the clipboard advertises a format, without copying its payload.
@@ -568,15 +589,10 @@ fn has_format(format: u32) -> bool {
 /// bytes as UTF-16 would yield paths made of nonsense rather than no paths at
 /// all.
 fn parse_hdrop(bytes: &[u8]) -> Vec<PathBuf> {
-	let Some(offset) = bytes.get(0..4).map(|head| {
-		u32::from_le_bytes(head.try_into().expect("a four-byte slice")) as usize
-	}) else {
+	let Some(offset) = read_u32(bytes, 0).map(|value| value as usize) else {
 		return Vec::new();
 	};
-	let wide = bytes
-		.get(16..20)
-		.map(|flag| u32::from_le_bytes(flag.try_into().expect("a four-byte slice")) != 0)
-		.unwrap_or(false);
+	let wide = read_u32(bytes, 16).is_some_and(|flag| flag != 0);
 	let Some(list) = bytes.get(offset..) else {
 		return Vec::new();
 	};
@@ -597,6 +613,16 @@ fn parse_hdrop(bytes: &[u8]) -> Vec<PathBuf> {
 			.map(|part| PathBuf::from(String::from_utf8_lossy(part).into_owned()))
 			.collect()
 	}
+}
+
+/// A little-endian `DWORD` at a byte offset, or `None` when the block is too
+/// short to hold one.
+///
+/// `DROPFILES` is a fixed-layout structure that a truncated or hostile producer
+/// can still hand over short, so every field read goes through this rather than
+/// through an `expect` on a slice that may not be there.
+fn read_u32(bytes: &[u8], at: usize) -> Option<u32> {
+	Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
 }
 
 /// What one format's payload turned out to be.
@@ -784,14 +810,10 @@ pub fn snapshot() -> Result<Snapshot> {
 			// content the user had — destroying it. Failing here leaves the
 			// clipboard untouched, because nothing has been injected yet.
 			FormatBytes::Unreadable => {
-				return Err(ClipboardError::Win32 {
-					op: "GetClipboardData",
-					code: 0,
-					message: format!(
-						"format {id} was advertised but could not be read; refusing to continue \
-						 and risk losing it"
-					),
-				})
+				return Err(ClipboardError::Refused(format!(
+					"format {id} was advertised but could not be read; refusing to continue and \
+					 risk losing it"
+				)))
 			}
 		}
 	}
@@ -1009,6 +1031,17 @@ mod tests {
 		let private = register(w!("Copper Test Private Format"));
 		assert!(!is_restorable(private, formats));
 		assert!(!is_ignorable(private, formats));
+	}
+
+	/// What the user is shown when a paste is declined. The old spelling put
+	/// `GetClipboardData failed: 0x00000000` in front of it, which named an API
+	/// nobody has heard of and a failure that did not happen.
+	#[test]
+	fn a_refusal_reads_as_a_plain_sentence_and_names_the_ceiling() {
+		let refusal = too_large_to_take("that image is too large to attach").to_string();
+		assert_eq!(refusal, "that image is too large to attach (over 128.0 MB)");
+		assert!(!refusal.contains("0x"), "{refusal}");
+		assert!(!refusal.contains("GetClipboardData"), "{refusal}");
 	}
 
 	// --- CF_HDROP ---

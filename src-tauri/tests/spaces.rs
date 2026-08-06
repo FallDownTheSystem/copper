@@ -326,6 +326,25 @@ fn code(source: &str) -> String {
 		.join("\n")
 }
 
+/// The text from `body` up to the next top-level `fn`, so an assertion about
+/// "inside this function" cannot silently read the one after it.
+fn until_next_fn(body: &str) -> &str {
+	&body[..body.find("\nfn ").unwrap_or(body.len())]
+}
+
+/// A document swap's offset, paired with the teardown it belongs to. Both
+/// structural tests below locate the same pair, and a second copy of the panics
+/// is a second thing to rewrite when a name changes.
+fn swap_and_teardown(code: &str, swap: &str) -> (usize, usize) {
+	let at = code
+		.find(swap)
+		.unwrap_or_else(|| panic!("{swap} is no longer called; this test needs rewriting"));
+	let teardown = code[..at]
+		.rfind("leave_current_space(")
+		.unwrap_or_else(|| panic!("{swap} runs without leaving the outgoing space first"));
+	(at, teardown)
+}
+
 /// A18. A correctness property, not a style choice: registering the plugin
 /// lazily inside the setup closure — as several of Tauri's own examples do —
 /// would put window creation before the instance check.
@@ -360,14 +379,8 @@ fn single_instance_is_the_literal_first_plugin() {
 fn every_document_swap_leaves_the_current_space_first() {
 	let code = code(SPACES);
 	for swap in ["store::open_space(", "store::create_space("] {
-		let at = code
-			.find(swap)
-			.unwrap_or_else(|| panic!("{swap} is no longer called; this test needs rewriting"));
-		let before = &code[..at];
-		let teardown = before
-			.rfind("leave_current_space(")
-			.unwrap_or_else(|| panic!("{swap} runs without leaving the outgoing space first"));
-		let guard = before
+		let (at, teardown) = swap_and_teardown(&code, swap);
+		let guard = code[..at]
 			.rfind("activation()")
 			.unwrap_or_else(|| panic!("{swap} runs without the activation guard held"));
 		assert!(
@@ -398,8 +411,7 @@ fn leaving_a_space_ends_handoffs_before_it_detaches_for_the_sweep() {
 		"the outgoing document is captured before editor handoffs have ended"
 	);
 	assert!(
-		!body[..body.find("
-fn ").unwrap_or(body.len())].contains("crate::attachments::sweep("),
+		!until_next_fn(body).contains("crate::attachments::sweep("),
 		"the sweep runs inside the teardown again, before the swap can fail"
 	);
 }
@@ -416,15 +428,10 @@ fn ").unwrap_or(body.len())].contains("crate::attachments::sweep("),
 fn the_sweep_runs_only_after_a_swap_has_succeeded() {
 	let code = code(SPACES);
 	for swap in ["store::open_space(", "store::create_space("] {
-		let at = code
-			.find(swap)
-			.unwrap_or_else(|| panic!("{swap} is no longer called; this test needs rewriting"));
 		// From the teardown this swap belongs to, up to the swap itself. Scoped to
 		// that window rather than to the whole file above the swap, which would
-		// also see the *other* entry point's sweep and the definition itself.
-		let teardown = code[..at]
-			.rfind("leave_current_space(")
-			.unwrap_or_else(|| panic!("{swap} runs without leaving the outgoing space first"));
+		// also see the *other* entry point's sweep.
+		let (at, teardown) = swap_and_teardown(&code, swap);
 		assert!(
 			!code[teardown..at].contains("sweep_detached("),
 			"{swap} sweeps between leaving and swapping, so a failed open collects a live space's \
@@ -435,9 +442,10 @@ fn the_sweep_runs_only_after_a_swap_has_succeeded() {
 			.find("sweep_detached(")
 			.unwrap_or_else(|| panic!("{swap} never sweeps the space it replaced"));
 		// Within the same function: the next `fn` must come after the sweep.
-		let next_fn = after.find("
-fn ").unwrap_or(after.len());
-		assert!(sweep < next_fn, "{swap}'s sweep landed in a different function");
+		assert!(
+			sweep < until_next_fn(after).len(),
+			"{swap}'s sweep landed in a different function"
+		);
 	}
 }
 
@@ -465,8 +473,7 @@ fn attachments_are_swept_only_after_a_swap_and_at_startup() {
 		.split("fn start_dispatcher(")
 		.nth(1)
 		.expect("start_dispatcher is gone");
-	let scope = &body[..body.find("
-fn ").unwrap_or(body.len())];
+	let scope = until_next_fn(body);
 	let spawn = scope.find("thread::spawn").expect("the startup sweep is not on a thread");
 	let sweep = scope
 		.find("sweep_active_space(")

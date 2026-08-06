@@ -17,7 +17,7 @@
 
 use std::collections::HashSet;
 
-use crate::attachments::{is_bare_filename, ATTACHMENT_MAX_PER_NOTE};
+use crate::attachments::{invalid_file_name, is_bare_filename, ATTACHMENT_MAX_PER_NOTE};
 use crate::entry::normalise_name;
 
 use super::error::{Result, StoreError};
@@ -140,10 +140,7 @@ fn clean_attachments(attachments: &[Attachment]) -> Result<Vec<Attachment>> {
 		.iter()
 		.find(|attachment| !is_bare_filename(&attachment.file))
 	{
-		return Err(StoreError::Invalid(format!(
-			"{:?} is not a valid attachment file name",
-			bad.file
-		)));
+		return Err(invalid_file_name(&bad.file));
 	}
 	// Ids are identity. Two entries sharing one would give the note two rows the
 	// frontend keys identically — Vue's `:key` would collide and render one of

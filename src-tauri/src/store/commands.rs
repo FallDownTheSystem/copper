@@ -135,6 +135,7 @@ pub async fn add_note(
 /// reaches: a captured selection whose whole body is `# Name` is an ordinary
 /// note (Open Question 1, answered 2026-08-05). Inline section creation is a
 /// composer affordance, so it lives on the composer's command.
+///
 /// `attachments` is the one parameter this task adds, and it is optional so that
 /// every existing caller — and every future one that has nothing to attach —
 /// keeps working unchanged. Single word, per spec 8.1c, so Tauri's snake↔camel
@@ -172,10 +173,7 @@ pub fn submit(shared: &SharedStore, body: &str, attachments: &[Attachment]) -> R
 	// references to files that will never exist there. The frontend clears the
 	// tray on a switch; this is the half that does not depend on it having done so.
 	if !attachments.is_empty() {
-		let space = guard
-			.active_path()
-			.map(std::path::Path::to_path_buf)
-			.ok_or_else(|| StoreError::Unavailable("no space is open".into()))?;
+		let space = guard.require_active_path()?;
 		crate::attachments::commands::require_present(&space, attachments)?;
 	}
 

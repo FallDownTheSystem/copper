@@ -109,10 +109,17 @@ const pendingLabel = computed(() =>
 
 // --- previews ----------------------------------------------------------------
 
+/**
+ * Written in place rather than through a replacement map.
+ *
+ * `ref(new Map())` is deeply reactive, so `set` tracks per key and only the
+ * cards reading *this* hash re-render. Rebuilding the map instead copied the
+ * whole cache on every arrival and — because this is reached from inside a
+ * card's own computed — subscribed every card to every key through the
+ * iteration, so one thumbnail landing re-rendered all of them.
+ */
 function setPreview(file: string, preview: Preview) {
-	const next = new Map(previews.value)
-	next.set(file, preview)
-	previews.value = next
+	previews.value.set(file, preview)
 }
 
 /**
@@ -146,7 +153,7 @@ async function loadPreview(file: string) {
 }
 
 /**
- * Queues a preview request, at most [`MAX_CONCURRENT_PREVIEWS`] at a time.
+ * Queues a preview request, at most `MAX_CONCURRENT_PREVIEWS` at a time.
  *
  * The queue is drained rather than scheduled: each finishing request starts the
  * next, so the in-flight count is exactly the number of decodes the backend is
@@ -208,8 +215,8 @@ function clearPreviews() {
 
 // --- the pending tray --------------------------------------------------------
 
-/** Refused with a message rather than silently truncated, so the user knows
- *  which files did not make it. */
+/** How many more files the tray will take. Whatever does not fit is truncated
+ *  *and* reported by `accept`, never dropped silently. */
 function room(): number {
 	return MAX_PER_NOTE - pending.value.length
 }

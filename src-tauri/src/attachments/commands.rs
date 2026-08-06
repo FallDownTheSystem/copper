@@ -26,8 +26,8 @@ use crate::store::{self, SharedStore};
 use crate::win32::clipboard::{self, ClipboardAttachment};
 
 use super::{
-	ingest, read_blob, read_capped, read_prefix, resolve_existing, thumb, ATTACHMENT_MAX_BYTES,
-	SNIFF_PREFIX_BYTES,
+	ingest, read_blob, read_capped, read_prefix, resolve_existing, sniff_mime, thumb,
+	ATTACHMENT_MAX_BYTES, SNIFF_PREFIX_BYTES,
 };
 
 type Reply<T> = std::result::Result<T, StoreError>;
@@ -66,10 +66,22 @@ pub fn require_present(space: &Path, attachments: &[Attachment]) -> Result<()> {
 /// clipboard session or an image decode would stall every capture for as long
 /// as the user left the dialog open.
 fn space_path(state: &SharedStore) -> Result<PathBuf> {
-	store::lock(state)
-		.active_path()
-		.map(Path::to_path_buf)
-		.ok_or_else(|| StoreError::Unavailable("no space is open".into()))
+	store::lock(state).require_active_path()
+}
+
+/// A clipboard outcome, worded for the composer's error line.
+///
+/// A [`ClipboardError::Refused`] is already the whole sentence — the clipboard
+/// was read perfectly well and Copper declined what was on it — so wrapping it
+/// in "the clipboard could not be read" would deny the read that plainly
+/// happened and bury the part the user can act on. Everything else is a Win32
+/// failure whose `Display` names an API, and that does need a sentence around it
+/// to mean anything.
+fn clipboard_failure(err: clipboard::ClipboardError) -> StoreError {
+	match err {
+		refused @ clipboard::ClipboardError::Refused(_) => StoreError::Invalid(refused.to_string()),
+		other => StoreError::Io(format!("the clipboard could not be read: {other}")),
+	}
 }
 
 /// Ingests each path, keeping the successes and the failures apart.
@@ -135,6 +147,7 @@ fn ingest_paths(space: &Path, paths: &[PathBuf]) -> Result<Vec<Attachment>> {
 /// nothing attachable. That is the signal the frontend falls through to the
 /// native text paste on, and it has to be an ordinary outcome because it is the
 /// overwhelmingly common one.
+///
 /// Off the async runtime's worker, in `spawn_blocking`. Every step here blocks:
 /// `OpenClipboard` retries with sleeps for up to a second, a `CF_HDROP` paste
 /// reads files, and a bitmap paste decodes and re-encodes an image. Parking a
@@ -145,8 +158,7 @@ pub async fn attach_paste(state: State<'_, SharedStore>) -> Reply<Vec<Attachment
 	let space = space_path(&state)?;
 
 	tauri::async_runtime::spawn_blocking(move || {
-		let found = clipboard::read_attachment()
-			.map_err(|err| StoreError::Io(format!("the clipboard could not be read: {err}")))?;
+		let found = clipboard::read_attachment().map_err(clipboard_failure)?;
 
 		match found {
 			None => Ok(Vec::new()),
@@ -169,6 +181,10 @@ pub async fn attach_paste(state: State<'_, SharedStore>) -> Reply<Vec<Attachment
 /// exactly as task-007's `pick_and_open_space` does — and `set_parent` is not
 /// optional against an always-on-top panel, which a parentless dialog opens
 /// *behind*, reading as a hang.
+///
+/// The ingest that follows is in `spawn_blocking` too, and for the same reason
+/// [`attach_paste`] is: a pick of ten files is ten reads, ten hashes and ten
+/// atomic writes, none of which an async worker may be parked on.
 #[tauri::command]
 pub async fn attach_pick(app: AppHandle, state: State<'_, SharedStore>) -> Reply<Vec<Attachment>> {
 	let space = space_path(&state)?;
@@ -177,15 +193,26 @@ pub async fn attach_pick(app: AppHandle, state: State<'_, SharedStore>) -> Reply
 		// Cancelling is a success with no state change.
 		return Ok(Vec::new());
 	}
-	ingest_paths(&space, &picked)
+
+	tauri::async_runtime::spawn_blocking(move || ingest_paths(&space, &picked))
+		.await
+		.map_err(|err| StoreError::Io(format!("the files could not be attached: {err}")))?
 }
 
 /// The drop path. `paths` comes straight from `tauri://drag-drop`.
+///
+/// In `spawn_blocking`, like the other two ingest affordances: dropping a folder
+/// full of screenshots is the same blocking read-hash-write per file, and the
+/// three commands agreeing about their thread is what keeps one of them from
+/// being the surface that stalls the app.
 #[tauri::command]
 pub async fn attach_paths(paths: Vec<String>, state: State<'_, SharedStore>) -> Reply<Vec<Attachment>> {
 	let space = space_path(&state)?;
 	let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-	ingest_paths(&space, &paths)
+
+	tauri::async_runtime::spawn_blocking(move || ingest_paths(&space, &paths))
+		.await
+		.map_err(|err| StoreError::Io(format!("the dropped files could not be attached: {err}")))?
 }
 
 /// A PNG thumbnail, or **an empty response** when the file is there but has no
@@ -201,22 +228,32 @@ pub async fn attach_paths(paths: Vec<String>, state: State<'_, SharedStore>) -> 
 /// The bytes go back through `tauri::ipc::Response`, which sends them raw. A
 /// plain `Vec<u8>` return would be serialised as a JSON array of numbers and
 /// quadruple a thumbnail on the wire for nothing.
+///
+/// In `spawn_blocking`, and this is the command that needs it most: a blob read,
+/// a full image decode and a PNG re-encode, four of which the frontend runs at
+/// once by design. Left on the async runtime's workers it parks four of them for
+/// the length of four decodes, and every capture queues behind that.
 #[tauri::command]
 pub async fn attachment_thumb(
 	file: String,
 	state: State<'_, SharedStore>,
 ) -> Reply<tauri::ipc::Response> {
 	let space = space_path(&state)?;
-	let bytes = read_blob(&space, &file)?;
 
-	// Sniffed from the bytes on disk, never from the `mime` in the document: that
-	// field is hand-editable, and a `.png` that is really an executable must not
-	// be handed to a decoder because a JSON key said so (AC22).
-	let mime = infer::get(&bytes).map_or("application/octet-stream", |kind| kind.mime_type());
-	if !thumb::is_thumbnailable(mime) {
-		return Ok(tauri::ipc::Response::new(Vec::new()));
-	}
-	Ok(tauri::ipc::Response::new(thumb::thumbnail(&bytes, mime)?))
+	tauri::async_runtime::spawn_blocking(move || {
+		let bytes = read_blob(&space, &file)?;
+
+		// Sniffed from the bytes on disk, never from the `mime` in the document: that
+		// field is hand-editable, and a `.png` that is really an executable must not
+		// be handed to a decoder because a JSON key said so (AC22).
+		let mime = sniff_mime(&bytes);
+		if !thumb::is_thumbnailable(mime) {
+			return Ok(tauri::ipc::Response::new(Vec::new()));
+		}
+		Ok(tauri::ipc::Response::new(thumb::thumbnail(&bytes, mime)?))
+	})
+	.await
+	.map_err(|err| StoreError::Io(format!("the preview could not be built: {err}")))?
 }
 
 /// Images open in the OS viewer; **everything else is revealed in Explorer**.
@@ -252,9 +289,7 @@ pub async fn attachment_open(
 
 		let path = resolve_existing(&space, &file)?;
 		let prefix = read_prefix(&path, SNIFF_PREFIX_BYTES)?;
-		let is_image = infer::get(&prefix)
-			.map(|kind| kind.mime_type())
-			.is_some_and(thumb::is_thumbnailable);
+		let is_image = thumb::is_thumbnailable(sniff_mime(&prefix));
 
 		let target = path.to_string_lossy().to_string();
 		let opened = if is_image {
@@ -268,17 +303,21 @@ pub async fn attachment_open(
 	.map_err(|err| StoreError::Io(format!("the file could not be opened: {err}")))?
 }
 
-/// Collects the open space's unreferenced blobs, with **no store lock held**.
+/// **The startup half of the sweep policy, and its only caller is startup.** A
+/// space *switch* does not come through here: it sweeps the document
+/// `spaces::leave_current_space` detached, after the swap has succeeded, which
+/// is what keeps a failed open from collecting a still-live space's blobs. This
+/// one sweeps whatever is already open when the process starts.
 ///
-/// The path and the document are cloned out under the guard and the guard is
-/// dropped before the directory is touched, following task-006's two-lock
-/// discipline: a sweep holding the store mutex would stall every capture for the
-/// length of a directory walk, and on a slow network share that is not a short
-/// time.
+/// **No store lock is held for it.** The path and the document are cloned out
+/// under the guard and the guard is dropped before the directory is touched,
+/// following task-006's two-lock discipline: a sweep holding the store mutex
+/// would stall every capture for the length of a directory walk, and on a slow
+/// network share that is not a short time.
 ///
-/// Called at space close and at startup only — never during a session. The undo
-/// stack is session-scoped, so a mid-session sweep would silently turn a
-/// restorable `Ctrl+Z` into a note whose attachments no longer exist.
+/// Never during a session either way. The undo stack is session-scoped, so a
+/// mid-session sweep would silently turn a restorable `Ctrl+Z` into a note whose
+/// attachments no longer exist.
 pub fn sweep_active_space(app: &AppHandle) {
 	let state = app.state::<SharedStore>();
 	let held = {
@@ -290,5 +329,32 @@ pub fn sweep_active_space(app: &AppHandle) {
 	};
 	if let Some((path, doc)) = held {
 		super::sweep(&path, &doc);
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// A refusal is the whole message, and a real Win32 failure still gets the
+	/// sentence that makes it readable.
+	#[test]
+	fn a_clipboard_refusal_reaches_the_composer_unwrapped() {
+		let refused = clipboard_failure(clipboard::ClipboardError::Refused(
+			"that image is too large to attach (over 128.0 MB)".into(),
+		));
+		assert_eq!(refused.kind(), "invalid");
+		assert_eq!(refused.message(), "that image is too large to attach (over 128.0 MB)");
+
+		let failed = clipboard_failure(clipboard::ClipboardError::Busy {
+			attempts: 7,
+			elapsed_ms: 1000,
+		});
+		assert_eq!(failed.kind(), "io");
+		assert!(
+			failed.message().starts_with("the clipboard could not be read: "),
+			"{}",
+			failed.message()
+		);
 	}
 }

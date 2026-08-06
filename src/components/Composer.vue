@@ -131,10 +131,11 @@ async function submit() {
 		value.value = ''
 		scheduleAutoSize()
 	}
-	// The tray is cleared on success alone, and unconditionally on the revision
-	// check — unlike the text, an attachment cannot be "newer input": adding one
-	// during a submit would have to go through `pending`, which was copied above,
-	// so anything added since is still in the tray and must survive.
+	// The tray is cleared on success alone, and independently of the revision
+	// check that guards the text — unlike the text, an attachment cannot be
+	// "newer input": adding one during a submit would have to go through
+	// `pending`, which was copied above, so anything added since is still in the
+	// tray and must survive.
 	if (result) {
 		for (const attachment of attachments) removePending(attachment.id)
 	}

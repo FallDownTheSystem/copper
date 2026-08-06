@@ -191,26 +191,6 @@ pub fn open_space_at(app: &AppHandle, path: &Path) -> Reply<ActivateOutcome> {
 	Ok(ActivateOutcome::changed(doc))
 }
 
-/// Ends every live `$EDITOR` handoff against the **outgoing** document, and
-/// refuses the transition when any of them could not be saved back.
-///
-/// A27. Handoffs are keyed by `note_id`, which is unique only within one
-/// document, so one surviving a switch can rebind to a coincidentally matching
-/// id in the new space and write one space's external edit into another. Each is
-/// reconciled against the outgoing document first — the temp file may hold work
-/// the user has not saved, and switching space is not consent to discard it —
-/// and only then stopped.
-///
-/// **What a refusal here does and does not mean.** By the time `end_all` returns,
-/// every session has already ended: they do *not* stay live, and an earlier
-/// version of this comment claimed they did. What survives a refusal is the
-/// *text* — a handoff whose save could not be read back keeps its temp file, and
-/// the message below names it. The transition is refused so the user can recover
-/// that text against the space it belongs to, rather than against whichever space
-/// they were moving to.
-///
-/// Must be called with the activation guard held, so nothing can create a handoff
-/// between the teardown and the document swap.
 /// Everything the outgoing space is owed before another one takes its place.
 ///
 /// Ends every live editor handoff — which can refuse the transition — and then
@@ -258,6 +238,26 @@ fn sweep_detached(outgoing: Option<(PathBuf, Space)>) {
 	}
 }
 
+/// Ends every live `$EDITOR` handoff against the **outgoing** document, and
+/// refuses the transition when any of them could not be saved back.
+///
+/// A27. Handoffs are keyed by `note_id`, which is unique only within one
+/// document, so one surviving a switch can rebind to a coincidentally matching
+/// id in the new space and write one space's external edit into another. Each is
+/// reconciled against the outgoing document first — the temp file may hold work
+/// the user has not saved, and switching space is not consent to discard it —
+/// and only then stopped.
+///
+/// **What a refusal here does and does not mean.** By the time `end_all` returns,
+/// every session has already ended: they do *not* stay live, and an earlier
+/// version of this comment claimed they did. What survives a refusal is the
+/// *text* — a handoff whose save could not be read back keeps its temp file, and
+/// the message below names it. The transition is refused so the user can recover
+/// that text against the space it belongs to, rather than against whichever space
+/// they were moving to.
+///
+/// Must be called with the activation guard held, so nothing can create a handoff
+/// between the teardown and the document swap.
 fn end_handoffs_before_switching(app: &AppHandle) -> Reply<()> {
 	let retained = editor::end_all(app);
 	if retained.is_empty() {

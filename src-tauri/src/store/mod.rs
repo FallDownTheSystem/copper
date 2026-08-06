@@ -192,6 +192,15 @@ impl Store {
 		self.open.as_ref().map(|open| open.on_disk_text.as_str())
 	}
 
+	/// The open document's path, or the reason there is none.
+	///
+	/// The `Option` form above is what most readers want; this is for the callers
+	/// that have to refuse, so the refusal is worded once and matches
+	/// [`Store::active_space`]'s rather than being spelled again per call site.
+	pub fn require_active_path(&self) -> Result<PathBuf> {
+		self.active_path().map(Path::to_path_buf).ok_or_else(no_space)
+	}
+
 	pub fn active_space(&self) -> Result<Space> {
 		self.open
 			.as_ref()
