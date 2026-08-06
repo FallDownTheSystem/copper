@@ -15,7 +15,7 @@ import { useEditorHandoff } from './useEditorHandoff'
 import { useNoteDisclosure } from './useNoteDisclosure'
 import { useNoteEditor } from './useNoteEditor'
 import { useNoteSearch } from './useNoteSearch'
-import { focusRowSoon, noteRow, rowElement, useSelection } from './useSelection'
+import { focusRowSoon, noteRow, rowElement, sectionRow, useSelection } from './useSelection'
 import { countMessage, useStatusMessage } from './useStatusMessage'
 import { useSpace } from './useSpace'
 
@@ -36,18 +36,27 @@ const status = useStatusMessage()
  * exactly when focus sits outside the selection, and the looser reading would
  * let `Ctrl+Enter` open a note other than the card the user is looking at.
  *
- * Materialised by walking `visibleNoteIds`, which buys two properties at once:
- * canonical document order rather than `Set` insertion order, and — because that
- * order is already filtered by the active query — targets that can never include
- * a note the user cannot see.
+ * **Focus on a section header takes the selection.** That is not the looser
+ * reading: the dangerous case is focus on a *different note*, and that is still
+ * resolved to the focused note alone below. A header row is not a note, so there
+ * is no competing single target — and it is where the roving target lands when
+ * the section holding the selection is collapsed, which would otherwise turn
+ * every action into a silent no-op at the moment of folding.
+ *
+ * Materialised by walking `actionableNoteIds`: canonical document order rather
+ * than `Set` insertion order, filtered by the active query — a query narrows
+ * what an action targets — and deliberately **not** filtered by collapse, which
+ * only folds rows away.
  */
 function targetIds(): string[] {
-	const order = selection.visibleNoteIds.value
+	const order = selection.actionableNoteIds.value
 	const focused = selection.focusedNoteId.value
+	const selected = selection.selectedIds.value
 
-	if (focused !== null && selection.selectedIds.value.includes(focused)) {
-		const selected = new Set(selection.selectedIds.value)
-		return order.filter((id) => selected.has(id))
+	const takesSelection = focused === null ? selected.length > 0 : selected.includes(focused)
+	if (takesSelection) {
+		const chosen = new Set(selected)
+		return order.filter((id) => chosen.has(id))
 	}
 
 	return focused !== null && order.includes(focused) ? [focused] : []
@@ -173,10 +182,26 @@ function moveTo(sectionId: string) {
 
 		// They stay selected — `move_notes` preserves relative order and appends
 		// them to the end of the target — and focus lands on the first of them.
+		//
+		// **Unless that row is not on screen.** A collapsed destination has no row
+		// for the moved note, and AC22's auto-expand deliberately excludes a move:
+		// this destination was chosen rather than arrived at, so folding it open
+		// would undo the choice just made. A search the note does not match leaves
+		// the same hole. `focusRow` validates nothing, so a key naming no row leaves
+		// the grid with no `tabindex="0"` anywhere and unreachable by Tab — the exact
+		// failure the reconciliation exists to prevent. The section header is
+		// rendered whenever the section is, so it is the honest fallback; if even
+		// that is filtered away there is nothing to hold and the roving-target
+		// watcher owns the outcome.
 		const first = ids[0]
 		if (first === undefined) return
-		selection.focusRow(noteRow(first))
-		focusRowSoon(noteRow(first))
+
+		const rows = selection.rowIds.value
+		const target = rows.includes(noteRow(first)) ? noteRow(first) : sectionRow(sectionId)
+		if (!rows.includes(target)) return
+
+		selection.focusRow(target)
+		focusRowSoon(target)
 	})
 }
 

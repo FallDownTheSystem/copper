@@ -192,20 +192,6 @@ impl Store {
 		self.open.as_ref().map(|open| open.on_disk_text.as_str())
 	}
 
-	/// Whether a `# Name` directive would resolve to a section that already
-	/// exists, without cloning the document to find out.
-	///
-	/// `submit_entry` asks this **before** mutating, because the answer decides
-	/// which `mutate` variant runs: creating a section is snapshotted, merely
-	/// activating one is not (spec 4.3). Borrowing rather than going through
-	/// [`Store::active_space`] matters — that clones every note in the space to
-	/// read one name.
-	pub fn has_section_named(&self, name: &str) -> bool {
-		self.open
-			.as_ref()
-			.is_some_and(|open| ops::section_by_name(&open.doc, name).is_some())
-	}
-
 	pub fn active_space(&self) -> Result<Space> {
 		self.open
 			.as_ref()
@@ -277,7 +263,7 @@ impl Store {
 	/// and could not be re-applied to a freshly parsed document, which is the
 	/// entire mechanism of the conflict path below.
 	pub fn mutate<T>(&mut self, op: impl Fn(&mut Space) -> Result<T>) -> Result<(T, Space)> {
-		self.mutate_with(op, true)
+		self.mutate_with(op, |_| true)
 	}
 
 	/// The same pipeline without the snapshot, for `edit_note` and
@@ -287,13 +273,37 @@ impl Store {
 		&mut self,
 		op: impl Fn(&mut Space) -> Result<T>,
 	) -> Result<(T, Space)> {
-		self.mutate_with(op, false)
+		self.mutate_with(op, |_| false)
+	}
+
+	/// For an operation that is undoable **only sometimes**, where the answer
+	/// depends on the document it is applied to.
+	///
+	/// `submit_entry` is the case: creating a section is structural and
+	/// snapshotted, while resolving a duplicate name to a section that already
+	/// exists is navigational and must push nothing, exactly as
+	/// `set_active_section` pushes nothing.
+	///
+	/// **The predicate has to run inside the conflict loop, not before it.**
+	/// Deciding once from the caller's own view and then re-applying against a
+	/// rebased document lets the two disagree: a section present locally but
+	/// deleted externally would be *created* by the re-applied op while the
+	/// caller had already chosen "no snapshot", leaving a structural change with
+	/// no undo entry — and the mirror case pushes a snapshot for a mutation that
+	/// only switched the active section. Evaluated here, the predicate always sees
+	/// the same base the op is applied to.
+	pub fn mutate_if<T>(
+		&mut self,
+		op: impl Fn(&mut Space) -> Result<T>,
+		snapshot: impl Fn(&Space) -> bool,
+	) -> Result<(T, Space)> {
+		self.mutate_with(op, snapshot)
 	}
 
 	fn mutate_with<T>(
 		&mut self,
 		op: impl Fn(&mut Space) -> Result<T>,
-		snapshot: bool,
+		snapshot: impl Fn(&Space) -> bool,
 	) -> Result<(T, Space)> {
 		let open = self.writable()?;
 
@@ -309,7 +319,11 @@ impl Store {
 			// Cloned only where a snapshot will actually be pushed; `base` itself
 			// moves into `working`, because a conflict replaces it wholesale rather
 			// than reusing it.
-			let pre_op = snapshot.then(|| base.clone());
+			//
+			// The predicate is asked per attempt, against this attempt's base, for the
+			// same reason the clone is taken per attempt: after a conflict both
+			// questions have a different answer.
+			let pre_op = snapshot(&base).then(|| base.clone());
 			let mut working = base;
 			// Validate-then-mutate: an `op` that fails has changed nothing but its
 			// own scratch copy, so nothing reaches disk and no snapshot is pushed.

@@ -344,6 +344,9 @@ declare global {
   export type { EditSession } from './composables/useNoteEditor'
   import('./composables/useNoteEditor')
   // @ts-ignore
+  export type { SwitcherHost } from './composables/useSections'
+  import('./composables/useSections')
+  // @ts-ignore
   export type { ScrollAnchor, SelectionSnapshot } from './composables/useSelection'
   import('./composables/useSelection')
   // @ts-ignore

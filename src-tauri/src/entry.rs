@@ -62,16 +62,31 @@ pub fn normalise_name(name: &str) -> String {
 		.to_string()
 }
 
+/// Every character that ends a line, not only the two ASCII ones.
+///
+/// `normalise_name` collapses whitespace with `split_whitespace`, which treats
+/// all of these as ordinary separators — so a body broken by a line separator
+/// would otherwise be folded into a single-line name and become a section, in
+/// direct contradiction of "multi-line bodies are never directives".
+const LINE_BREAKS: [char; 7] = ['\n', '\r', '\u{0b}', '\u{0c}', '\u{85}', '\u{2028}', '\u{2029}'];
+
 /// The whole rule, in one function.
 pub fn classify(body: &str) -> Entry<'_> {
 	// The documented escape hatch, and the only body rewriting this module
-	// performs. Tested against the raw body rather than the trimmed one: it is a
+	// performs. Applied against the raw body rather than the trimmed one: it is a
 	// literal "I meant this character" prefix, so it has to be the first thing the
 	// user typed.
-	if let Some(rest) = body.strip_prefix("\\#") {
-		return Entry::Note {
-			body: Cow::Owned(format!("#{rest}")),
-		};
+	//
+	// **The backslash is consumed only when it actually escaped something.** An
+	// unconditional strip rewrote bodies that were never in danger — `\#hashtag`
+	// was stored as `#hashtag` — which is the one thing this module is not allowed
+	// to do to text nobody asked it to touch.
+	if let Some(rest) = body.strip_prefix('\\') {
+		if section_name(rest).is_some() {
+			return Entry::Note {
+				body: Cow::Owned(rest.to_string()),
+			};
+		}
 	}
 
 	match section_name(body) {
@@ -96,10 +111,15 @@ fn section_name(body: &str) -> Option<String> {
 	}
 
 	let name = rest.trim_start_matches([' ', '\t']);
-	// Multi-line bodies are never directives. `\r` counts as a line ending, so a
-	// CRLF document's `# Name\r\n\r\nbody` is caught here rather than becoming a
-	// section named `Name\r\r\nbody`.
-	if name.contains(['\n', '\r']) {
+	// `\S`, and Unicode-wide rather than ASCII-wide: the run above is ASCII space
+	// and tab only, so without this a no-break space or an ideographic space after
+	// the `#` would survive the run, be deleted by `normalise_name`'s collapsing,
+	// and quietly widen the rule the Specification wrote as `\S`.
+	if name.starts_with(char::is_whitespace) {
+		return None;
+	}
+	// Multi-line bodies are never directives.
+	if name.contains(LINE_BREAKS) {
 		return None;
 	}
 
@@ -183,6 +203,20 @@ mod tests {
 			"",
 			"   ",
 			"A note that mentions # Research inside it",
+			// `\S` is Unicode-wide. The run after the `#` is ASCII space and tab, so
+			// a no-break space survives it — and `normalise_name` would then delete it
+			// and yield `Research`, silently widening the rule.
+			"# \u{00a0}Research",
+			"#\u{00a0}Research",
+			"# \u{3000}Research",
+			// Line separators other than the ASCII two. `split_whitespace` collapses
+			// all of them, so without the guard `# Alpha\u{2028}Beta` became the
+			// section `Alpha Beta`.
+			"# Alpha\u{2028}Beta",
+			"# Alpha\u{2029}Beta",
+			"# Alpha\u{85}Beta",
+			"# Alpha\u{0b}Beta",
+			"# Alpha\u{0c}Beta",
 		];
 		for body in notes {
 			assert_eq!(note_body(body), body, "{body:?} should be an ordinary note");
@@ -191,16 +225,26 @@ mod tests {
 
 	/// The escape hatch, and the only body this module rewrites.
 	#[test]
-	fn a_leading_backslash_escapes_the_directive_and_is_consumed() {
+	fn a_leading_backslash_is_consumed_only_when_it_escaped_a_directive() {
 		assert_eq!(note_body("\\# Research"), "# Research");
-		// Consumed by position, not by whether what follows would have matched.
-		assert_eq!(note_body("\\#Research"), "#Research");
-		assert_eq!(note_body("\\# Research\n\nmore"), "# Research\n\nmore");
+		assert_eq!(note_body("\\#   Deep   Research  "), "#   Deep   Research  ");
+
+		// **Consumed by consequence, not by position.** An unconditional strip
+		// rewrote bodies that were never in danger of becoming a section: neither of
+		// these would have matched, so the backslash is an ordinary character and
+		// the body is stored exactly as typed.
+		assert_eq!(note_body("\\#Research"), "\\#Research");
+		assert_eq!(note_body("\\## x"), "\\## x");
+		assert_eq!(note_body("\\# Research\n\nmore"), "\\# Research\n\nmore");
+		assert_eq!(note_body("\\#"), "\\#");
+		assert_eq!(note_body("\\not a heading"), "\\not a heading");
+
 		// Only at the very front: anywhere else it is an ordinary character, and a
 		// body that merely *contains* the sequence keeps it.
 		assert_eq!(note_body(" \\# Research"), " \\# Research");
 		assert_eq!(note_body("see \\# Research"), "see \\# Research");
-		// A doubled backslash escapes nothing extra — one is taken, one stays.
+		// A doubled backslash escapes nothing extra — the remainder is `\# Research`,
+		// which is not a directive, so nothing is stripped at all.
 		assert_eq!(note_body("\\\\# Research"), "\\\\# Research");
 	}
 
@@ -227,11 +271,14 @@ mod tests {
 		let name = section_of(&format!("# {wide}"));
 		assert_eq!(name.chars().count(), SECTION_NAME_MAX);
 
-		// A cut that lands on a space leaves no trailing space behind.
-		let words = format!("# {}", "ab ".repeat(60));
+		// A cut that lands on a space leaves no trailing space behind. `"a "`, not
+		// `"ab "`: the cut has to land *on* the space to exercise the trim at all,
+		// and with a three-character cycle character 80 is a letter, so the
+		// assertion below would have passed however the truncation behaved.
+		let words = format!("# {}", "a ".repeat(60));
 		let name = section_of(&words);
 		assert_eq!(name, name.trim_end());
-		assert!(name.chars().count() <= SECTION_NAME_MAX);
+		assert_eq!(name.chars().count(), SECTION_NAME_MAX - 1);
 	}
 
 	/// Normalisation is idempotent and case-preserving: it decides which names

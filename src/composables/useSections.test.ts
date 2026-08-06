@@ -82,13 +82,13 @@ describe('the search override', () => {
 	})
 })
 
-describe('revealing a section a note landed in', () => {
+describe('reconciling the collapse set against an applied document', () => {
 	const before = makeSpace([{ id: 'n1', section: 'sec_a' }])
 
 	it('expands the section a new note arrived in', () => {
 		sections.toggleCollapsed('sec_a')
 
-		sections.revealNewNotes(
+		sections.reconcile(
 			before,
 			makeSpace([
 				{ id: 'n1', section: 'sec_a' },
@@ -105,7 +105,7 @@ describe('revealing a section a note landed in', () => {
 		sections.toggleCollapsed('sec_a')
 		sections.toggleCollapsed('sec_b')
 
-		sections.revealNewNotes(
+		sections.reconcile(
 			before,
 			makeSpace([
 				{ id: 'n1', section: 'sec_a' },
@@ -122,7 +122,7 @@ describe('revealing a section a note landed in', () => {
 
 		// `n1` already existed; `Move to ▸` put it somewhere folded away, which is a
 		// destination the user chose rather than a note appearing unannounced.
-		sections.revealNewNotes(before, makeSpace([{ id: 'n1', section: 'sec_b' }]))
+		sections.reconcile(before, makeSpace([{ id: 'n1', section: 'sec_b' }]))
 
 		expect(sections.isCollapsed('sec_b')).toBe(true)
 	})
@@ -133,8 +133,8 @@ describe('revealing a section a note landed in', () => {
 			{ id: 'n2', section: 'sec_a' },
 		])
 
-		expect(() => sections.revealNewNotes(before, next)).not.toThrow()
-		expect(() => sections.revealNewNotes(null, next)).not.toThrow()
+		expect(() => sections.reconcile(before, next)).not.toThrow()
+		expect(() => sections.reconcile(null, next)).not.toThrow()
 		expect(sections.isCollapsed('sec_a')).toBe(false)
 	})
 
@@ -142,7 +142,7 @@ describe('revealing a section a note landed in', () => {
 		sections.toggleCollapsed('sec_a')
 		search.query.value = 'anything'
 
-		sections.revealNewNotes(
+		sections.reconcile(
 			before,
 			makeSpace([
 				{ id: 'n1', section: 'sec_a' },
@@ -154,6 +154,37 @@ describe('revealing a section a note landed in', () => {
 		// vanishing capture, one step later.
 		search.clearQuery()
 		expect(sections.isCollapsed('sec_a')).toBe(false)
+	})
+})
+
+describe('pruning ids the document no longer has', () => {
+	it('forgets a collapsed section that was deleted', () => {
+		sections.toggleCollapsed('sec_b')
+
+		sections.reconcile(makeSpace([]), {
+			...makeSpace([]),
+			sections: [{ id: 'sec_a', name: 'Research', order: 0 }],
+		})
+
+		expect(sections.isCollapsed('sec_b')).toBe(false)
+		// And a section reintroduced under the same id — which is exactly what
+		// undoing a delete does — comes back expanded rather than mysteriously shut.
+		sections.reconcile(makeSpace([]), makeSpace([]))
+		expect(sections.isCollapsed('sec_b')).toBe(false)
+	})
+
+	it('restores the empty-set fast path, so a dead id cannot cost every apply', () => {
+		sections.toggleCollapsed('sec_b')
+		sections.reconcile(makeSpace([]), {
+			...makeSpace([]),
+			sections: [{ id: 'sec_a', name: 'Research', order: 0 }],
+		})
+
+		// The set is genuinely empty again, not merely reporting false: an id that
+		// can never be removed defeats the size check for the rest of the session.
+		sections.toggleCollapsed('sec_a')
+		sections.toggleCollapsed('sec_a')
+		expect(sections.isCollapsedStored('sec_b')).toBe(false)
 	})
 })
 
@@ -172,17 +203,41 @@ describe('the switcher state', () => {
 		expect(sections.filterQuery.value).toBe('')
 	})
 
-	it('is closed rather than re-pointed when the document identity changes', () => {
-		sections.toggleCollapsed('sec_a')
-		sections.openSwitcher()
+	it('shows in one host at a time, and each runs the same lifecycle', () => {
+		sections.openSwitcher('menu')
+		expect(sections.isSwitcherOpenIn('menu')).toBe(true)
+		// One shared boolean would have opened the chip's dropdown as well.
+		expect(sections.isSwitcherOpenIn('chip')).toBe(false)
+
 		sections.filterQuery.value = 'res'
-
-		sections.reset()
-
-		// Section ids address a different document now, so neither the collapse set
-		// nor an open menu full of the previous space's rows can carry over.
-		expect(sections.switcherOpen.value).toBe(false)
+		sections.closeSwitcher('menu')
+		// The filter is cleared by *either* host closing. Leaving it behind is what
+		// made a reopened submenu come up pre-filtered, showing only
+		// `Create section "<old query>"` for a query nobody had typed.
 		expect(sections.filterQuery.value).toBe('')
-		expect(sections.isCollapsed('sec_a')).toBe(false)
+
+		sections.openSwitcher('menu')
+		sections.filterQuery.value = 'res'
+		// A close from the host that is not showing must not dismiss the one that is.
+		sections.closeSwitcher('chip')
+		expect(sections.isSwitcherOpenIn('menu')).toBe(true)
+		expect(sections.filterQuery.value).toBe('res')
+	})
+
+	it('is closed rather than re-pointed when the document identity changes', () => {
+		for (const host of ['chip', 'menu'] as const) {
+			sections.toggleCollapsed('sec_a')
+			sections.openSwitcher(host)
+			sections.filterQuery.value = 'res'
+
+			sections.reset()
+
+			// Section ids address a different document now, so neither the collapse
+			// set nor an open menu full of the previous space's rows can carry over —
+			// and that holds for whichever host was showing it.
+			expect(sections.switcherOpen.value, host).toBe(false)
+			expect(sections.filterQuery.value, host).toBe('')
+			expect(sections.isCollapsed('sec_a'), host).toBe(false)
+		}
 	})
 })

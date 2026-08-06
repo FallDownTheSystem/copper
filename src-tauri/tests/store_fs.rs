@@ -615,7 +615,22 @@ fn a_duplicate_directive_activates_without_pushing_a_snapshot() {
 fn a_submission_that_is_not_a_directive_is_an_ordinary_note() {
 	let harness = Harness::new();
 
-	for body in ["# Research\n\nwith more text", "## Research", "#Research", "#", "\\# Research"] {
+	// Stored byte-identically to what was submitted. `\# Research` is the one
+	// exception, and the only body this path rewrites: the backslash escaped a
+	// directive, so it is consumed.
+	let bodies = [
+		("# Research\n\nwith more text", "# Research\n\nwith more text"),
+		("## Research", "## Research"),
+		("#Research", "#Research"),
+		("#", "#"),
+		("\\# Research", "# Research"),
+		// The backslash is kept when it escaped nothing — neither of these was ever
+		// going to be a directive.
+		("\\#Research", "\\#Research"),
+		("\\## Research", "\\## Research"),
+	];
+
+	for (body, expected) in bodies {
 		let result = harness.submit(body).unwrap();
 		assert_eq!(result.outcome, SubmitOutcome::Note, "{body:?} was treated as a directive");
 		let id = result.note_id.expect("a note outcome carries its id");
@@ -623,13 +638,84 @@ fn a_submission_that_is_not_a_directive_is_an_ordinary_note() {
 			result.section_id, harness.doc().active_section,
 			"{body:?} landed outside the active section"
 		);
-		// Byte-identical to what was submitted, apart from the one documented
-		// rewrite: `\#` loses its backslash and nothing else changes.
-		let expected = body.strip_prefix('\\').unwrap_or(body);
 		assert_eq!(harness.doc().note(&id).unwrap().body, expected);
 	}
 
+	// `#   ` is a note, and the store trims its trailing whitespace on the way in —
+	// `ops::clean_body` has done that to every body since task-003, and AC3's
+	// "no trimming beyond the composer's existing untrimmed-submit rule" is what
+	// admits it. Pinned because nothing else would catch a change to it.
+	let result = harness.submit("#   ").unwrap();
+	assert_eq!(result.outcome, SubmitOutcome::Note);
+	let id = result.note_id.unwrap();
+	assert_eq!(harness.doc().note(&id).unwrap().body, "#");
+
 	assert_eq!(harness.doc().sections.len(), 1, "a note submission created a section");
+}
+
+/// The snapshot decision and the operation must be taken against the **same**
+/// document, and a write conflict is what pulls them apart: the operation is
+/// re-applied to the external document, so a decision made from the local view
+/// can describe a mutation that did not happen.
+///
+/// Both divergence directions, because they fail in opposite ways — one leaves a
+/// structural change with no undo entry, the other pushes a snapshot for a
+/// mutation that only moved `activeSection`.
+#[test]
+fn a_conflict_rebases_the_snapshot_decision_when_the_section_vanished_externally() {
+	let harness = Harness::new();
+	harness.submit("# Research").unwrap();
+	assert!(harness.section_named("Research").is_some());
+
+	// The section exists locally. Externally it is gone, so the re-applied
+	// operation will *create* it — and deciding from the local view would have
+	// chosen `mutate_no_snapshot`, leaving AC5 with nothing to undo.
+	let mut external = format::from_json(&harness.text()).unwrap();
+	let research = harness.section_named("Research").unwrap();
+	ops::delete_section(&mut external, &research).unwrap();
+	external_write(&harness.path(), &format::to_git_json(&external).unwrap());
+
+	let result = harness.submit("# Research").unwrap();
+
+	assert_eq!(result.outcome, SubmitOutcome::SectionCreated);
+	assert_eq!(harness.section_named("Research").as_deref(), Some(result.section_id.as_str()));
+	assert!(
+		harness.status().can_undo,
+		"a section was created with no undo entry behind it"
+	);
+	// The rebase cleared the stack and pushed exactly one entry — the one that
+	// reverts this operation and stops.
+	assert!(store::lock(&harness.shared).undo().unwrap().is_some());
+	assert!(harness.section_named("Research").is_none());
+	assert!(!harness.status().can_undo);
+}
+
+#[test]
+fn a_conflict_rebases_the_snapshot_decision_when_the_section_appeared_externally() {
+	let harness = Harness::new();
+
+	// Absent locally, present externally, so the re-applied operation only
+	// activates — and deciding from the local view would have pushed a snapshot for
+	// a navigational change, breaking AC2.
+	let mut external = format::from_json(&harness.text()).unwrap();
+	let research = ops::add_section(&mut external, "Research").unwrap();
+	external_write(&harness.path(), &format::to_git_json(&external).unwrap());
+
+	let result = harness.submit("# Research").unwrap();
+
+	assert_eq!(result.outcome, SubmitOutcome::SectionActivated);
+	assert_eq!(result.section_id, research);
+	assert_eq!(harness.doc().active_section, research);
+	assert_eq!(
+		harness.doc().sections.len(),
+		2,
+		"the rebased operation created a second Research"
+	);
+	// A rebase clears the stack, and an activation pushes nothing to replace it —
+	// so there is nothing to undo, which is exactly right: every older entry
+	// predates the external change and undoing one would destroy it.
+	assert!(!harness.status().can_undo, "an activation pushed a snapshot");
+	assert!(store::lock(&harness.shared).undo().unwrap().is_none());
 }
 
 #[test]

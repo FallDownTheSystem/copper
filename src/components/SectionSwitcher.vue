@@ -23,6 +23,8 @@
  */
 const emit = defineEmits<{ close: [] }>()
 
+import { normaliseSectionName } from '@/lib/sectionName'
+
 const { sections, activeSection, submitEntry, setActiveSection } = useSpace()
 const { filterQuery } = useSections()
 
@@ -34,12 +36,24 @@ onMounted(() => {
 	void nextTick(() => input.value?.focus())
 })
 
-const query = computed(() => filterQuery.value.trim())
+/**
+ * The query as the **store** would read it, not as it was typed.
+ *
+ * Both the filter and the create row use it, and they have to: the store
+ * collapses whitespace and caps at 80, so filtering on the raw text made
+ * `Deep  Research` miss the existing `Deep Research`, offer to create it, and
+ * then — because the store resolves the duplicate — silently activate the
+ * existing section instead of creating anything. Normalising here closes the gap
+ * between what the row promises and what the store does.
+ */
+const query = computed(() => normaliseSectionName(filterQuery.value))
 
 const matches = computed(() => {
 	const text = query.value.toLowerCase()
 	if (text.length === 0) return sections.value
-	return sections.value.filter((section) => section.name.toLowerCase().includes(text))
+	return sections.value.filter((section) =>
+		normaliseSectionName(section.name).toLowerCase().includes(text),
+	)
 })
 
 /**
@@ -75,6 +89,21 @@ async function create() {
  * form that does not exist. Everything else — including Escape, which reka
  * closes on — is left to bubble.
  */
+/**
+ * The row reka has highlighted, which is not always the first one.
+ *
+ * Reka highlights on hover and on arrow keys while the filter field keeps focus,
+ * so `Enter` has to resolve *that* row or it activates something the user is not
+ * pointing at. Read off the DOM because the highlight is reka's state, not ours —
+ * asking it is the only way not to keep a second copy that drifts.
+ */
+function highlighted(): HTMLElement | null {
+	const host = input.value?.closest<HTMLElement>(
+		'[data-slot="dropdown-menu-content"], [data-slot="dropdown-menu-sub-content"]',
+	)
+	return host?.querySelector<HTMLElement>('[role="menuitem"][data-highlighted]') ?? null
+}
+
 function onKeydown(event: KeyboardEvent) {
 	// WebView2 reports keyCode 229 while an IME candidate is open; accepting one
 	// with Enter must not choose a section.
@@ -86,9 +115,24 @@ function onKeydown(event: KeyboardEvent) {
 	if (event.key === 'Enter') {
 		event.preventDefault()
 		event.stopPropagation()
-		const first = matches.value[0]
-		if (first) void choose(first.id)
+		const row = highlighted()
+		const sectionId = row?.dataset.sectionId
+		if (sectionId !== undefined) void choose(sectionId)
+		else if (row?.hasAttribute('data-create-row')) void create()
+		// Nothing highlighted — the user typed and pressed Enter without ever
+		// leaving the field — so the first row is the one they meant.
+		else if (matches.value[0]) void choose(matches.value[0].id)
 		else void create()
+		return
+	}
+
+	if (event.key === 'ArrowLeft') {
+		// The submenu's close key *and* the caret key. It can only be one of them at
+		// a time, and the caret decides: at the very start of an empty selection
+		// there is nothing to move left over, so the press belongs to reka.
+		const field = event.target as HTMLInputElement
+		if (field.selectionStart === 0 && field.selectionEnd === 0) return
+		event.stopPropagation()
 		return
 	}
 
@@ -131,6 +175,7 @@ function onKeydown(event: KeyboardEvent) {
 		<DropdownMenuItem
 			v-for="section in matches"
 			:key="section.id"
+			:data-section-id="section.id"
 			class="min-h-6"
 			:aria-current="section.id === activeSection ? 'true' : undefined"
 			@select.prevent="choose(section.id)"
@@ -157,6 +202,7 @@ function onKeydown(event: KeyboardEvent) {
 
 		<DropdownMenuItem
 			v-if="matches.length === 0 && query.length > 0"
+			data-create-row
 			class="min-h-6"
 			@select.prevent="create"
 		>

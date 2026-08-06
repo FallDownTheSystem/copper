@@ -6,6 +6,7 @@ import PanelShell from './PanelShell.vue'
 // Statically imported, like PanelShell itself: a dynamic import after
 // `vi.resetModules()` would resolve a *second* instance of a module whose state
 // is module-scoped by design, and the component tree would not share it.
+import { useNoteActions } from '@/composables/useNoteActions'
 import { useNoteEditor } from '@/composables/useNoteEditor'
 import { useNoteSearch } from '@/composables/useNoteSearch'
 import { useSections } from '@/composables/useSections'
@@ -13,6 +14,7 @@ import { useSelection } from '@/composables/useSelection'
 import { useSpace } from '@/composables/useSpace'
 import type { Space, StoreStatus } from '@/composables/useSpace'
 
+const actions = useNoteActions()
 const editor = useNoteEditor()
 const search = useNoteSearch()
 const sections = useSections()
@@ -765,6 +767,112 @@ describe('the section switcher', () => {
 		expect(mocks.invoke).toHaveBeenCalledWith('submit_entry', { body: '# Reading' })
 	})
 
+	it('matches on the name the store will keep, not the one that was typed', async () => {
+		const wrapper = await mountPanel()
+		await openWithChord(wrapper)
+
+		const filter = content()!.querySelector<HTMLInputElement>('#section-filter')!
+		// Two spaces. The store collapses them, so this *is* the existing section —
+		// filtering on the raw text offered to create it and then silently activated
+		// the existing one, which is a create button that never creates.
+		filter.value = 'Deep  Research'
+		filter.dispatchEvent(new Event('input', { bubbles: true }))
+		await settle()
+		expect(content()?.textContent).toContain('Create section “Deep Research”')
+
+		// Padding is normalised away too, so this resolves to the existing section
+		// and offers to create nothing. On the raw text it did not: `"research"`
+		// does not contain `" research "`.
+		filter.value = '  Research  '
+		filter.dispatchEvent(new Event('input', { bubbles: true }))
+		await settle()
+		expect(content()?.textContent).not.toContain('Create section')
+
+		// And the row promises the normalised name, so what it says is what gets
+		// stored.
+		filter.value = '  Deep   Reading  '
+		filter.dispatchEvent(new Event('input', { bubbles: true }))
+		await settle()
+		const row = content()!.querySelector<HTMLElement>('[data-create-row]')!
+		expect(row.textContent).toContain('Create section “Deep Reading”')
+		row.click()
+		await settle(4)
+		expect(mocks.invoke).toHaveBeenCalledWith('submit_entry', { body: '# Deep Reading' })
+	})
+
+	it('activates the row reka has highlighted, not always the first', async () => {
+		const wrapper = await mountPanel()
+		await openWithChord(wrapper)
+
+		// Reka highlights on hover while the filter keeps focus, so Enter has to
+		// resolve that row rather than the top of the list.
+		const rows = [...content()!.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+		const inbox = rows.find((row) => row.textContent?.includes('Inbox'))!
+		inbox.setAttribute('data-highlighted', '')
+
+		const filter = content()!.querySelector<HTMLInputElement>('#section-filter')!
+		filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+		await settle(4)
+
+		expect(mocks.invoke).toHaveBeenCalledWith('set_active_section', { id: 'sec_b' })
+	})
+
+	it('gives ArrowLeft to the caret unless the caret is already at the start', async () => {
+		const wrapper = await mountPanel()
+		await openWithChord(wrapper)
+
+		const filter = content()!.querySelector<HTMLInputElement>('#section-filter')!
+		filter.value = 'res'
+		filter.dispatchEvent(new Event('input', { bubbles: true }))
+		await settle()
+
+		// Mid-text it is the caret key and must not reach reka, which would close a
+		// submenu out from under someone editing their query.
+		filter.setSelectionRange(2, 2)
+		let reached = false
+		const listen = () => (reached = true)
+		content()!.addEventListener('keydown', listen)
+		filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+		expect(reached).toBe(false)
+
+		// At 0/0 there is nothing to move over, so the press belongs to the menu.
+		filter.setSelectionRange(0, 0)
+		filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+		expect(reached).toBe(true)
+		content()!.removeEventListener('keydown', listen)
+	})
+
+	it('runs the same lifecycle from the overflow menu, so no filter survives it', async () => {
+		const wrapper = await mountPanel()
+
+		await wrapper.find('[aria-label="More actions"]').trigger('click')
+		await settle(3)
+		expect(
+			document.querySelector('[data-slot="dropdown-menu-sub-trigger"]'),
+			'the Switch section submenu trigger is missing',
+		).not.toBeNull()
+
+		// Driven through the shared state rather than by hovering the trigger, which
+		// is what proves the binding is *controlled*: an uncontrolled submenu would
+		// ignore this entirely. That is the whole fix — it is what lets the filter be
+		// cleared on every open and close, and an epoch change close it.
+		sections.openSwitcher('menu')
+		await settle(4)
+
+		const sub = document.querySelector<HTMLElement>('[data-slot="dropdown-menu-sub-content"]')
+		expect(sub, 'the submenu did not follow the shared open state').not.toBeNull()
+		// The same list component the chip hosts, not a second copy of it.
+		expect(sub!.querySelector('#section-filter')).not.toBeNull()
+		expect(sub!.textContent).toContain('Research')
+
+		sections.filterQuery.value = 'zzz'
+		sections.closeSwitcher('menu')
+		await settle(3)
+
+		expect(sections.filterQuery.value).toBe('')
+		expect(document.querySelector('[data-slot="dropdown-menu-sub-content"]')).toBeNull()
+	})
+
 	it('closes on Escape without taking a rung of the ladder with it', async () => {
 		const wrapper = await mountPanel()
 		selection.select('nte_1')
@@ -924,6 +1032,54 @@ describe('collapsible sections', () => {
 		search.clearQuery()
 		await settle(3)
 		expect(wrapper.findAll('[data-row-id^="n:"]')).toHaveLength(0)
+	})
+
+	it('keeps a folded-away selection actionable', async () => {
+		// Collapse is folding, not deselection. Targeting the collapse-filtered order
+		// turned copy, delete, mark-done, merge, Move to and the $EDITOR handoff into
+		// silent no-ops the moment a section was folded — with no status message to
+		// say so.
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		selection.extendTo('nte_2')
+
+		await disclosure(wrapper, 'Research').trigger('click')
+		await settle(3)
+
+		// The roving target moved to the header, so `focusedNoteId` is null — which
+		// must not defeat a multi-select either.
+		expect(selection.focusedNoteId.value).toBeNull()
+
+		await wrapper.trigger('keydown', { key: 'c', ctrlKey: true })
+		await settle(3)
+
+		expect(mocks.invoke).toHaveBeenCalledWith('clipboard_write_text', {
+			text: `first note\n\n${SPACE.notes[1]!.body}`,
+		})
+		expect(wrapper.text()).toContain('Copied 2 notes')
+	})
+
+	it('leaves the grid a tab stop when notes move into a collapsed section', async () => {
+		const wrapper = await mountPanel()
+		await disclosure(wrapper, 'Inbox').trigger('click')
+		await settle(3)
+
+		selection.select('nte_1')
+		// The document `move_notes` returns, with the note actually in the collapsed
+		// destination — which is what leaves its row unrendered.
+		const moved = {
+			...SPACE,
+			notes: [{ ...SPACE.notes[0]!, section: 'sec_b' }, SPACE.notes[1]!],
+		}
+		mocks.invoke.mockImplementationOnce(async () => moved)
+		await actions.moveTo('sec_b')
+		await settle(3)
+
+		// The moved note has no row — a move deliberately does not auto-expand its
+		// destination, because that destination was chosen rather than arrived at —
+		// so focus lands on the destination's header instead of a key naming nothing.
+		expect(selection.focusedId.value).toBe('s:sec_b')
+		expect(wrapper.findAll('[data-row-id][tabindex="0"]')).toHaveLength(1)
 	})
 
 	it('auto-expands the section a new note lands in', async () => {

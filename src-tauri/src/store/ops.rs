@@ -363,7 +363,11 @@ pub fn section_by_name<'a>(space: &'a Space, name: &str) -> Option<&'a Section> 
 /// Stays `Fn`-shaped like every other op, so `mutate` can re-apply it against a
 /// freshly re-read document after a write conflict.
 pub fn add_section_and_activate(space: &mut Space, name: &str) -> Result<(String, bool)> {
-	let name = clean_name(name)?;
+	// Normalised **here**, at the boundary, rather than trusted from the caller.
+	// The name this stores and the name duplicates are matched against then come
+	// out of the same expression, so a caller passing a raw 200-character
+	// double-spaced string cannot store one form and be looked up by another.
+	let name = clean_name(&normalise_name(name))?;
 
 	if let Some(existing) = section_by_name(space, &name) {
 		let id = existing.id.clone();
@@ -875,6 +879,26 @@ mod tests {
 
 		assert!(!created);
 		assert_eq!(space.sections.len(), 3);
+	}
+
+	#[test]
+	fn add_section_and_activate_stores_the_name_it_matches_duplicates_on() {
+		let mut space = space();
+		let long = format!("  Deep   {}  ", "x".repeat(200));
+		let (id, created) = add_section_and_activate(&mut space, &long).unwrap();
+
+		assert!(created);
+		let stored = &space.sections.iter().find(|s| s.id == id).unwrap().name;
+		// Collapsed and capped at the boundary, so the stored name and the name a
+		// later lookup normalises to are the same string.
+		assert_eq!(stored.chars().count(), 80);
+		assert_eq!(stored, &normalise_name(&long));
+		assert_eq!(section_by_name(&space, &long).unwrap().id, id);
+
+		// And the round trip holds: submitting it again resolves to this section.
+		let (again, created) = add_section_and_activate(&mut space, &long).unwrap();
+		assert!(!created);
+		assert_eq!(again, id);
 	}
 
 	#[test]

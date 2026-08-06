@@ -80,10 +80,15 @@ const orders = computed(() => {
 	const groups: { sectionId: string; noteIds: string[] }[] = []
 	const rows: string[] = []
 	const notes: string[] = []
+	const actionable: string[] = []
 
 	for (const group of documentGroups.value) {
 		const members = matched ? group.noteIds.filter((id) => matched.has(id)) : group.noteIds
 		if (matched && members.length === 0) continue
+
+		// Collected before the collapse test, which is the whole difference between
+		// the two orders below.
+		actionable.push(...members)
 
 		const shown = isCollapsed(group.sectionId) ? [] : members
 		groups.push({ sectionId: group.sectionId, noteIds: shown })
@@ -94,7 +99,7 @@ const orders = computed(() => {
 		}
 	}
 
-	return { groups, rows, notes }
+	return { groups, rows, notes, actionable }
 })
 
 /** Every note in the document, filter or no filter. The set reconciliation
@@ -113,6 +118,20 @@ function documentNoteIds(): Set<string> {
 const visibleGroups = computed(() => orders.value.groups)
 const rowIds = computed(() => orders.value.rows)
 const visibleNoteIds = computed(() => orders.value.notes)
+
+/**
+ * What an *action* may target: document order, filtered by the search query and
+ * by nothing else.
+ *
+ * Distinct from `visibleNoteIds`, and the distinction is the point. A search
+ * narrows what an action targets — that is what a query means. **Collapsing does
+ * not**: it folds rows away, and a note the user selected before folding its
+ * section is still a note they selected. Targeting `visibleNoteIds` made
+ * copy, delete, mark-done, merge, `Move to ▸` and the `$EDITOR` handoff into
+ * silent no-ops the moment a section was collapsed, which is the opposite of
+ * what the comment above `orders` promises.
+ */
+const actionableNoteIds = computed(() => orders.value.actionable)
 
 const selectedSet = computed(() => new Set(selectedIds.value))
 const focusedNoteId = computed(() => rowNoteId(focusedId.value))
@@ -715,6 +734,7 @@ export function useSelection() {
 		anchorId: readonly(anchorId),
 		rowIds,
 		visibleNoteIds,
+		actionableNoteIds,
 		visibleGroups,
 		isSelected,
 		select,

@@ -236,10 +236,10 @@ function applyDocument(
 		// else now, and an open switcher is closed rather than re-pointed.
 		sectionState.reset()
 	} else {
-		// Before the assignment, so a note landing in a collapsed section is on
-		// screen for the same flush the scroll pin measures. After it, `previous` is
-		// gone and there is nothing to diff against.
-		sectionState.revealNewNotes(space.value, next)
+		// Before the assignment, so a section revealed by a new note is on screen for
+		// the same flush the scroll pin measures. After it, `previous` is gone and
+		// there is nothing to diff against.
+		sectionState.reconcile(space.value, next)
 	}
 
 	// A different document is reconciled against an *empty* snapshot, so it takes

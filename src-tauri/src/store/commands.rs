@@ -170,16 +170,20 @@ pub fn submit(shared: &SharedStore, body: &str) -> Reply<SubmitResult> {
 		Entry::Section { name } => name,
 	};
 
-	// The snapshot decision is taken from a read-only lookup *before* the mutate
-	// call, not from the op's own answer: activating a section that already exists
-	// must push nothing, matching `set_active_section`'s exclusion (spec 4.3), and
-	// by the time the op has run the snapshot is already on the stack.
-	let existed = guard.has_section_named(&name);
-	let ((section_id, created), space) = if existed {
-		guard.mutate_no_snapshot(|doc| ops::add_section_and_activate(doc, &name))?
-	} else {
-		guard.mutate(|doc| ops::add_section_and_activate(doc, &name))?
-	};
+	// Creating a section is structural and undoable; resolving a duplicate name to
+	// one that already exists only moves `activeSection`, and must push nothing —
+	// matching `set_active_section`'s exclusion (spec 4.3).
+	//
+	// The decision goes *through* `mutate_if` rather than being taken here,
+	// because here is too early: a write conflict rebases the operation onto the
+	// external document, where the section may have appeared or vanished, and a
+	// decision made against the local view would then describe a mutation that did
+	// not happen. The predicate is asked again for each attempt, against the
+	// document the op is actually applied to.
+	let ((section_id, created), space) = guard.mutate_if(
+		|doc| ops::add_section_and_activate(doc, &name),
+		|doc| ops::section_by_name(doc, &name).is_none(),
+	)?;
 
 	Ok(SubmitResult {
 		space,

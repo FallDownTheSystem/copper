@@ -23,10 +23,23 @@
 import { useNoteSearch } from './useNoteSearch'
 import type { SpaceView } from './useSpace'
 
-/** The `Ctrl+K` switcher anchored on the composer's chip. The `...` menu's
- *  `Switch section ▸` submenu is reka's own open state — a submenu of a menu
- *  that is already up — and deliberately not this. */
-const switcherOpen = ref(false)
+/** The two places the switcher can be showing from. */
+export type SwitcherHost = 'chip' | 'menu'
+
+/**
+ * Which host currently has the switcher open, if either.
+ *
+ * One ref rather than a boolean per host, because both hosts have to run the
+ * *same* lifecycle — the filter is cleared on every open and every close, and an
+ * epoch change closes whichever is up. Two independent booleans is what left the
+ * `...` submenu uncontrolled: its filter survived every dismissal, so reopening
+ * it showed a pre-filtered list, and a stale no-match query showed only
+ * `Create section "<old query>"` with Enter creating it.
+ *
+ * A single shared boolean would not do either: both hosts bind their `open` to
+ * this, so one flag would open the chip's dropdown and the submenu at once.
+ */
+const openHost = ref<SwitcherHost | null>(null)
 const filterQuery = ref('')
 
 /** Section ids the user has collapsed. Not a `Set` mutated in place: a
@@ -67,42 +80,75 @@ function setCollapsed(sectionId: string, value: boolean) {
 }
 
 /**
- * Expands every section that just received a note it did not have before.
+ * Brings the collapse set back into line with a document that has just been
+ * applied. Two jobs, one walk, because both are "which ids still mean what they
+ * meant".
  *
- * A capture landing in a collapsed section would otherwise be invisible, which
- * is the one outcome a tool whose whole promise is "capture is silent on
- * success" cannot afford. Driven off a diff of the applied document rather than
- * off one writer's return value, so it covers the composer, the global capture,
- * an `$EDITOR` write-back, an external edit and a redo with one rule.
+ * **Pruning.** A collapsed id whose section no longer exists is dead weight that
+ * nothing can ever remove: it defeats the `size === 0` fast path below for the
+ * rest of the session, and if the id is ever reintroduced — an undone delete
+ * restores exactly the id it removed — the section comes back mysteriously
+ * folded shut.
  *
- * Called *before* the document is assigned, so the rows exist on the same flush
- * the sticky-bottom pin measures — expanding a tick later would leave the pin
- * anchored to a height that is about to change.
+ * **Revealing.** Every section that just received a note it did not have before
+ * is expanded. A capture landing in a collapsed section would otherwise be
+ * invisible, which is the one outcome a tool whose whole promise is "capture is
+ * silent on success" cannot afford. Driven off a diff of the applied document
+ * rather than off one writer's return value, so it covers the composer, the
+ * global capture, an `$EDITOR` write-back, an external edit and a redo with one
+ * rule. A note that merely *moved* into a collapsed section is not new and does
+ * not reveal it — that destination was chosen.
  *
- * Free in the ordinary case: with nothing collapsed there is nothing to reveal
- * and the diff never runs.
+ * Called *before* the document is assigned, so revealed rows exist on the same
+ * flush the sticky-bottom pin measures; expanding a tick later would leave the
+ * pin anchored to a height that is about to change.
+ *
+ * Free in the ordinary case: with nothing collapsed there is nothing to do.
  */
-function revealNewNotes(previous: SpaceView | null, next: SpaceView) {
-	if (collapsed.value.size === 0 || !previous) return
+function reconcile(previous: SpaceView | null, next: SpaceView) {
+	if (collapsed.value.size === 0) return
 
-	const known = new Set(previous.notes.map((note) => note.id))
-	let revealed: Set<string> | null = null
-	for (const note of next.notes) {
-		if (known.has(note.id) || !collapsed.value.has(note.section)) continue
-		revealed ??= new Set(collapsed.value)
-		revealed.delete(note.section)
+	// Copied only once something actually changes; every applied document runs
+	// this, and copying a set to discover nothing moved is the cost of every edit.
+	let updated: Set<string> | null = null
+	const edit = () => (updated ??= new Set(collapsed.value))
+
+	const live = new Set(next.sections.map((section) => section.id))
+	for (const id of collapsed.value) {
+		if (!live.has(id)) edit().delete(id)
 	}
-	// Only a real change replaces the set; every applied document runs this.
-	if (revealed) collapsed.value = revealed
+
+	if (previous) {
+		const known = new Set(previous.notes.map((note) => note.id))
+		for (const note of next.notes) {
+			if (known.has(note.id) || !collapsed.value.has(note.section)) continue
+			edit().delete(note.section)
+		}
+	}
+
+	if (updated) collapsed.value = updated
 }
 
-function openSwitcher() {
+/** Whether the switcher is showing at all, for the shell and for tests. */
+const switcherOpen = computed(() => openHost.value !== null)
+
+/** Whether *this* host is the one showing it. Each host binds its own `open` to
+ *  this, so opening one cannot open the other. */
+function isSwitcherOpenIn(host: SwitcherHost) {
+	return openHost.value === host
+}
+
+function openSwitcher(host: SwitcherHost = 'chip') {
 	filterQuery.value = ''
-	switcherOpen.value = true
+	openHost.value = host
 }
 
-function closeSwitcher() {
-	switcherOpen.value = false
+/** Closing is host-scoped so a stale event from the host that is *not* showing
+ *  cannot dismiss the one that is. Called with no host, it closes whatever is
+ *  open — which is what an epoch change wants. */
+function closeSwitcher(host?: SwitcherHost) {
+	if (host !== undefined && openHost.value !== host) return
+	openHost.value = null
 	filterQuery.value = ''
 }
 
@@ -115,18 +161,21 @@ function closeSwitcher() {
  */
 function reset() {
 	collapsed.value = new Set()
+	// No host argument: whichever one is showing goes, which is what "closed, not
+	// re-pointed" means when the document underneath it has been replaced.
 	closeSwitcher()
 }
 
 export function useSections() {
 	return {
-		switcherOpen: readonly(switcherOpen),
+		switcherOpen,
+		isSwitcherOpenIn,
 		filterQuery,
 		isCollapsed,
 		isCollapsedStored,
 		toggleCollapsed,
 		setCollapsed,
-		revealNewNotes,
+		reconcile,
 		openSwitcher,
 		closeSwitcher,
 		reset,

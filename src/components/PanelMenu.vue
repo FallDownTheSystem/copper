@@ -21,6 +21,7 @@ const { boundary, portalTo } = useOverlayHost()
 const { recents, probeRecents, openSpace, pickAndOpenSpace, createSpace, removeRecent } =
 	useSpaces()
 const { sections, addSection, errorFor } = useSpace()
+const { isSwitcherOpenIn, openSwitcher, closeSwitcher } = useSections()
 const { showSettings } = useView()
 /** The band's message for this surface's failures. Read back after a refused
  *  create so the inline field can repeat the store's own cause. */
@@ -45,7 +46,16 @@ function onOpenChange(next: boolean) {
 		void probeRecents()
 	} else {
 		cancelSection()
+		// The submenu goes down with its parent, and its lifecycle has to run —
+		// otherwise the filter it holds survives into the next opening.
+		closeSwitcher('menu')
 	}
+}
+
+/** The switcher chose a section, so the whole menu has done its job. */
+function closeMenu() {
+	closeSwitcher('menu')
+	open.value = false
 }
 
 /** The field replaces nothing and appears below the actions, so it has to take
@@ -249,13 +259,33 @@ function onSectionInput(event: Event) {
 			     existing destination is the common case and creating one is the
 			     exception — and both are the same list, since the submenu renders the
 			     component the composer's chip does rather than a second copy of it. -->
-			<DropdownMenuSub>
+			<!-- Controlled, not left to reka. The switcher's filter is module state
+			     shared with the chip's host, so an uncontrolled submenu never ran the
+			     open/close lifecycle: its query survived every dismissal, a reopened
+			     submenu came up pre-filtered, and a stale no-match query showed only
+			     `Create section "<old query>"` — with Enter creating it. Routing both
+			     hosts through the same two functions is also what lets an epoch change
+			     close this one rather than silently re-pointing it at a different
+			     space's sections.
+
+			     The boundary and padding match the chip's host: reka renders
+			     sub-content inside the parent's portal, so it inherits the in-panel
+			     host, but not the collision box that keeps it inside the rounded
+			     clip. -->
+			<DropdownMenuSub
+				:open="isSwitcherOpenIn('menu')"
+				@update:open="(next: boolean) => (next ? openSwitcher('menu') : closeSwitcher('menu'))"
+			>
 				<DropdownMenuSubTrigger class="min-h-6">
 					<IconLucideListTree class="size-4" aria-hidden="true" focusable="false" />
 					Switch section
 				</DropdownMenuSubTrigger>
-				<DropdownMenuSubContent class="w-64 text-meta">
-					<SectionSwitcher @close="open = false" />
+				<DropdownMenuSubContent
+					:collision-boundary="boundary ?? undefined"
+					:collision-padding="8"
+					class="w-64 max-h-(--reka-dropdown-menu-content-available-height) text-meta"
+				>
+					<SectionSwitcher @close="closeMenu" />
 				</DropdownMenuSubContent>
 			</DropdownMenuSub>
 

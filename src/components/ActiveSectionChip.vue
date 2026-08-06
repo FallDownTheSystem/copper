@@ -15,7 +15,7 @@
 
 const { activeSectionObject } = useSpace()
 const { boundary, portalTo } = useOverlayHost()
-const { switcherOpen, openSwitcher, closeSwitcher } = useSections()
+const { isSwitcherOpenIn, openSwitcher, closeSwitcher } = useSections()
 
 /**
  * Reka's own close-focus event, forwarded rather than consumed.
@@ -34,13 +34,13 @@ const emit = defineEmits<{ closed: [event: Event] }>()
 const name = computed(() => activeSectionObject.value?.name ?? 'No section')
 
 function onOpenChange(next: boolean) {
-	if (next) openSwitcher()
-	else closeSwitcher()
+	if (next) openSwitcher('chip')
+	else closeSwitcher('chip')
 }
 </script>
 
 <template>
-	<DropdownMenu :open="switcherOpen" @update:open="onOpenChange">
+	<DropdownMenu :open="isSwitcherOpenIn('chip')" @update:open="onOpenChange">
 		<DropdownMenuTrigger
 			type="button"
 			:aria-label="`Active section: ${name}. Switch section`"
@@ -71,7 +71,7 @@ function onOpenChange(next: boolean) {
 			     bare div — so a title here fails `aria-required-children`. It would
 			     also be a third place saying the same thing: the trigger is labelled
 			     "Switch section" and the field reads "Filter sections…". -->
-			<SectionSwitcher @close="closeSwitcher" />
+			<SectionSwitcher @close="closeSwitcher('chip')" />
 		</DropdownMenuContent>
 	</DropdownMenu>
 </template>
