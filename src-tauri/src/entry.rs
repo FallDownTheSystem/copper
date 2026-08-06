@@ -20,8 +20,6 @@
 //! 2026-08-05): a captured selection whose body is exactly `# Name` is saved as
 //! an ordinary note. Inline section creation exists only in the composer.
 
-use std::borrow::Cow;
-
 /// Open Question 3, answered 2026-08-05: 80 characters after normalisation,
 /// truncated rather than rejected.
 pub const SECTION_NAME_MAX: usize = 80;
@@ -32,10 +30,11 @@ pub enum Entry<'a> {
 	Section {
 		name: String,
 	},
-	/// `Cow` because only the `\#` escape rewrites the body; every other note
-	/// crosses this module untouched.
+	/// A slice of the submitted string, always: the only rewriting this module
+	/// does is dropping a leading `\`, and that is `body[1..]` rather than new
+	/// text.
 	Note {
-		body: Cow<'a, str>,
+		body: &'a str,
 	},
 }
 
@@ -54,12 +53,9 @@ pub fn normalise_name(name: &str) -> String {
 	// Counted in `char`s, not bytes: a byte slice would panic on a multi-byte
 	// boundary, and the cap is a legibility limit rather than a storage one.
 	// Trimmed again because the cut can land immediately after a space.
-	collapsed
-		.chars()
-		.take(SECTION_NAME_MAX)
-		.collect::<String>()
-		.trim_end()
-		.to_string()
+	let mut capped: String = collapsed.chars().take(SECTION_NAME_MAX).collect();
+	capped.truncate(capped.trim_end().len());
+	capped
 }
 
 /// Every character that ends a line, not only the two ASCII ones.
@@ -83,17 +79,13 @@ pub fn classify(body: &str) -> Entry<'_> {
 	// to do to text nobody asked it to touch.
 	if let Some(rest) = body.strip_prefix('\\') {
 		if section_name(rest).is_some() {
-			return Entry::Note {
-				body: Cow::Owned(rest.to_string()),
-			};
+			return Entry::Note { body: rest };
 		}
 	}
 
 	match section_name(body) {
 		Some(name) => Entry::Section { name },
-		None => Entry::Note {
-			body: Cow::Borrowed(body),
-		},
+		None => Entry::Note { body },
 	}
 }
 
@@ -136,7 +128,7 @@ mod tests {
 
 	fn note_body(body: &str) -> String {
 		match classify(body) {
-			Entry::Note { body } => body.into_owned(),
+			Entry::Note { body } => body.to_string(),
 			Entry::Section { name } => panic!("{body:?} was classified as the section {name:?}"),
 		}
 	}
@@ -248,14 +240,21 @@ mod tests {
 		assert_eq!(note_body("\\\\# Research"), "\\\\# Research");
 	}
 
-	/// An ordinary note crosses this module without allocating, which is the
-	/// whole reason the variant carries a `Cow`.
+	/// Every note body crosses this module as a slice of the input — the escaped
+	/// one included, because consuming the leading backslash is `body[1..]` and
+	/// not a rewrite. That is what lets the variant hold a plain `&str`.
 	#[test]
-	fn an_unescaped_note_body_is_borrowed_rather_than_copied() {
-		let body = "an ordinary note";
-		match classify(body) {
-			Entry::Note { body: Cow::Borrowed(borrowed) } => assert!(std::ptr::eq(borrowed, body)),
-			other => panic!("expected a borrowed note, got {other:?}"),
+	fn a_note_body_is_always_a_slice_of_the_input() {
+		let plain = "an ordinary note";
+		match classify(plain) {
+			Entry::Note { body } => assert!(std::ptr::eq(body, plain)),
+			other => panic!("expected a note, got {other:?}"),
+		}
+
+		let escaped = "\\# Research";
+		match classify(escaped) {
+			Entry::Note { body } => assert!(std::ptr::eq(body, &escaped[1..])),
+			other => panic!("expected a note, got {other:?}"),
 		}
 	}
 

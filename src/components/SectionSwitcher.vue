@@ -13,6 +13,8 @@
  * It is a destination picker, not a view of the filtered list.
  */
 
+import { normaliseSectionName } from '@/lib/sectionName'
+
 /**
  * Emitted once an action has actually succeeded, so the host closes itself.
  *
@@ -22,8 +24,6 @@
  * of them.
  */
 const emit = defineEmits<{ close: [] }>()
-
-import { normaliseSectionName } from '@/lib/sectionName'
 
 const { sections, activeSection, submitEntry, setActiveSection } = useSpace()
 const { filterQuery } = useSections()
@@ -82,14 +82,6 @@ async function create() {
 }
 
 /**
- * The field sits inside a reka menu, which owns arrows, Home/End, Escape and
- * typeahead. Only the keys that would otherwise be taken from a text input are
- * stopped here: every letter, so typeahead cannot steal focus onto an item
- * mid-word, and Enter, which activates the first row rather than submitting a
- * form that does not exist. Everything else — including Escape, which reka
- * closes on — is left to bubble.
- */
-/**
  * The row reka has highlighted, which is not always the first one.
  *
  * Reka highlights on hover and on arrow keys while the filter field keeps focus,
@@ -104,6 +96,14 @@ function highlighted(): HTMLElement | null {
 	return host?.querySelector<HTMLElement>('[role="menuitem"][data-highlighted]') ?? null
 }
 
+/**
+ * The field sits inside a reka menu, which owns arrows, Home/End, Escape and
+ * typeahead. Only the presses reka should still act on are let through — the
+ * allowlist at the bottom, Escape among them, because closing is reka's job and
+ * not this component's. Everything else is stopped, so typeahead cannot steal
+ * focus onto an item mid-word; Enter is resolved here against the highlighted
+ * row, and ArrowLeft belongs to the caret whenever there is text to move over.
+ */
 function onKeydown(event: KeyboardEvent) {
 	// WebView2 reports keyCode 229 while an IME candidate is open; accepting one
 	// with Enter must not choose a section.

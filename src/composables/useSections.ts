@@ -58,8 +58,13 @@ const { hasQuery } = useNoteSearch()
  * hides sections with no match; this composes with it instead of fighting it,
  * because a query means nothing is collapsed at all.
  */
+/** Whether collapsing means anything right now — the query-override rule, named
+ *  once. The disclosure control withdraws on it and the grid's arrow keys go
+ *  inert on it, and neither should re-derive it from the search module. */
+const collapseEnabled = computed(() => !hasQuery.value)
+
 function isCollapsed(sectionId: string) {
-	return !hasQuery.value && collapsed.value.has(sectionId)
+	return collapseEnabled.value && collapsed.value.has(sectionId)
 }
 
 /** The stored state, ignoring any active query. For the disclosure control's own
@@ -143,6 +148,14 @@ function openSwitcher(host: SwitcherHost = 'chip') {
 	openHost.value = host
 }
 
+/** The two hosts' `update:open` in one place. Both have to run the *same*
+ *  lifecycle — that they did not is what left the `...` submenu holding a stale
+ *  filter — and a host that spells the mapping itself is a host that can stop. */
+function setSwitcherOpen(host: SwitcherHost, open: boolean) {
+	if (open) openSwitcher(host)
+	else closeSwitcher(host)
+}
+
 /** Closing is host-scoped so a stale event from the host that is *not* showing
  *  cannot dismiss the one that is. Called with no host, it closes whatever is
  *  open — which is what an epoch change wants. */
@@ -170,8 +183,10 @@ export function useSections() {
 	return {
 		switcherOpen,
 		isSwitcherOpenIn,
+		setSwitcherOpen,
 		filterQuery,
 		isCollapsed,
+		collapseEnabled,
 		isCollapsedStored,
 		toggleCollapsed,
 		setCollapsed,

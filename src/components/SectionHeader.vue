@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { focusRowSoon } from '@/composables/useSelection'
+import { focusRowSoon, takeRow } from '@/composables/useSelection'
 import type { Section } from '@/composables/useSpace'
 
 const props = defineProps<{
@@ -10,11 +10,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{ activate: [] }>()
 
-const { focusedId, focusRow } = useSelection()
+const { focusedId } = useSelection()
 const { renaming, draft, setDraft, endRename, cancelRename } = useSectionEditor()
 const { renameSection } = useSpace()
-const { isCollapsedStored, toggleCollapsed } = useSections()
-const { hasQuery } = useNoteSearch()
+const { isCollapsedStored, toggleCollapsed, collapseEnabled } = useSections()
 
 const focused = computed(() => focusedId.value === props.rowId)
 const headingId = computed(() => `section-heading-${props.section.id}`)
@@ -35,8 +34,7 @@ const collapsed = computed(() => isCollapsedStored(props.section.id))
  */
 function toggle() {
 	toggleCollapsed(props.section.id)
-	focusRow(props.rowId)
-	focusRowSoon(props.rowId)
+	takeRow(props.rowId)
 }
 
 const input = useTemplateRef<HTMLInputElement>('input')
@@ -134,7 +132,7 @@ function onKeydown(event: KeyboardEvent) {
 						     and comes back when the query clears; the fixed-width stand-in
 						     keeps the heading from shifting sideways in the meantime. -->
 						<button
-							v-if="!hasQuery"
+							v-if="collapseEnabled"
 							type="button"
 							tabindex="-1"
 							:aria-expanded="!collapsed"

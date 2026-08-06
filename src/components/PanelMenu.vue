@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { normaliseSectionName } from '@/lib/sectionName'
+
 /**
  * The `...` menu: the spaces switcher, the two space actions, and the inline
  * section-creation field.
@@ -21,7 +23,7 @@ const { boundary, portalTo } = useOverlayHost()
 const { recents, probeRecents, openSpace, pickAndOpenSpace, createSpace, removeRecent } =
 	useSpaces()
 const { sections, addSection, errorFor } = useSpace()
-const { isSwitcherOpenIn, openSwitcher, closeSwitcher } = useSections()
+const { isSwitcherOpenIn, setSwitcherOpen, closeSwitcher } = useSections()
 const { showSettings } = useView()
 /** The band's message for this surface's failures. Read back after a refused
  *  create so the inline field can repeat the store's own cause. */
@@ -58,6 +60,10 @@ function closeMenu() {
 	open.value = false
 }
 
+function onSwitcherOpenChange(next: boolean) {
+	setSwitcherOpen('menu', next)
+}
+
 /** The field replaces nothing and appears below the actions, so it has to take
  *  focus itself — nothing else moves focus into a control that did not exist a
  *  tick ago. */
@@ -86,9 +92,15 @@ function cancelSection() {
  */
 function validate(name: string): string | null {
 	if (name.length === 0) return 'A section needs a name.'
-	if (sections.value.some((section) => section.name.toLowerCase() === name.toLowerCase())) {
-		return 'This space already has a section with that name.'
-	}
+	// The store's own notion of "the same name", not a second one: it collapses
+	// whitespace before matching, so `Deep  Research` and `Deep Research` are one
+	// section there and have to be one here. The switcher's create row goes
+	// through the same rule.
+	const wanted = normaliseSectionName(name).toLowerCase()
+	const clash = sections.value.some(
+		(section) => normaliseSectionName(section.name).toLowerCase() === wanted,
+	)
+	if (clash) return 'This space already has a section with that name.'
 	return null
 }
 
@@ -272,10 +284,7 @@ function onSectionInput(event: Event) {
 			     sub-content inside the parent's portal, so it inherits the in-panel
 			     host, but not the collision box that keeps it inside the rounded
 			     clip. -->
-			<DropdownMenuSub
-				:open="isSwitcherOpenIn('menu')"
-				@update:open="(next: boolean) => (next ? openSwitcher('menu') : closeSwitcher('menu'))"
-			>
+			<DropdownMenuSub :open="isSwitcherOpenIn('menu')" @update:open="onSwitcherOpenChange">
 				<DropdownMenuSubTrigger class="min-h-6">
 					<IconLucideListTree class="size-4" aria-hidden="true" focusable="false" />
 					Switch section

@@ -18,7 +18,11 @@
 export const SECTION_NAME_MAX = 80
 
 export function normaliseSectionName(name: string): string {
-	const collapsed = name.split(/\s+/).filter(Boolean).join(' ')
+	const collapsed = name.trim().split(/\s+/).join(' ')
+	// UTF-16 length is an upper bound on the code-point count, so a name that fits
+	// by this measure cannot be over the cap. The switcher normalises every section
+	// name on every keystroke, and Rust returns early at the same point.
+	if (collapsed.length <= SECTION_NAME_MAX) return collapsed
 	// `Array.from`, not `String.slice`, so the cap counts **code points** exactly
 	// as Rust's `chars()` does — `slice` counts UTF-16 units and would cut an emoji
 	// in half. Not graphemes either, in either language: a combining mark at the

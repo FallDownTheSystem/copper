@@ -15,7 +15,7 @@
 
 const { activeSectionObject } = useSpace()
 const { boundary, portalTo } = useOverlayHost()
-const { isSwitcherOpenIn, openSwitcher, closeSwitcher } = useSections()
+const { isSwitcherOpenIn, setSwitcherOpen, closeSwitcher } = useSections()
 
 /**
  * Reka's own close-focus event, forwarded rather than consumed.
@@ -34,8 +34,7 @@ const emit = defineEmits<{ closed: [event: Event] }>()
 const name = computed(() => activeSectionObject.value?.name ?? 'No section')
 
 function onOpenChange(next: boolean) {
-	if (next) openSwitcher('chip')
-	else closeSwitcher('chip')
+	setSwitcherOpen('chip', next)
 }
 </script>
 

@@ -519,9 +519,10 @@ async function mutate<T>(
 	// this side of the boundary makes about a stale *document*. Skipping the
 	// status update there left `canUndo` false after a real, undoable change.
 	if (options.repullStatus?.(result)) {
-		// `edit_note` and `set_active_section` take no undo snapshot of their own,
-		// but a write that had to be re-applied over an external change clears both
-		// stacks and emits nothing — a re-pull is the only way to learn about it.
+		// `edit_note`, `set_active_section`, and `submit_entry` when it only
+		// activated an existing section, take no undo snapshot of their own — but a
+		// write that had to be re-applied over an external change clears both stacks
+		// and emits nothing, and a re-pull is the only way to learn about it.
 		await pullStatus()
 	} else {
 		// Deterministic for an ordinary structural mutation, so no round trip.
@@ -565,8 +566,9 @@ async function submitEntry(body: string) {
 	// The roving target follows the new note; DOM focus stays in the composer so
 	// consecutive captures need no mouse. Neither section outcome touches focus or
 	// the selection — the switch is visible in the chip and the header instead.
-	const { outcome, noteId } = result?.value ?? {}
-	if (result?.applied && outcome === 'note' && noteId) selection.focusRow(noteRow(noteId))
+	if (result?.applied && result.value.outcome === 'note' && result.value.noteId) {
+		selection.focusRow(noteRow(result.value.noteId))
+	}
 	return result
 }
 

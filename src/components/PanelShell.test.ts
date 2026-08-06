@@ -126,6 +126,19 @@ async function baseInvoke(command: string) {
 	throw { kind: 'invalid', message: command }
 }
 
+/** Hands the store a different document and re-pulls it. Deliberately narrower
+ *  than `baseInvoke`: nothing else should be reachable while it is installed.
+ *  The teardown puts `baseInvoke` back. */
+async function installDocument(next: Space) {
+	mocks.invoke.mockImplementation(async (command: string) => {
+		if (command === 'get_active_space') return next
+		if (command === 'get_status') return STATUS
+		if (command === 'editor_handoffs') return []
+		throw { kind: 'invalid', message: command }
+	})
+	await space.refresh()
+}
+
 beforeEach(() => {
 	vi.resetModules()
 	mocks.invoke.mockReset()
@@ -646,15 +659,7 @@ describe('the active-section chip', () => {
 	it('carries the full name in a title, so a truncated one is still readable', async () => {
 		const wrapper = await mountPanel()
 		const long = 'A section name long enough to need an ellipsis in a 390px panel'
-		mocks.invoke.mockImplementation(async (command: string) => {
-			if (command === 'get_active_space') {
-				return { ...SPACE, sections: [{ id: 'sec_a', name: long, order: 0 }] }
-			}
-			if (command === 'get_status') return STATUS
-			if (command === 'editor_handoffs') return []
-			throw { kind: 'invalid', message: command }
-		})
-		await space.refresh()
+		await installDocument({ ...SPACE, sections: [{ id: 'sec_a', name: long, order: 0 }] })
 		await settle(3)
 
 		const chip = wrapper.find('[data-slot="dropdown-menu-trigger"][title]')
@@ -663,6 +668,49 @@ describe('the active-section chip', () => {
 		// It updates when the active section changes — that is the whole reason it
 		// exists, since the header it duplicates scrolls out of view.
 		expect(chip.text()).toContain(long)
+	})
+})
+
+describe('the New Section field', () => {
+	async function openField(wrapper: Awaited<ReturnType<typeof mountPanel>>) {
+		await wrapper.find('[aria-label="More actions"]').trigger('click')
+		await settle(3)
+
+		const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((row) =>
+			row.textContent?.includes('New Section'),
+		)
+		expect(item, 'the New Section item is missing').toBeTruthy()
+		item!.click()
+		await settle(3)
+
+		const field = document.querySelector<HTMLInputElement>('#new-section-name')
+		expect(field, 'the New Section field did not open').not.toBeNull()
+		return field!
+	}
+
+	it('refuses a name the store would resolve to an existing section', async () => {
+		const wrapper = await mountPanel()
+		await installDocument({
+			...SPACE,
+			sections: [{ id: 'sec_a', name: 'Deep Research', order: 0 }],
+		})
+		await settle(3)
+
+		const field = await openField(wrapper)
+		// Two spaces. The store collapses whitespace before deciding which names
+		// collide, so this *is* the existing section — validating on the raw text
+		// let it through and produced a store-level collision instead of an answer
+		// the user could act on while the field is still open.
+		field.value = 'Deep  Research'
+		field.dispatchEvent(new Event('input', { bubbles: true }))
+		await settle()
+		field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+		await settle(3)
+
+		expect(document.querySelector('#new-section-error')?.textContent).toContain(
+			'This space already has a section with that name.',
+		)
+		expect(mocks.invoke).not.toHaveBeenCalledWith('add_section', expect.anything())
 	})
 })
 
@@ -1105,13 +1153,7 @@ describe('collapsible sections', () => {
 				},
 			],
 		}
-		mocks.invoke.mockImplementation(async (command: string) => {
-			if (command === 'get_active_space') return captured
-			if (command === 'get_status') return STATUS
-			if (command === 'editor_handoffs') return []
-			throw { kind: 'invalid', message: command }
-		})
-		await space.refresh()
+		await installDocument(captured)
 		await settle(3)
 
 		expect(wrapper.find('[data-row-id="n:nte_3"]').exists()).toBe(true)

@@ -369,10 +369,12 @@ pub fn add_section_and_activate(space: &mut Space, name: &str) -> Result<(String
 	// double-spaced string cannot store one form and be looked up by another.
 	let name = clean_name(&normalise_name(name))?;
 
-	if let Some(existing) = section_by_name(space, &name) {
-		let id = existing.id.clone();
-		space.active_section = id.clone();
-		normalise(space);
+	// Through `set_active_section` for the same reason the create arm below goes
+	// through `add_section`: activation is spec 4.3's own operation, and a second
+	// place that assigns `active_section` is a second place for it to stop
+	// agreeing with the one `set_active_section` performs.
+	if let Some(id) = section_by_name(space, &name).map(|section| section.id.clone()) {
+		set_active_section(space, &id)?;
 		return Ok((id, false));
 	}
 

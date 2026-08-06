@@ -20,7 +20,7 @@ const {
 const { beginEdit } = useNoteEditor()
 const { interactionRowId, enter, reconcile } = useInteractionMode()
 const { hasQuery, resultCount } = useNoteSearch()
-const { setCollapsed } = useSections()
+const { setCollapsed, collapseEnabled } = useSections()
 const { toggleDone, finishDrag } = useNoteActions()
 
 /**
@@ -139,7 +139,7 @@ function onKeydown(event: KeyboardEvent) {
 			//
 			// Inert while a query is active, matching the control itself: search
 			// overrides collapse, so a press would change a state nothing is reading.
-			if (!sectionId || hasQuery.value) return
+			if (!sectionId || !collapseEnabled.value) return
 			event.preventDefault()
 			setCollapsed(sectionId, event.key === 'ArrowLeft')
 			return

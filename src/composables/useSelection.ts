@@ -86,14 +86,14 @@ const orders = computed(() => {
 		const members = matched ? group.noteIds.filter((id) => matched.has(id)) : group.noteIds
 		if (matched && members.length === 0) continue
 
-		// Collected before the collapse test, which is the whole difference between
-		// the two orders below.
-		actionable.push(...members)
-
-		const shown = isCollapsed(group.sectionId) ? [] : members
-		groups.push({ sectionId: group.sectionId, noteIds: shown })
+		// One walk for both orders. `actionable` takes every match; the collapse test
+		// is the whole difference between it and the rows below.
+		const folded = isCollapsed(group.sectionId)
+		groups.push({ sectionId: group.sectionId, noteIds: folded ? [] : members })
 		rows.push(sectionRow(group.sectionId))
-		for (const id of shown) {
+		for (const id of members) {
+			actionable.push(id)
+			if (folded) continue
 			rows.push(noteRow(id))
 			notes.push(id)
 		}
@@ -411,6 +411,16 @@ export function rowElement(key: string): HTMLElement | null {
  */
 export function focusRowSoon(key: string) {
 	void nextTick(() => rowElement(key)?.focus())
+}
+
+/**
+ * The roving target and DOM focus together, which is what a caller that moves
+ * focus deliberately always means. `focusRow` alone leaves the grid's
+ * `tabindex="0"` on a row that nothing is focused on.
+ */
+export function takeRow(key: string) {
+	focusRow(key)
+	focusRowSoon(key)
 }
 
 /**

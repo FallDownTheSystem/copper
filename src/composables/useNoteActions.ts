@@ -15,7 +15,14 @@ import { useEditorHandoff } from './useEditorHandoff'
 import { useNoteDisclosure } from './useNoteDisclosure'
 import { useNoteEditor } from './useNoteEditor'
 import { useNoteSearch } from './useNoteSearch'
-import { focusRowSoon, noteRow, rowElement, sectionRow, useSelection } from './useSelection'
+import {
+	focusRowSoon,
+	noteRow,
+	rowElement,
+	sectionRow,
+	takeRow,
+	useSelection,
+} from './useSelection'
 import { countMessage, useStatusMessage } from './useStatusMessage'
 import { useSpace } from './useSpace'
 
@@ -51,13 +58,13 @@ const status = useStatusMessage()
 function targetIds(): string[] {
 	const order = selection.actionableNoteIds.value
 	const focused = selection.focusedNoteId.value
-	const selected = selection.selectedIds.value
 
-	const takesSelection = focused === null ? selected.length > 0 : selected.includes(focused)
-	if (takesSelection) {
-		const chosen = new Set(selected)
-		return order.filter((id) => chosen.has(id))
-	}
+	// `isSelected` rather than a scan and a fresh `Set` per call: `useSelection`
+	// already memoises the selection as a set, and this runs once per `Move to ▸`
+	// entry through `isRedundantTarget` alone.
+	const takesSelection =
+		focused === null ? selection.selectedIds.value.length > 0 : selection.isSelected(focused)
+	if (takesSelection) return order.filter((id) => selection.isSelected(id))
 
 	return focused !== null && order.includes(focused) ? [focused] : []
 }
@@ -197,11 +204,10 @@ function moveTo(sectionId: string) {
 		if (first === undefined) return
 
 		const rows = selection.rowIds.value
-		const target = rows.includes(noteRow(first)) ? noteRow(first) : sectionRow(sectionId)
-		if (!rows.includes(target)) return
+		const target = [noteRow(first), sectionRow(sectionId)].find((row) => rows.includes(row))
+		if (target === undefined) return
 
-		selection.focusRow(target)
-		focusRowSoon(target)
+		takeRow(target)
 	})
 }
 

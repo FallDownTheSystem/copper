@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { useAutoSize } from '@/composables/useAutoSize'
-import { focusRowSoon, noteRow } from '@/composables/useSelection'
+import { noteRow, takeRow } from '@/composables/useSelection'
 
 const { spaceName, submitEntry, errorFor, clearActionError } = useSpace()
 
 const composerError = errorFor('composer')
-const { visibleNoteIds, focusRow } = useSelection()
+const { visibleNoteIds } = useSelection()
 const { switcherOpen } = useSections()
 
 const textarea = useTemplateRef<HTMLTextAreaElement>('textarea')
@@ -103,8 +103,7 @@ async function submit() {
 function focusLastNote() {
 	const last = visibleNoteIds.value.at(-1)
 	if (!last) return false
-	focusRow(noteRow(last))
-	focusRowSoon(noteRow(last))
+	takeRow(noteRow(last))
 	return true
 }
 
