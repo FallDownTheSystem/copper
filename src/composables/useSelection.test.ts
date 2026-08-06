@@ -303,11 +303,44 @@ describe('the scroll anchor', () => {
 		expect(selection.snapshot().scroll).toEqual({ kind: 'bottom' })
 	})
 
-	it('falls back to the topmost visible note once the reader has scrolled up', () => {
-		const region = mountRegion({ scrollTop: 40, scrollHeight: 500, clientHeight: 120 })
+	it('keeps the pin when the composer grows under the region', () => {
+		// The defect this exists for, measured in a real browser: typing into the
+		// composer expands it, which shrinks the scroll region by the same amount
+		// without moving `scrollTop`. The arithmetic then reports 70px from the
+		// bottom for a reader who never scrolled, and a capture taken at that
+		// instant — submit is exactly when the composer is tallest — took a note
+		// anchor and left the new note below the fold.
+		const metrics = { scrollTop: 380, scrollHeight: 500, clientHeight: 120 }
+		mountRegion(metrics)
+		expect(selection.snapshot().scroll).toEqual({ kind: 'bottom' })
+
+		metrics.clientHeight = 50
+		expect(selection.snapshot().scroll).toEqual({ kind: 'bottom' })
+	})
+
+	it('releases the pin when the reader actually scrolls up', () => {
+		const metrics = { scrollTop: 380, scrollHeight: 500, clientHeight: 120 }
+		const region = mountRegion(metrics)
 		region.innerHTML = '<div data-row-id="n:n1"></div><div data-row-id="n:n2"></div>'
+		expect(selection.snapshot().scroll).toEqual({ kind: 'bottom' })
+
+		// A scroll event fires only when `scrollTop` genuinely moves, which is what
+		// separates a reader from a composer growing underneath them.
+		metrics.scrollTop = 40
+		region.dispatchEvent(new Event('scroll'))
 
 		expect(selection.snapshot().scroll).toEqual({ kind: 'note', noteId: 'n1', offset: 0 })
+	})
+
+	it('re-arms at the bottom without waiting for a scroll event', () => {
+		const metrics = { scrollTop: 40, scrollHeight: 500, clientHeight: 120 }
+		mountRegion(metrics)
+		expect(selection.snapshot().scroll).not.toEqual({ kind: 'bottom' })
+
+		// Sufficient but not necessary: re-arming must not depend on an event
+		// having been delivered, or a missed one strands the list unstuck forever.
+		metrics.scrollTop = 380
+		expect(selection.snapshot().scroll).toEqual({ kind: 'bottom' })
 	})
 
 	it('re-pins to the bottom after the list grew, so the new note is on screen', () => {

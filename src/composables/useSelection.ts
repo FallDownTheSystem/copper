@@ -302,8 +302,37 @@ function syncDocument(space: SpaceView | null) {
 	}))
 }
 
+/**
+ * The latched half of "is the list parked at its bottom edge" — see
+ * `isStuckToBottom` for the predicate itself.
+ *
+ * Held across scroll events rather than re-measured when a document arrives,
+ * and that distinction *is* the fix. The region's height
+ * is not constant: the composer grows as the user types and collapses again when
+ * the note is submitted, so `scrollHeight - scrollTop - clientHeight` measured at
+ * submit — the one instant the composer is at its tallest — reports tens of
+ * pixels for a reader who has not scrolled at all. Measured that way a
+ * five-line capture classified as "scrolled up", took a note anchor, and left
+ * the new note below the fold.
+ *
+ * A scroll event fires only when `scrollTop` actually moves, which a composer
+ * growing underneath the region never does. So this survives typing and is
+ * released only by a reader who genuinely scrolls away.
+ */
+let stuckToBottom = true
+let trackedRegion: HTMLElement | null = null
+
 function scrollRegion() {
-	return document.querySelector<HTMLElement>('[data-scroll-region]')
+	if (typeof document === 'undefined') return null
+	const region = document.querySelector<HTMLElement>('[data-scroll-region]')
+	if (region && region !== trackedRegion) {
+		trackedRegion = region
+		stuckToBottom = atBottom(region)
+		// Passive: the handler only reads. Never removed, because this is the
+		// panel's one scroll surface and it outlives every document.
+		region.addEventListener('scroll', () => (stuckToBottom = atBottom(region)), { passive: true })
+	}
+	return region
 }
 
 /**
@@ -361,6 +390,20 @@ function atBottom(region: HTMLElement) {
 }
 
 /**
+ * The two signals are deliberately combined with `||` rather than either one
+ * being trusted alone.
+ *
+ * The measurement is *sufficient but not necessary*, so a reader who scrolls
+ * back down re-arms stickiness immediately and without depending on an event
+ * having been delivered. The latch covers the one case the measurement cannot
+ * see: the composer growing under the region shrinks the viewport without moving
+ * `scrollTop`, which reads as "scrolled up" for a reader who never scrolled.
+ */
+function isStuckToBottom(region: HTMLElement) {
+	return atBottom(region) || stuckToBottom
+}
+
+/**
  * Anchors on a visible note's id plus its pixel offset rather than raw
  * `scrollTop`, because an external edit can change the height of content above
  * the viewport and leave a restored `scrollTop` pointing somewhere else.
@@ -372,7 +415,7 @@ function captureScroll(): ScrollAnchor | null {
 	// Tested first, and it has to be: the note anchor below would hold the list
 	// exactly where it is, which is right for a reader who has scrolled up and
 	// wrong for one sitting at the end watching their own captures land.
-	if (atBottom(region)) return { kind: 'bottom' }
+	if (isStuckToBottom(region)) return { kind: 'bottom' }
 
 	// One DOM query for the whole walk. `rowElement` re-queries every row on each
 	// call, so calling it per note is quadratic in a list that reaches 200 — and
@@ -480,15 +523,33 @@ function restoreDom(snap: SelectionSnapshot) {
 	else document.querySelector<HTMLElement>('[data-composer]')?.focus()
 }
 
+/**
+ * Pinned twice: once against the patched DOM, once on the following frame.
+ *
+ * A row's height is not final when the document is patched. A note long enough
+ * to trip the clamp gains its `Show more` control from the disclosure's
+ * `ResizeObserver` pass, which lands after this one and grew the measured list
+ * by another dozen pixels. The second pass re-reads the flag rather than
+ * re-pinning blind, so a reader who scrolled away inside that frame keeps their
+ * position — scroll steps run before resize-observer steps, so the pin's own
+ * scroll event has already been accounted for by then.
+ */
+function pinToBottom(region: HTMLElement) {
+	region.scrollTop = region.scrollHeight
+	stuckToBottom = true
+	if (typeof requestAnimationFrame !== 'function') return
+	requestAnimationFrame(() => {
+		if (!isStuckToBottom(region)) return
+		region.scrollTop = region.scrollHeight
+	})
+}
+
 function restoreScroll(anchor: ScrollAnchor) {
 	const region = scrollRegion()
 	if (!region) return
 
-	// Read after the patch, so it already counts the row that was just added — a
-	// note captured while the list was at its end stays on screen without moving
-	// anyone who had scrolled up.
 	if (anchor.kind === 'bottom') {
-		region.scrollTop = region.scrollHeight
+		pinToBottom(region)
 		return
 	}
 
@@ -504,6 +565,8 @@ function resetForNewSpace() {
 	setSelection([])
 	focusedId.value = null
 	anchorId.value = null
+	// A different space opens at its end, exactly as a fresh load does.
+	stuckToBottom = true
 }
 
 /**
