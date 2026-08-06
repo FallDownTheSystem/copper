@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vite-plus/test'
+import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test'
 
 import { noteRow, sectionRow, useSelection } from './useSelection'
 import type { Note, Space } from './useSpace'
@@ -251,5 +251,88 @@ describe('reconcile', () => {
 
 		expect(selection.focusedId.value).toBeNull()
 		expect(selection.selectedIds.value).toEqual([])
+	})
+})
+
+describe('the scroll anchor', () => {
+	/**
+	 * happy-dom lays nothing out, so the three scroll metrics are installed by
+	 * hand — which is enough, because the bottom test reads exactly those three
+	 * and nothing else. The object is handed back so a test can grow the region
+	 * the way an added row does and then restore against it.
+	 */
+	function mountRegion(metrics: { scrollTop: number; scrollHeight: number; clientHeight: number }) {
+		const region = document.createElement('div')
+		region.setAttribute('data-scroll-region', '')
+		Object.defineProperty(region, 'scrollHeight', {
+			configurable: true,
+			get: () => metrics.scrollHeight,
+		})
+		Object.defineProperty(region, 'clientHeight', {
+			configurable: true,
+			get: () => metrics.clientHeight,
+		})
+		Object.defineProperty(region, 'scrollTop', {
+			configurable: true,
+			get: () => metrics.scrollTop,
+			set: (value: number) => {
+				metrics.scrollTop = value
+			},
+		})
+		document.body.append(region)
+		return region
+	}
+
+	afterEach(() => {
+		document.body.innerHTML = ''
+	})
+
+	it('takes the bottom edge itself as the anchor when the list is already there', () => {
+		mountRegion({ scrollTop: 380, scrollHeight: 500, clientHeight: 120 })
+
+		// Not a note plus an offset: holding the topmost visible note's offset is
+		// precisely what left a freshly added note below the fold.
+		expect(selection.snapshot().scroll).toEqual({ kind: 'bottom' })
+	})
+
+	it('counts a sub-pixel remainder as the bottom', () => {
+		// At a fractional device pixel ratio the three metrics do not cancel
+		// exactly, so an exact equality test never fires on a real display.
+		mountRegion({ scrollTop: 378.5, scrollHeight: 500, clientHeight: 120 })
+
+		expect(selection.snapshot().scroll).toEqual({ kind: 'bottom' })
+	})
+
+	it('falls back to the topmost visible note once the reader has scrolled up', () => {
+		const region = mountRegion({ scrollTop: 40, scrollHeight: 500, clientHeight: 120 })
+		region.innerHTML = '<div data-row-id="n:n1"></div><div data-row-id="n:n2"></div>'
+
+		expect(selection.snapshot().scroll).toEqual({ kind: 'note', noteId: 'n1', offset: 0 })
+	})
+
+	it('re-pins to the bottom after the list grew, so the new note is on screen', () => {
+		const metrics = { scrollTop: 380, scrollHeight: 500, clientHeight: 120 }
+		mountRegion(metrics)
+		const snapshot = selection.snapshot()
+
+		// The added row, measured after the patch.
+		metrics.scrollHeight = 560
+		selection.restoreDom(snapshot)
+
+		expect(metrics.scrollTop).toBe(560)
+	})
+
+	it('leaves a reader who has scrolled up exactly where they were', () => {
+		const metrics = { scrollTop: 40, scrollHeight: 500, clientHeight: 120 }
+		const region = mountRegion(metrics)
+		region.innerHTML = '<div data-row-id="n:n1"></div>'
+		const snapshot = selection.snapshot()
+
+		metrics.scrollHeight = 560
+		selection.restoreDom(snapshot)
+
+		// The note anchor resolves to a zero delta under happy-dom's null layout,
+		// so what this pins down is that the bottom pin did not fire.
+		expect(metrics.scrollTop).toBe(40)
 	})
 })

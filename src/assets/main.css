@@ -331,11 +331,19 @@
 	overflow-wrap: break-word;
 }
 
-.note-prose > :first-child {
+/* The doubled class is deliberate. Every block rule below opens with
+   `margin-block`, and the six heading rules match by *class* — so
+   `.note-prose .note-h1` ties this selector's specificity exactly and wins on
+   source order alone. A note beginning `# Hey` therefore kept 0.6em of top
+   margin and hung its first line well below the completion circle, while a note
+   beginning with a paragraph did not: `p` is matched by type, which is weaker,
+   so the reset held. Repeating the class lifts this above every block rule
+   regardless of where in the file they sit. */
+.note-prose.note-prose > :first-child {
 	margin-top: 0;
 }
 
-.note-prose > :last-child {
+.note-prose.note-prose > :last-child {
 	margin-bottom: 0;
 }
 

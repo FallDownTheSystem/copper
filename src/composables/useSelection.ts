@@ -106,6 +106,17 @@ const visibleNoteIds = computed(() => orders.value.notes)
 const selectedSet = computed(() => new Set(selectedIds.value))
 const focusedNoteId = computed(() => rowNoteId(focusedId.value))
 
+/**
+ * Where the scroll region was, in a form that survives a document whose content
+ * changed height.
+ *
+ * `bottom` is a position in its own right rather than a note plus an offset: a
+ * list sitting at its bottom edge has a topmost visible note like any other, and
+ * holding *that* note's offset is exactly what left a note added from the
+ * composer below the fold.
+ */
+export type ScrollAnchor = { kind: 'bottom' } | { kind: 'note'; noteId: string; offset: number }
+
 export type SelectionSnapshot = {
 	/** The flattened note order *before* the new document was assigned. Without
 	 *  it the focused note's former index is unrecoverable and the nearest-
@@ -125,7 +136,7 @@ export type SelectionSnapshot = {
 	/** Focus was inside a text-editing surface, which reconciliation must never
 	 *  steal. */
 	inTextSurface: boolean
-	scroll: { noteId: string; offset: number } | null
+	scroll: ScrollAnchor | null
 }
 
 /**
@@ -339,14 +350,29 @@ function snapshot(): SelectionSnapshot {
 	}
 }
 
+/** A couple of pixels of slack. At a fractional device pixel ratio the three
+ *  metrics do not cancel exactly, so a region genuinely scrolled to its end
+ *  reports a sub-pixel remainder. A region too short to scroll reports zero and
+ *  counts as at the bottom, which is correct: pinning it is a no-op. */
+const BOTTOM_SLACK = 2
+
+function atBottom(region: HTMLElement) {
+	return region.scrollHeight - region.scrollTop - region.clientHeight <= BOTTOM_SLACK
+}
+
 /**
  * Anchors on a visible note's id plus its pixel offset rather than raw
  * `scrollTop`, because an external edit can change the height of content above
  * the viewport and leave a restored `scrollTop` pointing somewhere else.
  */
-function captureScroll(): SelectionSnapshot['scroll'] {
+function captureScroll(): ScrollAnchor | null {
 	const region = scrollRegion()
 	if (!region) return null
+
+	// Tested first, and it has to be: the note anchor below would hold the list
+	// exactly where it is, which is right for a reader who has scrolled up and
+	// wrong for one sitting at the end watching their own captures land.
+	if (atBottom(region)) return { kind: 'bottom' }
 
 	// One DOM query for the whole walk. `rowElement` re-queries every row on each
 	// call, so calling it per note is quadratic in a list that reaches 200 — and
@@ -363,7 +389,7 @@ function captureScroll(): SelectionSnapshot['scroll'] {
 		const element = rows.get(noteRow(id))
 		if (!element) continue
 		const offset = element.getBoundingClientRect().top - top
-		if (offset >= 0) return { noteId: id, offset }
+		if (offset >= 0) return { kind: 'note', noteId: id, offset }
 	}
 	return null
 }
@@ -454,10 +480,20 @@ function restoreDom(snap: SelectionSnapshot) {
 	else document.querySelector<HTMLElement>('[data-composer]')?.focus()
 }
 
-function restoreScroll(anchor: { noteId: string; offset: number }) {
+function restoreScroll(anchor: ScrollAnchor) {
 	const region = scrollRegion()
+	if (!region) return
+
+	// Read after the patch, so it already counts the row that was just added — a
+	// note captured while the list was at its end stays on screen without moving
+	// anyone who had scrolled up.
+	if (anchor.kind === 'bottom') {
+		region.scrollTop = region.scrollHeight
+		return
+	}
+
 	const element = rowElement(noteRow(anchor.noteId))
-	if (!region || !element) return
+	if (!element) return
 
 	const delta = element.getBoundingClientRect().top - region.getBoundingClientRect().top
 	region.scrollTop += delta - anchor.offset

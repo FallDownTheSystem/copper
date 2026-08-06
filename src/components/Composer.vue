@@ -121,7 +121,6 @@ function onKeydown(event: KeyboardEvent) {
 			:value="value"
 			:placeholder="placeholder"
 			:aria-busy="pending"
-			aria-describedby="composer-hint"
 			class="border-separator bg-surface-hover text-text-primary placeholder:text-text-disabled outline-focus-ring max-h-[5lh] min-h-8 w-full min-w-0 resize-none select-text rounded-md border px-2 py-1.5 text-body focus-visible:outline-2 focus-visible:-outline-offset-1"
 			:class="supportsFieldSizing ? 'field-sizing-content' : ''"
 			@input="onInput"
@@ -131,9 +130,5 @@ function onKeydown(event: KeyboardEvent) {
 		/>
 
 		<p v-if="composerError" class="text-destructive mt-1 text-meta">{{ composerError }}</p>
-
-		<p id="composer-hint" class="text-text-disabled mt-1 text-meta">
-			Enter to add · Shift+Enter or Ctrl+Enter for newline
-		</p>
 	</form>
 </template>

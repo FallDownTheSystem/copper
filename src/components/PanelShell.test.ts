@@ -224,13 +224,18 @@ describe('the composer', () => {
 		)
 	})
 
-	it('is labelled and describes its own key bindings', async () => {
+	it('is labelled, and spends no panel height on a key-binding hint', async () => {
 		const wrapper = await mountPanel()
 		const composer = wrapper.find('#composer')
 
 		expect(wrapper.find('label[for="composer"]').exists()).toBe(true)
-		const describedBy = composer.attributes('aria-describedby')
-		expect(wrapper.find(`#${describedBy}`).text()).toContain('Enter to add')
+		// Task-004 shipped a permanent "Enter to add · Shift+Enter for newline"
+		// line under the field and this overrides it: the panel is a keyboard-first
+		// tool for its own author, and a standing row of text restating the most
+		// standard chord in text entry costs height on every launch to teach
+		// nothing twice.
+		expect(composer.attributes('aria-describedby')).toBeUndefined()
+		expect(wrapper.text()).not.toContain('Enter to add')
 	})
 })
 

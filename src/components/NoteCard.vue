@@ -68,7 +68,17 @@ function onContextMenu() {
 				@click="emit('pointerSelect', $event)"
 				@contextmenu="onContextMenu"
 			>
-				<div class="flex min-h-11 min-w-0 items-start gap-2 px-3 py-2" role="gridcell">
+				<!-- A grid rather than a flex row, for `content-center` alone. The row
+				     track is the height of its tallest item, so centring the *track*
+				     inside `min-h-11` centres a one-line note in the row while leaving a
+				     note already taller than the minimum exactly where it was — and
+				     `items-start` still puts the completion circle on the first line of
+				     both. Flex has no equivalent: `items-center` would drag the circle to
+				     the vertical middle of a tall note. -->
+				<div
+					class="grid min-h-11 min-w-0 grid-cols-[auto_minmax(0,1fr)] content-center items-start gap-2 px-3 py-2"
+					role="gridcell"
+				>
 					<button
 						type="button"
 						:tabindex="descendantTabIndex"
@@ -99,7 +109,7 @@ function onContextMenu() {
 						</svg>
 					</button>
 
-					<div class="min-w-0 flex-1">
+					<div class="min-w-0">
 						<!-- A grip rather than a body-wide drag: the row already owns
 						     click-to-select and the context-menu trigger, and a whole-card
 						     drag would have to arbitrate with both on `pointerdown`. Kept
