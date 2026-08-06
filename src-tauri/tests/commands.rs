@@ -52,7 +52,7 @@ const COMMANDS: [&str; 21] = [
 ];
 
 /// The commands later phases added beside the store's twenty.
-const EXTRA_COMMANDS: [&str; 26] = [
+const EXTRA_COMMANDS: [&str; 29] = [
 	"clipboard_write_text",
 	"editor_handoffs",
 	"editor_open_note",
@@ -90,6 +90,14 @@ const EXTRA_COMMANDS: [&str; 26] = [
 	"attach_paths",
 	"attachment_thumb",
 	"attachment_open",
+	// Task-009. Note what is *not* here: nothing for `tauri-plugin-updater`'s own
+	// four commands. The whole update flow is driven from Rust behind these three,
+	// so no `updater:*` permission is granted, the plugin's IPC surface stays
+	// unreachable from the WebView, and `removeUnusedCommands` strips it — which is
+	// the design rather than a misconfiguration.
+	"get_app_version",
+	"check_for_update",
+	"install_update",
 ];
 
 /// Spec 8.1c. Every argument name in the whole surface.
@@ -108,7 +116,7 @@ const SOURCE: &str = include_str!("../src/store/commands.rs");
 /// Command *wrappers* live next to the module they serve; only the registration
 /// is central, because Tauri accepts one `invoke_handler` and the closure
 /// `generate_handler!` builds consumes the `Invoke` it is handed.
-const OTHER_SOURCES: [&str; 8] = [
+const OTHER_SOURCES: [&str; 9] = [
 	include_str!("../src/clipboard.rs"),
 	include_str!("../src/editor.rs"),
 	include_str!("../src/spaces/mod.rs"),
@@ -117,6 +125,7 @@ const OTHER_SOURCES: [&str; 8] = [
 	include_str!("../src/autostart.rs"),
 	include_str!("../src/panel.rs"),
 	include_str!("../src/attachments/commands.rs"),
+	include_str!("../src/updater.rs"),
 ];
 
 const REGISTRY: &str = include_str!("../src/commands.rs");

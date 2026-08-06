@@ -19,6 +19,7 @@ pub mod spaces;
 pub mod store;
 mod theme;
 mod tray;
+mod updater;
 mod win32;
 
 pub use diagnostics::install_panic_dialog;
@@ -161,6 +162,13 @@ pub fn run() {
 			None,
 		))
 		.plugin(tauri_plugin_opener::init())
+		// Rust-side only, like the dialog plugin above: `updater.rs` owns the whole
+		// flow behind three application commands, so no `updater:*` permission is
+		// granted and the plugin's own four commands stay unreachable from the
+		// WebView — `removeUnusedCommands` then prunes them out of the binary.
+		// Registering it is still required: `updater_builder()` resolves the
+		// endpoint and the public key out of the state this installs.
+		.plugin(tauri_plugin_updater::Builder::new().build())
 		// Registered on the builder rather than inside setup() so it is in place
 		// before any event can arrive. This is what actually holds the "created
 		// hidden and never destroyed" invariant the whole shell rests on: nothing
@@ -311,6 +319,13 @@ pub fn run() {
 			)?)));
 			capture::arm_when_frontend_ready(app.handle());
 
+			// Inert until the settings view asks for a check, so it has no ordering
+			// constraint at all — but it is registered here rather than lazily,
+			// because `updater.rs` resolves both through `app.state()`, which panics
+			// on a type that was never managed.
+			app.manage(updater::PendingUpdate::default());
+			app.manage(updater::UpdateGate::default());
+
 			// Last, because it is the only step expected to fail in ordinary use:
 			// another application may already hold the chord. A failure here leaves
 			// the app running, says so in the tray tooltip, and waits to be asked
@@ -340,24 +355,53 @@ pub fn run() {
 	// follow is harmless.
 	app.run(|handle, event| {
 		if matches!(event, RunEvent::Exit) {
-			// First, because it is the only one of these that can still be lost: a
-			// drag that ended less than the debounce ago has not been written yet.
-			panel::flush_position(handle);
-			shortcuts::shutdown(handle);
-			capture::shutdown(handle);
-			// Before `scavenge`: each live handoff applies or refuses whatever is on
-			// disk, so exiting is not a way to silently discard unsaved editor work.
-			// The at-exit form skips the mid-write read retry, which would otherwise
-			// cost a debounce window per handoff on the way out.
-			//
-			// "Sweep" is deliberately not the word here. `scavenge` collects the
-			// editor's own temp directories; task-011's *attachment* sweep runs at
-			// space close and at startup only, and never at exit — a session that
-			// ends is a session whose undo stack ends with it, so there is nothing
-			// left to protect and nothing that needs collecting before the next
-			// launch does it.
-			editor::end_all_at_exit(handle);
-			editor::scavenge();
+			teardown(handle);
 		}
 	});
+}
+
+/// Everything that has to happen before this process stops existing.
+///
+/// One routine with two callers, and they are not variations on each other: the
+/// tray's Quit reaches it through `RunEvent::Exit`, and an update reaches it
+/// through the updater's `on_before_exit` hook, moments before the plugin calls
+/// `std::process::exit(0)` from inside the install. The second caller is why this
+/// is shared rather than inlined — an abrupt exit runs no destructors at all, so
+/// anything left only to `Drop` is simply lost on the update path.
+///
+/// Idempotent throughout, so the two callers cannot double up on a build where
+/// both happen to fire. Every step is already individually idempotent — the
+/// position flush takes its pending value, `capture::shutdown` guards on a flag,
+/// `scavenge` deletes a tree that may already be gone — and that is a property to
+/// preserve when adding to this list, not a coincidence.
+///
+/// **Not a crash hook.** None of this runs on a panic-abort, a Task Manager kill,
+/// or an uninstall started from Windows. The startup `editor::scavenge` is what
+/// covers those.
+fn teardown(handle: &tauri::AppHandle) {
+	// Before anything slow, because it is the one step the user can see. Windows
+	// normally reaps a notification icon when its owner window is destroyed, but
+	// `std::process::exit(0)` destroys nothing — so on the update path the icon
+	// would linger until the shell next swept it, which reads as an app that
+	// half-quit.
+	tray::hide(handle);
+
+	// First of the state-preserving steps, because it is the only one that can
+	// still be lost: a drag that ended less than the debounce ago has not been
+	// written yet.
+	panel::flush_position(handle);
+	shortcuts::shutdown(handle);
+	capture::shutdown(handle);
+	// Before `scavenge`: each live handoff applies or refuses whatever is on disk,
+	// so exiting is not a way to silently discard unsaved editor work. The at-exit
+	// form skips the mid-write read retry, which would otherwise cost a debounce
+	// window per handoff on the way out.
+	//
+	// "Sweep" is deliberately not the word here. `scavenge` collects the editor's
+	// own temp directories; task-011's *attachment* sweep runs at space close and
+	// at startup only, and never at exit — a session that ends is a session whose
+	// undo stack ends with it, so there is nothing left to protect and nothing that
+	// needs collecting before the next launch does it.
+	editor::end_all_at_exit(handle);
+	editor::scavenge();
 }

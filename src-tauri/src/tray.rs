@@ -157,3 +157,23 @@ pub fn report_summon(app: &AppHandle, registered: bool) {
 		diagnostics::log_error(&format!("[copper] tray: could not update the tooltip: {err}"));
 	}
 }
+
+/// Takes the icon out of the notification area, now.
+///
+/// Exists for the one exit that runs no destructors: an update replaces this
+/// process through `std::process::exit(0)` from inside the updater plugin, so
+/// nothing gets dropped, no window gets destroyed, and Windows has no event that
+/// tells it to reap the icon. `Shell_NotifyIcon` is not window-message based, so
+/// this is safe from the async runtime thread the install runs on rather than
+/// only from the main thread.
+///
+/// Silent when there is no tray — a build where `tray::build` failed reveals the
+/// panel instead and has nothing to hide.
+pub fn hide(app: &AppHandle) {
+	let Some(state) = app.try_state::<TrayState>() else {
+		return;
+	};
+	if let Err(err) = state.icon.set_visible(false) {
+		diagnostics::log_error(&format!("[copper] tray: could not hide the icon: {err}"));
+	}
+}

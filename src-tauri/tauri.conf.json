@@ -1,7 +1,6 @@
 {
 	"$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
 	"productName": "Copper",
-	"version": "0.1.0",
 	"identifier": "io.github.falldownthesystem.copper",
 	"build": {
 		"frontendDist": "../dist",
@@ -39,6 +38,10 @@
 	"bundle": {
 		"active": true,
 		"targets": ["nsis"],
+		"publisher": "FallDownTheSystem",
+		"copyright": "© 2026 FallDownTheSystem",
+		"shortDescription": "Capture panel for notes and prompts",
+		"createUpdaterArtifacts": true,
 		"fileAssociations": [
 			{
 				"ext": ["copper"],
@@ -46,15 +49,32 @@
 				"description": "Copper Space"
 			}
 		],
-		"icon": [
-			"icons/32x32.png",
-			"icons/128x128.png",
-			"icons/128x128@2x.png",
-			"icons/icon.icns",
-			"icons/icon.ico"
-		],
-		"android": {
-			"debugApplicationIdSuffix": ".debug"
+		"icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+		"windows": {
+			"webviewInstallMode": {
+				"type": "downloadBootstrapper",
+				"silent": true
+			},
+			"digestAlgorithm": "sha256",
+			"timestampUrl": "http://timestamp.digicert.com",
+			"nsis": {
+				"installMode": "perMachine",
+				"languages": ["English"],
+				"displayLanguageSelector": false,
+				"installerIcon": "icons/icon.ico",
+				"uninstallerIcon": "icons/icon.ico"
+			}
+		}
+	},
+	"plugins": {
+		"updater": {
+			"endpoints": [
+				"https://github.com/FallDownTheSystem/copper/releases/latest/download/latest.json"
+			],
+			"pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM1MTk3RkQ5ODgxQ0M4NTAKUldSUXlCeUkyWDhaTlVqbGdaWUZ5NmVjVTFIYks1RTV0aVJvcUNSNlIrQWJhN2tDa1VVZlVBMDgK",
+			"windows": {
+				"installMode": "passive"
+			}
 		}
 	}
 }

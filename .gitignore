@@ -20,6 +20,18 @@ src-tauri/gen/
 *.key
 !*.pub.key
 
+# Authenticode certificate material: the private half of the self-signed
+# code-signing certificate, in either export format. It lives outside the repo
+# (see backlog/docs/doc-release-process.md); these patterns exist so a stray
+# export dropped in the tree cannot be staged by accident.
+*.pfx
+*.p12
+
+# The release-only Tauri config override. It carries `certificateThumbprint`,
+# which identifies a certificate in one machine's store and means nothing in any
+# other checkout, so it is supplied per machine rather than committed.
+src-tauri/tauri.release.conf.json
+
 # Project management artifacts
 backlog/
 

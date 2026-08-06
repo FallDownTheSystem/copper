@@ -27,6 +27,19 @@ const {
 } = useSettings()
 const { isRecording, cancel } = useShortcutRecorder()
 const { showList } = useView()
+const {
+	status: updateStatus,
+	currentVersion,
+	available: availableUpdate,
+	percentage,
+	canInstall,
+	busy: updateBusy,
+	error: updateError,
+	initialize: startUpdater,
+	dispose: stopUpdater,
+	checkForUpdate,
+	installUpdate,
+} = useUpdater()
 
 const themeError = errorFor('theme')
 const autostartError = errorFor('autostart')
@@ -45,6 +58,9 @@ const back = useTemplateRef<HTMLButtonElement>('back')
  */
 onMounted(() => {
 	void refresh()
+	// Registers the progress listener and reads the installed version. It does
+	// **not** check for updates — nothing in the app does that unasked.
+	void startUpdater()
 
 	// Focus has to be moved deliberately, or Escape does not work on arrival.
 	// Neither entry path leaves it anywhere useful: the `...` menu's trigger is
@@ -63,6 +79,11 @@ onMounted(() => {
  */
 onBeforeUnmount(() => {
 	void cancel()
+	// The status itself is module-scoped and survives, so a download started here
+	// and still running when the view closes is reported correctly on the way back
+	// in. Only the listener comes down, which is what stops repeated visits
+	// stacking up duplicates.
+	stopUpdater()
 })
 
 /**
@@ -100,6 +121,45 @@ function setAnimations(on: boolean) {
  *  it at all. Both belong on the same row. */
 const summonRowError = computed(() => summonError.value ?? shortcuts.value?.summonError ?? null)
 const captureRowError = computed(() => captureError.value ?? shortcuts.value?.captureError ?? null)
+
+/**
+ * The one line the Updates row says about itself.
+ *
+ * `null` for `idle` — nothing has been asked yet, so there is nothing to report —
+ * and `null` for `error`, whose message goes through the row's own `error` slot
+ * so it renders as an alert rather than as status.
+ */
+const updateStatusLine = computed(() => {
+	switch (updateStatus.value) {
+		case 'checking':
+			return 'Checking…'
+		case 'upToDate':
+			return 'Up to date.'
+		case 'available': {
+			const update = availableUpdate.value
+			if (!update) return null
+			return update.date
+				? `Version ${update.version} is available, released ${update.date}.`
+				: `Version ${update.version} is available.`
+		}
+		case 'downloading':
+			// The indeterminate wording is not a fallback nobody hits: the total comes
+			// from `Content-Length`, which a server is free to omit.
+			return percentage.value === null ? 'Downloading…' : `Downloading… ${percentage.value}%`
+		default:
+			return null
+	}
+})
+
+/** Check until there is something to install, then install. One button, because
+ *  a second one would be disabled for the whole of its life until it wasn't. */
+const updateActionLabel = computed(() =>
+	canInstall.value ? `Install ${availableUpdate.value?.version}` : 'Check for updates',
+)
+
+function onUpdateAction() {
+	void (canInstall.value ? installUpdate() : checkForUpdate())
+}
 
 /** Standing conditions rather than failed actions: the keyboard hook is down and
  *  a conventional chord is covering for the double-tap. */
@@ -229,6 +289,51 @@ const captureNote = computed(() => {
 						:model-value="autostartEnabled"
 						@update:model-value="setAutostart"
 					/>
+				</SettingsRow>
+			</SettingsSection>
+
+			<SettingsSection title="Updates">
+				<SettingsRow
+					label="Version"
+					:description="currentVersion ? `Copper ${currentVersion}` : 'Reading the version…'"
+					:error="updateError"
+				>
+					<template #below>
+						<!-- Two copies on purpose, and only one of them is in the
+						     accessibility tree. A live region has to exist before its content
+						     changes to be announced reliably, so the spoken copy is a
+						     permanently mounted `sr-only` node and the visible paragraph is
+						     hidden from assistive tech to stop it being read a second time.
+						     PanelShell's status region is the same arrangement. -->
+						<p
+							v-if="updateStatusLine"
+							aria-hidden="true"
+							class="text-text-secondary mt-1.5 text-meta text-pretty"
+						>
+							{{ updateStatusLine }}
+						</p>
+						<div class="sr-only" role="status" aria-live="polite">
+							{{ updateStatusLine ?? '' }}
+						</div>
+
+						<p
+							v-if="updateStatus === 'available' && availableUpdate?.notes"
+							class="text-text-secondary mt-1 text-meta text-pretty"
+						>
+							{{ availableUpdate.notes }}
+						</p>
+					</template>
+
+					<!-- Disabled while a command is in flight, so the UI cannot issue the
+					     concurrent call the Rust side would then have to refuse. -->
+					<button
+						type="button"
+						:disabled="updateBusy"
+						class="panel-button outline-focus-ring hit-44 relative focus-visible:outline-2 focus-visible:-outline-offset-1 disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
+						@click="onUpdateAction"
+					>
+						{{ updateActionLabel }}
+					</button>
 				</SettingsRow>
 			</SettingsSection>
 		</div>

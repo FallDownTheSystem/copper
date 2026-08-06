@@ -302,7 +302,7 @@ importers:
         specifier: ^1.2.121
         version: 1.2.121
       '@tauri-apps/cli':
-        specifier: ^2.11.4
+        specifier: 2.11.4
         version: 2.11.4
       '@types/node':
         specifier: ^24.13.3

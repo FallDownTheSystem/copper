@@ -3,10 +3,18 @@ name = "copper"
 version = "0.1.0"
 description = "Copper — a Windows note-capture panel"
 authors = ["FallDownTheSystem"]
-# license and repository are intentionally left empty: task-009 (Phase 8) owns
-# distribution metadata and will set them alongside the bundle configuration.
-license = ""
-repository = ""
+# `version` is the single source of truth for the whole product: tauri.conf.json
+# omits its own `version` key and inherits this one, so the installer filename,
+# the Add/Remove Programs entry and `app.package_info().version` all move
+# together when this line is bumped.
+#
+# `license` stays unset rather than being given a value: the repository carries
+# no LICENSE file, and declaring a licence in metadata that nothing in the tree
+# grants would be a claim with nothing behind it. `publish = false` says the part
+# that is actually true — this crate is never going to crates.io — and is what
+# stops cargo asking for the licence it would otherwise require.
+repository = "https://github.com/FallDownTheSystem/copper"
+publish = false
 edition = "2021"
 # The project's real floor, and it does not come from Tauri: Tauri 2.11.5's own
 # MSRV is 1.77.2, but task-003 brings in notify-debouncer-full 0.7.0, which
@@ -65,6 +73,15 @@ tauri-plugin-single-instance = "2.4.3"
 tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-autostart = "2.5.1"
 tauri-plugin-opener = "2.5.4"
+
+# --- distribution (task-009) ---
+# Exact, not a caret range, and for a sharper reason than the usual pin: three
+# behaviours this task is built around are implementation details rather than API
+# — the Windows install path calling `std::process::exit(0)` after launching the
+# installer, the signature being verified during the download rather than during
+# the check, and `check()` hardcoding `timeout: None` into the `Update` it
+# returns. A minor bump could change any of them without changing a signature.
+tauri-plugin-updater = "=2.10.1"
 
 # --- store (task-003) ---
 # notify 8.2 is the current stable line; 9.x is still an unpromoted release
