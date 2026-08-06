@@ -49,7 +49,7 @@ defineExpose({ focusSearch, query })
 				name="search"
 				autocomplete="off"
 				placeholder="Search notes…"
-				class="border-separator bg-surface-hover text-text-primary placeholder:text-text-disabled outline-focus-ring h-8 w-full min-w-0 select-text rounded-md border pr-2 pl-8 text-body focus-visible:outline-2 focus-visible:-outline-offset-1"
+				class="squircle border-separator bg-surface-hover text-text-primary placeholder:text-text-disabled outline-focus-ring h-8 w-full min-w-0 select-text rounded-md border pr-2 pl-8 text-body focus-visible:outline-2 focus-visible:-outline-offset-1"
 				@keydown="onKeydown"
 			/>
 		</div>

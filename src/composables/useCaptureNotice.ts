@@ -24,6 +24,8 @@
 
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 
+import { useSounds } from './useSounds'
+
 export type CaptureNotice = { cause: string; message: string; generation: number }
 type ClearedPayload = { generation: number }
 
@@ -45,6 +47,10 @@ let unlisteners: UnlistenFn[] = []
 
 function onFailed(payload: CaptureNotice) {
 	notice.value = payload
+	// Here and not in `onCleared`, which is the auto-dismiss timer: a burst of
+	// failures resets the notice rather than stacking it, so this fires once per
+	// failure and that is the thing being reported.
+	useSounds().captureFailed()
 }
 
 function onCleared(payload: ClearedPayload) {

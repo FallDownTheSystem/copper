@@ -64,7 +64,7 @@ async function open() {
 				? `${attachment.name} — unavailable`
 				: `Open ${attachment.name}, ${formatBytes(attachment.bytes)}`
 		"
-		class="border-separator hover:bg-surface-hover outline-focus-ring flex min-h-16 w-full min-w-0 items-center gap-2 rounded-md border p-1.5 text-left transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-2 disabled:cursor-default disabled:hover:bg-transparent"
+		class="squircle border-separator hover:bg-surface-hover outline-focus-ring flex min-h-16 w-full min-w-0 items-center gap-2 rounded-md border p-1.5 text-left transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-2 disabled:cursor-default disabled:hover:bg-transparent"
 		@click.prevent
 		@dblclick.stop.prevent="open"
 		@keydown.enter.prevent="open"

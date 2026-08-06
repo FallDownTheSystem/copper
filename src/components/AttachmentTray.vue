@@ -24,7 +24,7 @@ const { pending, pendingLabel, removePending } = useAttachments()
 			<li
 				v-for="attachment in pending"
 				:key="attachment.id"
-				class="border-separator bg-surface-hover flex min-w-0 items-center gap-1.5 rounded-md border px-2 py-1"
+				class="squircle border-separator bg-surface-hover flex min-w-0 items-center gap-1.5 rounded-md border px-2 py-1"
 			>
 				<span class="text-text-primary min-w-0 flex-1 truncate text-meta">
 					{{ attachment.name }}

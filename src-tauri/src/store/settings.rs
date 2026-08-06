@@ -39,6 +39,8 @@ pub struct Settings {
 	pub panel_position: Option<PanelPosition>,
 	pub shortcuts: Shortcuts,
 	pub theme: String,
+	pub sounds: bool,
+	pub motion: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +63,12 @@ impl Default for Settings {
 			panel_position: None,
 			shortcuts: Shortcuts::default(),
 			theme: "system".to_string(),
+			// Capture is silent on success by design, and that decision is
+			// preserved by shipping sound off rather than by leaving the tick
+			// unimplemented. Turning this on by default would be a change to that
+			// decision and should be made as one.
+			sounds: false,
+			motion: "auto".to_string(),
 		}
 	}
 }
@@ -94,6 +102,8 @@ struct RawSettings {
 	panel_position: Value,
 	shortcuts: Value,
 	theme: Value,
+	sounds: Value,
+	motion: Value,
 }
 
 impl RawSettings {
@@ -171,12 +181,38 @@ impl RawSettings {
 			}
 		};
 
+		// Absent from every `settings.json` written before task-012, so `Value::Null`
+		// is the ordinary case here rather than the damaged one and must stay
+		// silent — a notice would make an older file look broken.
+		let sounds = match self.sounds {
+			Value::Null => defaults.sounds,
+			Value::Bool(on) => on,
+			_ => {
+				notices.push("\"sounds\" was not true or false and has been turned off.".into());
+				defaults.sounds
+			}
+		};
+
+		// Checked by name on the frontend, not here, exactly as `theme` is: a value
+		// of the right *type* that names nothing is repairable locally, and only a
+		// wrong type is worth a notice.
+		let motion = match self.motion {
+			Value::Null => defaults.motion,
+			Value::String(motion) => motion,
+			_ => {
+				notices.push("\"motion\" was not a name and has been reset to \"auto\".".into());
+				defaults.motion
+			}
+		};
+
 		let mut settings = Settings {
 			recents,
 			active_space,
 			panel_position,
 			shortcuts,
 			theme,
+			sounds,
+			motion,
 		};
 		settings.clamp();
 		(settings, notices)
@@ -273,6 +309,12 @@ impl Settings {
 		if let Some(theme) = patch.theme {
 			self.theme = theme;
 		}
+		if let Some(sounds) = patch.sounds {
+			self.sounds = sounds;
+		}
+		if let Some(motion) = patch.motion {
+			self.motion = motion;
+		}
 	}
 }
 
@@ -287,6 +329,10 @@ pub struct SettingsPatch {
 	pub shortcuts: Option<Shortcuts>,
 	#[serde(default)]
 	pub theme: Option<String>,
+	#[serde(default)]
+	pub sounds: Option<bool>,
+	#[serde(default)]
+	pub motion: Option<String>,
 }
 
 /// Distinguishes "key absent" from "key present and null".
@@ -495,8 +541,65 @@ mod tests {
 			text,
 			"{\n  \"recents\": [],\n  \"activeSpace\": 0,\n  \"panelPosition\": null,\n  \
 			 \"shortcuts\": {\n    \"capture\": \"Shift Shift\",\n    \"summon\": \
-			 \"Ctrl+Shift+Space\"\n  },\n  \"theme\": \"system\"\n}\n"
+			 \"Ctrl+Shift+Space\"\n  },\n  \"theme\": \"system\",\n  \"sounds\": false,\n  \
+			 \"motion\": \"auto\"\n}\n"
 		);
+	}
+
+	/// Task-012 AC13. A `settings.json` written by any earlier build has neither
+	/// key, and reading one must be indistinguishable from reading a current file:
+	/// documented defaults, no notice, and above all no `.corrupt-` rename — the
+	/// recovery path discards the whole file, so a merely *absent* key reaching it
+	/// would cost the user their recents list over a feature they never enabled.
+	#[test]
+	fn a_file_without_the_sound_and_motion_keys_is_not_treated_as_corrupt() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(
+			dir.path(),
+			r#"{"recents":["C:\\a.copper"],"activeSpace":0,"panelPosition":null,
+			   "shortcuts":{"capture":"Shift Shift","summon":"Ctrl+Shift+Space"},"theme":"dark"}"#,
+		);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(loaded.notice.is_none(), "absence was reported as damage: {:?}", loaded.notice);
+		assert_eq!(siblings(dir.path()), [FILE_NAME], "the file was set aside");
+		assert!(!loaded.settings.sounds, "sound must default to off");
+		assert_eq!(loaded.settings.motion, "auto");
+		// The rest of the file survived rather than being defaulted alongside them.
+		assert_eq!(loaded.settings.theme, "dark");
+		assert_eq!(loaded.settings.recents, ["C:\\a.copper"]);
+	}
+
+	#[test]
+	fn wrong_typed_sound_and_motion_values_are_repaired_and_reported() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"sounds":"yes","motion":7,"theme":"light"}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(!loaded.settings.sounds);
+		assert_eq!(loaded.settings.motion, "auto");
+		assert_eq!(loaded.settings.theme, "light");
+		let notice = loaded.notice.expect("repairs must be reported");
+		for expected in ["sounds", "motion"] {
+			assert!(notice.contains(expected), "{expected} unreported in: {notice}");
+		}
+	}
+
+	#[test]
+	fn a_patch_sets_sounds_and_motion_independently() {
+		let mut settings = Settings::default();
+
+		settings.apply_patch(patch(r#"{"sounds":true}"#));
+		assert!(settings.sounds);
+		assert_eq!(settings.motion, "auto", "an absent key must leave the stored value alone");
+
+		settings.apply_patch(patch(r#"{"motion":"off"}"#));
+		assert!(settings.sounds, "a motion patch must not clear sounds");
+		assert_eq!(settings.motion, "off");
 	}
 
 	#[test]

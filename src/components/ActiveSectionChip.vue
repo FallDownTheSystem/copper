@@ -44,7 +44,7 @@ function onOpenChange(next: boolean) {
 			type="button"
 			:aria-label="`Active section: ${name}. Switch section`"
 			:title="name"
-			class="text-text-secondary hover:bg-surface-hover active:bg-surface-active outline-focus-ring border-separator flex min-w-0 max-w-full items-center gap-1.5 rounded-full border px-2 py-0.5 transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
+			class="squircle text-text-secondary hover:bg-surface-hover active:bg-surface-active outline-focus-ring border-separator flex min-w-0 max-w-full items-center gap-1.5 rounded-full border px-2 py-0.5 transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
 		>
 			<span aria-hidden="true" class="bg-accent-ring size-1.5 shrink-0 rounded-full" />
 			<span class="truncate text-meta">{{ name }}</span>

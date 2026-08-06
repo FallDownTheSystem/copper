@@ -14,13 +14,26 @@
  */
 import { SwitchRoot, SwitchThumb } from 'reka-ui'
 
-const { shortcuts, autostartEnabled, theme, errorFor, refresh, setTheme, setAutostart } =
-	useSettings()
+const {
+	shortcuts,
+	autostartEnabled,
+	theme,
+	soundsEnabled,
+	motionPreference,
+	errorFor,
+	refresh,
+	setTheme,
+	setAutostart,
+	setSounds,
+	setMotion,
+} = useSettings()
 const { isRecording, cancel } = useShortcutRecorder()
 const { showList } = useView()
 
 const themeError = errorFor('theme')
 const autostartError = errorFor('autostart')
+const soundsError = errorFor('sounds')
+const motionError = errorFor('motion')
 const summonError = errorFor('summon')
 const captureError = errorFor('capture')
 
@@ -84,6 +97,14 @@ const captureRowError = computed(() => captureError.value ?? shortcuts.value?.ca
 
 /** Standing conditions rather than failed actions: the keyboard hook is down and
  *  a conventional chord is covering for the double-tap. */
+/** The switch is the presence of animation, but the *setting* is a two-value
+ *  preference rather than a boolean, because "auto" means "defer to Windows" and
+ *  a boolean has nowhere to say that. Off is the only thing this switch can
+ *  assert; on merely stops asserting. */
+function setAnimations(on: boolean) {
+	void setMotion(on ? 'auto' : 'off')
+}
+
 const captureNote = computed(() => {
 	const fallback = shortcuts.value?.captureFallback
 	if (!fallback) return null
@@ -112,7 +133,7 @@ const captureNote = computed(() => {
 				ref="back"
 				type="button"
 				aria-label="Back to notes"
-				class="text-text-secondary hover:bg-surface-hover active:bg-surface-active outline-focus-ring hit-44 relative grid size-8 place-items-center rounded-md transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
+				class="squircle text-text-secondary hover:bg-surface-hover active:bg-surface-active outline-focus-ring hit-44 relative grid size-8 place-items-center rounded-md transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
 				@click="showList"
 			>
 				<IconLucideChevronLeft class="size-4" aria-hidden="true" focusable="false" />
@@ -163,6 +184,49 @@ const captureNote = computed(() => {
 						:error="summonRowError"
 					/>
 				</template>
+			</SettingsSection>
+
+			<SettingsSection title="Sound and motion">
+				<SettingsRow
+					label="Sound"
+					description="A short sound when you complete a note, add one, or a capture fails."
+					label-for="sounds"
+					:error="soundsError"
+				>
+					<SwitchRoot
+						id="sounds"
+						:model-value="soundsEnabled"
+						class="bg-surface-hover data-[state=checked]:bg-accent-ring hit-44 relative inline-flex h-6 w-10 shrink-0 items-center rounded-full p-0.5 transition-colors duration-fast focus-visible:outline-2 focus-visible:outline-offset-2"
+						@update:model-value="setSounds"
+					>
+						<SwitchThumb
+							class="block size-5 rounded-full bg-white shadow-sm transition-transform duration-fast data-[state=checked]:translate-x-4"
+						/>
+					</SwitchRoot>
+				</SettingsRow>
+
+				<!-- The description says Windows wins rather than leaving the user to
+				     discover it: with reduced motion set system-wide this switch reads
+				     "on" and nothing animates, which looks like a broken control unless
+				     the row says why. Turning it off is the only assertion available —
+				     there is deliberately no value that animates against the OS. -->
+				<SettingsRow
+					label="Animate controls"
+					description="Windows' own animation setting always wins; this can only turn animation off."
+					label-for="motion"
+					:error="motionError"
+				>
+					<SwitchRoot
+						id="motion"
+						:model-value="motionPreference === 'auto'"
+						class="bg-surface-hover data-[state=checked]:bg-accent-ring hit-44 relative inline-flex h-6 w-10 shrink-0 items-center rounded-full p-0.5 transition-colors duration-fast focus-visible:outline-2 focus-visible:outline-offset-2"
+						@update:model-value="setAnimations"
+					>
+						<SwitchThumb
+							class="block size-5 rounded-full bg-white shadow-sm transition-transform duration-fast data-[state=checked]:translate-x-4"
+						/>
+					</SwitchRoot>
+				</SettingsRow>
 			</SettingsSection>
 
 			<SettingsSection title="Startup">

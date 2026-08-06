@@ -252,6 +252,7 @@ declare global {
   const usePreferredReducedTransparency: typeof import('@vueuse/core').usePreferredReducedTransparency
   const usePrevious: typeof import('@vueuse/core').usePrevious
   const useRafFn: typeof import('@vueuse/core').useRafFn
+  const useReducedMotion: typeof import('./composables/useReducedMotion').useReducedMotion
   const useRefHistory: typeof import('@vueuse/core').useRefHistory
   const useResizeObserver: typeof import('@vueuse/core').useResizeObserver
   const useSSRWidth: typeof import('@vueuse/core').useSSRWidth
@@ -269,6 +270,7 @@ declare global {
   const useShortcutRecorder: typeof import('./composables/useShortcutRecorder').useShortcutRecorder
   const useSlots: typeof import('vue').useSlots
   const useSorted: typeof import('@vueuse/core').useSorted
+  const useSounds: typeof import('./composables/useSounds').useSounds
   const useSpace: typeof import('./composables/useSpace').useSpace
   const useSpaces: typeof import('./composables/useSpaces').useSpaces
   const useSpeechRecognition: typeof import('@vueuse/core').useSpeechRecognition
@@ -357,7 +359,7 @@ declare global {
   export type { ScrollAnchor, SelectionSnapshot } from './composables/useSelection'
   import('./composables/useSelection')
   // @ts-ignore
-  export type { ThemePreference, ShortcutState, ShortcutTarget, SettingsScope } from './composables/useSettings'
+  export type { ThemePreference, MotionPreference, ShortcutState, ShortcutTarget, SettingsScope } from './composables/useSettings'
   import('./composables/useSettings')
   // @ts-ignore
   export type { Note, Section, Space, StoreStatus, Settings, SpaceView, NoteView, ChangeReason, SpaceChangedPayload, StoreErrorPayload, SubmitOutcome, SubmitResult, LoadState, ActionErrorScope, ActionError, MutationResult } from './composables/useSpace'
@@ -619,6 +621,7 @@ declare module 'vue' {
     readonly usePreferredReducedTransparency: UnwrapRef<typeof import('@vueuse/core')['usePreferredReducedTransparency']>
     readonly usePrevious: UnwrapRef<typeof import('@vueuse/core')['usePrevious']>
     readonly useRafFn: UnwrapRef<typeof import('@vueuse/core')['useRafFn']>
+    readonly useReducedMotion: UnwrapRef<typeof import('./composables/useReducedMotion')['useReducedMotion']>
     readonly useRefHistory: UnwrapRef<typeof import('@vueuse/core')['useRefHistory']>
     readonly useResizeObserver: UnwrapRef<typeof import('@vueuse/core')['useResizeObserver']>
     readonly useSSRWidth: UnwrapRef<typeof import('@vueuse/core')['useSSRWidth']>
@@ -636,6 +639,7 @@ declare module 'vue' {
     readonly useShortcutRecorder: UnwrapRef<typeof import('./composables/useShortcutRecorder')['useShortcutRecorder']>
     readonly useSlots: UnwrapRef<typeof import('vue')['useSlots']>
     readonly useSorted: UnwrapRef<typeof import('@vueuse/core')['useSorted']>
+    readonly useSounds: UnwrapRef<typeof import('./composables/useSounds')['useSounds']>
     readonly useSpace: UnwrapRef<typeof import('./composables/useSpace')['useSpace']>
     readonly useSpaces: UnwrapRef<typeof import('./composables/useSpaces')['useSpaces']>
     readonly useSpeechRecognition: UnwrapRef<typeof import('@vueuse/core')['useSpeechRecognition']>

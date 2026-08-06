@@ -74,7 +74,10 @@ export default defineConfig({
 	// datasets and ResizeObserver-free measurement, not a browser.
 	test: {
 		environment: 'happy-dom',
-		include: ['src/**/*.test.ts'],
+		// `tests/` is for suites that assert the *build*, not the app: they read
+		// node builtins, which tsconfig.app.json deliberately gives no types for so
+		// that a component importing `node:fs` stays a type error.
+		include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
 		restoreMocks: true,
 	},
 

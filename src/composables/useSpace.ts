@@ -45,6 +45,7 @@ import { useEditorHandoff } from './useEditorHandoff'
 import { useNoteSearch } from './useNoteSearch'
 import { useSectionEditor } from './useSectionEditor'
 import { useSections } from './useSections'
+import { useSounds } from './useSounds'
 
 // --- the document, mirroring task-003 exactly --------------------------------
 
@@ -88,6 +89,11 @@ export type Settings = {
 	panelPosition: { x: number; y: number } | null
 	shortcuts: Record<string, string>
 	theme: string
+	sounds: boolean
+	/** `'auto' | 'off'` — see `MotionPreference` in `useSettings`, which is where
+	 *  the value is narrowed. Typed loosely here for the same reason `theme` is:
+	 *  this mirrors the file, and the file can hold anything. */
+	motion: string
 }
 
 /**
@@ -380,7 +386,12 @@ async function refresh() {
  * document came back unchanged is the optimisation that leaves the panel saying
  * "this space is unreadable" forever, with no further event coming.
  */
-async function onSpaceChanged(_payload: SpaceChangedPayload) {
+async function onSpaceChanged(payload: SpaceChangedPayload) {
+	// The only signal the frontend gets that a capture *succeeded* — there is no
+	// `capture://succeeded` event, because a capture is silent on success by
+	// design. `append_capture` is the sole producer of this reason and emits only
+	// after the write, so this cannot fire for a capture that failed.
+	if (payload.reason === 'capture') useSounds().captureSucceeded()
 	await Promise.all([refresh(), pullStatus()])
 }
 
@@ -524,6 +535,7 @@ async function mutate<T>(
 		result = await run()
 	} catch (error) {
 		actionError.value = { scope: options.scope, message: errorMessage(error) }
+		useSounds().actionFailed()
 		return null
 	}
 
@@ -619,15 +631,25 @@ function listCommand(command: string, args: Record<string, unknown>) {
 /** There is no singular set-done command; `set_notes_done` takes an array. Phase
  *  5 calls this with a whole selection, with no signature change. */
 async function setNotesDone(ids: string[], done: boolean) {
-	return listCommand('set_notes_done', { ids, done })
+	// Sounded here rather than at the three call sites above it — the checkbox,
+	// Space, and the context menu all funnel through this one command, and one
+	// gesture over a whole selection is still one toggle.
+	const result = await listCommand('set_notes_done', { ids, done })
+	if (result) useSounds().noteToggled()
+	return result
 }
 
 async function setActiveSection(id: string) {
-	return mutate(
+	const result = await mutate(
 		() => invoke<Space>('set_active_section', { id }),
 		(value) => value,
 		{ scope: 'list', repullStatus: () => true },
 	)
+	// Only a deliberate switch. `activeSection` is computed off the document, so a
+	// watcher on it would also fire for an external edit, a reload, an undo and
+	// every refresh — none of which is a user action.
+	if (result) useSounds().sectionSwitched()
+	return result
 }
 
 /**

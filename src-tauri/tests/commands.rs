@@ -347,12 +347,24 @@ fn store_status_crosses_the_boundary_in_camel_case() {
 fn settings_cross_the_boundary_in_camel_case() {
 	let payload = serde_json::to_value(Settings::default()).unwrap();
 
-	for key in ["recents", "activeSpace", "panelPosition", "shortcuts", "theme"] {
+	for key in [
+		"recents",
+		"activeSpace",
+		"panelPosition",
+		"shortcuts",
+		"theme",
+		"sounds",
+		"motion",
+	] {
 		assert!(payload.get(key).is_some(), "get_settings is missing {key}: {payload}");
 	}
-	assert_eq!(payload.as_object().unwrap().len(), 5, "get_settings grew a field");
+	assert_eq!(payload.as_object().unwrap().len(), 7, "get_settings grew a field");
 	assert_eq!(payload["shortcuts"]["capture"], "Shift Shift");
 	assert_eq!(payload["shortcuts"]["summon"], "Ctrl+Shift+Space");
+	// The shipped defaults, which are the whole of "this task changes no
+	// behaviour": sound is off, and motion defers to Windows.
+	assert_eq!(payload["sounds"], false);
+	assert_eq!(payload["motion"], "auto");
 }
 
 #[test]

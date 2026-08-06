@@ -8,6 +8,7 @@ const composerError = errorFor('composer')
 const { visibleNoteIds } = useSelection()
 const { switcherOpen } = useSections()
 const { pending, pasteAttachment, pickAttachments, removePending } = useAttachments()
+const { entrySubmitted } = useSounds()
 
 const textarea = useTemplateRef<HTMLTextAreaElement>('textarea')
 
@@ -124,6 +125,12 @@ async function submit() {
 	const result = await submitEntry(submitted, attachments)
 	submitting.value = false
 
+	// The store accepted it, independently of the revision race below — that guard
+	// is about whose text is in the field, not about whether the note was written.
+	// A `# Name` directive sounds the same: it is still a composer submit, and the
+	// section it activates does not go through `setActiveSection`.
+	if (result) entrySubmitted()
+
 	// Nothing is cleared optimistically, and a success must not destroy newer
 	// input: the field is only cleared if it is unchanged since the request went
 	// out.
@@ -215,7 +222,7 @@ function onKeydown(event: KeyboardEvent) {
 				:value="value"
 				:placeholder="placeholder"
 				:aria-busy="submitting"
-				class="border-separator bg-surface-hover text-text-primary placeholder:text-text-disabled outline-focus-ring max-h-[5lh] min-h-8 w-full min-w-0 flex-1 resize-none select-text rounded-md border px-2 py-1.5 text-body focus-visible:outline-2 focus-visible:-outline-offset-1"
+				class="squircle border-separator bg-surface-hover text-text-primary placeholder:text-text-disabled outline-focus-ring max-h-[5lh] min-h-8 w-full min-w-0 flex-1 resize-none select-text rounded-md border px-2 py-1.5 text-body focus-visible:outline-2 focus-visible:-outline-offset-1"
 				:class="supportsFieldSizing ? 'field-sizing-content' : ''"
 				@input="onInput"
 				@keydown="onKeydown"
@@ -226,7 +233,7 @@ function onKeydown(event: KeyboardEvent) {
 			<button
 				type="button"
 				aria-label="Attach files"
-				class="text-text-secondary hover:text-text-primary hover:bg-surface-hover outline-focus-ring hit-44 relative mb-0.5 grid size-7 shrink-0 place-items-center rounded-md transition-colors duration-fast focus-visible:outline-2"
+				class="squircle text-text-secondary hover:text-text-primary hover:bg-surface-hover outline-focus-ring hit-44 relative mb-0.5 grid size-7 shrink-0 place-items-center rounded-md transition-colors duration-fast focus-visible:outline-2"
 				@click="pick"
 			>
 				<IconLucidePaperclip class="size-4" aria-hidden="true" focusable="false" />

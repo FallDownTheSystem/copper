@@ -15,6 +15,8 @@ declare module 'vue' {
     AttachmentCard: typeof import('./components/AttachmentCard.vue')['default']
     AttachmentTray: typeof import('./components/AttachmentTray.vue')['default']
     CaptureNotice: typeof import('./components/CaptureNotice.vue')['default']
+    Checkbox: typeof import('./components/ui/checkbox/Checkbox.vue')['default']
+    CheckboxIcon: typeof import('./components/ui/checkbox/CheckboxIcon.vue')['default']
     Composer: typeof import('./components/Composer.vue')['default']
     ContextMenu: typeof import('./components/ui/context-menu/ContextMenu.vue')['default']
     ContextMenuCheckboxItem: typeof import('./components/ui/context-menu/ContextMenuCheckboxItem.vue')['default']

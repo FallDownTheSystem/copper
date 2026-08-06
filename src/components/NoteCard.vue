@@ -84,35 +84,21 @@ function onContextMenu() {
 					class="grid min-h-11 min-w-0 grid-cols-[auto_minmax(0,1fr)] content-center items-start gap-2 px-3 py-2"
 					role="gridcell"
 				>
-					<button
-						type="button"
+					<!-- A rounded square rather than task-004's circle, so the squircle
+					     corner has something to shape — `corner-shape` does nothing to a
+					     circle. The entrance-animation objection task-004 recorded here
+					     still holds and is still satisfied: the mark is force-mounted and
+					     never enters, so a Space repeat retargets a `pathLength` that is
+					     already on screen rather than replaying an element appearing.
+					     See `useLinecap` for why an empty box paints nothing at all. -->
+					<Checkbox
 						:tabindex="descendantTabIndex"
-						:aria-pressed="note.done"
+						:model-value="note.done"
 						:aria-label="note.done ? 'Mark as not done' : 'Mark as done'"
-						class="completion-circle border-text-disabled outline-focus-ring relative mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border transition-colors duration-base focus-visible:outline-2 focus-visible:outline-offset-1"
-						:class="note.done ? 'bg-accent-ring border-accent-ring text-white' : ''"
-						@click.stop="emit('toggleDone')"
-					>
-						<!-- No entrance animation on the glyph: the toggle is bound to Space,
-						     repeats, and a scale-in on a keyboard-repeated control reads as
-						     lag. Only background-color transitions. -->
-						<svg
-							v-if="note.done"
-							viewBox="0 0 16 16"
-							class="size-3"
-							aria-hidden="true"
-							focusable="false"
-						>
-							<path
-								d="M3.5 8.5 6.5 11.5 12.5 5"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-							/>
-						</svg>
-					</button>
+						class="completion-circle mt-0.5"
+						@click.stop
+						@update:model-value="emit('toggleDone')"
+					/>
 
 					<div class="min-w-0">
 						<!-- A grip rather than a body-wide drag: the row already owns

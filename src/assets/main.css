@@ -252,7 +252,18 @@
 /* The secondary controls in the conflict and recovery surfaces: one appearance,
    four buttons, and one place to change it. */
 @utility panel-button {
-	@apply border-separator hover:bg-surface-hover rounded-md border px-2 py-1 text-meta transition-colors duration-fast;
+	@apply squircle border-separator hover:bg-surface-hover rounded-md border px-2 py-1 text-meta transition-colors duration-fast;
+}
+
+/* Superellipse corners on the panel's small rounded rectangles. Carries no
+   radius of its own: the element's own `rounded-*` is the fallback and this only
+   reshapes the curve, so deleting this utility leaves every surface visually
+   intact. `corner-shape` is Chromium-only and unflagged since 139; the
+   `@supports` guard is for a pinned runtime older than that. */
+@utility squircle {
+	@supports (corner-shape: squircle) {
+		corner-shape: squircle;
+	}
 }
 
 /* Grows a small control's hit area to the 44px baseline without growing the
@@ -280,6 +291,14 @@
 .panel-surface {
 	background: var(--surface);
 	border-radius: var(--panel-radius);
+	/* Stated rather than left to the initial value, because this is the one
+	   surface in the panel that must never become a squircle and the reason is not
+	   local to this file. `DWMWCP_ROUND` rounds the *window* on a circular arc, and
+	   `--panel-radius` exists to match it exactly; a superellipse here would
+	   diverge from that arc most sharply at the corner, which is precisely where
+	   task-004's acceptance criterion 13 looks for a seam. An explicit `round`
+	   makes an accidental inherited or utility-applied squircle a no-op. */
+	corner-shape: round;
 	/* Radius alone does not clip descendants. Without this the scrollbar, focus
 	   rings and row backgrounds paint into the transparent corners. */
 	overflow: hidden;

@@ -116,7 +116,7 @@ function onKeydown(event: KeyboardEvent) {
 							:value="draft"
 							type="text"
 							autocomplete="off"
-							class="border-separator bg-surface-hover text-text-primary outline-focus-ring h-6 min-w-0 flex-1 select-text rounded-md border px-1.5 text-label uppercase focus-visible:outline-2 focus-visible:-outline-offset-1"
+							class="squircle border-separator bg-surface-hover text-text-primary outline-focus-ring h-6 min-w-0 flex-1 select-text rounded-md border px-1.5 text-label uppercase focus-visible:outline-2 focus-visible:-outline-offset-1"
 							@input="setDraft(($event.target as HTMLInputElement).value)"
 							@keydown="onKeydown"
 							@blur="commit"

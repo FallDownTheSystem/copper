@@ -22,6 +22,16 @@ import { errorMessage, type Settings } from './useSpace'
 
 export type ThemePreference = 'system' | 'light' | 'dark'
 
+/**
+ * `auto` follows the OS, `off` forces animation off. There is deliberately no
+ * value that animates *against* an OS `prefers-reduced-motion: reduce` — that
+ * preference is an accessibility signal and an app setting is not entitled to
+ * override it. `useReducedMotion` enforces this by OR-ing the two rather than
+ * choosing between them, so the guarantee is structural and not a rule someone
+ * has to remember.
+ */
+export type MotionPreference = 'auto' | 'off'
+
 /** Everything `get_shortcut_state` carries: current bindings, the shipped
  *  defaults so Reset needs no second copy of them here, and whether registration
  *  actually took. */
@@ -44,8 +54,8 @@ export type ShortcutTarget = 'summon' | 'capture'
 
 /** Which row an error belongs under. A failure has to render next to the control
  *  that produced it, exactly as `useSpace`'s scoped action errors do. */
-export type SettingsScope = ThemeScope | ShortcutTarget
-type ThemeScope = 'theme' | 'autostart'
+export type SettingsScope = PreferenceScope | ShortcutTarget
+type PreferenceScope = 'theme' | 'autostart' | 'sounds' | 'motion'
 
 // --- module-scope state ------------------------------------------------------
 
@@ -61,6 +71,17 @@ const theme = computed<ThemePreference>(() => {
 	const stored = settings.value?.theme
 	return stored === 'light' || stored === 'dark' ? stored : 'system'
 })
+
+/** Off unless the file says otherwise, so an unreadable or older `settings.json`
+ *  leaves the app silent rather than making noise nobody asked for. */
+const soundsEnabled = computed(() => settings.value?.sounds === true)
+
+/** Named here rather than validated in Rust, the same split `theme` uses: the
+ *  store repairs wrong *types*, and a value of the right type that names nothing
+ *  collapses to the default on read. */
+const motionPreference = computed<MotionPreference>(() =>
+	settings.value?.motion === 'off' ? 'off' : 'auto',
+)
 
 function fail(scope: SettingsScope, error: unknown) {
 	errors.value = { ...errors.value, [scope]: errorMessage(error) }
@@ -183,6 +204,33 @@ function setTheme(next: ThemePreference): Promise<boolean> {
 	)
 }
 
+/**
+ * Both of these go through the general `update_settings` patch rather than
+ * earning a command each: unlike the theme, neither has a native side to apply
+ * — no window to re-tint, no registry key — so a dedicated Rust command would be
+ * a pass-through to the writer that already exists. The patch shape is
+ * field-at-a-time, so writing one cannot clear the other.
+ */
+function setSounds(enabled: boolean): Promise<boolean> {
+	return attempt(
+		'sounds',
+		() => invoke<Settings>('update_settings', { patch: { sounds: enabled } }),
+		(value) => {
+			settings.value = value
+		},
+	)
+}
+
+function setMotion(preference: MotionPreference): Promise<boolean> {
+	return attempt(
+		'motion',
+		() => invoke<Settings>('update_settings', { patch: { motion: preference } }),
+		(value) => {
+			settings.value = value
+		},
+	)
+}
+
 function setAutostart(enabled: boolean): Promise<boolean> {
 	return attempt(
 		'autostart',
@@ -257,11 +305,15 @@ export function useSettings() {
 		shortcuts: readonly(shortcuts),
 		autostartEnabled: readonly(autostartEnabled),
 		theme,
+		soundsEnabled,
+		motionPreference,
 		errorFor,
 		initialize,
 		dispose,
 		refresh,
 		setTheme,
+		setSounds,
+		setMotion,
 		setAutostart,
 		beginRecording,
 		commitRecording,

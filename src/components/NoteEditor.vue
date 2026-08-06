@@ -127,7 +127,7 @@ async function keepMine() {
 			:value="draft"
 			:aria-busy="pending"
 			aria-label="Edit note"
-			class="border-separator bg-surface-hover text-text-primary outline-focus-ring w-full min-w-0 select-text resize-none rounded-md border px-2 py-1.5 text-body focus-visible:outline-2 focus-visible:-outline-offset-1"
+			class="squircle border-separator bg-surface-hover text-text-primary outline-focus-ring w-full min-w-0 select-text resize-none rounded-md border px-2 py-1.5 text-body focus-visible:outline-2 focus-visible:-outline-offset-1"
 			:class="supportsFieldSizing ? 'field-sizing-content' : ''"
 			@input="onInput"
 			@keydown="onKeydown"
@@ -141,7 +141,7 @@ async function keepMine() {
 		     two columns of Markdown at that width are unreadable. -->
 		<div
 			v-if="conflict !== null"
-			class="border-separator mt-2 rounded-md border p-2"
+			class="squircle border-separator mt-2 rounded-md border p-2"
 			role="group"
 			aria-label="This note changed on disk"
 		>

@@ -161,7 +161,7 @@ function onKeydown(event: KeyboardEvent) {
 			type="text"
 			autocomplete="off"
 			placeholder="Filter sections…"
-			class="border-separator bg-surface-hover text-text-primary placeholder:text-text-disabled outline-focus-ring h-7 w-full min-w-0 select-text rounded-md border px-1.5 text-body focus-visible:outline-2 focus-visible:-outline-offset-1"
+			class="squircle border-separator bg-surface-hover text-text-primary placeholder:text-text-disabled outline-focus-ring h-7 w-full min-w-0 select-text rounded-md border px-1.5 text-body focus-visible:outline-2 focus-visible:-outline-offset-1"
 			@keydown="onKeydown"
 		/>
 	</div>

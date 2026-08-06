@@ -28,6 +28,8 @@ import { invoke } from '@tauri-apps/api/core'
 
 import { errorMessage } from '@/lib/rustError'
 
+import { useSounds } from './useSounds'
+
 /** Mirrors the Rust `Attachment` exactly. `file` is a bare filename inside the
  *  space's assets directory — never a path, and never rendered as one. */
 export type Attachment = {
@@ -236,6 +238,9 @@ function accept(added: Attachment[]): string | null {
 	}
 
 	pending.value = [...pending.value, ...added.slice(0, available)]
+	// Once per commit, not once per file — a ten-file drop is one gesture. Below
+	// both early returns, so a no-op paste and a refusal at capacity stay silent.
+	useSounds().attachmentsAdded()
 	return added.length > available
 		? `Only ${available} more file${available === 1 ? '' : 's'} fit on one note; the rest were not attached.`
 		: null

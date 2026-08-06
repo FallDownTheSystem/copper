@@ -183,11 +183,12 @@ describe('the settings view', () => {
 		useView().showSettings()
 		await settle()
 
-		const control = wrapper.find('[role="switch"]')
+		// Named rather than taken as the first switch on the surface: task-012 added
+		// two more above it, and "the first one" silently became a different row.
+		const control = wrapper.find('#autostart')
 		expect(control.exists()).toBe(true)
-		const id = control.attributes('id')
-		expect(id).toBeTruthy()
-		expect(wrapper.find(`label[for="${id}"]`).text()).toBe('Launch Copper at login')
+		expect(control.attributes('role')).toBe('switch')
+		expect(wrapper.find('label[for="autostart"]').text()).toBe('Launch Copper at login')
 	})
 
 	it('shows a startup registration failure against the summon row', async () => {
