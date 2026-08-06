@@ -426,4 +426,75 @@ describe('the scroll anchor', () => {
 		// so what this pins down is that the bottom pin did not fire.
 		expect(metrics.scrollTop).toBe(40)
 	})
+
+	/**
+	 * Task-012's control animations are why this matters now. The settle loop asks
+	 * `getAnimations({ subtree: true })` whether anything is still running and
+	 * holds the pin while something is — and the completion control now animates
+	 * on every toggle, inside the very region the loop watches.
+	 *
+	 * The question is not whether a 0.3s draw delays the release. It may, and
+	 * harmlessly: the loop's action is `scrollTop = scrollHeight`, so a longer
+	 * hold is a later release rather than a wrong position. The question is
+	 * whether an animation that never reports itself finished can hold the loop
+	 * open indefinitely, burning a callback every frame for the life of the panel.
+	 *
+	 * It cannot, and `SETTLE_CAP_MS` is the only thing that guarantees it — the
+	 * stability counter is satisfied here from the first frame and the loop keeps
+	 * going anyway. Delete the cap clause and this test spins until its own bound
+	 * fails it, which is the point of writing it against a hostile stub rather
+	 * than against a real animation.
+	 */
+	it('stops settling on the cap even while an animation never finishes', () => {
+		const metrics = { scrollTop: 380, scrollHeight: 500, clientHeight: 120 }
+		const region = mountRegion(metrics)
+		// Never finishes, and the height never moves — so stability is never the
+		// reason the loop continues, and the cap is the only available exit.
+		Object.defineProperty(region, 'getAnimations', {
+			configurable: true,
+			value: () => [{ playState: 'running' }],
+		})
+
+		const snapshot = selection.snapshot()
+		expect(snapshot.scroll).toEqual({ kind: 'bottom' })
+
+		// Driven rather than awaited: the cap is two seconds, and a test that
+		// actually waited them out would be two seconds of the suite.
+		const frames: FrameRequestCallback[] = []
+		const realRequestAnimationFrame = globalThis.requestAnimationFrame
+		const realNow = Date.now
+		let clock = 1_000_000
+		globalThis.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+			frames.push(callback)
+			return frames.length
+		}) as typeof globalThis.requestAnimationFrame
+		Date.now = () => clock
+
+		let pumped = 0
+		try {
+			selection.restoreDom(snapshot)
+
+			// 16ms of fake clock per frame, so the 2000ms cap falls at ~125.
+			while (frames.length > 0 && pumped < 1000) {
+				const next = frames.shift()
+				if (!next) break
+				clock += 16
+				pumped++
+				next(clock)
+			}
+		} finally {
+			globalThis.requestAnimationFrame = realRequestAnimationFrame
+			Date.now = realNow
+		}
+
+		// Nothing left scheduled: the loop let go rather than queueing another.
+		expect(frames).toHaveLength(0)
+		expect(pumped).toBeLessThan(1000)
+		// And it was the cap that stopped it, not an early exit on stability —
+		// otherwise this would pass just as well with the animation check removed.
+		expect(pumped).toBeGreaterThan(100)
+		// It kept the list pinned for the whole settle, which is the behaviour the
+		// cap is bounding rather than replacing.
+		expect(metrics.scrollTop).toBe(500)
+	})
 })

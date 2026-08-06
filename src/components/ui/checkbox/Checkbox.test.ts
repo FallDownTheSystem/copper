@@ -1,5 +1,5 @@
-import { mount } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
+import { enableAutoUnmount, mount } from '@vue/test-utils'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 import Checkbox from './Checkbox.vue'
 
@@ -21,17 +21,30 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 // `motion-v` calls `element.animate`, which happy-dom does not implement. The
 // animation is real product behaviour; only the environment is missing.
+//
+// Torn down again below. `restoreMocks` does not reach a plain assignment to a
+// host prototype, so a stub left in place would outlive this file and hand every
+// later suite in the worker a fake WAAPI they never asked for — which is exactly
+// the kind of environment difference that makes one suite pass only when another
+// ran first.
 const elementPrototype = Element.prototype as unknown as Record<string, unknown>
-elementPrototype.animate ??= () => ({
-	playState: 'finished',
-	finished: Promise.resolve(),
-	cancel: () => {},
-	play: () => {},
-	pause: () => {},
-	finish: () => {},
-	commitStyles: () => {},
-	addEventListener: () => {},
-	removeEventListener: () => {},
+const stubbedAnimate = elementPrototype.animate === undefined
+if (stubbedAnimate) {
+	elementPrototype.animate = () => ({
+		playState: 'finished',
+		finished: Promise.resolve(),
+		cancel: () => {},
+		play: () => {},
+		pause: () => {},
+		finish: () => {},
+		commitStyles: () => {},
+		addEventListener: () => {},
+		removeEventListener: () => {},
+	})
+}
+
+afterAll(() => {
+	if (stubbedAnimate) Reflect.deleteProperty(elementPrototype, 'animate')
 })
 
 /** VueUse reads the preference through `matchMedia`, so this is the only lever
@@ -52,6 +65,19 @@ function setReducedMotion(reduce: boolean) {
 		}),
 	})
 }
+
+/**
+ * Required, not hygiene. `useReducedMotion` is a `createSharedComposable`, so one
+ * instance is built on first use and kept alive while any consumer holds it —
+ * and it captures `matchMedia` at that moment. Without unmounting between cases
+ * the first mounted checkbox pins the preference for the whole file, and
+ * `setReducedMotion(true)` below would swap a global that nothing reads again.
+ *
+ * That sharing is still correct in the app: there is one real `matchMedia` there,
+ * and the live change listener inside it keeps every consumer in step with the
+ * OS. Only a suite that swaps the global mid-file has to care.
+ */
+enableAutoUnmount(afterEach)
 
 beforeEach(() => {
 	mocks.invoke.mockReset()

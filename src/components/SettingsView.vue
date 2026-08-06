@@ -89,14 +89,6 @@ function onEscape(event: KeyboardEvent) {
 	showList()
 }
 
-/** The summon binding's error is either a live failure from a rebind the user
- *  just attempted or the startup registration failure, which has no action behind
- *  it at all. Both belong on the same row. */
-const summonRowError = computed(() => summonError.value ?? shortcuts.value?.summonError ?? null)
-const captureRowError = computed(() => captureError.value ?? shortcuts.value?.captureError ?? null)
-
-/** Standing conditions rather than failed actions: the keyboard hook is down and
- *  a conventional chord is covering for the double-tap. */
 /** The switch is the presence of animation, but the *setting* is a two-value
  *  preference rather than a boolean, because "auto" means "defer to Windows" and
  *  a boolean has nowhere to say that. Off is the only thing this switch can
@@ -105,6 +97,14 @@ function setAnimations(on: boolean) {
 	void setMotion(on ? 'auto' : 'off')
 }
 
+/** The summon binding's error is either a live failure from a rebind the user
+ *  just attempted or the startup registration failure, which has no action behind
+ *  it at all. Both belong on the same row. */
+const summonRowError = computed(() => summonError.value ?? shortcuts.value?.summonError ?? null)
+const captureRowError = computed(() => captureError.value ?? shortcuts.value?.captureError ?? null)
+
+/** Standing conditions rather than failed actions: the keyboard hook is down and
+ *  a conventional chord is covering for the double-tap. */
 const captureNote = computed(() => {
 	const fallback = shortcuts.value?.captureFallback
 	if (!fallback) return null

@@ -28,27 +28,38 @@ function install() {
 	installed = true
 
 	/**
-	 * Ungated, unlike `useTheme`'s otherwise identical watcher — and the
-	 * difference is load-bearing rather than an oversight.
+	 * Two decisions here, and both are load-bearing rather than style.
 	 *
-	 * The engine ships `enabled = true`, because the reference app's demo page
-	 * switches it on explicitly. Copper's default is the opposite, and `settings`
-	 * is `null` until the startup pull lands. `soundsEnabled` reads `false` for
-	 * that whole window, so running the watcher immediately and ungated is what
-	 * makes the engine silent from the first tick — which matters, because a
-	 * capture can arrive over the global hotkey before the pull has returned, and
-	 * `render()` checks `enabled` *before* it touches `getAudioContext()`. Off by
-	 * default therefore means no `AudioContext` is constructed at all.
+	 * **The scope is detached.** `install()` runs inside whichever caller reached a
+	 * sound point first, which in practice is `Composer`'s `setup()` — and a
+	 * `watch` registered there belongs to *that component's* effect scope. The
+	 * panel swaps the list out for the settings view, so Composer unmounts, the
+	 * watcher is disposed with it, and `installed` stays `true` forever: the
+	 * setting could never be applied again, in either direction, from the one
+	 * screen that can change it. `useTheme` gets an application-lifetime owner for
+	 * free by being called from `App.vue`'s root setup; this cannot rely on that,
+	 * because its callers are event handlers in plain modules as well as
+	 * components, so it owns its scope explicitly.
 	 *
-	 * The theme watcher's gate exists because applying a default there *writes* to
-	 * disk. Nothing here writes, so there is nothing to protect against.
+	 * **The watcher is ungated**, unlike `useTheme`'s otherwise identical one. The
+	 * engine ships `enabled = true`, because the reference app's demo page switches
+	 * it on explicitly. Copper's default is the opposite, and `settings` is `null`
+	 * until the startup pull lands. `soundsEnabled` reads `false` for that whole
+	 * window, so running immediately and ungated is what makes the engine silent
+	 * from the first tick — which matters, because a capture can arrive over the
+	 * global hotkey before the pull has returned, and `render()` checks `enabled`
+	 * *before* it touches `getAudioContext()`. Off by default therefore means no
+	 * `AudioContext` is constructed at all. The theme watcher's gate exists because
+	 * applying a default there *writes* to disk; nothing here writes.
 	 */
-	// Wrapped rather than passed as the handler directly: a watcher callback is
-	// invoked with `(value, previous, onCleanup)`, and handing all three to a
-	// third-party function that happens to read only the first is a coincidence,
-	// not an interface.
-	const { soundsEnabled } = useSettings()
-	watch(soundsEnabled, (enabled) => setEnabled(enabled), { immediate: true })
+	effectScope(true).run(() => {
+		const { soundsEnabled } = useSettings()
+		// Wrapped rather than passed as the handler directly: a watcher callback is
+		// invoked with `(value, previous, onCleanup)`, and handing all three to a
+		// third-party function that happens to read only the first is a
+		// coincidence, not an interface.
+		watch(soundsEnabled, (enabled) => setEnabled(enabled), { immediate: true })
+	})
 }
 
 /** The click-clack; pairs with the completion control's stroke draw. */

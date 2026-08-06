@@ -1,3 +1,4 @@
+import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 import type { Settings, Space, StoreStatus } from './useSpace'
@@ -121,6 +122,12 @@ beforeEach(() => {
 	respond('get_status', () => ({ ...STATUS }))
 	respond('get_settings', () => makeSettings(false))
 	respond('get_active_space', () => makeSpace())
+	respond('submit_entry', () => ({
+		space: makeSpace(),
+		outcome: 'note',
+		noteId: 'n1',
+		sectionId: 'sec_a',
+	}))
 	respond('get_shortcut_state', () => ({
 		capture: 'Shift Shift',
 		summon: 'Ctrl+Shift+Space',
@@ -295,5 +302,92 @@ describe('the seven sound points', () => {
 		await attachments.attachPaths(['C:\\a.png'])
 
 		expect(engine.play).not.toHaveBeenCalled()
+	})
+})
+
+/**
+ * These two go through `Composer` rather than through the composable, and that
+ * is the point of them.
+ *
+ * `Composer` is the real first caller of `useSounds()` in the running app — it
+ * calls it in `setup()` — so it is the component that decides which effect scope
+ * the settings watcher lands in, and it is also the only place the composer chime
+ * is wired. Nothing here may call `useSounds()` before the mount, or the install
+ * happens outside a component scope and the defect under test disappears.
+ */
+describe('the composer, which is the component that installs the watcher', () => {
+	async function freshComposer() {
+		vi.resetModules()
+		const [settingsModule, spaceModule, composerModule] = await Promise.all([
+			import('./useSettings'),
+			import('./useSpace'),
+			import('@/components/Composer.vue'),
+		])
+		const space = spaceModule.useSpace()
+		await space.initialize()
+		await flush()
+		return {
+			settings: settingsModule.useSettings(),
+			wrapper: mount(composerModule.default, { attachTo: document.body }),
+		}
+	}
+
+	/** Task-012 AC10's other half — the Specification names `chime` for a composer
+	 *  submit by hand, and the `if (result)` placement was previously untested. */
+	it('sounds a chime when a submit is accepted, and nothing when it is refused', async () => {
+		const { wrapper } = await freshComposer()
+		await flush()
+		engine.play.mockClear()
+
+		await wrapper.find('textarea').setValue('a note')
+		await wrapper.find('form').trigger('submit')
+		await flush()
+
+		expect(engine.play).toHaveBeenCalledWith('chime')
+
+		engine.play.mockClear()
+		respond('submit_entry', () => {
+			throw { kind: 'invalid', message: 'nope' }
+		})
+		await wrapper.find('textarea').setValue('another note')
+		await wrapper.find('form').trigger('submit')
+		await flush()
+
+		// The failure sound, and specifically not the confirmation one.
+		expect(engine.play).not.toHaveBeenCalledWith('chime')
+		expect(engine.play).toHaveBeenCalledWith('error')
+	})
+
+	/**
+	 * The regression test for the watcher's lifetime, and the reason `install()`
+	 * owns a detached `effectScope`.
+	 *
+	 * A `watch` registered during `Composer`'s `setup()` belongs to that
+	 * component's scope. The panel replaces the list with the settings view, so
+	 * Composer unmounts — and because `installed` never resets, the watcher would
+	 * be gone for the rest of the session. The user would then be standing on the
+	 * one screen that can change this setting, changing it, and hearing nothing
+	 * happen, in either direction.
+	 *
+	 * The unmount is the whole test. Without it this passes against the bug.
+	 */
+	it('keeps applying the setting after the installing component is gone', async () => {
+		const { settings, wrapper } = await freshComposer()
+		await flush()
+
+		wrapper.unmount()
+		engine.setEnabled.mockClear()
+
+		respond('update_settings', () => makeSettings(true))
+		await settings.setSounds(true)
+		await flush()
+
+		expect(engine.setEnabled).toHaveBeenLastCalledWith(true)
+
+		respond('update_settings', () => makeSettings(false))
+		await settings.setSounds(false)
+		await flush()
+
+		expect(engine.setEnabled).toHaveBeenLastCalledWith(false)
 	})
 })
