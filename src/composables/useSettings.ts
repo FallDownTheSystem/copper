@@ -2,7 +2,9 @@
  * The settings surface: theme, the two global shortcuts, and launch at login.
  *
  * One adapter per Rust surface, the same amendment `useSpaces` records: this file
- * may invoke the shell commands and nothing else does. It holds its own copy of
+ * may invoke the theme, shortcut and autostart commands and nothing else does.
+ * `hide_panel` is deliberately not among them — it belongs to the Escape ladder
+ * that is its only caller, not to this surface. It holds its own copy of
  * `settings.json` rather than sharing `useSpace`'s, because the two are pulled
  * for different reasons and coupling them would mean a theme change re-reading
  * the document.
@@ -114,8 +116,8 @@ async function pullAutostart() {
 }
 
 /** Everything the settings view needs, refreshed together. */
-function refresh(): Promise<void> {
-	return Promise.all([pullSettings(), pullShortcuts(), pullAutostart()]).then(() => undefined)
+async function refresh(): Promise<void> {
+	await Promise.all([pullSettings(), pullShortcuts(), pullAutostart()])
 }
 
 /**
@@ -136,7 +138,7 @@ function initialize(): Promise<void> {
 			// responded by re-pulling `get_settings` would learn nothing at all.
 			listen('autostart-changed', () => void pullAutostart()),
 		])
-		await Promise.all([pullSettings(), pullShortcuts(), pullAutostart()])
+		await refresh()
 	})()
 
 	return initPromise
@@ -150,27 +152,46 @@ function dispose() {
 
 // --- setters -----------------------------------------------------------------
 
-async function setTheme(next: ThemePreference): Promise<boolean> {
-	clear('theme')
+/**
+ * The shape every setter here shares: clear this row's message, invoke, apply the
+ * command's own return value, and report a failure against the row that produced
+ * it. `useSpace`'s `mutate` is the same idea, minus the document machinery there
+ * is none of here.
+ */
+async function attempt<T>(
+	scope: SettingsScope,
+	run: () => Promise<T>,
+	apply: (value: T) => void,
+): Promise<boolean> {
+	clear(scope)
 	try {
-		settings.value = await invoke<Settings>('set_theme_preference', { theme: next })
+		apply(await run())
 		return true
 	} catch (error) {
-		fail('theme', error)
+		fail(scope, error)
 		return false
 	}
 }
 
-async function setAutostart(enabled: boolean): Promise<boolean> {
-	clear('autostart')
-	try {
+function setTheme(next: ThemePreference): Promise<boolean> {
+	return attempt(
+		'theme',
+		() => invoke<Settings>('set_theme_preference', { theme: next }),
+		(value) => {
+			settings.value = value
+		},
+	)
+}
+
+function setAutostart(enabled: boolean): Promise<boolean> {
+	return attempt(
+		'autostart',
+		() => invoke<boolean>('set_autostart_enabled', { enabled }),
 		// The answer is what the registry now says, not what was asked for.
-		autostartEnabled.value = await invoke<boolean>('set_autostart_enabled', { enabled })
-		return true
-	} catch (error) {
-		fail('autostart', error)
-		return false
-	}
+		(value) => {
+			autostartEnabled.value = value
+		},
+	)
 }
 
 // --- the recording lease -----------------------------------------------------
@@ -192,25 +213,16 @@ async function beginRecording(): Promise<number | null> {
 	}
 }
 
-async function commitRecording(
-	token: number,
-	target: ShortcutTarget,
-	chord: string,
-): Promise<boolean> {
-	clear(target)
-	try {
-		shortcuts.value = await invoke<ShortcutState>('commit_shortcut_recording', {
-			token,
-			target,
-			chord,
-		})
-		return true
-	} catch (error) {
-		// Nothing changed, so nothing changes on screen except this: the row keeps
-		// showing the binding that is still live.
-		fail(target, error)
-		return false
-	}
+function commitRecording(token: number, target: ShortcutTarget, chord: string): Promise<boolean> {
+	// A failure changed nothing, so nothing changes on screen except the message:
+	// the row keeps showing the binding that is still live.
+	return attempt(
+		target,
+		() => invoke<ShortcutState>('commit_shortcut_recording', { token, target, chord }),
+		(value) => {
+			shortcuts.value = value
+		},
+	)
 }
 
 async function cancelRecording(): Promise<void> {
@@ -228,16 +240,15 @@ async function cancelRecording(): Promise<void> {
 async function resetShortcut(target: ShortcutTarget): Promise<boolean> {
 	const fallback = shortcuts.value?.defaults[target]
 	if (!fallback) return false
-	clear(target)
-	try {
-		const command = target === 'summon' ? 'set_summon_shortcut' : 'set_capture_trigger'
-		const args = target === 'summon' ? { chord: fallback } : { trigger: fallback }
-		shortcuts.value = await invoke<ShortcutState>(command, args)
-		return true
-	} catch (error) {
-		fail(target, error)
-		return false
-	}
+	const command = target === 'summon' ? 'set_summon_shortcut' : 'set_capture_trigger'
+	const args = target === 'summon' ? { chord: fallback } : { trigger: fallback }
+	return attempt(
+		target,
+		() => invoke<ShortcutState>(command, args),
+		(value) => {
+			shortcuts.value = value
+		},
+	)
 }
 
 export function useSettings() {

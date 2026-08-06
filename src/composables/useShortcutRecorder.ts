@@ -140,11 +140,11 @@ async function cancel(): Promise<void> {
 
 async function commit(chord: string): Promise<void> {
 	session += 1
-	const held = token
+	const leased = token
 	const which = target.value
 	reset()
-	if (held === null) return
-	await useSettings().commitRecording(held, which, chord)
+	if (leased === null) return
+	await useSettings().commitRecording(leased, which, chord)
 }
 
 /** The chord as it stands, in the parser's order. */

@@ -8,8 +8,7 @@
  * space the panel cannot spare.
  *
  * The layout takes a fourth or fifth group with no structural change, which is
- * what task-010's section switcher and task-008's own in-panel rebinding layer
- * will need.
+ * what task-010's section switcher will need.
  */
 defineProps<{ title: string }>()
 </script>

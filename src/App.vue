@@ -26,11 +26,7 @@ const shift = computed(() => (reduced.value === 'reduce' ? 0 : 1))
 const EASE = [0.23, 1, 0.32, 1]
 
 const initial = computed(() => ({ opacity: 0, x: 16 * sign.value * shift.value }))
-const animate = computed(() => ({
-	opacity: 1,
-	x: 0,
-	transition: { duration: 0.2, ease: EASE },
-}))
+const animate = { opacity: 1, x: 0, transition: { duration: 0.2, ease: EASE } }
 /** Exits are faster and smaller than entrances — the thing leaving has already
  *  been read. */
 const exit = computed(() => ({

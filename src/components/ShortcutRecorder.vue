@@ -68,10 +68,6 @@ const recordingAnnouncement = computed(() =>
 watch(recording, (open) => {
 	if (open) void nextTick(() => box.value?.focus())
 })
-
-async function edit() {
-	await start(props.target)
-}
 </script>
 
 <template>
@@ -102,7 +98,7 @@ async function edit() {
 						<button
 							type="button"
 							class="panel-button outline-focus-ring hit-44 relative focus-visible:outline-2 focus-visible:-outline-offset-1"
-							@click="edit"
+							@click="start(target)"
 						>
 							Edit
 						</button>

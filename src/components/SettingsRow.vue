@@ -1,22 +1,14 @@
 <script setup lang="ts">
-/**
- * One label-and-control line.
- *
- * `align` exists because the two control shapes want different baselines: a
- * switch or a segmented control is one line tall and centres against the label,
- * while a shortcut control is two or three and has to align to the label's cap
- * height instead.
- */
-withDefaults(
-	defineProps<{
-		label: string
-		description?: string
-		/** For the accessible name of a control that has no visible text of its own. */
-		labelFor?: string
-		align?: 'center' | 'start'
-	}>(),
-	{ description: undefined, labelFor: undefined, align: 'center' },
-)
+/** One label-and-control line. */
+defineProps<{
+	label: string
+	description?: string
+	/** For the accessible name of a control that has no visible text of its own. */
+	labelFor?: string
+	/** A failed action for this row. Rows whose message is richer than a line of
+	 *  text — a shortcut row's icon and its live regions — use `below` instead. */
+	error?: string | null
+}>()
 </script>
 
 <template>
@@ -34,16 +26,14 @@ withDefaults(
 			</p>
 
 			<slot name="below" />
+
+			<p v-if="error" class="text-text-primary mt-1.5 text-meta" role="alert">{{ error }}</p>
 		</div>
 
 		<!-- Absent rather than empty when there is no trailing control: a shortcut
 		     row puts its control in `below`, and an empty box here would still take
 		     the row's `gap-3`. -->
-		<div
-			v-if="$slots.default"
-			class="shrink-0"
-			:class="align === 'center' ? 'self-center' : 'self-start pt-0.5'"
-		>
+		<div v-if="$slots.default" class="shrink-0 self-center">
 			<slot />
 		</div>
 	</div>

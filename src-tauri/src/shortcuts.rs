@@ -223,16 +223,22 @@ pub enum CaptureTrigger {
 /// the same vocabulary the parser uses rather than by a second list that can
 /// drift from it.
 fn is_modifier_token(token: &str) -> bool {
-	matches!(
-		token.trim().to_ascii_uppercase().as_str(),
-		"ALT"
-			| "OPTION" | "CONTROL"
-			| "CTRL" | "COMMAND"
-			| "CMD" | "SUPER"
-			| "SHIFT" | "COMMANDORCONTROL"
-			| "COMMANDORCTRL"
-			| "CMDORCTRL" | "CMDORCONTROL"
-	)
+	const MODIFIERS: [&str; 12] = [
+		"Alt",
+		"Option",
+		"Control",
+		"Ctrl",
+		"Command",
+		"Cmd",
+		"Super",
+		"Shift",
+		"CommandOrControl",
+		"CommandOrCtrl",
+		"CmdOrCtrl",
+		"CmdOrControl",
+	];
+	let token = token.trim();
+	MODIFIERS.iter().any(|name| token.eq_ignore_ascii_case(name))
 }
 
 /// Windows will never deliver these, so binding one produces a shortcut that
@@ -273,8 +279,7 @@ pub fn validate_summon_chord(text: &str) -> Result<Shortcut, ShellError> {
 		));
 	}
 
-	let tokens: Vec<&str> = text.split('+').collect();
-	if tokens.iter().all(|token| is_modifier_token(token)) {
+	if text.split('+').all(is_modifier_token) {
 		return Err(ShellError::ModifierOnly(format!(
 			"{text} is only modifier keys. Hold them and press one more key."
 		)));
@@ -675,23 +680,19 @@ pub fn install(app: &AppHandle) {
 		}
 	}
 
-	if let CaptureBinding::Chord(binding) = &registry.capture {
+	if let CaptureBinding::Chord(binding) = &mut registry.capture {
 		let chord = binding.chord;
-		let text = binding.text.clone();
 		match register(app, chord, Role::Capture) {
 			Ok(()) => {
 				CANONICAL_CAPTURE.store(chord.id(), Ordering::Relaxed);
-				if let CaptureBinding::Chord(binding) = &mut registry.capture {
-					binding.registered = true;
-				}
+				binding.registered = true;
 			}
 			Err(err) => {
 				diagnostics::log_error(&format!(
-					"[copper] shortcuts: the capture chord {text} could not be registered: {err}"
+					"[copper] shortcuts: the capture chord {} could not be registered: {err}",
+					binding.text
 				));
-				if let CaptureBinding::Chord(binding) = &mut registry.capture {
-					binding.error = Some(registration_failed_message(&text));
-				}
+				binding.error = Some(registration_failed_message(&binding.text));
 			}
 		}
 	}
@@ -744,7 +745,7 @@ fn ensure_fallback(app: &AppHandle, registry: &mut Registry) {
 		// Nothing wanted and nothing held: any complaint left over from a previous
 		// pass no longer describes anything.
 		(false, None) => registry.fallback_error = None,
-		_ => {}
+		(true, Some(_)) => {}
 	}
 }
 

@@ -129,13 +129,12 @@ const captureNote = computed(() => {
 
 		<div class="thin-scrollbar min-h-0 min-w-0 flex-1 space-y-6 overflow-y-auto px-4 py-4">
 			<SettingsSection title="Theme">
-				<SettingsRow label="Theme" description="Match your system, or set it manually.">
+				<SettingsRow
+					label="Theme"
+					description="Match your system, or set it manually."
+					:error="themeError"
+				>
 					<ThemeToggle :model-value="theme" @update:model-value="setTheme" />
-					<template #below>
-						<p v-if="themeError" class="text-text-primary mt-1.5 text-meta" role="alert">
-							{{ themeError }}
-						</p>
-					</template>
 				</SettingsRow>
 			</SettingsSection>
 
@@ -171,6 +170,7 @@ const captureNote = computed(() => {
 					label="Launch Copper at login"
 					description="Start automatically when you sign in to Windows."
 					label-for="autostart"
+					:error="autostartError"
 				>
 					<!-- `SwitchRoot` has no label part of its own, so the row's visible
 					     label is paired to it by `for`/`id` — otherwise the control
@@ -188,11 +188,6 @@ const captureNote = computed(() => {
 							class="block size-5 rounded-full bg-white shadow-sm transition-transform duration-fast data-[state=checked]:translate-x-4"
 						/>
 					</SwitchRoot>
-					<template #below>
-						<p v-if="autostartError" class="text-text-primary mt-1.5 text-meta" role="alert">
-							{{ autostartError }}
-						</p>
-					</template>
 				</SettingsRow>
 			</SettingsSection>
 		</div>

@@ -345,23 +345,28 @@ pub fn clamp_to_visible_monitor(
 	monitors: &[MonitorRect],
 	fallback: PanelPosition,
 ) -> PanelPosition {
+	if is_reachable(saved, grab, monitors) {
+		saved
+	} else {
+		fallback
+	}
+}
+
+/// The predicate on its own, so a caller that only wants the answer does not have
+/// to compute a fallback it will not use — locating the cursor's monitor costs a
+/// display enumeration, and every reveal asks this question.
+fn is_reachable(saved: PanelPosition, grab: GrabRect, monitors: &[MonitorRect]) -> bool {
 	let left = i64::from(saved.x);
 	let top = i64::from(saved.y);
 	let right = left.saturating_add(grab.width);
 	let bottom = top.saturating_add(grab.height);
 	let needed_height = (grab.height / 2).max(1);
 
-	let reachable = monitors.iter().any(|monitor| {
+	monitors.iter().any(|monitor| {
 		let overlap_x = right.min(monitor.right()) - left.max(monitor.left());
 		let overlap_y = bottom.min(monitor.bottom()) - top.max(monitor.top());
 		overlap_x >= MIN_GRAB_WIDTH && overlap_y >= needed_height
-	});
-
-	if reachable {
-		saved
-	} else {
-		fallback
-	}
+	})
 }
 
 /// Right-aligned with an inset, vertically centred.
@@ -498,11 +503,16 @@ fn ensure_reachable(window: &WebviewWindow) {
 	if monitors.is_empty() {
 		return;
 	}
-	let Some(fallback) = fallback_position(window, &monitors) else {
+	// Asked before a fallback is computed, not after: locating the cursor's
+	// monitor is a display enumeration of its own, and the panel is reachable on
+	// almost every reveal.
+	if is_reachable(current, grab_rect(window, current), &monitors) {
+		return;
+	}
+	let Some(target) = fallback_position(window, &monitors) else {
 		return;
 	};
 
-	let target = clamp_to_visible_monitor(current, grab_rect(window, current), &monitors, fallback);
 	if target != current {
 		if let Err(err) = window.set_position(PhysicalPosition::new(target.x, target.y)) {
 			diagnostics::log_error(&format!("[copper] panel: could not recover the window: {err}"));
