@@ -4,8 +4,9 @@
  * section-creation field.
  *
  * The switcher is a section of this menu rather than a third view. The design
- * puts space switching behind `...`, the recents list is short, and the panel
- * stays single-view until Phase 7 adds settings.
+ * puts space switching behind `...` and the recents list is short. Settings is
+ * the one entry here that leaves the list entirely, which is why it sits alone
+ * at the bottom rather than beside the space actions.
  *
  * **Switching is always an explicit user choice.** Nothing here infers or
  * auto-switches — including at startup, where the store may already have
@@ -20,6 +21,7 @@ const { boundary, portalTo } = useOverlayHost()
 const { recents, probeRecents, openSpace, pickAndOpenSpace, createSpace, removeRecent } =
 	useSpaces()
 const { sections, addSection, errorFor } = useSpace()
+const { showSettings } = useView()
 /** The band's message for this surface's failures. Read back after a refused
  *  create so the inline field can repeat the store's own cause. */
 const listError = errorFor('list')
@@ -294,6 +296,15 @@ function onSectionInput(event: Event) {
 					</button>
 				</div>
 			</div>
+
+			<DropdownMenuSeparator />
+
+			<!-- Its own group at the bottom, below the space and section actions:
+			     everything above operates on the open document, and this leaves it. -->
+			<DropdownMenuItem class="min-h-6" @select="showSettings()">
+				<IconLucideSettings class="size-4" aria-hidden="true" focusable="false" />
+				Settings
+			</DropdownMenuItem>
 		</DropdownMenuContent>
 	</DropdownMenu>
 </template>

@@ -107,6 +107,7 @@ beforeEach(() => {
 			return { recents: [], activeSpace: 0, panelPosition: null, shortcuts: {}, theme: 'system' }
 		}
 		if (command === 'clipboard_write_text') return null
+		if (command === 'hide_panel') return null
 		if (command === 'editor_handoffs') return []
 		if (command === 'set_notes_done') return SPACE
 		// An empty stack is `null`, not an error (task-003 §4.5).
@@ -403,6 +404,17 @@ describe('the Escape ladder', () => {
 		// selection rather than being swallowed.
 		await wrapper.trigger('keydown', { key: 'Escape' })
 		expect(selection.selectedIds.value).toEqual([])
+		// Neither press reached the last rung, which is the point of skipping a
+		// level with nothing to do rather than consuming the press.
+		expect(mocks.invoke).not.toHaveBeenCalledWith('hide_panel')
+	})
+
+	it('dismisses the panel once every rung above it has nothing to do', async () => {
+		const wrapper = await mountPanel()
+
+		await wrapper.trigger('keydown', { key: 'Escape' })
+
+		expect(mocks.invoke).toHaveBeenCalledWith('hide_panel')
 	})
 
 	it('declines the press entirely while a menu is open', async () => {

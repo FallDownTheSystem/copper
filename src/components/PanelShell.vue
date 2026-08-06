@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { invoke } from '@tauri-apps/api/core'
+
 import { CHORDS, inOverlay, inTextSurface } from '@/lib/chords'
 
 const {
@@ -33,6 +35,16 @@ const {
 	announceResults,
 } = useNoteActions()
 
+// The panel root. It carries `relative` rather than `panel-surface`: the surface
+// itself — background, radius, clip — moved to `App.vue` when the settings view
+// arrived, because those belong to the window rather than to either view. The
+// `relative` is what `panel-surface` used to supply for the `absolute inset-0`
+// portal host below.
+//
+// That explanation lives here rather than above the element it describes because
+// a comment before a template's root element makes the component a *fragment*: the
+// root then resolves to the comment node, and every listener bound to the element
+// stops receiving anything dispatched at the component.
 const root = useTemplateRef<HTMLElement>('root')
 const portalHost = useTemplateRef<HTMLElement>('portalHost')
 const clampProbe = useTemplateRef<HTMLElement>('clampProbe')
@@ -90,8 +102,13 @@ watch([hasQuery, resultCount], announceResults)
  *
  * A level with nothing to do is skipped rather than consuming the press, so
  * `Escape` in an empty search field with notes selected clears the selection.
- * With every level exhausted the press is simply not consumed — Phase 7's
- * panel-hide rung appends here.
+ * The last rung is Phase 7's and always has something to do: with nothing left
+ * to dismiss inside the panel, `Escape` dismisses the panel.
+ *
+ * Through `hide_panel` rather than `getCurrentWindow().hide()`, even though the
+ * capability for the latter is granted: hiding also ends an open recording
+ * session, and task-002 centralised the window operations in Rust so that a
+ * second path could not end up doing half of one.
  *
  * The composer is a deliberate exception and not a rung: task-004 binds `Escape`
  * there to "move focus to the last note", and it consumes the press itself.
@@ -109,6 +126,9 @@ function onEscape(event: KeyboardEvent) {
 	} else if (selectedIds.value.length > 0) {
 		event.preventDefault()
 		clear()
+	} else {
+		event.preventDefault()
+		void invoke('hide_panel')
 	}
 }
 
@@ -229,7 +249,7 @@ function onContextMenu(event: MouseEvent) {
 <template>
 	<div
 		ref="root"
-		class="panel-surface grid h-full min-h-0 w-full grid-rows-[auto_1fr_auto] select-none font-sans text-body"
+		class="relative grid h-full min-h-0 w-full grid-rows-[auto_1fr_auto] select-none font-sans text-body"
 		@keydown="onShellKeydown"
 		@contextmenu="onContextMenu"
 	>

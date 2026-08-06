@@ -407,12 +407,20 @@ impl Store {
 	// --- settings ------------------------------------------------------------
 
 	/// Returns the updated settings, not a `Space` — this touches no document.
+	///
+	/// A patch that changes nothing writes nothing, mirroring [`Self::remove_recent`].
+	/// That guard is not a micro-optimisation: from Phase 7 the panel persists its
+	/// position on every `WindowEvent::Moved`, and both a programmatic
+	/// `set_position` at startup and a drag that ends where it began would
+	/// otherwise rewrite `settings.json` for no change at all.
 	pub fn update_settings(&mut self, patch: SettingsPatch) -> Result<Settings> {
 		let mut next = self.settings.clone();
 		next.apply_patch(patch);
-		// Disk first, memory second, so a failed save leaves nothing half-applied.
-		settings::save(&self.settings_path, &next)?;
-		self.settings = next;
+		if next != self.settings {
+			// Disk first, memory second, so a failed save leaves nothing half-applied.
+			settings::save(&self.settings_path, &next)?;
+			self.settings = next;
+		}
 		Ok(self.settings.clone())
 	}
 
@@ -681,6 +689,21 @@ pub fn create_space(shared: &SharedStore, path: &Path, name: &str) -> Result<Spa
 	let (doc, produced) = guard.create_space_locked(path, name, weak)?;
 	emit_after(guard, produced);
 	Ok(doc)
+}
+
+/// Phase 7's entry point: persist a settings patch from Rust.
+///
+/// `commands::update_settings` is a `#[tauri::command]`, so `shortcuts`, `theme`
+/// and `panel` cannot call it — they would have to go out through IPC to reach
+/// the writer they are standing next to. This is the same seam
+/// [`append_capture`] is for Phase 4, taking the same single `Mutex<Store>` and
+/// the same atomic write. It is **not** a second writer.
+///
+/// It emits nothing: every caller is either a frontend-invoked mutation, whose
+/// return value carries the change (spec 8.4), or a position write the frontend
+/// has no reason to hear about.
+pub fn patch_settings(shared: &SharedStore, patch: SettingsPatch) -> Result<Settings> {
+	lock(shared).update_settings(patch)
 }
 
 /// Phase 4's entry point: append a captured note without touching store

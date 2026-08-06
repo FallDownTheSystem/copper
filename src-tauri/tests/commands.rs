@@ -49,7 +49,7 @@ const COMMANDS: [&str; 20] = [
 ];
 
 /// The commands later phases added beside the store's twenty.
-const EXTRA_COMMANDS: [&str; 11] = [
+const EXTRA_COMMANDS: [&str; 21] = [
 	"clipboard_write_text",
 	"editor_handoffs",
 	"editor_open_note",
@@ -64,11 +64,26 @@ const EXTRA_COMMANDS: [&str; 11] = [
 	"pick_and_open_space",
 	"create_space_interactive",
 	"remove_recent",
+	// Phase 7. Note what is *not* here: nothing for the `autostart` or
+	// `global-shortcut` plugins' own JS APIs. Both are driven from Rust only, so
+	// `removeUnusedCommands` stripping their IPC handlers is correct rather than a
+	// misconfiguration.
+	"set_theme_preference",
+	"get_shortcut_state",
+	"set_summon_shortcut",
+	"set_capture_trigger",
+	"begin_shortcut_recording",
+	"commit_shortcut_recording",
+	"cancel_shortcut_recording",
+	"get_autostart_enabled",
+	"set_autostart_enabled",
+	"hide_panel",
 ];
 
 /// Spec 8.1c. Every argument name in the whole surface.
-const PARAMETERS: [&str; 10] = [
-	"patch", "path", "name", "body", "section", "id", "ids", "done", "index", "text",
+const PARAMETERS: [&str; 16] = [
+	"patch", "path", "name", "body", "section", "id", "ids", "done", "index", "text", "theme",
+	"chord", "trigger", "token", "target", "enabled",
 ];
 
 const SOURCE: &str = include_str!("../src/store/commands.rs");
@@ -76,10 +91,14 @@ const SOURCE: &str = include_str!("../src/store/commands.rs");
 /// Command *wrappers* live next to the module they serve; only the registration
 /// is central, because Tauri accepts one `invoke_handler` and the closure
 /// `generate_handler!` builds consumes the `Invoke` it is handed.
-const OTHER_SOURCES: [&str; 3] = [
+const OTHER_SOURCES: [&str; 7] = [
 	include_str!("../src/clipboard.rs"),
 	include_str!("../src/editor.rs"),
 	include_str!("../src/spaces/mod.rs"),
+	include_str!("../src/shortcuts.rs"),
+	include_str!("../src/theme.rs"),
+	include_str!("../src/autostart.rs"),
+	include_str!("../src/panel.rs"),
 ];
 
 const REGISTRY: &str = include_str!("../src/commands.rs");
@@ -313,6 +332,41 @@ fn every_error_kind_crosses_the_boundary_as_kind_and_message() {
 		assert_eq!(payload["kind"], kind);
 		assert_eq!(payload["message"], message);
 		assert_eq!(payload.as_object().unwrap().len(), 2, "{kind} carries extra fields");
+	}
+}
+
+/// The same contract for Phase 7's error type. It is a second enum reaching the
+/// same frontend mapper, so it has to arrive in the same shape rather than in a
+/// second one that happens to look similar.
+#[test]
+fn every_shell_error_kind_crosses_the_boundary_as_kind_and_message() {
+	use copper_lib::ShellError;
+
+	let errors = [
+		(ShellError::InvalidChord("not a chord".into()), "invalid-chord"),
+		(ShellError::ModifierOnly("only modifiers".into()), "modifier-only"),
+		(ShellError::Reserved("Windows keeps it".into()), "reserved"),
+		(
+			ShellError::RegistrationFailed("Windows refused it".into()),
+			"registration-failed",
+		),
+		(ShellError::Persist("could not save".into()), "persist"),
+		(ShellError::StaleToken("already finished".into()), "stale-token"),
+		(ShellError::Invalid("not a theme".into()), "invalid"),
+	];
+
+	for (error, kind) in errors {
+		let message = error.message().to_owned();
+		let payload = serde_json::to_value(&error).unwrap();
+		assert_eq!(payload["kind"], kind);
+		assert_eq!(payload["message"], message);
+		assert_eq!(payload.as_object().unwrap().len(), 2, "{kind} carries extra fields");
+		// Lowercase kebab, the same spelling StoreError uses — one convention, so
+		// the frontend needs one mapper rather than two.
+		assert!(
+			kind.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+			"{kind} is not lowercase kebab"
+		);
 	}
 }
 

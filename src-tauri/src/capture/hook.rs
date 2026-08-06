@@ -16,7 +16,7 @@
 //! triggers.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -231,6 +231,74 @@ impl DoubleTap {
 	fn was_a_tap(&self, down: u32, up: u32) -> bool {
 		up.wrapping_sub(down) <= self.cfg.tap_max_ms
 	}
+
+	/// Drops any half-finished sequence.
+	///
+	/// Called when the watched family changes, so a tap recorded under the old
+	/// modifier cannot pair with a tap under the new one.
+	pub fn reset(&mut self) {
+		self.state = State::Idle;
+	}
+}
+
+// --- the watched family, swappable at runtime --------------------------------
+
+/// Which two-sided modifier the recogniser is watching — or nothing at all, when
+/// task-008 has bound capture to a conventional chord instead and the chord is
+/// serviced by `tauri-plugin-global-shortcut`.
+///
+/// `#[repr(u8)]` because the live value is a module-level atomic: the hook
+/// procedure reads it on every key event, and task-005's R2 rules out anything
+/// that can block on that path — a `Mutex` would put a lock acquisition on the
+/// hot path of a callback Windows silently uninstalls when it runs slowly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ModifierFamily {
+	Off = 0,
+	Shift = 1,
+	Control = 2,
+	Alt = 3,
+}
+
+impl ModifierFamily {
+	fn from_code(code: u8) -> Self {
+		match code {
+			1 => Self::Shift,
+			2 => Self::Control,
+			3 => Self::Alt,
+			_ => Self::Off,
+		}
+	}
+
+	/// The virtual-key family this selector stands for, or `None` when the hook
+	/// has no double-tap binding to recognise.
+	pub fn trigger(self) -> Option<TriggerKey> {
+		match self {
+			Self::Off => None,
+			Self::Shift => Some(TriggerKey::SHIFT),
+			Self::Control => Some(TriggerKey::CONTROL),
+			Self::Alt => Some(TriggerKey::ALT),
+		}
+	}
+}
+
+static WATCHED: AtomicU8 = AtomicU8::new(ModifierFamily::Shift as u8);
+
+/// Points the recogniser at a different modifier without tearing the hook down.
+///
+/// Reinstalling `WH_KEYBOARD_LL` to change one selector would be the wrong shape
+/// entirely — the hook is installed on its own thread with a published thread id
+/// and a message pump, and swapping it means a window with no hook at all.
+pub fn watch(family: ModifierFamily) {
+	WATCHED.store(family as u8, Ordering::Relaxed);
+}
+
+/// `Relaxed` is correct rather than merely cheap: the value is a single
+/// independent selector that publishes no other memory, so there is nothing for
+/// a stronger ordering to synchronise. The worst case is one gesture judged
+/// against the previous modifier.
+pub fn watched() -> ModifierFamily {
+	ModifierFamily::from_code(WATCHED.load(Ordering::Relaxed))
 }
 
 /// The trigger key expressed as the low-level hook actually reports it.
@@ -258,16 +326,11 @@ impl TriggerKey {
 		left: Some(VK_LSHIFT),
 		right: Some(VK_RSHIFT),
 	};
-	/// Unused in Phase 4. Present because the trigger-family test table is run
-	/// against a second family to prove the machine is not Shift-specific, which
-	/// is the seam task-008 inherits.
-	#[cfg_attr(not(test), allow(dead_code))]
 	pub const CONTROL: TriggerKey = TriggerKey {
 		generic: VK_CONTROL,
 		left: Some(VK_LCONTROL),
 		right: Some(VK_RCONTROL),
 	};
-	#[cfg_attr(not(test), allow(dead_code))]
 	pub const ALT: TriggerKey = TriggerKey {
 		generic: VK_MENU,
 		left: Some(VK_LMENU),
@@ -328,7 +391,11 @@ pub struct Trigger {
 
 struct HookState {
 	machine: DoubleTap,
-	trigger: TriggerKey,
+	/// The family the machine's current partial sequence was recorded under.
+	/// Compared against [`watched`] on every event, so a rebind that lands
+	/// mid-gesture resets rather than pairing a tap of the old modifier with a tap
+	/// of the new one.
+	family: ModifierFamily,
 	tx: Sender<Trigger>,
 	/// One capture in flight at a time. A bounded channel does not express this:
 	/// once the worker receives, the slot is free again and a second trigger
@@ -383,9 +450,21 @@ unsafe extern "system" fn keyboard_proc(ncode: i32, wparam: WPARAM, lparam: LPAR
 					return;
 				};
 
-				let classified = state
-					.trigger
-					.classify(vk, || match MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX) {
+				// One relaxed load per event. The compare is what generalises
+				// task-005's Shift-specific machine: a family change resets the
+				// machine, and `Off` — capture bound to a conventional chord instead
+				// — leaves it idle rather than recognising anything.
+				let family = watched();
+				if family != state.family {
+					state.machine.reset();
+					state.family = family;
+				}
+				let Some(trigger) = family.trigger() else {
+					return;
+				};
+
+				let classified =
+					trigger.classify(vk, || match MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX) {
 						0 => None,
 						resolved => Some(resolved),
 					});
@@ -498,8 +577,12 @@ impl Drop for HookHandle {
 /// `PostThreadMessageW` fails with `ERROR_INVALID_THREAD_ID`, the `WM_QUIT` is
 /// lost, and shutdown blocks forever. The state goes in before the hook because
 /// the callback can fire the instant the hook is installed.
+///
+/// The watched modifier is **not** a parameter: it is the module-level atomic
+/// [`watch`] sets, because task-008 rebinds it while the hook is running and
+/// tearing the hook down to change one selector would leave a window with no
+/// hook at all.
 pub fn install(
-	trigger: TriggerKey,
 	tx: Sender<Trigger>,
 	in_flight: Arc<AtomicBool>,
 	armed: Arc<AtomicBool>,
@@ -520,7 +603,7 @@ pub fn install(
 			HOOK_STATE.with(|cell| {
 				*cell.borrow_mut() = Some(HookState {
 					machine: DoubleTap::new(DoubleTapConfig::default()),
-					trigger,
+					family: watched(),
 					tx,
 					in_flight,
 					armed,
@@ -865,7 +948,36 @@ mod tests {
 	}
 
 	#[test]
-	fn the_configured_trigger_is_shift() {
-		assert_eq!(super::super::CAPTURE_TRIGGER, TriggerKey::SHIFT);
+	fn the_shipped_default_family_is_shift() {
+		// The atomic's initial value is what the hook recognises between install
+		// and the persisted binding being loaded, so it has to be the shipped
+		// default rather than whatever a test left behind.
+		assert_eq!(ModifierFamily::from_code(ModifierFamily::Shift as u8), ModifierFamily::Shift);
+		assert_eq!(ModifierFamily::Shift.trigger(), Some(TriggerKey::SHIFT));
+	}
+
+	#[test]
+	fn every_family_maps_to_its_own_trigger_and_off_maps_to_none() {
+		assert_eq!(ModifierFamily::Control.trigger(), Some(TriggerKey::CONTROL));
+		assert_eq!(ModifierFamily::Alt.trigger(), Some(TriggerKey::ALT));
+		// The conventional-chord case: nothing for the hook to recognise, so the
+		// callback returns before it ever reaches the machine.
+		assert_eq!(ModifierFamily::Off.trigger(), None);
+		// An out-of-range byte can only come from a bug, and reading it as "no
+		// binding" is the safe answer: capture stops rather than firing on a
+		// modifier nobody chose.
+		assert_eq!(ModifierFamily::from_code(9), ModifierFamily::Off);
+	}
+
+	/// The other half of the family swap: a partial sequence must not survive it.
+	#[test]
+	fn a_reset_drops_a_half_finished_double_tap() {
+		let mut machine = DoubleTap::new(DoubleTapConfig::default());
+		assert!(!machine.on_key(L, DOWN, 0));
+		assert!(!machine.on_key(L, UP, 40));
+		machine.reset();
+		// Without the reset this second tap would complete the pair and fire.
+		assert!(!machine.on_key(L, DOWN, 100));
+		assert!(!machine.on_key(L, UP, 140));
 	}
 }

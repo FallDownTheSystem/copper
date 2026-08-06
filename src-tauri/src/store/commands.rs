@@ -56,9 +56,11 @@ pub async fn get_settings(state: State<'_, SharedStore>) -> Reply<Settings> {
 	Ok(lock(&state).settings().clone())
 }
 
+/// Delegates to the module's Rust-callable seam rather than locking here, so the
+/// frontend's writer and Phase 7's are literally the same call.
 #[tauri::command]
 pub async fn update_settings(patch: SettingsPatch, state: State<'_, SharedStore>) -> Reply<Settings> {
-	lock(&state).update_settings(patch)
+	super::patch_settings(&state, patch)
 }
 
 #[tauri::command]
@@ -196,4 +198,18 @@ pub async fn redo(state: State<'_, SharedStore>) -> Reply<Option<Space>> {
 pub fn append_capture(app: &AppHandle, body: &str) -> Reply<String> {
 	let state = app.state::<SharedStore>();
 	super::append_capture(&state, body)
+}
+
+/// Phase 7's settings writer, taking the handle it already has.
+pub fn patch_settings(app: &AppHandle, patch: SettingsPatch) -> Reply<Settings> {
+	let state = app.state::<SharedStore>();
+	super::patch_settings(&state, patch)
+}
+
+/// The settings as Phase 7's startup steps read them, without a command round
+/// trip.
+pub fn settings(app: &AppHandle) -> Settings {
+	let state = app.state::<SharedStore>();
+	let settings = lock(&state).settings().clone();
+	settings
 }

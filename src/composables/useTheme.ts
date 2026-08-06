@@ -10,10 +10,17 @@
  * `index.html`'s pre-hydration script reads — and the two disagreeing is exactly
  * a light flash on launch.
  *
- * Phase 3 ships no theme *setting*; task-008 puts the preference in
- * `settings.json`. Until then nothing writes a deliberate choice, so in practice
- * the mode stays `auto` and follows the OS.
+ * **`localStorage['color-scheme']` is a render-time cache, not persistence, and
+ * deleting the write would silently restore the flash.** `settings.json` stays
+ * the single source of truth and nothing ever reads this key as authority. Its
+ * one reader is the pre-hydration script in `index.html`, which runs before IPC
+ * is even possible — which is precisely why the value cannot come from Rust. A
+ * cache with one writer, one reader and no authority is not a second source of
+ * truth; clearing it costs one frame of the wrong theme on the next launch and
+ * nothing else.
  */
+
+import { useSettings, type ThemePreference } from './useSettings'
 
 const COLOR_SCHEME_KEY = 'color-scheme'
 
@@ -37,6 +44,19 @@ function guardOneFrame() {
 	})
 }
 
+/**
+ * The three-way preference, mapped onto VueUse's own three modes.
+ *
+ * `system` stores the string `auto`, which is what `useColorMode` writes for its
+ * third mode and what the pre-hydration script already reads correctly: it treats
+ * anything that is neither `light` nor `dark` as "consult
+ * `prefers-color-scheme`". Storing nothing instead would be undone on the next
+ * tick, since `useColorMode` owns the key and writes `auto` back.
+ */
+function apply(preference: ThemePreference) {
+	mode.value = preference === 'system' ? 'auto' : preference
+}
+
 let installed = false
 
 function install() {
@@ -54,6 +74,26 @@ function install() {
 		},
 		{ immediate: true, flush: 'pre' },
 	)
+
+	// Driven from the setting rather than from a component, so both moments that
+	// matter are covered by one watcher: the startup pull, which repairs a
+	// hand-edited `settings.json` or an earlier failed write, and every successful
+	// `set_theme_preference`. A component doing this would have to remember to,
+	// and the startup one would be the easy half to forget.
+	//
+	// Gated on the settings having actually arrived. `theme` reads `system` until
+	// the pull lands, and applying that would write `auto` over a stored `dark`
+	// for the length of one IPC round trip — so a launch interrupted in that
+	// window would flash the wrong theme on the next one, which is precisely the
+	// defect this write exists to repair.
+	const { settings, theme } = useSettings()
+	watch(
+		[settings, theme],
+		([loaded, preference]) => {
+			if (loaded) apply(preference)
+		},
+		{ immediate: true },
+	)
 }
 
 export function useTheme() {
@@ -61,7 +101,8 @@ export function useTheme() {
 
 	return {
 		isDark: readonly(isDark),
-		/** `'auto' | 'light' | 'dark'` — task-008's settings view writes this. */
+		/** `'auto' | 'light' | 'dark'`, VueUse's own vocabulary. Prefer `apply`. */
 		mode,
+		apply,
 	}
 }

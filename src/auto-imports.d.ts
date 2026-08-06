@@ -259,7 +259,9 @@ declare global {
   const useSectionEditor: typeof import('./composables/useSectionEditor').useSectionEditor
   const useSelection: typeof import('./composables/useSelection').useSelection
   const useSessionStorage: typeof import('@vueuse/core').useSessionStorage
+  const useSettings: typeof import('./composables/useSettings').useSettings
   const useShare: typeof import('@vueuse/core').useShare
+  const useShortcutRecorder: typeof import('./composables/useShortcutRecorder').useShortcutRecorder
   const useSlots: typeof import('vue').useSlots
   const useSorted: typeof import('@vueuse/core').useSorted
   const useSpace: typeof import('./composables/useSpace').useSpace
@@ -299,6 +301,7 @@ declare global {
   const useVModel: typeof import('@vueuse/core').useVModel
   const useVModels: typeof import('@vueuse/core').useVModels
   const useVibrate: typeof import('@vueuse/core').useVibrate
+  const useView: typeof import('./composables/useView').useView
   const useVirtualList: typeof import('@vueuse/core').useVirtualList
   const useWakeLock: typeof import('@vueuse/core').useWakeLock
   const useWebNotification: typeof import('@vueuse/core').useWebNotification
@@ -343,11 +346,17 @@ declare global {
   export type { ScrollAnchor, SelectionSnapshot } from './composables/useSelection'
   import('./composables/useSelection')
   // @ts-ignore
+  export type { ThemePreference, ShortcutState, ShortcutTarget, SettingsScope } from './composables/useSettings'
+  import('./composables/useSettings')
+  // @ts-ignore
   export type { Note, Section, Space, StoreStatus, Settings, SpaceView, NoteView, ChangeReason, SpaceChangedPayload, StoreErrorPayload, AddNoteResult, LoadState, ActionErrorScope, ActionError, MutationResult } from './composables/useSpace'
   import('./composables/useSpace')
   // @ts-ignore
   export type { UnavailableReason, Availability, RecentEntry, ActivateOutcome } from './composables/useSpaces'
   import('./composables/useSpaces')
+  // @ts-ignore
+  export type { View, Direction } from './composables/useView'
+  import('./composables/useView')
 }
 
 // for vue template auto import
@@ -606,7 +615,9 @@ declare module 'vue' {
     readonly useSectionEditor: UnwrapRef<typeof import('./composables/useSectionEditor')['useSectionEditor']>
     readonly useSelection: UnwrapRef<typeof import('./composables/useSelection')['useSelection']>
     readonly useSessionStorage: UnwrapRef<typeof import('@vueuse/core')['useSessionStorage']>
+    readonly useSettings: UnwrapRef<typeof import('./composables/useSettings')['useSettings']>
     readonly useShare: UnwrapRef<typeof import('@vueuse/core')['useShare']>
+    readonly useShortcutRecorder: UnwrapRef<typeof import('./composables/useShortcutRecorder')['useShortcutRecorder']>
     readonly useSlots: UnwrapRef<typeof import('vue')['useSlots']>
     readonly useSorted: UnwrapRef<typeof import('@vueuse/core')['useSorted']>
     readonly useSpace: UnwrapRef<typeof import('./composables/useSpace')['useSpace']>
@@ -646,6 +657,7 @@ declare module 'vue' {
     readonly useVModel: UnwrapRef<typeof import('@vueuse/core')['useVModel']>
     readonly useVModels: UnwrapRef<typeof import('@vueuse/core')['useVModels']>
     readonly useVibrate: UnwrapRef<typeof import('@vueuse/core')['useVibrate']>
+    readonly useView: UnwrapRef<typeof import('./composables/useView')['useView']>
     readonly useVirtualList: UnwrapRef<typeof import('@vueuse/core')['useVirtualList']>
     readonly useWakeLock: UnwrapRef<typeof import('@vueuse/core')['useWakeLock']>
     readonly useWebNotification: UnwrapRef<typeof import('@vueuse/core')['useWebNotification']>

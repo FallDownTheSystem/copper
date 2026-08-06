@@ -48,6 +48,33 @@ describe('useTheme', () => {
 		expect(document.documentElement.style.colorScheme).toBe('light')
 	})
 
+	/**
+	 * The whole flash fix, in one mapping. task-002's pre-hydration script reads
+	 * this key before Vue mounts and treats anything that is neither `light` nor
+	 * `dark` as "consult prefers-color-scheme" — so `system` is stored as VueUse's
+	 * own third mode rather than as an absence, which `useColorMode` would rewrite
+	 * on the next tick anyway.
+	 */
+	it('maps the three-way preference onto what the pre-hydration script reads', async () => {
+		const theme = await freshTheme()
+
+		theme.apply('dark')
+		await new Promise((resolve) => setTimeout(resolve, 0))
+		expect(localStorage.getItem('color-scheme')).toBe('dark')
+
+		theme.apply('light')
+		await new Promise((resolve) => setTimeout(resolve, 0))
+		expect(localStorage.getItem('color-scheme')).toBe('light')
+
+		theme.apply('system')
+		await new Promise((resolve) => setTimeout(resolve, 0))
+		// Neither of the two values the script overrides on, so it falls through to
+		// its own media query — which is exactly what `system` means.
+		const stored = localStorage.getItem('color-scheme')
+		expect(stored).not.toBe('dark')
+		expect(stored).not.toBe('light')
+	})
+
 	it('puts the .dark class on the element the stylesheet keys off', async () => {
 		const theme = await freshTheme()
 

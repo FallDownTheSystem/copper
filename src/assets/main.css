@@ -71,6 +71,14 @@
 	--accent-ring: oklch(0.62 0.11 55);
 	--accent-text: oklch(0.53 0.11 55);
 	--scrollbar-thumb: oklch(0.24 0.008 60 / 0.25);
+	/* The one surface role the list view has no equivalent for: a key cap and the
+	   recording box both need to stay legible over whatever desktop shows through
+	   a translucent window. Alpha rather than an opaque hex for the same reason
+	   every other edge in this file is — a solid border does not adapt to what
+	   sits behind it, and a fourth hardcoded alpha in a surface whose other three
+	   are calculated is exactly what the semantic-token rule exists to prevent. */
+	--kbd-surface: oklch(1 0 0 / 0.62);
+	--kbd-ring: oklch(0.24 0.008 60 / 0.18);
 
 	/* --- shadcn-vue's generated set (reka-vega / neutral) ------------------- */
 	--background: oklch(1 0 0);
@@ -106,6 +114,8 @@
 	--accent-ring: oklch(0.7 0.12 55);
 	--accent-text: oklch(0.78 0.1 60);
 	--scrollbar-thumb: oklch(1 0 0 / 0.22);
+	--kbd-surface: oklch(1 0 0 / 0.1);
+	--kbd-ring: oklch(1 0 0 / 0.18);
 
 	--background: oklch(0.145 0 0);
 	--foreground: oklch(0.985 0 0);
@@ -144,6 +154,8 @@
 	   rewrites. */
 	--color-accent-ring: var(--accent-ring);
 	--color-accent-text: var(--accent-text);
+	--color-kbd-surface: var(--kbd-surface);
+	--color-kbd-ring: var(--kbd-ring);
 
 	--color-background: var(--background);
 	--color-foreground: var(--foreground);
@@ -241,6 +253,25 @@
    four buttons, and one place to change it. */
 @utility panel-button {
 	@apply border-separator hover:bg-surface-hover rounded-md border px-2 py-1 text-meta transition-colors duration-fast;
+}
+
+/* Grows a small control's hit area to the 44px baseline without growing the
+   control. The expander is a pseudo-element, so nothing in the layout moves and
+   nothing under it is covered — which is also why adjacent controls that sit
+   flush must not use it: expanded areas overlapping would make each other's
+   edges unhittable. The theme segmented control is the recorded exception that
+   cannot use this, since its three segments touch. Requires `position:
+   relative` on the element. */
+@utility hit-44 {
+	&::before {
+		content: '';
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		width: 44px;
+		height: 44px;
+		translate: -50% -50%;
+	}
 }
 
 /* --- The panel surface ------------------------------------------------------

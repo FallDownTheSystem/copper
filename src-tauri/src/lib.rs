@@ -1,3 +1,4 @@
+mod autostart;
 mod capture;
 mod clipboard;
 mod commands;
@@ -6,8 +7,10 @@ mod diagnostics;
 /// and it must stay the only way another module ends every handoff at once.
 pub mod editor;
 mod panel;
+mod shortcuts;
 pub mod spaces;
 pub mod store;
+mod theme;
 mod tray;
 mod win32;
 
@@ -15,7 +18,97 @@ pub use diagnostics::install_panic_dialog;
 
 use std::sync::{Arc, Mutex};
 
+use serde::ser::{Serialize, SerializeStruct, Serializer};
 use tauri::{DeviceEventFilter, Manager, RunEvent, WindowEvent};
+
+/// What the shell layer returns to the frontend.
+///
+/// Declared here rather than inside one of the modules that produce it:
+/// `shortcuts`, `autostart`, `theme` and `panel` all return it and none of them
+/// owns it, and there is no `shell` module for it to live in — task-002 already
+/// established `panel.rs` and `tray.rs` as top-level siblings, so this task grew
+/// those rather than introducing a parallel tree.
+///
+/// Serialised flat as `{ kind, message }`, exactly like task-003's `StoreError`,
+/// so the frontend branches on a discriminant. Rust owns the wording: every
+/// variant carries a sentence written for a person, matching what
+/// `CaptureFailure::message` and `StoreError` already do, and the frontend
+/// renders it rather than keeping a second copy of the copy in TypeScript.
+///
+/// **There is no `Conflict` variant, and that is not an omission.**
+/// `tauri-plugin-global-shortcut` flattens `global_hotkey::Error` into
+/// `Error::GlobalHotkey(String)`, so "another application holds this chord"
+/// cannot be told apart from any other registration failure without matching on
+/// an error message. Promising a discriminant the API cannot supply would be a
+/// lie the UI then repeats to the user, so every post-validation registration
+/// failure is `RegistrationFailed` and its wording hedges on the cause.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShellError {
+	/// The string is not a chord this app can parse.
+	InvalidChord(String),
+	/// Modifiers with no main key. The parser rejects this too, but a dedicated
+	/// message reads better than "invalid hotkey format".
+	ModifierOnly(String),
+	/// Windows will never deliver this combination, or Copper has already claimed
+	/// it for its other binding.
+	Reserved(String),
+	/// The OS refused the registration. Cause unknown by construction — see above.
+	RegistrationFailed(String),
+	/// The OS-side change worked and writing it down did not.
+	Persist(String),
+	/// A recording token that is not the live one.
+	StaleToken(String),
+	/// An argument outside the accepted set — a `theme` that is not one of
+	/// `system` / `light` / `dark`.
+	Invalid(String),
+}
+
+impl ShellError {
+	/// The stable, lowercase-kebab discriminant the frontend branches on, in the
+	/// same spelling task-003's `StoreError::kind` uses.
+	pub fn kind(&self) -> &'static str {
+		match self {
+			Self::InvalidChord(_) => "invalid-chord",
+			Self::ModifierOnly(_) => "modifier-only",
+			Self::Reserved(_) => "reserved",
+			Self::RegistrationFailed(_) => "registration-failed",
+			Self::Persist(_) => "persist",
+			Self::StaleToken(_) => "stale-token",
+			Self::Invalid(_) => "invalid",
+		}
+	}
+
+	pub fn message(&self) -> &str {
+		match self {
+			Self::InvalidChord(message)
+			| Self::ModifierOnly(message)
+			| Self::Reserved(message)
+			| Self::RegistrationFailed(message)
+			| Self::Persist(message)
+			| Self::StaleToken(message)
+			| Self::Invalid(message) => message,
+		}
+	}
+}
+
+impl std::fmt::Display for ShellError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(self.message())
+	}
+}
+
+impl std::error::Error for ShellError {}
+
+/// Hand-written for the same reason `StoreError`'s is: the derive would emit an
+/// externally tagged enum, and the contract is one flat shape for every variant.
+impl Serialize for ShellError {
+	fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+		let mut state = serializer.serialize_struct("ShellError", 2)?;
+		state.serialize_field("kind", self.kind())?;
+		state.serialize_field("message", self.message())?;
+		state.end()
+	}
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -69,11 +162,32 @@ pub fn run() {
 		// `closable: false` in the window config is belt-and-braces. Quitting stays
 		// the tray menu's job.
 		.on_window_event(|window, event| {
-			if let WindowEvent::CloseRequested { api, .. } = event {
-				if window.label() == panel::PANEL_LABEL {
+			if window.label() != panel::PANEL_LABEL {
+				return;
+			}
+			match event {
+				WindowEvent::CloseRequested { api, .. } => {
 					api.prevent_close();
 					panel::hide_or_log(window);
 				}
+				// Fires for a `data-tauri-drag-region` drag as well as for a
+				// programmatic `set_position`; the write behind it is debounced and the
+				// store's change-guard makes the programmatic case free.
+				WindowEvent::Moved(position) => panel::on_moved(window.app_handle(), *position),
+				// Only while the window is following the system theme, which is exactly
+				// the case that needs re-tinting.
+				WindowEvent::ThemeChanged(_) => {
+					if let Some(panel) = window.get_webview_window(panel::PANEL_LABEL) {
+						theme::on_system_theme_changed(&panel);
+					}
+				}
+				// The panel is never destroyed in normal use — `CloseRequested` above
+				// sees to that — but if it ever is, a recording session must not take
+				// the summon chord with it. Off the main thread, per the note in
+				// `shortcuts`: this callback runs on the thread that registration waits
+				// on.
+				WindowEvent::Destroyed => shortcuts::cancel_recording_off_thread(window.app_handle()),
+				_ => {}
 			}
 		})
 		// setup() runs once on the main thread before the event loop, and the
@@ -92,8 +206,18 @@ pub fn run() {
 				.get_webview_window(panel::PANEL_LABEL)
 				.ok_or_else(|| format!("panel window '{}' not found", panel::PANEL_LABEL))?;
 
-			panel::apply_effects(&window)?;
-			tray::build(app.handle())?;
+			// The tray comes before everything that can fail, because it is the
+			// recovery path: an app that starts hidden with no tray has no way back
+			// in. If the tray itself will not build, the panel is revealed instead —
+			// otherwise the process runs with neither a window nor a recovery surface.
+			panel::apply_effects(&window, None)?;
+			if let Err(err) = tray::build(app.handle()) {
+				diagnostics::log_error(&format!(
+					"[copper] tray: could not be built ({err}); revealing the panel so the app is \
+					 still reachable"
+				));
+				panel::reveal_or_log(app.handle());
+			}
 
 			// Store startup is two-stage, and the order is not negotiable (spec 7.5).
 			// The watcher's callback resolves the store through the shared handle,
@@ -124,6 +248,22 @@ pub fn run() {
 			for event in store::attach_watcher(&shared) {
 				diagnostics::log_error(&format!("[copper] store startup: {event:?}"));
 			}
+
+			// Everything below this point degrades rather than propagating, and that
+			// is a deliberate departure from the `?` above. task-002's reasoning was
+			// about panics; returning `Err` from `setup()` is just as fatal, because
+			// Tauri turns it into one. A failed shortcut registration, an unreadable
+			// monitor list or a backdrop that will not re-tint must each cost the user
+			// that one feature, not the whole app — which for something that starts
+			// hidden would be indistinguishable from a silent successful launch.
+			//
+			// Position before the window is ever shown, and validated against the
+			// monitors actually attached: Tauri does not clamp an out-of-bounds
+			// `set_position`, so a display that was unplugged since the last run would
+			// otherwise put the panel where it cannot be reached.
+			app.manage(panel::PositionState::default());
+			panel::restore_position(&window, store::lock(&shared).settings().panel_position);
+			theme::install(app.handle(), &window);
 
 			// Scavenged *before* the registry exists, so no live handoff can have its
 			// temp tree deleted out from under it. Startup scavenging is what makes
@@ -156,10 +296,20 @@ pub fn run() {
 			// **not armed**. Arming waits for the frontend to report that its notice
 			// listeners are registered, because Tauri events are not replayed and a
 			// failure arriving before then would reveal an empty panel.
+			// Before `start_capture`, so the first double-tap after launch is judged
+			// against the user's binding rather than the compiled-in default.
+			shortcuts::prepare_capture(app.handle());
 			app.manage(capture::CaptureState(Mutex::new(capture::start_capture(
 				app.handle(),
 			)?)));
 			capture::arm_when_frontend_ready(app.handle());
+
+			// Last, because it is the only step expected to fail in ordinary use:
+			// another application may already hold the chord. A failure here leaves
+			// the app running, says so in the tray tooltip, and waits to be asked
+			// about through `get_shortcut_state` — the settings view pulls it rather
+			// than having had to listen during a startup that predates the webview.
+			shortcuts::install(app.handle());
 
 			// The presentation half of the cold launch, queued rather than performed:
 			// window operations before the message pump resumes would block this
@@ -183,6 +333,10 @@ pub fn run() {
 	// follow is harmless.
 	app.run(|handle, event| {
 		if matches!(event, RunEvent::Exit) {
+			// First, because it is the only one of these that can still be lost: a
+			// drag that ended less than the debounce ago has not been written yet.
+			panel::flush_position(handle);
+			shortcuts::shutdown(handle);
 			capture::shutdown(handle);
 			// Before the sweep: each live handoff applies or refuses whatever is on
 			// disk, so exiting is not a way to silently discard unsaved editor work.

@@ -419,14 +419,37 @@ fn outstanding_key_ups(inserted: usize) -> Vec<u32> {
 mod tests {
 	use super::*;
 
+	/// The invariant Phase 7 had to preserve when the trigger became rebindable.
+	/// The trigger fires on a key-up and the fallback injects a chord, so a
+	/// trigger key missing from this list could corrupt the injection — and now
+	/// that any of three families can be bound, *every* one of them has to be in
+	/// it, not just the one that happens to be configured.
+	///
+	/// This is also what settles Q54. `Ctrl Ctrl` was flagged as possibly
+	/// unshippable because a physically-held Ctrl at injection time would turn the
+	/// synthesized `Ctrl+C` into something else. It cannot: Ctrl is in the wait
+	/// list, so a held Ctrl is waited out and then reported as `ModifierHeld`,
+	/// exactly as a held Shift is today. Copper never injects a key-up for a key
+	/// the user is holding, so there is no key-being-synthesized exception to make.
 	#[test]
-	fn the_trigger_key_is_in_the_modifier_wait_list() {
-		// The invariant Phase 7 must preserve when the trigger becomes rebindable:
-		// the trigger fires on a key-up and the fallback injects a chord, so a
-		// trigger key missing from this list could corrupt the injection.
-		let trigger = super::super::CAPTURE_TRIGGER;
-		assert!(WATCHED_MODIFIERS.contains(&trigger.left.unwrap()));
-		assert!(WATCHED_MODIFIERS.contains(&trigger.right.unwrap()));
+	fn every_bindable_trigger_family_is_in_the_modifier_wait_list() {
+		use crate::capture::ModifierFamily;
+
+		for family in [
+			ModifierFamily::Shift,
+			ModifierFamily::Control,
+			ModifierFamily::Alt,
+		] {
+			let trigger = family.trigger().expect("a bindable family has a trigger");
+			assert!(
+				WATCHED_MODIFIERS.contains(&trigger.left.unwrap()),
+				"{family:?} left side is not waited for"
+			);
+			assert!(
+				WATCHED_MODIFIERS.contains(&trigger.right.unwrap()),
+				"{family:?} right side is not waited for"
+			);
+		}
 	}
 
 	#[test]

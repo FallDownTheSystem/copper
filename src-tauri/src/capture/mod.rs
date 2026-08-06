@@ -45,7 +45,7 @@ mod worker;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Listener, Manager};
 
@@ -65,12 +65,14 @@ use crate::win32::integrity::TargetIntegrity;
 pub const CAPTURE_CASCADE: [CaptureStrategy; 2] =
 	[CaptureStrategy::UiAutomation, CaptureStrategy::ClipboardFallback];
 
-/// The trigger key family, in one named place, mirroring [`CAPTURE_CASCADE`].
+/// The trigger, as Phase 7 made it: a runtime selector rather than the constant
+/// task-005 shipped.
 ///
-/// Phase 7 (task-008) replaces this constant with a setting. It is a constant
-/// here: no configuration surface, no persistence, no validation. The seam
-/// exists only so that work does not have to unpick the transition logic.
-pub const CAPTURE_TRIGGER: hook::TriggerKey = hook::TriggerKey::SHIFT;
+/// Re-exported from `hook` so the rest of the app never names the hook module.
+/// [`watch`] points the recogniser at a different modifier — or at nothing, when
+/// task-008's capture binding is a conventional chord serviced by
+/// `tauri-plugin-global-shortcut` and delivered through [`request_capture`].
+pub use hook::{watch, ModifierFamily};
 
 /// How long the clipboard fallback waits for the sequence number to reach its
 /// expected next value after the injected `Ctrl+C`.
@@ -386,13 +388,17 @@ pub fn normalise(text: &str) -> String {
 /// worker thread and the trigger channel that ends it, the notice controller,
 /// and the two flags that arm and stop the pipeline.
 pub struct CaptureHandle {
-	hook: hook::HookHandle,
+	hook: Option<hook::HookHandle>,
 	worker: Option<std::thread::JoinHandle<()>>,
 	/// Dropping this closes the trigger channel, which is how the worker learns
 	/// to exit.
 	trigger_tx: Option<mpsc::Sender<hook::Trigger>>,
 	notice: Arc<notice::NoticeController>,
 	armed: Arc<AtomicBool>,
+	/// Held here as well as inside the hook so [`request_capture`] can take the
+	/// same one-at-a-time gate the hook takes. Without that, a conventional
+	/// capture chord and a double-tap could each start a capture at once.
+	in_flight: Arc<AtomicBool>,
 	shut_down: AtomicBool,
 }
 
@@ -412,7 +418,9 @@ impl CaptureHandle {
 		}
 		// New triggers stop first, so nothing can be queued behind the shutdown.
 		self.armed.store(false, Ordering::SeqCst);
-		let hook_stopped = self.hook.stop();
+		// A hook that never installed holds no sender, so there is nothing to stop
+		// and nothing keeping the worker's channel open.
+		let hook_stopped = self.hook.as_mut().is_none_or(hook::HookHandle::stop);
 		// Closing the channel is what ends the worker's receive loop.
 		self.trigger_tx.take();
 
@@ -478,20 +486,25 @@ pub fn start_capture(app: &AppHandle) -> Result<CaptureHandle, Box<dyn std::erro
 		Arc::clone(&notice),
 	)?;
 
+	// A failed install is **not** fatal from Phase 7 onwards. task-005 returned
+	// `Err` here and `setup()` propagated it, which for an app that starts hidden
+	// means the process exits with no window and no tray — every other feature
+	// lost because one of them could not start. task-008's fallback-chord
+	// insurance is the alternative: the pipeline stays up, `hook_installed`
+	// reports false, and `shortcuts` registers a conventional chord that reaches
+	// the same worker through `request_capture`.
 	let hook = match hook::install(
-		CAPTURE_TRIGGER,
 		trigger_tx.clone(),
 		Arc::clone(&in_flight),
 		Arc::clone(&armed),
 	) {
-		Ok(hook) => hook,
+		Ok(hook) => Some(hook),
 		Err(err) => {
-			// The worker is already running; close its channel so it exits rather
-			// than leaving a thread behind a failed start.
-			drop(trigger_tx);
-			let _ = worker.join();
-			notice.shutdown();
-			return Err(Box::new(err));
+			diagnostics::log_error(&format!(
+				"[copper] capture: the keyboard hook could not be installed ({err}); the double-tap \
+				 trigger is unavailable and capture falls back to a conventional chord"
+			));
+			None
 		}
 	};
 
@@ -501,8 +514,51 @@ pub fn start_capture(app: &AppHandle) -> Result<CaptureHandle, Box<dyn std::erro
 		trigger_tx: Some(trigger_tx),
 		notice,
 		armed,
+		in_flight,
 		shut_down: AtomicBool::new(false),
 	})
+}
+
+/// Whether the `WH_KEYBOARD_LL` hook is actually installed.
+///
+/// Read by `shortcuts` to decide whether the fallback chord is needed, and by
+/// `get_shortcut_state` so the settings view can say why a double-tap binding is
+/// not working.
+pub fn hook_installed(app: &AppHandle) -> bool {
+	app.try_state::<CaptureState>()
+		.is_some_and(|state| lock(&state.0).hook.is_some())
+}
+
+/// Starts a capture from outside the hook — the conventional-chord capture
+/// binding R-Q52 allows, and the fallback chord that keeps capture reachable
+/// when the hook could not be installed.
+///
+/// Goes through the same arm gate, the same one-at-a-time flag and the same
+/// channel the hook procedure uses, so the two entry points cannot produce two
+/// overlapping captures or two notes from one gesture.
+pub fn request_capture(app: &AppHandle) {
+	let Some(state) = app.try_state::<CaptureState>() else {
+		return;
+	};
+	let handle = lock(&state.0);
+	if !handle.armed.load(Ordering::SeqCst) {
+		return;
+	}
+	if handle
+		.in_flight
+		.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+		.is_err()
+	{
+		return;
+	}
+	let sent = handle
+		.trigger_tx
+		.as_ref()
+		.is_some_and(|tx| tx.send(hook::Trigger { at: Instant::now() }).is_ok());
+	if !sent {
+		// The worker is gone; do not leave the gate latched shut.
+		handle.in_flight.store(false, Ordering::SeqCst);
+	}
 }
 
 /// Arms capture when the frontend reports its notice listeners are registered.

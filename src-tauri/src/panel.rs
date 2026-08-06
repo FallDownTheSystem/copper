@@ -3,8 +3,13 @@
 //!
 //! This is the only module in the app that handles an `HWND`.
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
+
 use crate::diagnostics;
-use tauri::{Manager, WebviewWindow};
+use crate::store::settings::{PanelPosition, SettingsPatch};
+use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindow};
 use windows::Win32::Graphics::Dwm::{
 	DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
 	DWM_WINDOW_CORNER_PREFERENCE,
@@ -17,14 +22,38 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// Label of the single panel window, as declared in `tauri.conf.json`.
 pub const PANEL_LABEL: &str = "main";
 
+/// The panel's fixed logical size, as declared in `tauri.conf.json`. The window
+/// is `resizable: false`, so this cannot drift at runtime.
+const PANEL_WIDTH: f64 = 390.0;
+const PANEL_HEIGHT: f64 = 660.0;
+
+/// The height of the draggable header, matching `h-12` in `SettingsView` and
+/// `PanelHeader`. It is what the visibility test below is written against: a
+/// panel whose header is off-screen cannot be moved and is functionally lost,
+/// however much of its body happens to overlap a monitor.
+const HEADER_HEIGHT: f64 = 48.0;
+
+/// How far the default placement sits in from the right edge of the work area.
+const DEFAULT_INSET: f64 = 24.0;
+
 /// Applies the native backdrop and corner rounding.
+///
+/// `dark` is the `window-vibrancy` crate's own argument: `None` follows the
+/// system, `Some(true)` / `Some(false)` force the tint. task-002 hardcoded `None`
+/// here, which meant the backdrop could not be made dark while Windows was light
+/// — exactly what an explicit theme preference asks for. This is an extension of
+/// that function rather than a second vibrancy path; there is still exactly one
+/// place in the app that calls the crate.
 ///
 /// The return type is deliberately `Box<dyn Error>` rather than `tauri::Result`:
 /// this calls into `window_vibrancy` and `windows`, and neither
 /// `window_vibrancy::Error` nor `windows::core::Error` has a `From` impl into
 /// `tauri::Error`, so `?` would not compile. `Box<dyn Error>` is what `setup()`'s
 /// closure already returns, so it propagates with no adapter.
-pub fn apply_effects(window: &WebviewWindow) -> Result<(), Box<dyn std::error::Error>> {
+pub fn apply_effects(
+	window: &WebviewWindow,
+	dark: Option<bool>,
+) -> Result<(), Box<dyn std::error::Error>> {
 	// Mica first (Windows 11, follows the system theme), Acrylic as the fallback.
 	//
 	// Which one takes is part of the deliverable, not a debug aid: the two
@@ -33,13 +62,13 @@ pub fn apply_effects(window: &WebviewWindow) -> Result<(), Box<dyn std::error::E
 	// is derived from the wallpaper and system theme and ignores other windows
 	// entirely, so that same test "fails" on a perfectly working Mica panel.
 	// Without this log there is no way to tell those two cases apart.
-	match window_vibrancy::apply_mica(window, None) {
+	match window_vibrancy::apply_mica(window, dark) {
 		Ok(()) => diagnostics::log("[copper] backdrop: Mica applied"),
 		Err(mica_err) => {
 			diagnostics::log(&format!(
 				"[copper] backdrop: Mica failed ({mica_err}), falling back to Acrylic"
 			));
-			window_vibrancy::apply_acrylic(window, None)?;
+			window_vibrancy::apply_acrylic(window, acrylic_tint(dark))?;
 			diagnostics::log("[copper] backdrop: Acrylic applied");
 		}
 	}
@@ -62,6 +91,23 @@ pub fn apply_effects(window: &WebviewWindow) -> Result<(), Box<dyn std::error::E
 	}
 
 	Ok(())
+}
+
+/// The two materials take the theme differently, which is why this exists rather
+/// than one argument passed through to both.
+///
+/// `apply_mica` takes `Option<bool>` — the flag `dark` already is. `apply_acrylic`
+/// takes an RGBA *tint* instead, so an explicit preference has to be turned into
+/// a colour. These two are deliberately near-neutral and only lightly opaque: the
+/// CSS `--surface` token carries the panel's actual opacity, and the native tint's
+/// only job is to stop the material reading as the opposite appearance behind it.
+/// `None` in both cases means "follow the system", which is what `system` wants.
+fn acrylic_tint(dark: Option<bool>) -> Option<(u8, u8, u8, u8)> {
+	match dark {
+		None => None,
+		Some(true) => Some((26, 26, 28, 125)),
+		Some(false) => Some((250, 250, 250, 125)),
+	}
 }
 
 /// Reveals the panel.
@@ -115,7 +161,16 @@ pub fn reveal_without_activating(
 }
 
 /// Hides the panel. The window is never destroyed, only hidden.
+///
+/// Every hide path also ends any recording session, which is why the call lives
+/// here rather than at each caller. A lease has the live chords unregistered while
+/// it is open, and hiding is exactly the route that bypasses the recorder's own
+/// cancel — the tray toggle, the summon chord, `Escape`, the close button. Left
+/// standing behind a hidden panel, the user is left with no summon shortcut; the
+/// Rust lease's watchdog would catch it eventually, this catches it at once. Off
+/// the main thread, per the note in `shortcuts`.
 pub fn hide(window: &WebviewWindow) -> tauri::Result<()> {
+	crate::shortcuts::cancel_recording_off_thread(window.app_handle());
 	window.hide()
 }
 
@@ -151,6 +206,18 @@ pub fn hide_or_log<M: Manager<tauri::Wry>>(app: &M) {
 	with_panel(app, "hide", hide);
 }
 
+/// The Escape ladder's last rung, from the webview.
+///
+/// A command rather than `getCurrentWindow().hide()` from JS, even though
+/// `core:window:allow-hide` is granted and would allow it. Hiding is not just a
+/// window call here — it also ends an open recording session — and task-002
+/// centralised the window operations precisely so a later phase could not end up
+/// with a second path that forgets half of one.
+#[tauri::command]
+pub async fn hide_panel(app: AppHandle) {
+	hide_or_log(&app);
+}
+
 /// Hides the panel if it is visible and reveals it otherwise, or logs why it
 /// could not be reached. This is the tray's left-click behaviour, kept here so
 /// that the window lookup stays in the module that owns the window.
@@ -168,8 +235,460 @@ pub fn toggle_or_log<M: Manager<tauri::Wry>>(app: &M) {
 	});
 }
 
+/// The summon chord's behaviour: **three** states, not two.
+///
+/// A two-state toggle reads the middle case wrong. With the panel visible but
+/// behind whatever the user is typing in, "toggle" hides a window they can see
+/// and were reaching for — so they press again, and the second press finally
+/// shows what the first should have. Visible-but-unfocused therefore raises
+/// rather than hides, and only a panel that already has focus is hidden.
+///
+/// The hidden case is also where placement is checked, so a panel left on a
+/// monitor that has since been unplugged comes back somewhere reachable instead
+/// of being summoned into nowhere.
+pub fn summon_or_log(app: &AppHandle) {
+	with_panel(app, "summon", |window| {
+		if is_visible(window) {
+			if window.is_focused().unwrap_or(false) {
+				return hide(window);
+			}
+			crate::capture::panel_revealed_by_user(app);
+			return reveal(window);
+		}
+
+		crate::capture::panel_revealed_by_user(app);
+		ensure_reachable(window);
+		reveal(window)
+	});
+}
+
 /// Whether the panel is currently visible, defaulting to `false` if it cannot be
 /// determined — a failed query should not leave the tray toggle stuck.
 fn is_visible(window: &WebviewWindow) -> bool {
 	window.is_visible().unwrap_or(false)
+}
+
+// --- position ----------------------------------------------------------------
+
+/// One monitor's usable rectangle, in physical pixels.
+///
+/// Built from `work_area()` rather than `position()`/`size()`: the work area
+/// excludes the taskbar, and validating against the raw monitor rectangle
+/// happily places the panel underneath it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MonitorRect {
+	pub x: i32,
+	pub y: i32,
+	pub width: u32,
+	pub height: u32,
+}
+
+impl MonitorRect {
+	fn left(self) -> i64 {
+		i64::from(self.x)
+	}
+
+	fn top(self) -> i64 {
+		i64::from(self.y)
+	}
+
+	fn right(self) -> i64 {
+		self.left() + i64::from(self.width)
+	}
+
+	fn bottom(self) -> i64 {
+		self.top() + i64::from(self.height)
+	}
+}
+
+/// The part of the panel a user has to be able to hit to move it — its draggable
+/// header — in physical pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GrabRect {
+	pub width: i64,
+	pub height: i64,
+}
+
+/// How much of the header's width has to be on a monitor for it to be grabbable.
+const MIN_GRAB_WIDTH: i64 = 64;
+
+/// Keeps a restored position only if the panel can actually be reached there.
+///
+/// Pure over rectangles, so it is unit-testable with no display attached — which
+/// matters, because the case it exists for is a monitor that is *not* attached.
+///
+/// The test is written against the header strip rather than the whole panel: a
+/// window whose bottom-right corner clips a monitor while its header sits
+/// off-screen cannot be dragged back and is lost. The two thresholds differ for
+/// the same reason — 64 px of width is a comfortable pointer target, but the
+/// header is only 48 logical pixels tall, so requiring 64 px vertically would
+/// reject every position on every display. Half the header's height is the
+/// vertical equivalent of the same idea.
+///
+/// All arithmetic widens to `i64` so that a corrupt or extreme saved coordinate
+/// cannot overflow and compute as visible.
+pub fn clamp_to_visible_monitor(
+	saved: PanelPosition,
+	grab: GrabRect,
+	monitors: &[MonitorRect],
+	fallback: PanelPosition,
+) -> PanelPosition {
+	let left = i64::from(saved.x);
+	let top = i64::from(saved.y);
+	let right = left.saturating_add(grab.width);
+	let bottom = top.saturating_add(grab.height);
+	let needed_height = (grab.height / 2).max(1);
+
+	let reachable = monitors.iter().any(|monitor| {
+		let overlap_x = right.min(monitor.right()) - left.max(monitor.left());
+		let overlap_y = bottom.min(monitor.bottom()) - top.max(monitor.top());
+		overlap_x >= MIN_GRAB_WIDTH && overlap_y >= needed_height
+	});
+
+	if reachable {
+		saved
+	} else {
+		fallback
+	}
+}
+
+/// Right-aligned with an inset, vertically centred.
+///
+/// A corner rather than the screen centre, because the panel is a side companion
+/// to whatever the user is actually working in — centring would put it on top of
+/// that.
+fn default_position(monitor: MonitorRect, scale: f64) -> PanelPosition {
+	let panel_width = (PANEL_WIDTH * scale).round() as i64;
+	let panel_height = (PANEL_HEIGHT * scale).round() as i64;
+	let inset = (DEFAULT_INSET * scale).round() as i64;
+
+	let x = monitor.right() - panel_width - inset;
+	let y = monitor.top() + (i64::from(monitor.height) - panel_height) / 2;
+	PanelPosition {
+		x: x.clamp(monitor.left(), monitor.right()) as i32,
+		y: y.clamp(monitor.top(), monitor.bottom()) as i32,
+	}
+}
+
+fn rect_of(monitor: &tauri::window::Monitor) -> MonitorRect {
+	let area = monitor.work_area();
+	MonitorRect {
+		x: area.position.x,
+		y: area.position.y,
+		width: area.size.width,
+		height: area.size.height,
+	}
+}
+
+/// The monitor the pointer is on, falling back to the primary one.
+///
+/// The panel is summoned to where the user is working, not to wherever the app
+/// happened to be when it last exited — which for a multi-monitor desk is the
+/// difference between a companion panel and one that keeps appearing on the
+/// wrong screen. This only decides the *default*: a position the user chose is
+/// kept as long as it is reachable.
+fn current_monitor(window: &WebviewWindow) -> Option<tauri::window::Monitor> {
+	if let Ok(cursor) = window.cursor_position() {
+		if let Ok(Some(monitor)) = window.monitor_from_point(cursor.x, cursor.y) {
+			return Some(monitor);
+		}
+	}
+	window.primary_monitor().ok().flatten()
+}
+
+fn monitor_rects(window: &WebviewWindow) -> Vec<MonitorRect> {
+	window
+		.available_monitors()
+		.map(|monitors| monitors.iter().map(rect_of).collect())
+		.unwrap_or_default()
+}
+
+/// The grab rectangle at the scale of whichever monitor the position lands on.
+///
+/// The saved position is physical, and on a 150% display the panel is half again
+/// as wide as its logical size — so a logical-pixel grab rect would judge a
+/// perfectly reachable position as lost.
+fn grab_rect(window: &WebviewWindow, at: PanelPosition) -> GrabRect {
+	let scale = window
+		.monitor_from_point(f64::from(at.x), f64::from(at.y))
+		.ok()
+		.flatten()
+		.or_else(|| current_monitor(window))
+		.map_or(1.0, |monitor| monitor.scale_factor());
+	GrabRect {
+		width: (PANEL_WIDTH * scale).round() as i64,
+		height: (HEADER_HEIGHT * scale).round() as i64,
+	}
+}
+
+/// Places the panel at startup: the saved position when it is still reachable,
+/// the current monitor's default otherwise.
+///
+/// Called before the window is ever shown. `panel_position` is `Option` and
+/// defaults to `null`, so a first run takes the default path rather than the
+/// restore path. Tauri does not clamp an out-of-bounds `set_position`, so
+/// skipping this validation puts the panel where the user cannot reach it.
+pub fn restore_position(window: &WebviewWindow, saved: Option<PanelPosition>) {
+	let monitors = monitor_rects(window);
+	if monitors.is_empty() {
+		// Nothing to validate against, and computing a position from nothing would
+		// be worse than Tauri's own centring.
+		diagnostics::log_error("[copper] panel: no monitors reported; keeping the default placement");
+		return;
+	}
+
+	let Some(fallback) = current_monitor(window)
+		.map(|monitor| default_position(rect_of(&monitor), monitor.scale_factor()))
+	else {
+		return;
+	};
+
+	let target = match saved {
+		Some(saved) => clamp_to_visible_monitor(saved, grab_rect(window, saved), &monitors, fallback),
+		None => fallback,
+	};
+
+	if let Err(err) = window.set_position(PhysicalPosition::new(target.x, target.y)) {
+		diagnostics::log_error(&format!("[copper] panel: could not place the window: {err}"));
+	}
+}
+
+/// Moves the panel back on-screen if it is not, leaving it alone if it is.
+///
+/// Run before revealing a hidden panel, so a display unplugged while Copper was
+/// hidden cannot summon it into nowhere.
+fn ensure_reachable(window: &WebviewWindow) {
+	let Ok(position) = window.outer_position() else {
+		return;
+	};
+	let current = PanelPosition {
+		x: position.x,
+		y: position.y,
+	};
+	let monitors = monitor_rects(window);
+	if monitors.is_empty() {
+		return;
+	}
+	let Some(fallback) = current_monitor(window)
+		.map(|monitor| default_position(rect_of(&monitor), monitor.scale_factor()))
+	else {
+		return;
+	};
+
+	let target = clamp_to_visible_monitor(current, grab_rect(window, current), &monitors, fallback);
+	if target != current {
+		if let Err(err) = window.set_position(PhysicalPosition::new(target.x, target.y)) {
+			diagnostics::log_error(&format!("[copper] panel: could not recover the window: {err}"));
+		}
+	}
+}
+
+/// How long the panel has to stop moving before its position is written.
+const POSITION_DEBOUNCE: Duration = Duration::from_millis(500);
+
+/// The debounce behind `WindowEvent::Moved`.
+///
+/// A drag emits a move per frame, and each one would otherwise be an atomic
+/// rewrite of `settings.json`. One writer thread per drag rather than one per
+/// frame, and the store's own change-guard makes a redundant flush free.
+#[derive(Default)]
+pub struct PositionState {
+	pending: Mutex<Option<PanelPosition>>,
+	/// Bumped on every move, so the sleeping writer can tell a finished drag from
+	/// a paused one without holding anything.
+	generation: AtomicU64,
+	scheduled: AtomicBool,
+}
+
+/// Records a move and schedules the write.
+pub fn on_moved(app: &AppHandle, position: PhysicalPosition<i32>) {
+	let Some(state) = app.try_state::<PositionState>() else {
+		return;
+	};
+	if let Ok(mut pending) = state.pending.lock() {
+		*pending = Some(PanelPosition {
+			x: position.x,
+			y: position.y,
+		});
+	}
+	state.generation.fetch_add(1, Ordering::Relaxed);
+
+	if state
+		.scheduled
+		.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+		.is_err()
+	{
+		return;
+	}
+
+	let app = app.clone();
+	std::thread::spawn(move || {
+		loop {
+			let Some(state) = app.try_state::<PositionState>() else {
+				return;
+			};
+			let seen = state.generation.load(Ordering::Relaxed);
+			std::thread::sleep(POSITION_DEBOUNCE);
+			if state.generation.load(Ordering::Relaxed) == seen {
+				// Cleared before the write, so a move arriving during it schedules a
+				// fresh pass rather than being swallowed.
+				state.scheduled.store(false, Ordering::SeqCst);
+				break;
+			}
+		}
+		flush_position(&app);
+	});
+}
+
+/// Writes the pending position now.
+///
+/// Called at exit as well as by the debounce: a drag followed promptly by
+/// quitting is the common case for someone repositioning the panel and then
+/// closing the app, and without this it is exactly the case that is lost.
+pub fn flush_position(app: &AppHandle) {
+	let Some(state) = app.try_state::<PositionState>() else {
+		return;
+	};
+	let Some(position) = state.pending.lock().ok().and_then(|mut pending| pending.take()) else {
+		return;
+	};
+
+	let patch = SettingsPatch {
+		panel_position: Some(Some(position)),
+		..SettingsPatch::default()
+	};
+	if let Err(err) = crate::store::commands::patch_settings(app, patch) {
+		diagnostics::log_error(&format!(
+			"[copper] panel: could not save the window position: {}",
+			err.message()
+		));
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	const GRAB: GrabRect = GrabRect {
+		width: 390,
+		height: 48,
+	};
+
+	const PRIMARY: MonitorRect = MonitorRect {
+		x: 0,
+		y: 0,
+		width: 1920,
+		height: 1040,
+	};
+
+	const SECOND: MonitorRect = MonitorRect {
+		x: 1920,
+		y: 0,
+		width: 1920,
+		height: 1040,
+	};
+
+	const FALLBACK: PanelPosition = PanelPosition { x: 1506, y: 190 };
+
+	fn clamp(saved: PanelPosition, monitors: &[MonitorRect]) -> PanelPosition {
+		clamp_to_visible_monitor(saved, GRAB, monitors, FALLBACK)
+	}
+
+	#[test]
+	fn a_position_inside_a_monitor_is_kept() {
+		let saved = PanelPosition { x: 200, y: 300 };
+		assert_eq!(clamp(saved, &[PRIMARY, SECOND]), saved);
+	}
+
+	#[test]
+	fn a_position_on_a_disconnected_monitor_falls_back() {
+		let saved = PanelPosition { x: 2400, y: 300 };
+		assert_eq!(clamp(saved, &[PRIMARY, SECOND]), saved);
+		// The second display is unplugged and the saved point is now nowhere.
+		assert_eq!(clamp(saved, &[PRIMARY]), FALLBACK);
+	}
+
+	#[test]
+	fn a_position_straddling_two_monitors_is_kept() {
+		// Two hundred pixels of header on each side: reachable on either.
+		let saved = PanelPosition { x: 1720, y: 300 };
+		assert_eq!(clamp(saved, &[PRIMARY, SECOND]), saved);
+	}
+
+	#[test]
+	fn a_position_barely_touching_a_monitor_falls_back() {
+		// Ten pixels of header showing is not something a user can grab.
+		let saved = PanelPosition { x: -380, y: 300 };
+		assert_eq!(clamp(saved, &[PRIMARY]), FALLBACK);
+	}
+
+	#[test]
+	fn a_body_on_screen_with_the_header_above_it_falls_back() {
+		// The whole point of testing the header rather than the panel: the body
+		// overlaps by hundreds of pixels and the window still cannot be moved.
+		let saved = PanelPosition { x: 200, y: -48 };
+		assert_eq!(clamp(saved, &[PRIMARY]), FALLBACK);
+		// Half the header showing is still grabbable.
+		let half = PanelPosition { x: 200, y: -24 };
+		assert_eq!(clamp(half, &[PRIMARY]), half);
+	}
+
+	#[test]
+	fn an_extreme_coordinate_cannot_overflow_into_looking_visible() {
+		for saved in [
+			PanelPosition {
+				x: i32::MIN,
+				y: i32::MIN,
+			},
+			PanelPosition {
+				x: i32::MAX,
+				y: i32::MAX,
+			},
+			PanelPosition {
+				x: i32::MAX,
+				y: 300,
+			},
+		] {
+			assert_eq!(clamp(saved, &[PRIMARY, SECOND]), FALLBACK, "{saved:?}");
+		}
+	}
+
+	#[test]
+	fn no_monitors_means_no_opinion() {
+		let saved = PanelPosition { x: 200, y: 300 };
+		assert_eq!(clamp(saved, &[]), FALLBACK);
+	}
+
+	#[test]
+	fn the_default_sits_inside_the_work_area_at_every_scale() {
+		for scale in [1.0, 1.25, 1.5, 2.0] {
+			let monitor = MonitorRect {
+				x: 0,
+				y: 0,
+				width: (1920.0 * scale) as u32,
+				height: (1040.0 * scale) as u32,
+			};
+			let placed = default_position(monitor, scale);
+			assert!(placed.x >= monitor.x, "scale {scale}: {placed:?}");
+			assert!(placed.y >= monitor.y, "scale {scale}: {placed:?}");
+			// And the panel that lands there is reachable, which is the property that
+			// actually matters — the fallback must never itself need clamping.
+			let grab = GrabRect {
+				width: (PANEL_WIDTH * scale).round() as i64,
+				height: (HEADER_HEIGHT * scale).round() as i64,
+			};
+			assert_eq!(
+				clamp_to_visible_monitor(placed, grab, &[monitor], FALLBACK),
+				placed,
+				"scale {scale}: the fallback position is not reachable"
+			);
+		}
+	}
+
+	#[test]
+	fn the_default_respects_a_monitor_that_does_not_start_at_the_origin() {
+		let placed = default_position(SECOND, 1.0);
+		assert!(placed.x >= SECOND.x);
+		assert!(placed.x + 390 <= SECOND.x + SECOND.width as i32);
+	}
 }
