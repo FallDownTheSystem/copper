@@ -12,8 +12,6 @@
  * over an acrylic backdrop; a second layer would make this view visibly darker
  * than the list it transitions from.
  */
-import { SwitchRoot, SwitchThumb } from 'reka-ui'
-
 const {
 	shortcuts,
 	autostartEnabled,
@@ -193,16 +191,11 @@ const captureNote = computed(() => {
 					label-for="sounds"
 					:error="soundsError"
 				>
-					<SwitchRoot
+					<SettingsSwitch
 						id="sounds"
 						:model-value="soundsEnabled"
-						class="bg-surface-hover data-[state=checked]:bg-accent-ring hit-44 relative inline-flex h-6 w-10 shrink-0 items-center rounded-full p-0.5 transition-colors duration-fast focus-visible:outline-2 focus-visible:outline-offset-2"
 						@update:model-value="setSounds"
-					>
-						<SwitchThumb
-							class="block size-5 rounded-full bg-white shadow-sm transition-transform duration-fast data-[state=checked]:translate-x-4"
-						/>
-					</SwitchRoot>
+					/>
 				</SettingsRow>
 
 				<!-- The description says Windows wins rather than leaving the user to
@@ -216,16 +209,11 @@ const captureNote = computed(() => {
 					label-for="motion"
 					:error="motionError"
 				>
-					<SwitchRoot
+					<SettingsSwitch
 						id="motion"
 						:model-value="motionPreference === 'auto'"
-						class="bg-surface-hover data-[state=checked]:bg-accent-ring hit-44 relative inline-flex h-6 w-10 shrink-0 items-center rounded-full p-0.5 transition-colors duration-fast focus-visible:outline-2 focus-visible:outline-offset-2"
 						@update:model-value="setAnimations"
-					>
-						<SwitchThumb
-							class="block size-5 rounded-full bg-white shadow-sm transition-transform duration-fast data-[state=checked]:translate-x-4"
-						/>
-					</SwitchRoot>
+					/>
 				</SettingsRow>
 			</SettingsSection>
 
@@ -236,22 +224,11 @@ const captureNote = computed(() => {
 					label-for="autostart"
 					:error="autostartError"
 				>
-					<!-- `SwitchRoot` has no label part of its own, so the row's visible
-					     label is paired to it by `for`/`id` — otherwise the control
-					     announces with no name at all. It renders `<button role="switch"
-					     aria-checked>`, toggled by both Space and Enter, which is the
-					     right pattern for a system-level toggle and the idiom Windows and
-					     macOS both use for exactly this setting. -->
-					<SwitchRoot
+					<SettingsSwitch
 						id="autostart"
 						:model-value="autostartEnabled"
-						class="bg-surface-hover data-[state=checked]:bg-accent-ring hit-44 relative inline-flex h-6 w-10 shrink-0 items-center rounded-full p-0.5 transition-colors duration-fast focus-visible:outline-2 focus-visible:outline-offset-2"
 						@update:model-value="setAutostart"
-					>
-						<SwitchThumb
-							class="block size-5 rounded-full bg-white shadow-sm transition-transform duration-fast data-[state=checked]:translate-x-4"
-						/>
-					</SwitchRoot>
+					/>
 				</SettingsRow>
 			</SettingsSection>
 		</div>

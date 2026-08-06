@@ -35,13 +35,26 @@ const reducedMotion = useReducedMotion()
 const scalesOnPress = computed(() => !props.disabled && !reducedMotion.value)
 
 // Dipped further than a full-size button: a 16px box needs a bigger ratio before
-// the scale reads at all.
-const pressState = computed(() => (scalesOnPress.value ? { scale: 0.9 } : {}))
+// the scale reads at all. `undefined` rather than `{}` when it is not going to
+// dip: motion-v decides whether to register its press gesture on
+// `Boolean(whilePress)`, so an empty object still puts a pointer listener on
+// every row's box and still resolves a variant on every press to arrive at no
+// change at all.
+const pressState = computed(() => (scalesOnPress.value ? { scale: 0.9 } : undefined))
 
 // Only the boxes that actually dip earn a permanent compositor layer.
 const pressStyle = computed(() => (scalesOnPress.value ? { willChange: 'transform' } : undefined))
 
 const pressTransition = { duration: 0.15, ease: [0.22, 1, 0.36, 1] as const }
+
+/** Resolved once per box rather than once per render: this control is mounted on
+ *  every row of the list, and `cn` is a clsx join plus a tailwind-merge parse. */
+const rootClass = computed(() =>
+	cn(
+		'squircle border-text-disabled outline-focus-ring data-[state=checked]:bg-accent-ring data-[state=checked]:border-accent-ring size-4 shrink-0 rounded-[4px] border text-white transition-colors duration-base focus-visible:outline-2 focus-visible:outline-offset-1 disabled:cursor-not-allowed disabled:opacity-50',
+		props.class,
+	),
+)
 </script>
 
 <template>
@@ -54,12 +67,7 @@ const pressTransition = { duration: 0.15, ease: [0.22, 1, 0.36, 1] as const }
 			:style="pressStyle"
 			:whilePress="pressState"
 			:transition="pressTransition"
-			:class="
-				cn(
-					'squircle border-text-disabled outline-focus-ring data-[state=checked]:bg-accent-ring data-[state=checked]:border-accent-ring data-[state=indeterminate]:bg-accent-ring data-[state=indeterminate]:border-accent-ring size-4 shrink-0 rounded-[4px] border text-white transition-colors duration-base focus-visible:outline-2 focus-visible:outline-offset-1 disabled:cursor-not-allowed disabled:opacity-50',
-					props.class,
-				)
-			"
+			:class="rootClass"
 		>
 			<!-- Force-mounted so unchecking can retract the stroke instead of
 			     unmounting mid-draw. `transition-none` kills the inherited CSS

@@ -95,7 +95,7 @@ function onContextMenu() {
 						:tabindex="descendantTabIndex"
 						:model-value="note.done"
 						:aria-label="note.done ? 'Mark as not done' : 'Mark as done'"
-						class="completion-circle mt-0.5"
+						class="completion-box mt-0.5"
 						@click.stop
 						@update:model-value="emit('toggleDone')"
 					/>

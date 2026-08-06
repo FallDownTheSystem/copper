@@ -58,56 +58,55 @@ function builtCss() {
 }
 
 /**
- * The inverse of `withoutSupportsBlocks`: the *contents* of every corner-shape
- * support query, and nothing else.
- *
- * Not `css.replace(withoutSupportsBlocks(css), '')` — that returns a
- * concatenation of fragments rather than one contiguous substring, so it would
- * match nothing and silently hand back the whole stylesheet.
+ * Every `@supports (corner-shape: squircle)` block in the stylesheet, located
+ * once and read two ways below. Brace-matched rather than regexed: these blocks
+ * hold whole rules, and a non-greedy `[^}]*` would stop at the first inner `}`.
  */
-function supportsBlocksOnly(css: string) {
+function supportsBlocks(css: string) {
 	const prelude = /@supports\s*\(corner-shape:\s*squircle\)\s*\{/g
-	let out = ''
+	const blocks: { start: number; bodyStart: number; end: number }[] = []
 
 	for (let match = prelude.exec(css); match; match = prelude.exec(css)) {
+		const bodyStart = match.index + match[0].length
 		let depth = 1
-		const start = match.index + match[0].length
-		let index = start
+		let index = bodyStart
 		while (index < css.length && depth > 0) {
 			if (css[index] === '{') depth++
 			else if (css[index] === '}') depth--
 			index++
 		}
 		// `index` sits one past the closing brace.
-		out += `${css.slice(start, index - 1)}\n`
+		blocks.push({ start: match.index, bodyStart, end: index })
 		prelude.lastIndex = index
 	}
 
-	return out
+	return blocks
 }
 
 /**
- * Cuts out every `@supports (corner-shape: squircle)` block, prelude and all, so
- * that what remains is exactly the CSS that would still apply on a runtime
- * without the property. Brace-matched rather than regexed: these blocks hold
- * whole rules, and a non-greedy `[^}]*` would stop at the first inner `}`.
+ * The *contents* of every corner-shape support query, and nothing else.
+ *
+ * Not `css.replace(withoutSupportsBlocks(css), '')` — that returns a
+ * concatenation of fragments rather than one contiguous substring, so it would
+ * match nothing and silently hand back the whole stylesheet.
+ */
+function supportsBlocksOnly(css: string) {
+	return supportsBlocks(css)
+		.map((block) => `${css.slice(block.bodyStart, block.end - 1)}\n`)
+		.join('')
+}
+
+/**
+ * Cuts out every support block, prelude and all, so that what remains is exactly
+ * the CSS that would still apply on a runtime without the property.
  */
 function withoutSupportsBlocks(css: string) {
-	const prelude = /@supports\s*\(corner-shape:\s*squircle\)\s*\{/g
 	let out = ''
 	let cursor = 0
 
-	for (let match = prelude.exec(css); match; match = prelude.exec(css)) {
-		out += css.slice(cursor, match.index)
-		let depth = 1
-		let index = match.index + match[0].length
-		while (index < css.length && depth > 0) {
-			if (css[index] === '{') depth++
-			else if (css[index] === '}') depth--
-			index++
-		}
-		cursor = index
-		prelude.lastIndex = index
+	for (const block of supportsBlocks(css)) {
+		out += css.slice(cursor, block.start)
+		cursor = block.end
 	}
 
 	return out + css.slice(cursor)

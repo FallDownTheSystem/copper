@@ -205,30 +205,28 @@ function setTheme(next: ThemePreference): Promise<boolean> {
 }
 
 /**
- * Both of these go through the general `update_settings` patch rather than
- * earning a command each: unlike the theme, neither has a native side to apply
- * — no window to re-tint, no registry key — so a dedicated Rust command would be
- * a pass-through to the writer that already exists. The patch shape is
- * field-at-a-time, so writing one cannot clear the other.
+ * Both preferences below go through the general `update_settings` patch rather
+ * than earning a command each: unlike the theme, neither has a native side to
+ * apply — no window to re-tint, no registry key — so a dedicated Rust command
+ * would be a pass-through to the writer that already exists. The patch is one
+ * key wide at every call site, so writing one cannot clear the other.
  */
-function setSounds(enabled: boolean): Promise<boolean> {
+function patchSettings(scope: PreferenceScope, patch: Partial<Settings>): Promise<boolean> {
 	return attempt(
-		'sounds',
-		() => invoke<Settings>('update_settings', { patch: { sounds: enabled } }),
+		scope,
+		() => invoke<Settings>('update_settings', { patch }),
 		(value) => {
 			settings.value = value
 		},
 	)
 }
 
+function setSounds(enabled: boolean): Promise<boolean> {
+	return patchSettings('sounds', { sounds: enabled })
+}
+
 function setMotion(preference: MotionPreference): Promise<boolean> {
-	return attempt(
-		'motion',
-		() => invoke<Settings>('update_settings', { patch: { motion: preference } }),
-		(value) => {
-			settings.value = value
-		},
-	)
+	return patchSettings('motion', { motion: preference })
 }
 
 function setAutostart(enabled: boolean): Promise<boolean> {

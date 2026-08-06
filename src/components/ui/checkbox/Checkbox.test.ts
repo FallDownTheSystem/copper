@@ -2,6 +2,7 @@ import { enableAutoUnmount, mount } from '@vue/test-utils'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 import Checkbox from './Checkbox.vue'
+import { clearReducedMotion, setReducedMotion } from '@/testing/matchMedia'
 
 /**
  * The completion control, ported from the reference app. These pin the details
@@ -12,7 +13,7 @@ import Checkbox from './Checkbox.vue'
  * artefact.
  */
 
-const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }))
+const mocks = vi.hoisted(() => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 vi.mock('@tauri-apps/api/event', () => ({
 	emit: vi.fn(),
@@ -47,25 +48,6 @@ afterAll(() => {
 	if (stubbedAnimate) Reflect.deleteProperty(elementPrototype, 'animate')
 })
 
-/** VueUse reads the preference through `matchMedia`, so this is the only lever
- *  that reaches it. */
-function setReducedMotion(reduce: boolean) {
-	Object.defineProperty(window, 'matchMedia', {
-		configurable: true,
-		writable: true,
-		value: (query: string) => ({
-			matches: reduce && query.includes('prefers-reduced-motion'),
-			media: query,
-			onchange: null,
-			addEventListener: () => {},
-			removeEventListener: () => {},
-			addListener: () => {},
-			removeListener: () => {},
-			dispatchEvent: () => false,
-		}),
-	})
-}
-
 /**
  * Required, not hygiene. `useReducedMotion` is a `createSharedComposable`, so one
  * instance is built on first use and kept alive while any consumer holds it —
@@ -86,12 +68,12 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-	Reflect.deleteProperty(window as unknown as Record<string, unknown>, 'matchMedia')
+	clearReducedMotion()
 })
 
 function checkPath(wrapper: ReturnType<typeof mount>) {
-	// The check mark, not the indeterminate dash — source order, as authored.
-	return wrapper.findAll('path')[0]
+	// The only path — the indeterminate dash is deliberately not ported.
+	return wrapper.find('path')
 }
 
 describe('the completion control', () => {
@@ -129,7 +111,7 @@ describe('the completion control', () => {
 		const wrapper = mount(Checkbox, { props: { modelValue: false } })
 
 		expect(wrapper.find('svg').exists()).toBe(true)
-		expect(wrapper.findAll('path')).toHaveLength(2)
+		expect(wrapper.findAll('path')).toHaveLength(1)
 	})
 
 	/**
@@ -149,7 +131,7 @@ describe('the completion control', () => {
 		}
 
 		expect(wrapper.find('svg').element).toBe(svgBefore)
-		expect(wrapper.findAll('path')).toHaveLength(2)
+		expect(wrapper.findAll('path')).toHaveLength(1)
 		expect(wrapper.findAll('button')).toHaveLength(1)
 	})
 

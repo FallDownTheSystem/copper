@@ -1,23 +1,13 @@
 /**
- * The sound engine's public surface, copied from the reference app minus its
- * `bind` export — Copper's `data-sound-*` delegated binding is not ported at all
- * (task-012 ruling OQ6). Every sound point here is an explicit `play()` call
- * from `useSounds`, which is what keeps the seven of them enumerable.
+ * The two entry points Copper uses, and deliberately no more. The reference app's
+ * `bind` export and its `data-sound-*` delegated binding are not ported at all
+ * (task-012 ruling OQ6); `hold`, `playRecipe` and the recipe table stay reachable
+ * through `./engine` and `./recipes` but are not offered here.
  *
- * Prefer `useSounds()` to importing this directly: `play` is the whole palette
- * and the composable is the seven interactions Copper has actually decided to
- * sound.
+ * That narrowness is the point. Every sound point is an explicit `play()` call
+ * from `useSounds`, which is what keeps the seven of them enumerable — and a
+ * barrel handing out the whole 51-recipe palette is exactly the escape hatch that
+ * would stop being true.
  */
-export { hold, holdRecipe, play, playRecipe, setEnabled } from './engine'
-export type { PlayOptions, SoundHandle } from './engine'
-export { RECIPES, isSoundName, sounds } from './recipes'
-export type {
-	Jitter,
-	LayerRepeat,
-	NoiseLayer,
-	Shimmer,
-	SoundLayer,
-	SoundName,
-	SoundRecipe,
-	ToneLayer,
-} from './recipes'
+export { play, setEnabled } from './engine'
+export type { SoundName } from './recipes'

@@ -631,9 +631,9 @@ function listCommand(command: string, args: Record<string, unknown>) {
 /** There is no singular set-done command; `set_notes_done` takes an array. Phase
  *  5 calls this with a whole selection, with no signature change. */
 async function setNotesDone(ids: string[], done: boolean) {
-	// Sounded here rather than at the three call sites above it — the checkbox,
-	// Space, and the context menu all funnel through this one command, and one
-	// gesture over a whole selection is still one toggle.
+	// Sounded here rather than at the three callers — the checkbox, Space and the
+	// context menu all funnel through this one command, and one gesture over a
+	// whole selection is still one toggle.
 	const result = await listCommand('set_notes_done', { ids, done })
 	if (result) useSounds().noteToggled()
 	return result

@@ -238,8 +238,8 @@ function accept(added: Attachment[]): string | null {
 	}
 
 	pending.value = [...pending.value, ...added.slice(0, available)]
-	// Once per commit, not once per file — a ten-file drop is one gesture. Below
-	// both early returns, so a no-op paste and a refusal at capacity stay silent.
+	// Below both early returns, so a no-op paste and a refusal at capacity stay
+	// silent.
 	useSounds().attachmentsAdded()
 	return added.length > available
 		? `Only ${available} more file${available === 1 ? '' : 's'} fit on one note; the rest were not attached.`

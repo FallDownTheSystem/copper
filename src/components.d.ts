@@ -88,6 +88,7 @@ declare module 'vue' {
     SectionSwitcher: typeof import('./components/SectionSwitcher.vue')['default']
     SettingsRow: typeof import('./components/SettingsRow.vue')['default']
     SettingsSection: typeof import('./components/SettingsSection.vue')['default']
+    SettingsSwitch: typeof import('./components/SettingsSwitch.vue')['default']
     SettingsView: typeof import('./components/SettingsView.vue')['default']
     ShortcutRecorder: typeof import('./components/ShortcutRecorder.vue')['default']
     StatusLine: typeof import('./components/StatusLine.vue')['default']

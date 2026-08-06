@@ -14,14 +14,17 @@ const { view, direction, showSettings } = useView()
 const { initialize } = useSettings()
 useTheme()
 
-const reduced = usePreferredReducedMotion()
+/** Copper's own composable rather than VueUse's `usePreferredReducedMotion`
+ *  directly: this is the one animation a user is watching while they toggle
+ *  "Animate controls", so it has to honour the setting as well as the OS. */
+const reduced = useReducedMotion()
 
 /** The view leaves the way it arrived, so the motion says what happened rather
  *  than the opposite of it. */
 const sign = computed(() => (direction.value === 'forward' ? 1 : -1))
 
 /** Reduce, do not remove: the translate goes, the cross-fade stays. */
-const shift = computed(() => (reduced.value === 'reduce' ? 0 : 1))
+const shift = computed(() => (reduced.value ? 0 : 1))
 
 const EASE = [0.23, 1, 0.32, 1]
 

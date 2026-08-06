@@ -10,6 +10,11 @@ import { motion, useMotionValue } from 'motion-v'
 import { cn } from '@/lib/utils'
 
 const props = defineProps<{
+	/** Reka's `CheckedState`, forwarded verbatim. `'indeterminate'` is in the type
+	 *  because reka can produce it, not because Copper does — nothing here passes a
+	 *  tri-state model value, so the dash the reference app draws for it is not
+	 *  ported. It would be a second `motion.path`, a second motion value and a
+	 *  second change subscription on every row of the list, all inert. */
 	state: boolean | 'indeterminate'
 	class?: HTMLAttributes['class']
 }>()
@@ -34,10 +39,8 @@ function useLinecap(length: MotionValue<number>) {
 // Seeded from the state at mount so a note that is already done simply shows its
 // mark. Only a state the user changes gets drawn.
 const checkLength = useMotionValue(props.state === true ? 1 : 0)
-const dashLength = useMotionValue(props.state === 'indeterminate' ? 1 : 0)
 
 const checkCap = useLinecap(checkLength)
-const dashCap = useLinecap(dashLength)
 
 /**
  * Drawing a mark on is the confirmation, so it gets room to read. Wiping one off
@@ -50,11 +53,15 @@ function draw(visible: boolean) {
 	if (reducedMotion.value) return { duration: 0 } as const
 	return { type: 'spring', bounce: 0, duration: visible ? 0.3 : 0.15 } as const
 }
+
+/** Merged once per mark rather than once per render — one of these exists per row
+ *  of the list. `cn` and not a plain list, so a caller's own `size-*` still wins. */
+const svgClass = computed(() => cn('size-3.5', props.class))
 </script>
 
 <template>
 	<svg
-		:class="cn('size-3.5', props.class)"
+		:class="svgClass"
 		viewBox="0 0 24 24"
 		fill="none"
 		stroke="currentColor"
@@ -70,14 +77,6 @@ function draw(visible: boolean) {
 			:animate="{ pathLength: state === true ? 1 : 0 }"
 			:transition="draw(state === true)"
 			:stroke-linecap="checkCap"
-		/>
-		<motion.path
-			d="M5 12H19"
-			:initial="false"
-			:style="{ pathLength: dashLength }"
-			:animate="{ pathLength: state === 'indeterminate' ? 1 : 0 }"
-			:transition="draw(state === 'indeterminate')"
-			:stroke-linecap="dashCap"
 		/>
 	</svg>
 </template>

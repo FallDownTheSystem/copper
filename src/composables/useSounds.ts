@@ -99,16 +99,20 @@ function actionFailed() {
 	play('error')
 }
 
+/** The complete list, built once. Most callers reach for a single point —
+ *  `useSounds().captureSucceeded()` — and rebuilding the record to read one field
+ *  of it is work with no reader. */
+const points = {
+	noteToggled,
+	entrySubmitted,
+	captureSucceeded,
+	captureFailed,
+	sectionSwitched,
+	attachmentsAdded,
+	actionFailed,
+}
+
 export function useSounds() {
 	install()
-
-	return {
-		noteToggled,
-		entrySubmitted,
-		captureSucceeded,
-		captureFailed,
-		sectionSwitched,
-		attachmentsAdded,
-		actionFailed,
-	}
+	return points
 }

@@ -51,7 +51,12 @@ async function flush(times = 4) {
 }
 
 async function openSettings(stored: Partial<Settings> = {}) {
-	vi.resetModules()
+	// No module reset here, unlike the suites that use one: `SettingsView` and the
+	// composables behind it are static imports, and `vi.resetModules()` cannot
+	// re-evaluate a module that has already been imported. What separates the cases
+	// is that every mount pulls `get_settings` again and overwrites the
+	// module-scoped value.
+	//
 	// Cleared per mount, not per test: a case that opens the view twice is
 	// comparing what the *second* one wrote.
 	mocks.invoke.mockClear()

@@ -2,6 +2,7 @@ import { mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 import App from './App.vue'
+import { useSettings } from '@/composables/useSettings'
 import { useView } from '@/composables/useView'
 
 /**
@@ -53,17 +54,11 @@ const SHORTCUTS = {
 /** The handlers `listen` was given, so a Rust-originated event can be delivered. */
 const listeners = new Map<string, (event: { payload: unknown }) => void>()
 
-beforeEach(() => {
-	listeners.clear()
-	mocks.listen.mockReset()
-	mocks.listen.mockImplementation(async (name: string, handler: (event: never) => void) => {
-		listeners.set(name, handler as (event: { payload: unknown }) => void)
-		return () => {}
-	})
-	mocks.emit.mockReset()
-	mocks.invoke.mockReset()
+/** The whole startup responder, with the stored settings overridable — the motion
+ *  preference is the only field any case here varies. */
+function respond(settings: Record<string, unknown> = SETTINGS) {
 	mocks.invoke.mockImplementation(async (command: string) => {
-		if (command === 'get_settings') return SETTINGS
+		if (command === 'get_settings') return settings
 		if (command === 'get_shortcut_state') return SHORTCUTS
 		if (command === 'get_autostart_enabled') return false
 		if (command === 'get_status') {
@@ -89,6 +84,18 @@ beforeEach(() => {
 		if (command === 'list_recents') return []
 		return null
 	})
+}
+
+beforeEach(() => {
+	listeners.clear()
+	mocks.listen.mockReset()
+	mocks.listen.mockImplementation(async (name: string, handler: (event: never) => void) => {
+		listeners.set(name, handler as (event: { payload: unknown }) => void)
+		return () => {}
+	})
+	mocks.emit.mockReset()
+	mocks.invoke.mockReset()
+	respond()
 	useView().showList()
 })
 
@@ -98,6 +105,10 @@ afterEach(() => {
 	app?.unmount()
 	app = null
 	useView().showList()
+	// `initialize()` memoises its promise at module scope and `App.vue` is its only
+	// caller, so without this only the *first* mount in the file ever pulls — every
+	// later case would mount against whatever settings the previous one left behind.
+	useSettings().dispose()
 	document.body.innerHTML = ''
 })
 
@@ -110,6 +121,58 @@ async function mountApp() {
 	await settle()
 	return app
 }
+
+/**
+ * The transitioning view's inline transform, sampled across the whole swap.
+ *
+ * Sampled rather than read once because `motion-v` drives this from JavaScript
+ * here — happy-dom has no Web Animations API — so the number moves between turns
+ * and only the transform's *shape* is stable: a transition with no shift emits
+ * `transform: none` at every frame, and one with a shift emits a `translateX`
+ * from the first frame to the last.
+ */
+async function shiftDuringSwap(wrapper: ReturnType<typeof mount>) {
+	useView().showSettings()
+	const samples: string[] = []
+	for (let i = 0; i < 8; i++) {
+		await settle(1)
+		// The outermost inline-styled element is the `motion.div` wrapping the view;
+		// neither view's own root carries a style attribute.
+		samples.push(wrapper.element.querySelector('[style*="transform"]')?.getAttribute('style') ?? '')
+	}
+	return samples
+}
+
+describe('the view transition', () => {
+	/**
+	 * This is the one animation a user is watching at the moment they toggle
+	 * "Animate controls", so it has to obey that setting and not only the OS —
+	 * which is why `App.vue` goes through Copper's own `useReducedMotion` rather
+	 * than reading `usePreferredReducedMotion` directly, as it first did.
+	 *
+	 * Reduce, not remove: the translate goes and the cross-fade stays, so what is
+	 * asserted is the absence of a horizontal shift rather than the absence of a
+	 * transition.
+	 */
+	it('drops the slide when the motion setting is off', async () => {
+		respond({ ...SETTINGS, motion: 'off' })
+		const wrapper = await mountApp()
+
+		expect(
+			(await shiftDuringSwap(wrapper)).filter((style) => style.includes('translateX')),
+		).toEqual([])
+	})
+
+	/** The other half, and what makes the case above discriminating rather than an
+	 *  assertion that passes on a view that never moved in the first place. */
+	it('slides when nothing has asked it not to', async () => {
+		const wrapper = await mountApp()
+
+		expect((await shiftDuringSwap(wrapper)).some((style) => style.includes('translateX'))).toBe(
+			true,
+		)
+	})
+})
 
 describe('the view switch', () => {
 	it('shows the list first', async () => {

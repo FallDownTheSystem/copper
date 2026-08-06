@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 import type { Settings } from './useSpace'
+import { clearReducedMotion, setReducedMotion as setOsPreference } from '@/testing/matchMedia'
 
 /**
  * Task-012 AC8, and the reason the composable ORs its two sources rather than
@@ -33,25 +34,6 @@ function makeSettings(motion: string): Settings {
 	}
 }
 
-/** VueUse reads the preference through `matchMedia`, which is the only lever
- *  that reaches it. */
-function setOsPreference(reduce: boolean) {
-	Object.defineProperty(window, 'matchMedia', {
-		configurable: true,
-		writable: true,
-		value: (query: string) => ({
-			matches: reduce && query.includes('prefers-reduced-motion'),
-			media: query,
-			onchange: null,
-			addEventListener: () => {},
-			removeEventListener: () => {},
-			addListener: () => {},
-			removeListener: () => {},
-			dispatchEvent: () => false,
-		}),
-	})
-}
-
 /**
  * `os` is the Windows setting; `motion` is Copper's own. Returns what the
  * composable concludes once the settings pull has landed.
@@ -82,7 +64,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-	Reflect.deleteProperty(window as unknown as Record<string, unknown>, 'matchMedia')
+	clearReducedMotion()
 })
 
 describe('useReducedMotion', () => {

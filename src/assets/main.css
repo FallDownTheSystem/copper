@@ -358,7 +358,7 @@
 		outline-offset: -2px;
 	}
 
-	.completion-circle {
+	.completion-box {
 		border-color: ButtonBorder;
 		color: ButtonText;
 	}
