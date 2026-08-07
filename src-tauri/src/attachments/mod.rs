@@ -39,6 +39,7 @@ pub mod commands;
 pub mod thumb;
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
 use sha2::{Digest, Sha256};
@@ -441,6 +442,62 @@ fn recycle(path: &Path) -> Disposed {
 	trash::delete(path).map_err(|err| err.to_string())
 }
 
+/// How the sweep gets rid of one blob.
+///
+/// A plain `fn` pointer rather than a boxed closure: the slot below has to live
+/// in a `static`, and this is the only shape that fits in one without an
+/// allocation or a lock on the disposal path.
+type Disposer = fn(&Path) -> Disposed;
+
+/// The disposer every sweep goes through, installed once by a test or never.
+///
+/// **Why a process-wide slot and not just the parameter [`sweep_with`] already
+/// takes.** That parameter reaches the unit tests in this file, and nothing
+/// else. The integration tests under `tests/` are a *separate crate* compiled
+/// against this library without `cfg(test)`, so all they can see is the public
+/// surface — and on that surface [`sweep`] is a two-argument function wired
+/// straight to the real Recycle Bin. Any test that reached a sweep would move a
+/// fixture's blobs into the developer's actual bin, which is not something a
+/// test suite may ever do to the person running it. The slot is what makes the
+/// real bin *unreachable* from a test process, rather than merely unreached by
+/// the tests that happen to exist today.
+static DISPOSER: OnceLock<Disposer> = OnceLock::new();
+
+/// The installed disposer, or the Recycle Bin if nothing installed one.
+///
+/// The default lives here rather than in the `static` so the production path
+/// needs no initialising call at all: a process that never installs one pays a
+/// single atomic load and nothing else.
+fn disposer() -> Disposer {
+	DISPOSER.get().copied().unwrap_or(recycle)
+}
+
+/// The disposer a test installs: an ordinary permanent delete.
+///
+/// Safe precisely because it is the *test* path — what it deletes is a fixture
+/// under a `tempfile::tempdir()`, never a file a person put somewhere.
+fn remove_blob(path: &Path) -> Disposed {
+	std::fs::remove_file(path).map_err(|err| err.to_string())
+}
+
+/// Points every sweep in this process at `fs::remove_file` instead of the
+/// Recycle Bin, for the rest of the process.
+///
+/// **For tests, and deliberately public.** The integration tests are a separate
+/// crate, so `#[cfg(test)]` does not reach them and there is no way to hand them
+/// a safe disposer except through this library's public surface. Call it once
+/// when constructing a harness that can reach a sweep — one line per harness,
+/// not per test. Calling it from several harnesses is fine: they all install the
+/// same function and only the first `set` wins, which is why the result is
+/// discarded rather than unwrapped.
+///
+/// Nothing in the product calls this, and because the slot is a [`OnceLock`] a
+/// test process cannot be switched *back* to the real bin once this has run.
+#[doc(hidden)]
+pub fn install_test_disposer() {
+	let _ = DISPOSER.set(remove_blob);
+}
+
 /// Moves blobs no note references, and that nothing has touched for
 /// [`ORPHAN_GRACE`], to the Recycle Bin.
 ///
@@ -454,18 +511,18 @@ fn recycle(path: &Path) -> Disposed {
 /// two-lock discipline: walking a directory while holding the store mutex would
 /// stall every capture for the duration of the walk.
 pub fn sweep(space_path: &Path, doc: &Space) {
-	sweep_with(space_path, doc, recycle);
+	sweep_with(space_path, doc, disposer());
 }
 
-/// [`sweep`], with the disposal step as a parameter.
+/// [`sweep`], with the disposal step passed in rather than read from
+/// [`DISPOSER`].
 ///
-/// The seam is here for the tests and for nothing else — the one production
-/// caller passes [`recycle`]. A `cargo test` that reached the real Recycle Bin
-/// would deposit a file in the developer's bin on every run, and would go red on
-/// a runner whose temp volume has no bin at all, for a reason that has nothing
-/// to do with the code. It is also the only way to reach the failure branch
-/// below, since making a real trash move fail on demand needs a filesystem a
-/// test cannot conjure.
+/// The two seams answer different questions and both are load-bearing. This one
+/// is for the unit tests in this file, which need to drive a *particular*
+/// disposal — one that records what it was handed, or one that fails on demand
+/// so the refusal branch below is reachable at all. The slot is for the
+/// integration tests, which cannot reach this function because it is private to
+/// the crate and they are not in it.
 fn sweep_with(space_path: &Path, doc: &Space, dispose: impl Fn(&Path) -> Disposed) {
 	let dir = assets_dir(space_path);
 	let entries = match std::fs::read_dir(&dir) {
