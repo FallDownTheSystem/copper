@@ -12,7 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     ActiveMarker: typeof import('./components/ActiveMarker.vue')['default']
-    ActiveSectionChip: typeof import('./components/ActiveSectionChip.vue')['default']
+    ActiveSectionHeading: typeof import('./components/ActiveSectionHeading.vue')['default']
     AttachmentCard: typeof import('./components/AttachmentCard.vue')['default']
     AttachmentTray: typeof import('./components/AttachmentTray.vue')['default']
     CaptureNotice: typeof import('./components/CaptureNotice.vue')['default']
@@ -40,9 +40,9 @@ declare module 'vue' {
     DropTarget: typeof import('./components/DropTarget.vue')['default']
     EditorRecoveryRow: typeof import('./components/EditorRecoveryRow.vue')['default']
     IconLucideAlertCircle: typeof import('~icons/lucide/alert-circle')['default']
+    IconLucideChevronDown: typeof import('~icons/lucide/chevron-down')['default']
     IconLucideChevronLeft: typeof import('~icons/lucide/chevron-left')['default']
     IconLucideChevronRight: typeof import('~icons/lucide/chevron-right')['default']
-    IconLucideChevronsUpDown: typeof import('~icons/lucide/chevrons-up-down')['default']
     IconLucideEllipsis: typeof import('~icons/lucide/ellipsis')['default']
     IconLucideFile: typeof import('~icons/lucide/file')['default']
     IconLucideFilePlus: typeof import('~icons/lucide/file-plus')['default']

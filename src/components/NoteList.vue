@@ -21,7 +21,8 @@ const { beginEdit } = useNoteEditor()
 const { interactionRowId, enter, reconcile } = useInteractionMode()
 const { hasQuery, resultCount } = useNoteSearch()
 const { setCollapsed, collapseEnabled } = useSections()
-const { toggleDone, finishDrag } = useNoteActions()
+const { toggleDone } = useNoteActions()
+const { dropTarget } = useNoteDrag()
 
 /**
  * The rendered list, paired with its section objects in one place. Derived from
@@ -77,18 +78,27 @@ function onPointerSelect(event: MouseEvent, noteId: string) {
 	else select(noteId)
 }
 
-/**
- * The DOM after a drop *is* the intended order, so it is read back rather than
- * reconstructed from the library's callbacks. After a tick, because the reorder
- * lands in the mirror array first and Vue patches on the next flush.
- */
-function onDragEnd(noteId: string) {
-	void nextTick(() => finishDrag(noteId))
-}
-
 function onKeydown(event: KeyboardEvent) {
 	// A reka overlay that consumed the key must not also move the selection.
 	if (event.defaultPrevented) return
+
+	/**
+	 * **Alt belongs to the shell's chord layer, and the grid must not claim it.**
+	 *
+	 * This is what made Alt+Arrow reordering appear to work exactly once, measured
+	 * live in WebView2. The grid is a descendant of the shell, so it sees a press
+	 * first; `case 'ArrowDown'` tested no modifier, so it `preventDefault`ed
+	 * Alt+ArrowDown and moved the roving target instead — and the shell's handler,
+	 * whose first line declines an already-prevented press, never ran. The one
+	 * position it worked from was a control *inside* a row: the guard below
+	 * early-returns for a button target, so the press escaped to the shell and
+	 * reordered. That reorder then put focus back on the row itself, where this
+	 * handler could swallow every press after it. The bug re-armed itself.
+	 *
+	 * A guard rather than an `altKey` test on each case, because the grid binds no
+	 * Alt chord at all — the general rule is the honest one.
+	 */
+	if (event.altKey) return
 
 	const target = event.target as HTMLElement | null
 
@@ -199,7 +209,11 @@ watch(() => space.value, reconcile)
 </script>
 
 <template>
-	<div class="min-w-0">
+	<!-- `data-note-list` marks the frame every drag coordinate is measured
+	     against, and `relative` is what lets the drop indicator be placed in it.
+	     The root scrolls with the content, so an offset measured against it stays
+	     true while the region scrolls under the pointer. -->
+	<div data-note-list class="relative min-w-0">
 		<!-- One grid spanning every section, not one per section: a Shift range has
 		     to extend across section boundaries, which needs a single composite
 		     widget. During a search a section with no match is not rendered at all,
@@ -227,9 +241,20 @@ watch(() => space.value, reconcile)
 				@activate="activateSection(entry.section.id)"
 				@pointer-select="onPointerSelect"
 				@toggle-done="toggleOne"
-				@drag-end="onDragEnd"
 			/>
 		</div>
+
+		<!-- Where the dragged note would land. Outside the grid rather than inside
+		     it: a `grid` may own only `row` and `rowgroup`, so a bare div among the
+		     sections would break `aria-required-children`. Purely decorative — the
+		     drag has no keyboard equivalent to announce, Alt+Arrow being the
+		     keyboard path to the same outcome. -->
+		<div
+			v-if="dropTarget"
+			aria-hidden="true"
+			class="bg-accent-ring pointer-events-none absolute inset-x-1 z-20 h-0.5 rounded-full"
+			:style="{ top: `${dropTarget.indicatorY}px` }"
+		/>
 
 		<SearchEmptyState v-if="noMatches" />
 	</div>

@@ -16,14 +16,7 @@ import { useEditorHandoff } from './useEditorHandoff'
 import { useNoteDisclosure } from './useNoteDisclosure'
 import { useNoteEditor } from './useNoteEditor'
 import { useNoteSearch } from './useNoteSearch'
-import {
-	focusRowSoon,
-	noteRow,
-	rowElement,
-	sectionRow,
-	takeRow,
-	useSelection,
-} from './useSelection'
+import { focusRowSoon, noteRow, sectionRow, takeRow, useSelection } from './useSelection'
 import { countMessage, useStatusMessage } from './useStatusMessage'
 import { useSpace } from './useSpace'
 
@@ -279,32 +272,24 @@ function reorderBlockedBySearch(): boolean {
 }
 
 /**
- * Commits a completed drag by reading the list back out of the DOM.
+ * Commits a completed drag.
  *
- * The DOM after a drop already *is* the intended final order, and `reorder_note`
- * interprets `index` against the target section with the note removed — which is
- * exactly the position it occupies in that final order. So this needs no diff
- * against the previous order and no knowledge of where the drag started.
+ * The destination arrives as a section and an index rather than being read back
+ * out of the DOM. The drag does not reorder the list as it runs — it translates
+ * the row it carries and paints a line where that row would land — so at drop
+ * time the DOM still holds the *old* order and reading it would compute a no-op
+ * every time. `useNoteDrag` resolves the destination from geometry instead, and
+ * counts its index over the section with the dragged note excluded, which is
+ * exactly what `reorder_note` takes.
  */
-async function finishDrag(noteId: string) {
-	// The DOM is read *before* the queue, not inside it: it holds the result of a
-	// gesture that has already finished, and a mutation completing in the meantime
-	// would re-render the list out from under it.
-	if (reorderBlockedBySearch()) return
-	const row = rowElement(noteRow(noteId))
-	const group = row?.closest<HTMLElement>('[data-section-id]')
-	const sectionId = group?.dataset.sectionId
-	if (!group || sectionId === undefined) return
-
-	const index = [...group.querySelectorAll<HTMLElement>('[data-note-row]')].findIndex(
-		(element) => element.dataset.rowId === noteRow(noteId),
-	)
-	if (index === -1) return
-
+function finishDrag(noteId: string, sectionId: string, index: number) {
 	return serialize(async () => {
+		if (reorderBlockedBySearch()) return
+
 		const note = space.noteById(noteId)
+		if (!note) return
 		// A drag that changed nothing must not push an undo entry.
-		if (note && note.section === sectionId && positionOf(noteId) === index) return
+		if (note.section === sectionId && positionOf(noteId) === index) return
 
 		if (!space.applied(await space.reorderNote(noteId, sectionId, index))) return
 
@@ -355,9 +340,17 @@ function moveFocusedBy(delta: number) {
 			index = delta > 0 ? 0 : neighbour.noteIds.length
 		}
 
-		if (space.applied(await space.reorderNote(noteId, sectionId, index))) {
-			focusRowSoon(noteRow(noteId))
-		}
+		if (!space.applied(await space.reorderNote(noteId, sectionId, index))) return
+
+		// `takeRow` rather than `focusRowSoon`: both halves of the roving target, not
+		// just the DOM one. The note keeps its row key across a reorder, so
+		// reconciliation leaves `focusedId` pointing at it and the two happen to
+		// agree — but "happen to" is not a guarantee, and a held Alt+Down depends on
+		// DOM focus landing back inside the grid for the *next* press to be seen at
+		// all. The selection is deliberately left alone: unlike a drag, this is a
+		// keyboard action on the focused note, and collapsing a multi-note selection
+		// as a side effect of nudging one note is not something the user asked for.
+		takeRow(noteRow(noteId))
 	})
 }
 

@@ -203,6 +203,11 @@ afterEach(async () => {
 	search.clearQuery()
 	sections.reset()
 	selection.clear()
+	// Interaction mode belongs on that list for the same reason and was missing
+	// from it: with a row still in the mode, the grid's key handler declines every
+	// press but Tab, so a later test's arrow keys move nothing and fail with focus
+	// simply sitting where it started.
+	interaction.exit()
 
 	// The *document* is module-scoped too, and `initialize()` is memoised — so a
 	// second mount does not re-pull it and a test that installed a different one
@@ -709,16 +714,31 @@ describe('the composer submit', () => {
 	})
 })
 
-describe('the active-section chip', () => {
+describe('the active-section heading', () => {
+	function heading(wrapper: Awaited<ReturnType<typeof mountPanel>>) {
+		return wrapper.find('[data-slot="dropdown-menu-trigger"][title]')
+	}
+
 	it('names the active section without touching the placeholder', async () => {
 		const wrapper = await mountPanel()
-		const chip = wrapper.find('[data-slot="dropdown-menu-trigger"][title]')
 
-		expect(chip.text()).toContain('Research')
+		expect(heading(wrapper).text()).toContain('Research')
 		// Task-004 acceptance criterion 3 stands: the placeholder names the *space*.
 		expect(wrapper.find('#composer').attributes('placeholder')).toBe(
 			'Add a note or a prompt (development)',
 		)
+	})
+
+	it('sits under the search field, and nowhere else', async () => {
+		// It began as a chip above the composer and moved: the active section is what
+		// the list below it is *of*, and a label above a list is where a reader looks
+		// for that. Moved, not copied — two controls saying the same thing is how one
+		// of them ends up stale.
+		const wrapper = await mountPanel()
+
+		expect(wrapper.find('header').element.contains(heading(wrapper).element)).toBe(true)
+		expect(wrapper.find('form[aria-label="Add a note"] [title]').exists()).toBe(false)
+		expect(wrapper.findAll('[data-slot="dropdown-menu-trigger"][title]')).toHaveLength(1)
 	})
 
 	it('carries the full name in a title, so a truncated one is still readable', async () => {
@@ -727,12 +747,11 @@ describe('the active-section chip', () => {
 		await installDocument({ ...SPACE, sections: [{ id: 'sec_a', name: long, order: 0 }] })
 		await settle(3)
 
-		const chip = wrapper.find('[data-slot="dropdown-menu-trigger"][title]')
-		expect(chip.attributes('title')).toBe(long)
-		expect(chip.find('.truncate').exists()).toBe(true)
+		expect(heading(wrapper).attributes('title')).toBe(long)
+		expect(heading(wrapper).find('.truncate').exists()).toBe(true)
 		// It updates when the active section changes — that is the whole reason it
-		// exists, since the header it duplicates scrolls out of view.
-		expect(chip.text()).toContain(long)
+		// exists, since the section's own header row scrolls out of view.
+		expect(heading(wrapper).text()).toContain(long)
 	})
 })
 
@@ -1821,4 +1840,331 @@ describe('attachments', () => {
 			results.violations.map((violation) => `${violation.id}: ${violation.nodes.length} node(s)`),
 		).toEqual([])
 	}, 30_000)
+})
+
+describe('reordering', () => {
+	/**
+	 * A store that actually reorders, so a second press sees the result of the
+	 * first. That is the whole subject here — every bug in this area was about what
+	 * the *next* press does.
+	 */
+	function installReorderingStore() {
+		let current: Space = { ...SPACE, notes: SPACE.notes.map((note) => ({ ...note })) }
+		const calls: { id: string; section: string; index: number }[] = []
+
+		mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+			if (command === 'get_active_space') return current
+			if (command !== 'reorder_note') return baseInvoke(command)
+
+			const { id, section, index } = args as { id: string; section: string; index: number }
+			calls.push({ id, section, index })
+
+			const moved = current.notes.find((note) => note.id === id)
+			if (!moved) return current
+			const rest = current.notes.filter((note) => note.id !== id)
+			const target = rest.filter((note) => note.section === section)
+			target.splice(index, 0, { ...moved, section })
+			const others = rest.filter((note) => note.section !== section)
+
+			current = {
+				...current,
+				notes: [...others, ...target].map((note, at) => ({ ...note, order: at })),
+			}
+			return current
+		})
+
+		return {
+			calls,
+			/** Note ids in the order the document holds them, for one section. */
+			order: (section: string) =>
+				current.notes.filter((note) => note.section === section).map((note) => note.id),
+		}
+	}
+
+	describe('Alt+Arrow', () => {
+		/**
+		 * **The bug this exists for, root-caused live in WebView2.**
+		 *
+		 * Alt+Arrow reordering worked exactly once and then went dead. The grid is a
+		 * descendant of the shell, so it sees a press first, and its `ArrowDown` case
+		 * tested no modifier: it `preventDefault`ed Alt+ArrowDown and moved the
+		 * roving target, and the shell's chord layer — whose first line declines a
+		 * press that is already prevented — never ran at all. The one position it did
+		 * work from was a control *inside* a row, because the grid's guard
+		 * early-returns for a button target. The reorder that followed then put focus
+		 * back on the row itself, where this handler could swallow every press after
+		 * it.
+		 *
+		 * So the measurement is not "does one press reorder" — one always did, from
+		 * the right starting position. It is whether the press after it does.
+		 */
+		it('reorders repeatedly from a focused row, not once from a lucky one', async () => {
+			const wrapper = await mountPanel()
+			const store = installReorderingStore()
+
+			const row = wrapper.find('[data-row-id="n:nte_1"]').element as HTMLElement
+			row.click()
+			row.focus()
+			await settle()
+
+			await wrapper
+				.find('[data-row-id="n:nte_1"]')
+				.trigger('keydown', { key: 'ArrowDown', altKey: true })
+			await settle(4)
+
+			expect(store.calls).toHaveLength(1)
+			expect(store.order('sec_a')).toEqual(['nte_2', 'nte_1'])
+			// Focus lands back on the moved row — both halves of the roving target, so
+			// the press after this one is seen at all.
+			expect(selection.focusedId.value).toBe('n:nte_1')
+			expect((document.activeElement as HTMLElement | null)?.dataset.rowId).toBe('n:nte_1')
+
+			// The press that used to do nothing: it arrives at the row the previous
+			// reorder just focused, which is exactly where the grid used to eat it.
+			await wrapper
+				.find('[data-row-id="n:nte_1"]')
+				.trigger('keydown', { key: 'ArrowDown', altKey: true })
+			await settle(4)
+
+			expect(store.calls).toHaveLength(2)
+			// Past the end of its own section it carries on into the next one, which
+			// is what a drag does too.
+			expect(store.order('sec_a')).toEqual(['nte_2'])
+			expect(store.order('sec_b')).toEqual(['nte_1'])
+		})
+
+		it('leaves an unmodified arrow to the grid, which still moves the target', async () => {
+			// The guard is "Alt belongs to the shell", not "arrows are off limits".
+			const wrapper = await mountPanel()
+			const store = installReorderingStore()
+
+			const row = wrapper.find('[data-row-id="n:nte_1"]')
+			;(row.element as HTMLElement).click()
+			await row.trigger('keydown', { key: 'ArrowDown' })
+			await settle()
+
+			expect(store.calls).toEqual([])
+			expect(selection.focusedId.value).toBe('n:nte_2')
+		})
+
+		it('does not collapse a multi-note selection as a side effect', async () => {
+			// Unlike a drag, this is a keyboard action on the *focused* note. Nudging
+			// one note is not a reason to throw away the others the user picked.
+			const wrapper = await mountPanel()
+			installReorderingStore()
+			selection.select('nte_1')
+			selection.extendTo('nte_2')
+
+			await wrapper
+				.find('[data-row-id="n:nte_2"]')
+				.trigger('keydown', { key: 'ArrowDown', altKey: true })
+			await settle(4)
+
+			expect(selection.selectedIds.value).toEqual(['nte_1', 'nte_2'])
+		})
+	})
+
+	describe('pointer drag', () => {
+		/**
+		 * happy-dom lays nothing out, so every rect is zero and a drop would resolve
+		 * to the top of the first section whatever the pointer did. The geometry is
+		 * real product behaviour and only the environment is missing — the same
+		 * argument the Web Animations stub at the top of this file makes — so the
+		 * boxes are supplied here rather than the composable weakened to cope
+		 * without them.
+		 *
+		 * `sec_a` spans 0–100 with its two notes at 20–60 and 64–100; `sec_b` spans
+		 * 124–200 and holds nothing.
+		 */
+		const BOXES: Record<string, [number, number]> = {
+			'[data-note-list]': [0, 400],
+			'[data-scroll-region]': [0, 400],
+			'[data-section-id="sec_a"]': [0, 100],
+			'[data-section-id="sec_b"]': [124, 200],
+			'[data-row-id="n:nte_1"]': [20, 60],
+			'[data-row-id="n:nte_2"]': [64, 100],
+		}
+
+		function stubLayout() {
+			const proto = Element.prototype as unknown as Record<string, unknown>
+			const real = proto.getBoundingClientRect
+			proto.getBoundingClientRect = function (this: Element) {
+				const entry = Object.entries(BOXES).find(([selector]) => this.matches(selector))
+				const [top, bottom] = entry?.[1] ?? [0, 0]
+				return { top, bottom, left: 0, right: 390, width: 390, height: bottom - top }
+			}
+			return () => {
+				proto.getBoundingClientRect = real
+			}
+		}
+
+		/** Pointer capture is part of the gesture and part of no DOM happy-dom
+		 *  implements. Only the three calls the drag makes are needed. */
+		function stubPointerCapture() {
+			const proto = Element.prototype as unknown as Record<string, unknown>
+			const held = new Set<number>()
+			proto.setPointerCapture = (id: number) => held.add(id)
+			proto.hasPointerCapture = (id: number) => held.has(id)
+			proto.releasePointerCapture = (id: number) => held.delete(id)
+			return () => {
+				for (const name of ['setPointerCapture', 'hasPointerCapture', 'releasePointerCapture']) {
+					Reflect.deleteProperty(proto, name)
+				}
+			}
+		}
+
+		function pointer(name: string, clientY: number) {
+			const event = new Event(name, { bubbles: true, cancelable: true })
+			return Object.assign(event, {
+				pointerId: 1,
+				pointerType: 'mouse',
+				button: 0,
+				clientX: 300,
+				clientY,
+			})
+		}
+
+		let restore: (() => void)[] = []
+
+		beforeEach(() => {
+			restore = [stubLayout(), stubPointerCapture()]
+		})
+
+		afterEach(() => {
+			for (const undo of restore.splice(0)) undo()
+		})
+
+		function gripOf(wrapper: Awaited<ReturnType<typeof mountPanel>>, rowId: string) {
+			const grip = wrapper.find(`[data-row-id="${rowId}"] [data-drag-handle]`)
+			expect(grip.exists(), `no drag handle on ${rowId}`).toBe(true)
+			return grip.element as HTMLElement
+		}
+
+		function draggingRow() {
+			return document.querySelector('[data-note-row][data-dragging]')
+		}
+
+		it('drags a note past its neighbour and commits the index that lands it there', async () => {
+			const wrapper = await mountPanel()
+			const store = installReorderingStore()
+			const grip = gripOf(wrapper, 'n:nte_1')
+
+			grip.dispatchEvent(pointer('pointerdown', 40))
+			window.dispatchEvent(pointer('pointermove', 90))
+			await settle()
+
+			// The list is not reordered while the drag runs — the row is translated
+			// and a line painted where it would land — so the DOM still holds the old
+			// order at this point. That is what lets the commit hand over a section and
+			// an index instead of reading a mutated DOM back.
+			expect(draggingRow()).not.toBeNull()
+			expect(
+				wrapper.findAll('[data-row-id^="n:"]').map((row) => row.attributes('data-row-id')),
+			).toEqual(['n:nte_1', 'n:nte_2'])
+
+			window.dispatchEvent(pointer('pointerup', 90))
+			await settle(4)
+
+			expect(store.calls).toEqual([{ id: 'nte_1', section: 'sec_a', index: 1 }])
+			expect(store.order('sec_a')).toEqual(['nte_2', 'nte_1'])
+			// Nothing of the gesture is left on the row.
+			expect(draggingRow()).toBeNull()
+		})
+
+		it('carries a note into another section in one gesture', async () => {
+			const wrapper = await mountPanel()
+			const store = installReorderingStore()
+			const grip = gripOf(wrapper, 'n:nte_1')
+
+			grip.dispatchEvent(pointer('pointerdown', 40))
+			// Into the empty second section, which has no row to compare against —
+			// only the band it occupies.
+			window.dispatchEvent(pointer('pointermove', 150))
+			window.dispatchEvent(pointer('pointerup', 150))
+			await settle(4)
+
+			expect(store.calls).toEqual([{ id: 'nte_1', section: 'sec_b', index: 0 }])
+			expect(store.order('sec_b')).toEqual(['nte_1'])
+		})
+
+		it('holds a press that has barely moved, so the grip stays clickable', async () => {
+			const wrapper = await mountPanel()
+			const store = installReorderingStore()
+			const grip = gripOf(wrapper, 'n:nte_1')
+
+			grip.dispatchEvent(pointer('pointerdown', 40))
+			window.dispatchEvent(pointer('pointermove', 43))
+			await settle()
+			expect(draggingRow()).toBeNull()
+
+			window.dispatchEvent(pointer('pointerup', 43))
+			await settle(3)
+
+			expect(store.calls).toEqual([])
+		})
+
+		it('commits nothing for a drag that ends where it started', async () => {
+			// A drag that changed nothing must not push an undo entry.
+			const wrapper = await mountPanel()
+			const store = installReorderingStore()
+			const grip = gripOf(wrapper, 'n:nte_1')
+
+			grip.dispatchEvent(pointer('pointerdown', 40))
+			window.dispatchEvent(pointer('pointermove', 50))
+			window.dispatchEvent(pointer('pointerup', 50))
+			await settle(4)
+
+			expect(store.calls).toEqual([])
+		})
+
+		it('abandons the drag on Escape without touching the document', async () => {
+			const wrapper = await mountPanel()
+			const store = installReorderingStore()
+			selection.select('nte_1')
+			const grip = gripOf(wrapper, 'n:nte_1')
+
+			grip.dispatchEvent(pointer('pointerdown', 40))
+			window.dispatchEvent(pointer('pointermove', 90))
+			await settle()
+			expect(draggingRow()).not.toBeNull()
+
+			window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+			await settle(3)
+
+			expect(store.calls).toEqual([])
+			expect(draggingRow()).toBeNull()
+			// The press is consumed by the drag rather than falling through to the
+			// shell's ladder, which would have cleared the selection underneath it.
+			expect(selection.selectedIds.value).toEqual(['nte_1'])
+
+			// And the gesture is genuinely over: a later pointerup commits nothing.
+			window.dispatchEvent(pointer('pointerup', 90))
+			await settle(3)
+			expect(store.calls).toEqual([])
+		})
+
+		it('abandons the drag when the pointer stream is cancelled', async () => {
+			const wrapper = await mountPanel()
+			const store = installReorderingStore()
+			const grip = gripOf(wrapper, 'n:nte_1')
+
+			grip.dispatchEvent(pointer('pointerdown', 40))
+			window.dispatchEvent(pointer('pointermove', 90))
+			window.dispatchEvent(pointer('pointercancel', 90))
+			await settle(3)
+
+			expect(store.calls).toEqual([])
+			expect(draggingRow()).toBeNull()
+		})
+
+		it('withdraws the handle while a search is active', async () => {
+			// A filtered list is a subset of its section, so an index read off it is
+			// not the index `reorder_note` takes.
+			const wrapper = await mountPanel()
+			await wrapper.find('#panel-search').setValue('first')
+			await settle(3)
+
+			expect(wrapper.find('[data-drag-handle]').exists()).toBe(false)
+		})
+	})
 })

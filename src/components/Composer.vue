@@ -32,8 +32,6 @@ function focus() {
 	textarea.value?.focus()
 }
 
-defineExpose({ focus })
-
 /**
  * Where the caret was when the section switcher opened, or null if the composer
  * did not have focus at the time.
@@ -43,9 +41,14 @@ defineExpose({ focus })
  * because "focus returns to the composer with its caret preserved" is a promise
  * worth holding explicitly rather than one that happens to be true of Chromium.
  *
- * Null is also the signal that the switcher was opened by clicking the chip, in
- * which case reka's own close-focus — back to the chip — is the right answer and
- * is left alone.
+ * Null is also the signal that the switcher was opened by clicking the heading,
+ * in which case reka's own close-focus — back to that trigger — is the right
+ * answer and is left alone.
+ *
+ * The trigger itself lives in the header now rather than beside this field, so
+ * the event arrives second-hand: `PanelHeader` forwards it and `PanelShell` hands
+ * it here. The decision stays where the knowledge is — only the composer knows
+ * whether it held the caret when the switcher opened.
  */
 let caret: { start: number; end: number } | null = null
 
@@ -58,7 +61,7 @@ watch(switcherOpen, (open) => {
 			: null
 })
 
-function onSwitcherClosed(event: Event) {
+function restoreCaret(event: Event) {
 	if (!caret) return
 	// Declines reka's return-to-trigger only when there is somewhere better to go.
 	event.preventDefault()
@@ -69,6 +72,8 @@ function onSwitcherClosed(event: Event) {
 	field.focus()
 	field.setSelectionRange(start, end)
 }
+
+defineExpose({ focus, restoreCaret })
 
 function onInput(event: Event) {
 	value.value = (event.target as HTMLTextAreaElement).value
@@ -221,13 +226,6 @@ function onKeydown(event: KeyboardEvent) {
 		class="border-separator border-t px-3 py-2"
 		@submit.prevent="submit"
 	>
-		<!-- Above the field, in a row it never shares, so activating a section
-		     shifts nothing. The placeholder below still names the *space*, which is
-		     task-004's rule and is upheld rather than amended. -->
-		<div class="mb-1.5 flex min-w-0">
-			<ActiveSectionChip @closed="onSwitcherClosed" />
-		</div>
-
 		<AttachmentTray />
 
 		<label for="composer" class="sr-only">New note</label>

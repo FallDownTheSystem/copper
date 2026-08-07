@@ -229,6 +229,7 @@ declare global {
   const useNetwork: typeof import('@vueuse/core').useNetwork
   const useNoteActions: typeof import('./composables/useNoteActions').useNoteActions
   const useNoteDisclosure: typeof import('./composables/useNoteDisclosure').useNoteDisclosure
+  const useNoteDrag: typeof import('./composables/useNoteDrag').useNoteDrag
   const useNoteEditor: typeof import('./composables/useNoteEditor').useNoteEditor
   const useNoteSearch: typeof import('./composables/useNoteSearch').useNoteSearch
   const useNow: typeof import('@vueuse/core').useNow
@@ -602,6 +603,7 @@ declare module 'vue' {
     readonly useNetwork: UnwrapRef<typeof import('@vueuse/core')['useNetwork']>
     readonly useNoteActions: UnwrapRef<typeof import('./composables/useNoteActions')['useNoteActions']>
     readonly useNoteDisclosure: UnwrapRef<typeof import('./composables/useNoteDisclosure')['useNoteDisclosure']>
+    readonly useNoteDrag: UnwrapRef<typeof import('./composables/useNoteDrag')['useNoteDrag']>
     readonly useNoteEditor: UnwrapRef<typeof import('./composables/useNoteEditor')['useNoteEditor']>
     readonly useNoteSearch: UnwrapRef<typeof import('./composables/useNoteSearch')['useNoteSearch']>
     readonly useNow: UnwrapRef<typeof import('@vueuse/core')['useNow']>

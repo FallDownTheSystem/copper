@@ -50,7 +50,9 @@ const root = useTemplateRef<HTMLElement>('root')
 const portalHost = useTemplateRef<HTMLElement>('portalHost')
 const clampProbe = useTemplateRef<HTMLElement>('clampProbe')
 const header = useTemplateRef<{ focusSearch: () => void }>('header')
-const composer = useTemplateRef<{ focus: () => void }>('composer')
+const composer = useTemplateRef<{ focus: () => void; restoreCaret: (event: Event) => void }>(
+	'composer',
+)
 
 const empty = computed(() => loadState.value === 'ready' && noteCount.value === 0)
 
@@ -293,7 +295,10 @@ function onContextMenu(event: MouseEvent) {
 		@keydown="onShellKeydown"
 		@contextmenu="onContextMenu"
 	>
-		<PanelHeader ref="header" />
+		<!-- The section switcher's close-focus event, relayed from the heading in the
+		     header to the composer. The two are siblings, and only the composer knows
+		     whether it was mid-sentence when `Ctrl+K` opened the switcher. -->
+		<PanelHeader ref="header" @switcher-closed="composer?.restoreCaret($event)" />
 
 		<!-- The only scrollable region. `min-h-0` is load-bearing: a grid item
 		     defaults to `min-height: auto`, so without it this grows to its content
@@ -309,7 +314,10 @@ function onContextMenu(event: MouseEvent) {
 			<h1 class="sr-only">{{ spaceName || 'Copper' }}</h1>
 
 			<PanelStates>
-				<div class="pt-2 pb-3">
+				<!-- `px-1` matches the 4px rhythm between rows. Without it the cards sit
+				     flush against the panel edge, which puts their rounded corners and
+				     the selection ring's outer edge hard against the window. -->
+				<div class="px-1 pt-2 pb-3">
 					<NoteList />
 
 					<!-- Additive, not a replacement: a zero-note space still renders its

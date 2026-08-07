@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import autoAnimate, { type AnimationController } from '@formkit/auto-animate'
-import { useDragAndDrop } from '@formkit/drag-and-drop/vue'
 
 import { EASE_OUT_QUINT_CSS } from '@/lib/motion'
 import { noteRow, sectionRow } from '@/composables/useSelection'
@@ -18,13 +17,13 @@ const emit = defineEmits<{
 	activate: []
 	pointerSelect: [event: MouseEvent, noteId: string]
 	toggleDone: [noteId: string]
-	dragEnd: [noteId: string]
 }>()
 
 const { noteById, listAnimated } = useSpace()
 const { isCollapsed } = useSections()
+const { isDragging } = useNoteDrag()
 
-const dragging = ref(false)
+const rowgroup = useTemplateRef<HTMLElement>('rowgroup')
 
 /** Read here rather than passed as a prop, like selection and focus: a prop
  *  would put it in the parent's render dependencies and rebuild every section on
@@ -34,61 +33,21 @@ const dragging = ref(false)
 const collapsed = computed(() => isCollapsed(props.section.id))
 
 /**
- * One drag parent per section, which is why sections are a component at all:
- * `useDragAndDrop` binds a parent element to a values array once, and a `v-for`
- * of sections inside one component has no stable place to do that.
+ * The document's order is the only order there is.
  *
- * Cross-section drags work through the shared `group`, so a note can be dragged
- * out of one section and into another in a single gesture.
+ * Reordering used to keep a second one: `@formkit/drag-and-drop` owned a mirror
+ * array it reordered optimistically mid-gesture, and a watcher pushed the store's
+ * order back into it on every applied document. `useNoteDrag` reorders nothing
+ * while a drag runs — it translates the row it carries and commits a section and
+ * an index — so there is no mirror left to keep in step, and what a section
+ * renders is what the document says it holds.
+ *
+ * Resolved once per row rather than twice — the `v-if` and the `:note` binding
+ * asked the same question — which drops the non-null assertion with it. An id the
+ * document no longer has simply yields no row.
  */
-const [rowgroup, order] = useDragAndDrop<string>([...props.noteIds], {
-	group: 'copper-notes',
-	// Synthetic pointer drag rather than the HTML5 drag API. Tauri's
-	// `dragDropEnabled` (on by default) intercepts native drag events at the
-	// webview boundary on Windows, and reordering built on `dragstart`/`drop`
-	// would simply never fire. This setting sidesteps the question entirely —
-	// which is also the answer to the gate task-011 carries.
-	nativeDrag: false,
-	// A handle rather than the whole card: the row already owns click-to-select
-	// and a `contextmenu` trigger, and a body-wide drag would have to arbitrate
-	// with both on `pointerdown`.
-	dragHandle: '[data-drag-handle]',
-	// The rowgroup also holds the section header row and, when empty, a message
-	// row. ARIA forbids an inner wrapper here — a `rowgroup` may own only `row` —
-	// so the non-note children are excluded by predicate instead.
-	draggable: (child) => child.hasAttribute('data-note-row'),
-	onDragstart: () => onDragStart(),
-	onDragend: (data) => onDragEnd(String(data.draggedNode.data.value)),
-})
-
-function onDragStart() {
-	dragging.value = true
-}
-
-function onDragEnd(noteId: string) {
-	dragging.value = false
-	emit('dragEnd', noteId)
-}
-
-/**
- * The store is the source of truth; the library's array is a mirror it is
- * allowed to reorder optimistically. When the write round-trips, the two already
- * agree and this assigns nothing.
- */
-watch(
-	() => props.noteIds,
-	(ids) => {
-		if (ids.length === order.value.length && ids.every((id, at) => order.value[at] === id)) return
-		order.value = [...ids]
-	},
-	{ immediate: true },
-)
-
-/** Resolved once per row rather than twice — the `v-if` and the `:note` binding
- *  asked the same question — which drops the non-null assertion with it. An id
- *  the document no longer has simply yields no row. */
 const orderedNotes = computed(() =>
-	order.value.flatMap((id) => {
+	props.noteIds.flatMap((id) => {
 		const note = noteById(id)
 		return note ? [note] : []
 	}),
@@ -106,13 +65,15 @@ const reduced = useReducedMotion()
 
 function syncAnimation() {
 	if (!controller) return
-	// A drag already animates the rows it moves. Leaving auto-animate on would put
-	// two independent transforms on the same element for the whole gesture.
-	if (listAnimated.value && !dragging.value && !reduced.value) controller.enable()
+	// The dragged row carries a transform of its own for the length of the
+	// gesture, and auto-animate would put a second, independent one on the same
+	// element. Every section stands down rather than only the one the note came
+	// from: a drag can cross into another section, and the row lands there.
+	if (listAnimated.value && !isDragging.value && !reduced.value) controller.enable()
 	else controller.disable()
 }
 
-watch([listAnimated, dragging, reduced], syncAnimation)
+watch([listAnimated, isDragging, reduced], syncAnimation)
 
 onMounted(() => {
 	const element = rowgroup.value
@@ -128,11 +89,11 @@ onMounted(() => {
 </script>
 
 <template>
-	<!-- A function ref rather than the ref object: `useDragAndDrop` hands back a
-	     `Ref<HTMLElement | undefined>`, which is not one of the shapes Vue's `ref`
-	     binding accepts. -->
+	<!-- `data-section-id` is read by two things: this is the element a drop
+	     resolves a section from, as well as the rowgroup auto-animate is bound
+	     to. -->
 	<div
-		:ref="(element) => (rowgroup = element as HTMLElement | undefined)"
+		ref="rowgroup"
 		role="rowgroup"
 		:data-section-id="section.id"
 		:aria-labelledby="`section-heading-${section.id}`"
@@ -162,7 +123,7 @@ onMounted(() => {
 		     collapsed: the notes are there, they are folded away. The general empty
 		     state is additive; the headers stay visible either way, because hiding
 		     where a capture will land is worst exactly when the list is empty. -->
-		<div v-if="order.length === 0 && active && !collapsed" role="row">
+		<div v-if="noteIds.length === 0 && active && !collapsed" role="row">
 			<div role="gridcell" class="text-text-secondary px-3 py-1 text-meta">
 				No notes in this section yet.
 			</div>

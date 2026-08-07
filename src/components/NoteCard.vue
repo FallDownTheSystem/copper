@@ -23,6 +23,7 @@ const { isHandingOff, isConflicted } = useEditorHandoff()
 const { stopHandoff } = useNoteActions()
 const { hasQuery } = useNoteSearch()
 const { setMessage } = useStatusMessage()
+const { beginDrag, consumeDragClick } = useNoteDrag()
 
 /** The field is omitted from the document when empty, so it arrives undefined
  *  on every note written before this feature existed. */
@@ -48,6 +49,16 @@ const conflicted = computed(() => isConflicted(props.note.id))
  */
 function onContextMenu() {
 	if (!selected.value) select(props.note.id)
+}
+
+/**
+ * A completed drag ends with the pointer going down and up on the grip, which is
+ * a `click` by every definition the browser has — and the grip sits inside the
+ * row, whose own click selects. Swallowed only when a drag actually happened, so
+ * a plain click on the grip still selects the row it belongs to.
+ */
+function onGripClick(event: MouseEvent) {
+	if (consumeDragClick()) event.stopPropagation()
 }
 </script>
 
@@ -79,9 +90,16 @@ function onContextMenu() {
 				     note already taller than the minimum exactly where it was — and
 				     `items-start` still puts the completion circle on the first line of
 				     both. Flex has no equivalent: `items-center` would drag the circle to
-				     the vertical middle of a tall note. -->
+				     the vertical middle of a tall note.
+
+				     The third column is the grip's, and it is a column rather than an
+				     overlay because that is what keeps a long line from running
+				     underneath it: the gutter is reserved by the layout at all times, so
+				     nothing depends on a `pr-*` matching the grip's width by hand. It
+				     holds its width while the grip is invisible, so revealing the grip on
+				     hover shifts no text either. -->
 				<div
-					class="grid min-h-11 min-w-0 grid-cols-[auto_minmax(0,1fr)] content-center items-start gap-2 px-3 py-2"
+					class="grid min-h-11 min-w-0 grid-cols-[auto_minmax(0,1fr)_1.25rem] content-center items-start gap-2 px-3 py-2"
 					role="gridcell"
 				>
 					<!-- A rounded square rather than task-004's circle, so the squircle
@@ -101,19 +119,6 @@ function onContextMenu() {
 					/>
 
 					<div class="min-w-0">
-						<!-- A grip rather than a body-wide drag: the row already owns
-						     click-to-select and the context-menu trigger, and a whole-card
-						     drag would have to arbitrate with both on `pointerdown`. Kept
-						     out of the tab order like every other descendant — the keyboard
-						     path to reordering is Alt+Arrow, not this. -->
-						<span
-							v-if="draggable"
-							data-drag-handle
-							role="presentation"
-							class="text-text-disabled hover:text-text-secondary absolute top-2 right-1 cursor-grab rounded-md p-1 opacity-0 transition-opacity duration-fast group-focus-within/row:opacity-100 group-hover/row:opacity-100 active:cursor-grabbing"
-						>
-							<IconLucideGripVertical class="size-4" aria-hidden="true" focusable="false" />
-						</span>
 						<NoteEditor v-if="editing" :row-id="rowId" />
 						<NoteBody v-else :note="note" :class="note.done ? 'note-done' : ''" />
 
@@ -157,6 +162,26 @@ function onContextMenu() {
 							</button>
 						</p>
 					</div>
+
+					<!-- A grip rather than a body-wide drag: the row already owns
+					     click-to-select and the context-menu trigger, and a whole-card drag
+					     would have to arbitrate with both on `pointerdown`. Kept out of the
+					     tab order like every other descendant — the keyboard path to
+					     reordering is Alt+Arrow, not this.
+
+					     The visible mark stays small; `.note-grip` below is what the
+					     pointer can actually hit. `touch-none` is what stops a touch or pen
+					     drag from scrolling the region instead of moving the note. -->
+					<span
+						v-if="draggable"
+						data-drag-handle
+						role="presentation"
+						class="note-grip text-text-disabled hover:text-text-secondary flex cursor-grab touch-none justify-center pt-1 opacity-0 transition-opacity duration-fast group-focus-within/row:opacity-100 group-hover/row:opacity-100"
+						@pointerdown="beginDrag(note.id, $event)"
+						@click="onGripClick"
+					>
+						<IconLucideGripVertical class="size-4" aria-hidden="true" focusable="false" />
+					</span>
 				</div>
 			</div>
 		</ContextMenuTrigger>
@@ -168,9 +193,49 @@ function onContextMenu() {
 <style scoped>
 /* Bounds layout cost without `content-visibility: auto`, which reports
    provisional dimensions for a skipped subtree and would make the disclosure
-   measurement decide "not overflowing" until the card scrolled into view. */
+   measurement decide "not overflowing" until the card scrolled into view.
+
+   It is also what makes the row the containing block for the grip's hit-area
+   pseudo-element below — layout containment establishes one for absolutely
+   positioned descendants. */
 .note-row {
 	contain: layout;
+}
+
+/* The grip's real hit area, which is much larger than the 16px mark it paints.
+   Absolutely positioned and so resolved against `.note-row` rather than against
+   the grid cell: that is what lets it span the row's *whole* height, padding
+   included, without the layout knowing about it.
+
+   It is bounded by the row on purpose, and cannot use `hit-44`: that utility
+   centres a fixed 44px box on the control, which for a grip sitting near the top
+   of a 44px row would reach up into the row above and make the two rows' grips
+   fight over the same pixels. This one is exactly as tall as its own row and no
+   taller.
+
+   The width is exactly the gutter it lives in — the row's 12px right padding,
+   plus the 20px grip column, plus the 8px column gap — so a generous grab area
+   still never covers a word of the note. */
+.note-grip::before {
+	content: '';
+	position: absolute;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	width: 2.5rem;
+}
+
+/* Lifted while it is carried. The row is translated under the pointer with
+   nothing else moving, so it needs a surface of its own — over a bare row the two
+   texts would simply overlap — and a stacking order above the rows it passes.
+   Nothing here animates over time: the transform tracks the pointer 1:1, so there
+   is no duration for reduced motion to have an opinion about. */
+.note-row[data-dragging] {
+	position: relative;
+	z-index: 10;
+	background: var(--surface);
+	box-shadow: 0 4px 14px oklch(0 0 0 / 0.18);
+	cursor: grabbing;
 }
 
 /* Done notes drop to the secondary colour with a faint rule through the text
