@@ -47,11 +47,23 @@ const pressStyle = computed(() => (scalesOnPress.value ? { willChange: 'transfor
 
 const pressTransition = { duration: 0.15, ease: [0.22, 1, 0.36, 1] as const }
 
-/** Resolved once per box rather than once per render: this control is mounted on
- *  every row of the list, and `cn` is a clsx join plus a tailwind-merge parse. */
+/**
+ * Resolved once per box rather than once per render: this control is mounted on
+ * every row of the list, and `cn` is a clsx join plus a tailwind-merge parse.
+ *
+ * The radius is what makes the superellipse visible at all. `corner-shape` bends
+ * the corner arc within the radius it is given, so on a 16px box a 4px radius —
+ * the reference app's value, carried over unexamined — leaves the squircle and
+ * the circular arc within a pixel of each other, and the box reads as a plain
+ * rounded square however well the property is supported. 6px is most of the way
+ * to the 8px that would make the whole edge one curve, which is where the
+ * difference is legible while the shape is still a square with soft corners —
+ * and it is a sane plain radius on a runtime that ignores `corner-shape`, since
+ * that `rounded-[6px]` is the fallback.
+ */
 const rootClass = computed(() =>
 	cn(
-		'squircle border-text-disabled outline-focus-ring data-[state=checked]:bg-accent-ring data-[state=checked]:border-accent-ring size-4 shrink-0 rounded-[4px] border text-white transition-colors duration-base focus-visible:outline-2 focus-visible:outline-offset-1 disabled:cursor-not-allowed disabled:opacity-50',
+		'squircle border-text-disabled outline-focus-ring data-[state=checked]:bg-accent-ring data-[state=checked]:border-accent-ring size-4 shrink-0 rounded-[6px] border text-white transition-colors duration-base focus-visible:outline-2 focus-visible:outline-offset-1 disabled:cursor-not-allowed disabled:opacity-50',
 		props.class,
 	),
 )

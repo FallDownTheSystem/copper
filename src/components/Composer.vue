@@ -84,6 +84,22 @@ function report(message: string | null) {
 }
 
 /**
+ * Every attach attempt starts by retiring the previous one's message — the same
+ * discipline `useSettings`'s `attempt` applies to a settings row, and the reason
+ * both need it is that `report` can only ever *add*.
+ *
+ * Without this a refusal outlived every later attach that succeeded: the new
+ * file landed in the tray with the old failure still sitting under it, until a
+ * keystroke happened to clear it through `onInput`. On the way in rather than on
+ * the way out, so the stale message is not on screen for the length of the round
+ * trip either. `DropTarget` is the fourth ingest path and clears the same scope
+ * for the same reason.
+ */
+function beginAttach() {
+	clearActionError('composer')
+}
+
+/**
  * `Ctrl+V`, which may or may not be an attachment.
  *
  * **The native paste is deliberately not prevented.** Deciding needs a round
@@ -98,6 +114,10 @@ function report(message: string | null) {
  * nothing to insert and inserted nothing.
  */
 async function onPaste() {
+	// Ahead of the round trip that decides whether this was an attachment at all,
+	// which costs nothing when it turns out to have been text: the native paste
+	// that ran alongside it fires `input`, and that clears this scope too.
+	beginAttach()
 	const outcome = await pasteAttachment()
 	if (!outcome.handled) return
 	report(outcome.message)
@@ -105,6 +125,7 @@ async function onPaste() {
 }
 
 async function pick() {
+	beginAttach()
 	report(await pickAttachments())
 	focus()
 }

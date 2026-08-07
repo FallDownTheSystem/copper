@@ -67,7 +67,15 @@ afterAll(() => {
 	if (stubbedAnimate) Reflect.deleteProperty(elementPrototype, 'animate')
 })
 
-const mocks = vi.hoisted(() => ({ invoke: vi.fn(), openUrl: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+	invoke: vi.fn(),
+	openUrl: vi.fn(),
+	/** `DropTarget`'s own listener, held so a test can hand it an OS drag event.
+	 *  Boxed rather than a bare binding: the `vi.mock` factory below closes over
+	 *  this object, and reassigning a hoisted binding from inside it would not be
+	 *  seen out here. */
+	dragDrop: { deliver: null as ((payload: unknown) => unknown) | null },
+}))
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 // `emit` is here for the capture notice the shell mounts, which signals frontend
@@ -82,7 +90,16 @@ vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: mocks.openUrl }))
 // exist outside the real webview — so the whole module is stubbed rather than
 // the internals faked, which would be a second, worse copy of Tauri's shape.
 vi.mock('@tauri-apps/api/webview', () => ({
-	getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
+	getCurrentWebview: () => ({
+		onDragDropEvent: async (handler: (payload: unknown) => unknown) => {
+			mocks.dragDrop.deliver = handler
+			// Dropped on unmount as the real unlisten is, so a test that fires a drop
+			// cannot reach a component the previous test tore down.
+			return () => {
+				mocks.dragDrop.deliver = null
+			}
+		},
+	}),
 }))
 
 const SPACE: Space = {
@@ -368,6 +385,31 @@ describe('row controls', () => {
 		await circle.trigger('keydown', { key: 'Escape' })
 
 		expect(reachedGrid).toBe(true)
+	})
+})
+
+describe('the header mark', () => {
+	/**
+	 * Two properties that are invisible in a screenshot and easy to undo.
+	 *
+	 * Tauri reads `data-tauri-drag-region` off the element the mousedown actually
+	 * lands on, so wrapping the glyph in a span — the obvious thing to do when
+	 * someone next restyles it — would leave the mark looking identical and
+	 * dragging nothing. And it is branding rather than a control: a tab stop here
+	 * would put a dead target in front of the search field, which is the first
+	 * thing the panel's keyboard flow reaches.
+	 */
+	it('is the drag handle itself and takes no focus', async () => {
+		const wrapper = await mountPanel()
+		// A descendant selector, so the header's own drag region is not what this
+		// finds.
+		const mark = wrapper.find('header [data-tauri-drag-region]')
+
+		expect(mark.exists()).toBe(true)
+		expect(mark.element.children).toHaveLength(0)
+		expect(mark.text()).toBe('c')
+		expect(mark.attributes('tabindex')).toBeUndefined()
+		expect(mark.element.tagName).not.toBe('BUTTON')
 	})
 })
 
@@ -1290,6 +1332,15 @@ describe('attachments', () => {
 		await settle(3)
 	}
 
+	/** An OS file drop, delivered to the listener `DropTarget` registered on
+	 *  mount — the third ingest path, and the only one with no DOM event behind
+	 *  it. */
+	async function dropFiles(paths: string[]) {
+		expect(mocks.dragDrop.deliver, 'DropTarget registered no drag listener').not.toBeNull()
+		await mocks.dragDrop.deliver?.({ payload: { type: 'drop', paths } })
+		await settle(3)
+	}
+
 	/**
 	 * Cleared going *in* rather than coming out, and the difference is not
 	 * stylistic.
@@ -1366,6 +1417,75 @@ describe('attachments', () => {
 
 		expect(wrapper.text()).toContain('huge.bin is 12.0 MB')
 		expect(wrapper.text()).toContain('Attached 1 file')
+	})
+
+	/**
+	 * The reported bug. A refused file left its message on the composer, and the
+	 * next attach — which worked — landed in the tray underneath it, because
+	 * `report` only ever added and `onInput` was the only thing that took a
+	 * message away. So the message survived until the user happened to type.
+	 *
+	 * Asserted per ingest path rather than once, because the clearing lives at
+	 * each entry point: `useAttachments` deliberately holds no opinion about
+	 * error surfaces, so there is no single place downstream that could cover all
+	 * three at once.
+	 */
+	describe('a refusal does not outlive the next attach that succeeds', () => {
+		const REFUSED = 'empty.md is empty'
+
+		/** Leaves the composer showing a refusal, through the picker. */
+		async function refuse(wrapper: Awaited<ReturnType<typeof mountPanel>>) {
+			withAttachmentCommands({
+				attach_pick: () => {
+					throw { kind: 'invalid', message: REFUSED }
+				},
+			})
+			await wrapper.find('[aria-label="Attach files"]').trigger('click')
+			await settle(3)
+			expect(wrapper.text()).toContain(REFUSED)
+		}
+
+		/**
+		 * The message is gone and the file arrived — and the field is still empty,
+		 * which is the half that distinguishes the fix from the old behaviour:
+		 * nothing was typed, so `onInput` never ran.
+		 */
+		function expectRetired(wrapper: Awaited<ReturnType<typeof mountPanel>>) {
+			expect(wrapper.text()).not.toContain(REFUSED)
+			expect(wrapper.text()).toContain('Attached 1 file')
+			expect((wrapper.find('#composer').element as HTMLTextAreaElement).value).toBe('')
+		}
+
+		it('through the picker', async () => {
+			const wrapper = await mountPanel()
+			await refuse(wrapper)
+
+			withAttachmentCommands({ attach_pick: [PNG] })
+			await wrapper.find('[aria-label="Attach files"]').trigger('click')
+			await settle(3)
+
+			expectRetired(wrapper)
+		})
+
+		it('through a paste', async () => {
+			const wrapper = await mountPanel()
+			await refuse(wrapper)
+
+			withAttachmentCommands({ attach_paste: [PNG] })
+			await composerPaste(wrapper)
+
+			expectRetired(wrapper)
+		})
+
+		it('through a drop', async () => {
+			const wrapper = await mountPanel()
+			await refuse(wrapper)
+
+			withAttachmentCommands({ attach_paths: [PNG] })
+			await dropFiles(['C:\\shot.png'])
+
+			expectRetired(wrapper)
+		})
 	})
 
 	/** AC2. The tray is emptied only after the store accepted the submission,

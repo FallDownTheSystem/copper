@@ -17,7 +17,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 
 const { attachPaths } = useAttachments()
-const { reportActionError } = useSpace()
+const { clearActionError, reportActionError } = useSpace()
 
 const over = ref(false)
 let unlisten: UnlistenFn | null = null
@@ -42,6 +42,11 @@ onMounted(async () => {
 			over.value = false
 			if (event.payload.type !== 'drop') return
 
+			// Cleared before the attempt and reported after it, which is the rule
+			// every ingest path follows — see `Composer`'s `beginAttach`. A drop that
+			// succeeds has to retire the message the last refusal left, or it lands
+			// in the tray underneath a failure that is no longer about anything.
+			clearActionError('composer')
 			const message = await attachPaths(event.payload.paths)
 			// The composer's surface, because the tray it concerns lives there — a
 			// drop is a way of filling the composer, however far from it the pointer

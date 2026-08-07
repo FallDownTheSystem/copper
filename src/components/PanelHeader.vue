@@ -27,12 +27,31 @@ defineExpose({ focusSearch, query })
 </script>
 
 <template>
-	<!-- The drag region is the header's empty area only, never the field or the
-	     button: a drag region swallows the pointer events of anything under it. -->
+	<!-- The drag region is the header's empty area and the mark, never the field
+	     or the button: a drag region swallows the pointer events of anything under
+	     it. -->
 	<header
 		data-tauri-drag-region
 		class="border-separator flex min-h-12 items-center gap-2 border-b px-3 py-2"
 	>
+		<!-- Copper's mark, and the header's dependable grab handle: the field and
+		     the menu button leave the header almost no bare area, so the drag region
+		     on the header itself is a strip a few pixels wide in practice.
+
+		     The glyph is this element's own text rather than a child span, because
+		     a child element receives the mousedown and `data-tauri-drag-region` is
+		     read off the element that does. Branding rather than a control — no
+		     hover state, no tab stop, nothing to activate — so it is a `div` and
+		     `aria-hidden`: a lone decorative `c` announced to a screen reader is
+		     noise. -->
+		<div
+			data-tauri-drag-region
+			aria-hidden="true"
+			class="text-accent-text grid size-8 shrink-0 cursor-grab place-items-center text-body font-semibold select-none active:cursor-grabbing"
+		>
+			c
+		</div>
+
 		<label for="panel-search" class="sr-only">Search notes</label>
 		<div class="relative min-w-0 flex-1">
 			<IconLucideSearch
