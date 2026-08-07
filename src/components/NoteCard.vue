@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatCreated } from '@/lib/noteTime'
 import type { Note } from '@/composables/useSpace'
 
 const props = defineProps<{
@@ -24,6 +25,8 @@ const { stopHandoff, doubleClickNote } = useNoteActions()
 const { hasQuery } = useNoteSearch()
 const { setMessage } = useStatusMessage()
 const { beginDrag, consumeDragClick, draggingNoteId } = useNoteDrag()
+const { isSorted } = useNoteList()
+const { showCreated } = useSettings()
 
 /** The field is omitted from the document when empty, so it arrives undefined
  *  on every note written before this feature existed. */
@@ -32,9 +35,22 @@ const attachments = computed(() => props.note.attachments ?? [])
 const selected = computed(() => isSelected(props.note.id))
 const focused = computed(() => focusedId.value === props.rowId)
 const editing = computed(() => isEditing(props.note.id))
-/** No handle, no drag: a filtered list is a subset of its section, so an index
- *  read off it is not the index `reorder_note` takes. */
-const draggable = computed(() => !editing.value && !hasQuery.value)
+/** No handle, no drag: a filtered list is a subset of its section and a sorted
+ *  one is a permutation of it, so in neither case is an index read off the
+ *  rendered rows the index `reorder_note` takes. `useNoteActions.reorderBlocked`
+ *  refuses both again for the keyboard path. */
+const draggable = computed(() => !editing.value && !hasQuery.value && !isSorted(props.note.section))
+
+/**
+ * The creation date, when the setting asks for it and the stored value is
+ * readable.
+ *
+ * `null` covers both halves of AC20: a `created` that cannot be parsed renders
+ * **nothing** rather than a placeholder. A dash would claim the note has no date
+ * when what is true is that the one it has cannot be read, and inventing a
+ * plausible one would be worse still.
+ */
+const createdLabel = computed(() => (showCreated.value ? formatCreated(props.note.created) : null))
 const descendantTabIndex = computed(() => (props.interactive ? 0 : -1))
 const handingOff = computed(() => isHandingOff(props.note.id))
 const conflicted = computed(() => isConflicted(props.note.id))
@@ -194,6 +210,29 @@ function onDoubleClick(event: MouseEvent) {
 							>
 								Stop
 							</button>
+						</p>
+
+						<!-- **Below the body, and last in the column.** The date describes the
+						     note as a whole, so it reads as the card's footer; putting it
+						     between the body and its own attachments would separate content
+						     that belongs together. Above the first line was the other option
+						     the spec allowed and costs more: it pushes every note's first
+						     line down by a row, in a list that has to stay legible at 200
+						     notes.
+
+						     One `text-meta` line at `mt-1` is the same vertical cost the
+						     handoff notice above already pays, and it reuses that line's
+						     colour rather than `--text-disabled`: this is information, not a
+						     decorative mark, and 12px at the disabled tone is the one
+						     combination too faint to read. Hidden while the editor is open,
+						     like the attachment list and for the same reason — the editor
+						     replaces the body, and adjuncts left under it read as part of
+						     what is being edited.
+
+						     `<time>` carries the machine-readable instant, which is the
+						     stored RFC3339 string rather than the formatted local text. -->
+						<p v-if="!editing && createdLabel" class="text-text-secondary mt-1 text-meta">
+							<time :datetime="note.created">{{ createdLabel }}</time>
 						</p>
 					</div>
 

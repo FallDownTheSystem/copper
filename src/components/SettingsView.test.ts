@@ -34,6 +34,7 @@ function makeSettings(over: Partial<Settings> = {}): Settings {
 		insertionPoint: 'bottom',
 		doubleClick: 'copy',
 		alwaysOnTop: true,
+		showCreated: false,
 		...over,
 	}
 }
@@ -276,5 +277,34 @@ describe('the notes rows', () => {
 		expect(
 			segment(wrapper, 'What double-clicking a note does', 'Copy').attributes('aria-checked'),
 		).toBe('true')
+	})
+})
+
+/**
+ * Task-016's one settings key. It is a *display* switch and nothing else: the
+ * `created` it reveals has been recorded on every note since task-003, so
+ * turning it on shows history that already exists rather than starting to
+ * collect any.
+ */
+describe('the date-added switch', () => {
+	it('ships off, so an upgrade shows the cards it showed before', async () => {
+		const wrapper = await openSettings()
+		expect(wrapper.get('#show-created').attributes('aria-checked')).toBe('false')
+	})
+
+	it('reflects a stored true', async () => {
+		const wrapper = await openSettings({ showCreated: true })
+		expect(wrapper.get('#show-created').attributes('aria-checked')).toBe('true')
+	})
+
+	/** One key wide, like every other row here, so writing this one cannot clear
+	 *  the preference beside it. */
+	it('writes only its own key', async () => {
+		const wrapper = await openSettings()
+
+		await wrapper.get('#show-created').trigger('click')
+		await flush()
+
+		expect(patchesSent()).toEqual([{ showCreated: true }])
 	})
 })

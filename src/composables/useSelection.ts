@@ -16,6 +16,9 @@
  * selects, because folding a section shut hides rows rather than narrowing scope.
  */
 
+import { sortByCreated } from '@/lib/noteTime'
+
+import { useNoteList } from './useNoteList'
 import { useNoteSearch } from './useNoteSearch'
 import { useSections } from './useSections'
 import type { SpaceView } from './useSpace'
@@ -68,6 +71,7 @@ const documentGroups = shallowRef<{ sectionId: string; noteIds: string[] }[]>([]
 
 const { matchedIds } = useNoteSearch()
 const { isCollapsed } = useSections()
+const { doneOnly, isDone, createdOf, sortOf } = useNoteList()
 
 /**
  * Both orders are filtered, and filtering only one of them is the single easiest
@@ -99,17 +103,41 @@ const { isCollapsed } = useSections()
  *
  * It also leaves `actionable` alone. That order is the document's by contract,
  * and ranking is a presentation of the same set rather than a re-ordering of it.
+ *
+ * **Task-016's done filter narrows like a search, and its sort reorders like the
+ * ranking.** The filter is on the `actionable` side of the split rather than the
+ * collapse side, and the reasoning is the one this file already states: a query
+ * narrows what an action targets, folding does not. Filtering to done is a scope
+ * the user chose in order to act on it, so `Ctrl+A` there selects the done notes
+ * and nothing else. (The bulk delete is the deliberate exception and reads the
+ * document instead — see `deleteDoneInSection`, which must not be narrowed by a
+ * search the way a selection legitimately is.)
+ *
+ * The per-section sort applies to the rows only, exactly as the ranking does, and
+ * for the same reason: it is a presentation of the set, and a multi-note copy out
+ * of a newest-first section must still come out in document order. **An explicit
+ * sort outranks the search ranking** where both apply — relevance is implicit and
+ * a sort mode is something the user went and chose.
  */
 const orders = computed(() => {
 	const matched = matchedIds.value
+	const done = doneOnly.value
 	const groups: { sectionId: string; noteIds: string[] }[] = []
 	const rows: string[] = []
 	const notes: string[] = []
 	const actionable: string[] = []
 
 	for (const group of documentGroups.value) {
-		const members = matched ? group.noteIds.filter((id) => matched.has(id)) : group.noteIds
-		if (matched && members.length === 0) continue
+		// At most one copy, and only when something is actually narrowing: with no
+		// query and no filter this stays the document's own array, which is what
+		// makes the reordering below careful about mutating in place.
+		let members = group.noteIds
+		if (matched) members = members.filter((id) => matched.has(id))
+		if (done) members = members.filter((id) => isDone(id))
+		// A section with no survivor is dropped entirely, header included — the same
+		// treatment a search miss gets, and what keeps the done view from being a
+		// wall of empty headings.
+		if ((matched || done) && members.length === 0) continue
 
 		// **`actionable` is filled before the ranking, and from the unsorted list.**
 		// Its contract is document order — every consumer that acts on several notes
@@ -122,15 +150,20 @@ const orders = computed(() => {
 		// `sort` is stable, so notes that score the same keep the document order they
 		// arrived in — which is what makes a query produce the same list twice rather
 		// than one that reshuffles its ties. In place, on the array `filter` has
-		// already copied; with no query `members` is the document's own array and
-		// there is nothing to sort.
-		if (matched) members.sort((a, b) => (matched.get(b) ?? 0) - (matched.get(a) ?? 0))
+		// already copied; a query is what guarantees that copy exists.
+		const mode = sortOf(group.sectionId)
+		if (matched && mode === 'manual') {
+			members.sort((a, b) => (matched.get(b) ?? 0) - (matched.get(a) ?? 0))
+		}
+		// Returns a new array, so it is safe over the document's own when nothing
+		// above copied it.
+		const ordered = mode === 'manual' ? members : sortByCreated(members, createdOf, mode)
 
 		const folded = isCollapsed(group.sectionId)
-		groups.push({ sectionId: group.sectionId, noteIds: folded ? [] : members })
+		groups.push({ sectionId: group.sectionId, noteIds: folded ? [] : ordered })
 		rows.push(sectionRow(group.sectionId))
 		if (folded) continue
-		for (const id of members) {
+		for (const id of ordered) {
 			rows.push(noteRow(id))
 			notes.push(id)
 		}
@@ -288,13 +321,14 @@ function selectAll() {
 /**
  * The notes of one section an action may target — `actionableNoteIds`' rule
  * narrowed to a single group, so a collapsed section still answers with its
- * notes and an active query still narrows them.
+ * notes while an active query and an active done filter both narrow them.
  */
 function actionableInSection(sectionId: string): string[] {
 	const matched = matchedIds.value
 	const group = documentGroups.value.find((entry) => entry.sectionId === sectionId)
 	if (!group) return []
-	return matched ? group.noteIds.filter((id) => matched.has(id)) : group.noteIds
+	const members = matched ? group.noteIds.filter((id) => matched.has(id)) : group.noteIds
+	return doneOnly.value ? members.filter((id) => isDone(id)) : members
 }
 
 /**

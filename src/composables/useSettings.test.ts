@@ -31,6 +31,7 @@ const SETTINGS = {
 	insertionPoint: 'bottom',
 	doubleClick: 'copy',
 	alwaysOnTop: true,
+	showCreated: false,
 }
 
 const SHORTCUTS = {

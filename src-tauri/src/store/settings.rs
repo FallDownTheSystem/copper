@@ -44,6 +44,7 @@ pub struct Settings {
 	pub insertion_point: String,
 	pub double_click: String,
 	pub always_on_top: bool,
+	pub show_created: bool,
 }
 
 /// Where a fresh note goes inside its section.
@@ -94,6 +95,11 @@ impl Default for Settings {
 			// Defaulting to `false` would change what every existing install does on
 			// its first launch after an upgrade, over a setting nobody had asked for.
 			always_on_top: true,
+			// Off, so an upgrade shows exactly the cards it showed before. The
+			// timestamp itself has been recorded on every note since task-003 — only
+			// its display is new — so turning this on reveals real history rather
+			// than starting to collect it.
+			show_created: false,
 		}
 	}
 }
@@ -132,6 +138,7 @@ struct RawSettings {
 	insertion_point: Value,
 	double_click: Value,
 	always_on_top: Value,
+	show_created: Value,
 }
 
 impl RawSettings {
@@ -209,6 +216,12 @@ impl RawSettings {
 			defaults.always_on_top,
 			&mut notices,
 		);
+		let show_created = repair_flag(
+			self.show_created,
+			"showCreated",
+			defaults.show_created,
+			&mut notices,
+		);
 
 		let motion = repair_named(self.motion, "motion", defaults.motion, &mut notices);
 		let insertion_point = repair_named(
@@ -235,6 +248,7 @@ impl RawSettings {
 			insertion_point,
 			double_click,
 			always_on_top,
+			show_created,
 		};
 		settings.clamp();
 		(settings, notices)
@@ -396,6 +410,9 @@ impl Settings {
 		if let Some(always_on_top) = patch.always_on_top {
 			self.always_on_top = always_on_top;
 		}
+		if let Some(show_created) = patch.show_created {
+			self.show_created = show_created;
+		}
 	}
 }
 
@@ -420,6 +437,8 @@ pub struct SettingsPatch {
 	pub double_click: Option<String>,
 	#[serde(default)]
 	pub always_on_top: Option<bool>,
+	#[serde(default)]
+	pub show_created: Option<bool>,
 }
 
 /// Distinguishes "key absent" from "key present and null".
@@ -630,7 +649,7 @@ mod tests {
 			 \"shortcuts\": {\n    \"capture\": \"Shift Shift\",\n    \"summon\": \
 			 \"Ctrl+Shift+Space\"\n  },\n  \"theme\": \"system\",\n  \"sounds\": false,\n  \
 			 \"motion\": \"auto\",\n  \"insertionPoint\": \"bottom\",\n  \"doubleClick\": \
-			 \"copy\",\n  \"alwaysOnTop\": true\n}\n"
+			 \"copy\",\n  \"alwaysOnTop\": true,\n  \"showCreated\": false\n}\n"
 		);
 	}
 
@@ -683,6 +702,53 @@ mod tests {
 
 		settings.apply_patch(patch(r#"{"theme":"dark"}"#));
 		assert!(!settings.always_on_top, "a theme patch must not re-pin the window");
+	}
+
+	/// Task-016's one key joins the same guarantee `sounds`, `motion`, task-013's
+	/// pair and the pin all hold: a `settings.json` written by any earlier build
+	/// lacks it, and reading one must be indistinguishable from reading a current
+	/// file — the documented default, no notice, and above all no `.corrupt-`
+	/// rename over a feature the user never enabled.
+	#[test]
+	fn a_file_without_the_show_created_key_reads_as_hidden_without_a_notice() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"theme":"dark","alwaysOnTop":false}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(loaded.notice.is_none(), "absence was reported as damage: {:?}", loaded.notice);
+		assert_eq!(siblings(dir.path()), [FILE_NAME], "the file was set aside");
+		assert!(!loaded.settings.show_created, "the timestamp line must ship hidden");
+		// The rest of the file survived rather than being defaulted alongside it.
+		assert_eq!(loaded.settings.theme, "dark");
+		assert!(!loaded.settings.always_on_top);
+	}
+
+	#[test]
+	fn a_wrong_typed_show_created_is_repaired_to_hidden_and_reported() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"showCreated":"sometimes"}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(!loaded.settings.show_created);
+		let notice = loaded.notice.expect("repairs must be reported");
+		assert!(notice.contains("showCreated"), "{notice}");
+	}
+
+	#[test]
+	fn a_patch_sets_show_created_without_touching_its_neighbours() {
+		let mut settings = Settings::default();
+
+		settings.apply_patch(patch(r#"{"showCreated":true}"#));
+		assert!(settings.show_created);
+		assert!(settings.always_on_top, "an absent key must leave the stored value alone");
+
+		settings.apply_patch(patch(r#"{"alwaysOnTop":false}"#));
+		assert!(settings.show_created, "a pin patch must not hide the timestamp again");
+		assert!(!settings.always_on_top);
 	}
 
 	/// Task-013's two keys join `sounds` and `motion` in the same guarantee: a

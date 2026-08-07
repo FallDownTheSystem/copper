@@ -50,6 +50,7 @@ function makeSettings(sounds: boolean): Settings {
 		insertionPoint: 'bottom',
 		doubleClick: 'copy',
 		alwaysOnTop: true,
+		showCreated: false,
 	}
 }
 

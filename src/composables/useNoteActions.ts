@@ -20,6 +20,7 @@ import { useSystemClipboard } from './useSystemClipboard'
 import { useEditorHandoff } from './useEditorHandoff'
 import { useNoteDisclosure } from './useNoteDisclosure'
 import { useNoteEditor } from './useNoteEditor'
+import { useNoteList } from './useNoteList'
 import { useNoteSearch } from './useNoteSearch'
 import { noteRow, sectionRow, takeRow, useSelection } from './useSelection'
 import { useSettings } from './useSettings'
@@ -36,6 +37,7 @@ const disclosure = useNoteDisclosure()
 const status = useStatusMessage()
 const attachments = useAttachments()
 const settings = useSettings()
+const list = useNoteList()
 
 /**
  * **The one target rule, used by every action in this file.**
@@ -405,22 +407,99 @@ function deleteNotes() {
 	})
 }
 
+// --- delete every done note in a section --------------------------------------
+
+/**
+ * The done notes of the **active** section, read straight off the document.
+ *
+ * Not off `actionableNoteIds`, and that is the whole design of this action. That
+ * order is narrowed by whatever is in the search field, which is correct for
+ * `Ctrl+A` and wrong for a button labelled "Delete all done" — the same objection
+ * `copyDocumentAsMarkdown` records: an "all" that quietly operated on a filtered
+ * subset would be the one destructive action nobody could trust. It is not
+ * narrowed by collapse either, for the reason that rule exists everywhere else:
+ * folding a section away is not deselecting its notes.
+ *
+ * Scoped to the active section per AC9. `activeSection` is the one section the
+ * panel singles out — it is where a capture lands and which header carries the
+ * marker — so it is the only non-arbitrary scope available for a control that
+ * sits in the header rather than in a per-section menu.
+ */
+function doneInActiveSection(): string[] {
+	const sectionId = space.activeSection.value
+	if (sectionId === null) return []
+	return space
+		.notesInSection(sectionId)
+		.filter((note) => note.done)
+		.map((note) => note.id)
+}
+
+/** What the confirmation offers to delete, so the control can name a count and
+ *  withdraw when there is nothing to do. */
+const doneCount = computed(() => doneInActiveSection().length)
+
+/**
+ * One `delete_notes` call whatever the count, which is what makes AC7 true: the
+ * store pushes exactly one snapshot per `mutate`, so the whole purge is a single
+ * `Ctrl+Z`. Looping the singular delete would push one snapshot per note and make
+ * undoing a five-note purge take five presses — the discipline `useSpace`'s batch
+ * mutations already state.
+ *
+ * Selection and focus are left to task-004's reconciliation, exactly as
+ * `deleteNotes` leaves them.
+ */
+function deleteDoneInActiveSection() {
+	return serialize(async () => {
+		const ids = doneInActiveSection()
+		if (ids.length === 0) return
+
+		const result = await space.deleteNotes(ids)
+		if (!result) return
+		status.setMessage(
+			countMessage(ids.length, {
+				one: 'Deleted 1 done note · Ctrl+Z to undo',
+				many: (count) => `Deleted ${count} done notes · Ctrl+Z to undo`,
+			}),
+		)
+	})
+}
+
 // --- reorder -----------------------------------------------------------------
 
 /**
- * Reordering is refused while a search is active, and the reason is arithmetic
- * rather than taste: the rendered list is a *subset* of its section, so an index
+ * Reordering is refused for two reasons, and both are arithmetic rather than
+ * taste.
+ *
+ * **A search** leaves the rendered list a *subset* of its section, so an index
  * read off it means something different from the `index` `reorder_note` takes,
  * which counts positions in the whole section. Dropping a note between two
  * matches would silently move it somewhere else entirely.
  *
- * The drag handle is hidden while a query is active, so this guards the keyboard
- * path and anything that slips past that.
+ * **A non-manual sort** is the stronger form of the same problem: the rendered
+ * order is a *permutation* of the section, so a drop index means nothing at all —
+ * and the position it would write is one the sort immediately overrules on the
+ * next render, which reads as a drag that silently sprang back.
+ *
+ * The sections are passed rather than read off the focused row because a move can
+ * *cross* sections: an Alt+Arrow out of a manual section into a sorted one is
+ * still a reorder whose destination index is meaningless. Nulls are accepted so
+ * callers can hand over an unresolved neighbour without checking first.
+ *
+ * The drag grip is hidden under both conditions, so this guards the keyboard path
+ * and anything that slips past that.
  */
-function reorderBlockedBySearch(): boolean {
-	if (!search.hasQuery.value) return false
-	status.setMessage('Clear the search to reorder notes.')
-	return true
+function reorderBlocked(...sectionIds: (string | null | undefined)[]): boolean {
+	if (search.hasQuery.value) {
+		status.setMessage('Clear the search to reorder notes.')
+		return true
+	}
+	if (sectionIds.some((id) => id != null && list.isSorted(id))) {
+		// Names the control that gives reordering back, which is what AC14's label
+		// has to do — the grip is `role="presentation"` and has nowhere to say it.
+		status.setMessage('Set the section’s sort to Manual to reorder notes.')
+		return true
+	}
+	return false
 }
 
 /**
@@ -436,10 +515,12 @@ function reorderBlockedBySearch(): boolean {
  */
 function finishDrag(noteId: string, sectionId: string, index: number) {
 	return serialize(async () => {
-		if (reorderBlockedBySearch()) return
-
 		const note = space.noteById(noteId)
 		if (!note) return
+		// Both ends: dragging *out* of a sorted section is as meaningless as dragging
+		// into one, and a cross-section drop involves two orders.
+		if (reorderBlocked(note.section, sectionId)) return
+
 		// A drag that changed nothing must not push an undo entry.
 		if (note.section === sectionId && positionOf(noteId) === index) return
 
@@ -474,7 +555,9 @@ function moveFocusedBy(delta: number) {
 	// landed on the previous press rather than recomputing the same destination.
 	return serialize(async () => {
 		const noteId = selection.focusedNoteId.value
-		if (noteId === null || reorderBlockedBySearch()) return
+		// The query half up front: it refuses whichever sections turn out to be
+		// involved, and the index arithmetic below depends on it having refused.
+		if (noteId === null || reorderBlocked()) return
 
 		const groups = selection.visibleGroups.value
 		const groupIndex = groups.findIndex((group) => group.noteIds.includes(noteId))
@@ -502,6 +585,11 @@ function moveFocusedBy(delta: number) {
 			// section here and never a filtered subset of it.
 			index = delta > 0 ? 0 : space.notesInSection(neighbour.sectionId).length
 		}
+
+		// The sort half, once both ends are known. A step at a section boundary
+		// crosses into a neighbour whose order may be computed, and writing a
+		// position into one is a move the next render silently overrules.
+		if (reorderBlocked(group.sectionId, sectionId)) return
 
 		if (!space.applied(await space.reorderNote(noteId, sectionId, index))) return
 
@@ -690,6 +778,8 @@ export function useNoteActions() {
 		moveTo,
 		merge,
 		deleteNotes,
+		doneCount,
+		deleteDoneInActiveSection,
 		finishDrag,
 		moveFocusedBy,
 		expand,

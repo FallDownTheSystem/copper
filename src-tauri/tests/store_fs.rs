@@ -548,6 +548,58 @@ fn sixty_operations_leave_a_fifty_deep_stack() {
 	assert_eq!(harness.doc().notes.len(), 10);
 }
 
+/// Task-016 AC7/AC8. "Delete all done" is one undoable step, and the claim has
+/// to be proved against the stack's **depth** rather than against the document.
+///
+/// Restoring every note is what a loop of single deletes would do too — it would
+/// just take one press per note to do it, which is exactly the outcome the batch
+/// discipline exists to prevent. So this counts the entries the operation left
+/// behind, by draining the stack the way the cap test above does.
+#[test]
+fn deleting_every_done_note_is_one_undoable_step() {
+	let harness = Harness::new();
+
+	let ids: Vec<String> = ["alpha", "beta", "gamma", "delta", "epsilon"]
+		.iter()
+		.map(|body| harness.add(body).unwrap())
+		.collect();
+
+	// Three of the five, deliberately not contiguous: a restore that merely
+	// re-appended them would pass a contiguous case and fail this one.
+	let done = vec![ids[0].clone(), ids[2].clone(), ids[4].clone()];
+	store::lock(&harness.shared)
+		.mutate(|doc| ops::set_notes_done(doc, &done, true))
+		.unwrap();
+
+	// Five adds and one mark-done, each one snapshot.
+	let depth_before = 6;
+	let before = harness.doc();
+
+	store::lock(&harness.shared)
+		.mutate(|doc| ops::delete_notes(doc, &done))
+		.unwrap();
+	assert_eq!(harness.doc().notes.len(), 2, "the bulk delete left a done note behind");
+
+	// One press restores the whole pre-delete document: the notes, their
+	// `done: true`, and the positions they held between the two survivors.
+	let restored = store::lock(&harness.shared).undo().unwrap().unwrap();
+	assert_eq!(restored, before, "one undo did not restore the document");
+	assert_eq!(
+		restored.notes.iter().filter(|note| note.done).count(),
+		3,
+		"the notes came back without their done state"
+	);
+
+	// And the stack is exactly where it was before the delete, so the delete
+	// contributed one entry rather than one per note.
+	let mut remaining = 0;
+	while store::lock(&harness.shared).undo().unwrap().is_some() {
+		remaining += 1;
+		assert!(remaining <= depth_before, "the bulk delete pushed more than one snapshot");
+	}
+	assert_eq!(remaining, depth_before);
+}
+
 // --- submit_entry (task-010) --------------------------------------------------
 
 #[test]

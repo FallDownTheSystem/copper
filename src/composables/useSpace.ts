@@ -43,6 +43,7 @@ import { useMarkdown } from './useMarkdown'
 import { useNoteDisclosure } from './useNoteDisclosure'
 import { useNoteEditor } from './useNoteEditor'
 import { useEditorHandoff } from './useEditorHandoff'
+import { useNoteList } from './useNoteList'
 import { useNoteSearch } from './useNoteSearch'
 import { useSectionEditor } from './useSectionEditor'
 import { useSections } from './useSections'
@@ -102,6 +103,10 @@ export type Settings = {
 	/** Whether the panel window sits in the topmost band. A genuine boolean,
 	 *  unlike the four above — there is nothing for a name to say here. */
 	alwaysOnTop: boolean
+	/** Whether a note's card shows the `created` the store has recorded since
+	 *  task-003. A display preference only — nothing about it changes what is
+	 *  written. */
+	showCreated: boolean
 }
 
 /**
@@ -218,6 +223,9 @@ const sectionEditor = useSectionEditor()
 /** Named for the state rather than the module: `sections` below is the
  *  document's own list, and the two are different things. */
 const sectionState = useSections()
+/** Named for the state for the same reason `sectionState` is: this is the done
+ *  filter and the per-section sort, not the list component. */
+const listState = useNoteList()
 const handoff = useEditorHandoff()
 const attachmentState = useAttachments()
 
@@ -265,6 +273,11 @@ function applyDocument(
 		// Collapse and the switcher are document-scoped: section ids mean something
 		// else now, and an open switcher is closed rather than re-pointed.
 		sectionState.reset()
+		// The done filter and the per-section sorts go with them, and for the same
+		// reason: both are questions asked about the document that has just been
+		// replaced. This is the reset AC3 asks for — a space switch is the only
+		// gesture inside the panel that changes which sections exist.
+		listState.reset()
 	} else {
 		// Before the assignment, so a section revealed by a new note is on screen for
 		// the same flush the scroll pin measures. After it, `previous` is gone and
@@ -288,6 +301,11 @@ function applyDocument(
 	// index's own result set: rebuilding afterwards would leave one frame in which
 	// the new document is grouped against the previous document's matches.
 	search.rebuild(next)
+	// Beside the search index and before `syncDocument` for the same reason: the
+	// orders that walk is about to build are filtered by the done set and ordered
+	// by the created index, so rebuilding afterwards would leave one frame in which
+	// the new document is filtered against the previous document's `done`.
+	listState.rebuild(next)
 	selection.syncDocument(next)
 	selection.reconcile(snapshot)
 	markdown.pruneCache(next.notes.map((note) => note.id))

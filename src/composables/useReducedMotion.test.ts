@@ -34,6 +34,7 @@ function makeSettings(motion: string): Settings {
 		insertionPoint: 'bottom',
 		doubleClick: 'copy',
 		alwaysOnTop: true,
+		showCreated: false,
 	}
 }
 

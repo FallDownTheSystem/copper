@@ -80,6 +80,7 @@ type PreferenceScope =
 	| 'insertionPoint'
 	| 'doubleClick'
 	| 'alwaysOnTop'
+	| 'showCreated'
 
 // --- module-scope state ------------------------------------------------------
 
@@ -119,6 +120,11 @@ const doubleClickAction = computed<DoubleClickAction>(() =>
  *  unreadable `settings.json` must not silently drop the panel behind everything
  *  the user is working in. */
 const alwaysOnTop = computed(() => settings.value?.alwaysOnTop !== false)
+
+/** Hidden unless the file says otherwise, the same way round as `sounds`: an
+ *  unreadable or older `settings.json` leaves the cards looking exactly as they
+ *  did rather than adding a line nobody asked for. */
+const showCreated = computed(() => settings.value?.showCreated === true)
 
 function fail(scope: SettingsScope, error: unknown) {
 	errors.value = { ...errors.value, [scope]: errorMessage(error) }
@@ -284,6 +290,7 @@ const rowWrites: Record<SettingsScope, Generation> = {
 	insertionPoint: generations(),
 	doubleClick: generations(),
 	alwaysOnTop: generations(),
+	showCreated: generations(),
 	summon: generations(),
 	capture: generations(),
 }
@@ -368,6 +375,10 @@ function setInsertionPoint(point: InsertionPoint): Promise<boolean> {
 
 function setDoubleClick(action: DoubleClickAction): Promise<boolean> {
 	return patchSettings('doubleClick', { doubleClick: action })
+}
+
+function setShowCreated(enabled: boolean): Promise<boolean> {
+	return patchSettings('showCreated', { showCreated: enabled })
 }
 
 /**
@@ -480,6 +491,7 @@ export function useSettings() {
 		insertionPoint,
 		doubleClickAction,
 		alwaysOnTop,
+		showCreated,
 		errorFor,
 		initialize,
 		dispose,
@@ -489,6 +501,7 @@ export function useSettings() {
 		setMotion,
 		setInsertionPoint,
 		setDoubleClick,
+		setShowCreated,
 		setAlwaysOnTop,
 		setAutostart,
 		beginRecording,

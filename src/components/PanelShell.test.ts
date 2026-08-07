@@ -11,6 +11,7 @@ import { useInteractionMode } from '@/composables/useInteractionMode'
 import { useNoteActions } from '@/composables/useNoteActions'
 import { useNoteDrag } from '@/composables/useNoteDrag'
 import { useNoteEditor } from '@/composables/useNoteEditor'
+import { useNoteList } from '@/composables/useNoteList'
 import { useNoteSearch } from '@/composables/useNoteSearch'
 import { useSections } from '@/composables/useSections'
 import { noteRow, takeRow, useSelection } from '@/composables/useSelection'
@@ -24,6 +25,7 @@ const actions = useNoteActions()
 const drag = useNoteDrag()
 const interaction = useInteractionMode()
 const editor = useNoteEditor()
+const list = useNoteList()
 const search = useNoteSearch()
 const sections = useSections()
 const selection = useSelection()
@@ -194,6 +196,7 @@ function defaultSettings() {
 		insertionPoint: 'bottom',
 		doubleClick: 'copy',
 		alwaysOnTop: true,
+		showCreated: false,
 	}
 }
 
@@ -272,6 +275,10 @@ afterEach(async () => {
 	// a collapsed section would empty it.
 	search.clearQuery()
 	sections.reset()
+	// Module-scoped for the same reason, and with two ways to break the next test:
+	// a done filter left on empties its list, and a sort left set withdraws every
+	// drag handle it goes looking for.
+	list.reset()
 	selection.clear()
 	// Interaction mode belongs on that list for the same reason and was missing
 	// from it: with a row still in the mode, the grid's key handler declines every
@@ -3589,5 +3596,274 @@ describe('top insertion', () => {
 		// decision leaves in the frontend.
 		expect(selection.focusedId.value).toBe(noteRow('nte_2'))
 		expect(wrapper.get('[data-scroll-region]').element.scrollTop).toBe(0)
+	})
+})
+
+// --- task-016: done filtering, per-section sort, creation dates ---------------
+
+/**
+ * Done notes in **both** sections, so the bulk delete's scope is observable
+ * rather than assumed: `SPACE` has one done note and it is in the active
+ * section, which every wrong scope would also produce.
+ */
+const DONE_IN_BOTH: Space = {
+	...SPACE,
+	notes: [
+		{ ...SPACE.notes[0]!, done: true },
+		{ ...SPACE.notes[1]!, body: 'second note', done: true },
+		{
+			id: 'nte_3',
+			section: 'sec_a',
+			order: 2,
+			done: false,
+			body: 'still to do',
+			created: '2026-08-06T00:00:00Z',
+			updated: '2026-08-06T00:00:00Z',
+		},
+		{
+			id: 'nte_4',
+			section: 'sec_b',
+			order: 0,
+			done: true,
+			body: 'done elsewhere',
+			created: '2026-08-07T00:00:00Z',
+			updated: '2026-08-07T00:00:00Z',
+		},
+	],
+}
+
+describe('the done filter', () => {
+	/**
+	 * Mounts against a document with done notes in both sections, and records what
+	 * `delete_notes` was asked to remove.
+	 *
+	 * The explicit `space.refresh()` is not ceremony: `initialize()` is memoised,
+	 * so mounting after installing a different store does **not** re-pull it and
+	 * the panel would render `SPACE` — where the only done note happens to be in
+	 * the active section, which is precisely the case that cannot tell a correct
+	 * scope from a wrong one.
+	 */
+	async function mountWithDoneInBoth() {
+		const calls: string[][] = []
+		mocks.invoke.mockImplementation(async (command: string, args?: { ids?: string[] }) => {
+			if (command === 'get_active_space') return DONE_IN_BOTH
+			if (command === 'delete_notes') {
+				calls.push(args?.ids ?? [])
+				return {
+					...DONE_IN_BOTH,
+					notes: DONE_IN_BOTH.notes.filter((entry) => !args?.ids?.includes(entry.id)),
+				}
+			}
+			return baseInvoke(command)
+		})
+		const wrapper = await mountPanel()
+		await space.refresh()
+		await settle(3)
+		return { wrapper, calls }
+	}
+
+	function renderedRows(wrapper: Awaited<ReturnType<typeof mountPanel>>) {
+		return wrapper.findAll('[data-note-row]').map((row) => row.attributes('data-row-id'))
+	}
+
+	/** AC1 / AC2. */
+	it('shows only the done notes when switched on', async () => {
+		const wrapper = await mountPanel()
+		expect(renderedRows(wrapper)).toEqual([noteRow('nte_1'), noteRow('nte_2')])
+
+		await wrapper.get('[data-done-filter]').trigger('click')
+		await settle(3)
+
+		// `nte_2` is the only done note in `SPACE`.
+		expect(renderedRows(wrapper)).toEqual([noteRow('nte_2')])
+	})
+
+	/** AC10. The chip and the filter share a row that is not the search field's,
+	 *  so neither can move the field — the structural guarantee, asserted rather
+	 *  than trusted. */
+	it('sits outside the search field’s row, beside the active-section chip', async () => {
+		const wrapper = await mountPanel()
+		const filter = wrapper.get('[data-done-filter]').element
+		const field = wrapper.get('#panel-search').element
+
+		expect(filter.parentElement?.parentElement?.contains(field)).toBe(false)
+	})
+
+	/** AC5. Nothing to purge, nothing to press. */
+	it('offers the delete only inside the done view', async () => {
+		const wrapper = await mountPanel()
+		expect(wrapper.find('[data-delete-done]').exists()).toBe(false)
+
+		await wrapper.get('[data-done-filter]').trigger('click')
+		await settle(2)
+		expect(wrapper.find('[data-delete-done]').exists()).toBe(true)
+	})
+
+	/** AC6. One press asks, the second acts — and the first press must not delete
+	 *  anything, which is the whole point of the confirmation. */
+	it('asks before deleting, and the first press deletes nothing', async () => {
+		const { wrapper, calls } = await mountWithDoneInBoth()
+		await wrapper.get('[data-done-filter]').trigger('click')
+		await settle(2)
+
+		const button = wrapper.get('[data-delete-done]')
+		await button.trigger('click')
+		await settle(2)
+
+		expect(calls).toEqual([])
+		expect(button.text()).toContain('Delete 2?')
+
+		await button.trigger('click')
+		await settle(3)
+		expect(calls).toHaveLength(1)
+	})
+
+	/** AC9. `nte_4` is done and in `sec_b`, and must survive. */
+	it('deletes the active section’s done notes and no others', async () => {
+		const { wrapper, calls } = await mountWithDoneInBoth()
+		await wrapper.get('[data-done-filter]').trigger('click')
+		await settle(2)
+
+		await wrapper.get('[data-delete-done]').trigger('click')
+		await wrapper.get('[data-delete-done]').trigger('click')
+		await settle(4)
+
+		// AC7's other half: one call, not one per note. The store pushes one
+		// snapshot per `mutate`, so one call is one Ctrl+Z — the depth itself is
+		// asserted in `store_fs.rs`, which is the only side that can see it.
+		expect(calls).toHaveLength(1)
+		expect(calls[0]).toEqual(['nte_1', 'nte_2'])
+	})
+
+	/** The undo affordance is the message, exactly as the singular delete's is. */
+	it('says how to undo', async () => {
+		const { wrapper } = await mountWithDoneInBoth()
+		await wrapper.get('[data-done-filter]').trigger('click')
+		await settle(2)
+
+		await wrapper.get('[data-delete-done]').trigger('click')
+		await wrapper.get('[data-delete-done]').trigger('click')
+		await settle(4)
+
+		expect(wrapper.text()).toContain('Deleted 2 done notes · Ctrl+Z to undo')
+	})
+
+	/** The done view with nothing in it says so rather than going blank. */
+	it('explains an empty done view instead of rendering nothing', async () => {
+		mocks.invoke.mockImplementation(async (command: string) => {
+			if (command === 'get_active_space') {
+				return { ...SPACE, notes: SPACE.notes.map((entry) => ({ ...entry, done: false })) }
+			}
+			return baseInvoke(command)
+		})
+		const wrapper = await mountPanel()
+		await space.refresh()
+		await settle(3)
+
+		await wrapper.get('[data-done-filter]').trigger('click')
+		await settle(3)
+
+		expect(wrapper.text()).toContain('Nothing is done yet.')
+	})
+})
+
+describe('per-section sort', () => {
+	/** AC14. The grip is the pointer's only path to a reorder, and an index read
+	 *  off a permuted list means nothing — so it withdraws, exactly as it does
+	 *  under a search. */
+	it('withdraws the drag handle while a sort is active', async () => {
+		const wrapper = await mountPanel()
+		expect(wrapper.find('[data-drag-handle]').exists()).toBe(true)
+
+		list.setSort('sec_a', 'newest')
+		await settle(2)
+
+		expect(wrapper.find('[data-drag-handle]').exists()).toBe(false)
+	})
+
+	/** AC14's keyboard half, and AC15: refused with a message that names the
+	 *  control which gives reordering back, then permitted again on Manual. */
+	it('refuses Alt+Arrow while sorted and allows it again on Manual', async () => {
+		const wrapper = await mountPanel()
+		list.setSort('sec_a', 'oldest')
+		takeRow(noteRow('nte_1'))
+		await settle(2)
+
+		await wrapper.get('[role="grid"]').trigger('keydown', { key: 'ArrowDown', altKey: true })
+		await settle(3)
+
+		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_note', expect.anything())
+		expect(wrapper.text()).toContain('Set the section’s sort to Manual to reorder notes.')
+
+		list.setSort('sec_a', 'manual')
+		await settle(2)
+		expect(wrapper.find('[data-drag-handle]').exists()).toBe(true)
+	})
+
+	/** The state is visible on the header, which is what makes a context-menu
+	 *  control discoverable enough and gives AC14's explanation somewhere to live
+	 *  — the grip is `role="presentation"` and has no accessible name. */
+	it('marks a sorted section on its own header', async () => {
+		const wrapper = await mountPanel()
+		expect(wrapper.text()).not.toContain('Reordering by hand is unavailable')
+
+		list.setSort('sec_a', 'newest')
+		await settle(2)
+
+		expect(wrapper.text()).toContain('Sorted newest first')
+		expect(wrapper.text()).toContain('Reordering by hand is unavailable')
+	})
+})
+
+describe('creation dates', () => {
+	async function mountWithDates() {
+		settingsPayload = { ...defaultSettings(), showCreated: true }
+		const wrapper = await mountPanel()
+		await settings.refresh()
+		await settle(2)
+		return wrapper
+	}
+
+	/** AC18. The setting ships off, so an upgrade shows exactly the cards it
+	 *  showed before. */
+	it('shows nothing by default', async () => {
+		const wrapper = await mountPanel()
+		expect(wrapper.find('time').exists()).toBe(false)
+	})
+
+	/** AC19, and the placement decision: below the body, last in the column. */
+	it('shows a date under each note when the setting is on', async () => {
+		const wrapper = await mountWithDates()
+
+		const stamps = wrapper.findAll('time')
+		expect(stamps).toHaveLength(2)
+		// The machine-readable half is the stored instant, not the formatted text.
+		expect(stamps[0]!.attributes('datetime')).toBe('2026-08-05T00:00:00Z')
+		expect(stamps[0]!.text()).toContain('2026')
+	})
+
+	/**
+	 * AC20. The store keeps `created` a plain string so a hand-edited value cannot
+	 * make the document unloadable, which means an unreadable one reaches the card.
+	 * It renders nothing — not a dash, which would claim the note has no date, and
+	 * certainly not a substituted one.
+	 */
+	it('renders no line at all for a date it cannot read', async () => {
+		mocks.invoke.mockImplementation(async (command: string) => {
+			if (command === 'get_active_space') {
+				return {
+					...SPACE,
+					notes: [{ ...SPACE.notes[0]!, created: 'yesterday afternoon' }, SPACE.notes[1]!],
+				}
+			}
+			return baseInvoke(command)
+		})
+		const wrapper = await mountWithDates()
+		await space.refresh()
+		await settle(3)
+
+		// The readable one still shows; the broken one contributes nothing.
+		expect(wrapper.findAll('time')).toHaveLength(1)
+		expect(wrapper.text()).not.toContain('yesterday afternoon')
 	})
 })

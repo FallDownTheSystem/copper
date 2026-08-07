@@ -375,10 +375,11 @@ fn settings_cross_the_boundary_in_camel_case() {
 		"insertionPoint",
 		"doubleClick",
 		"alwaysOnTop",
+		"showCreated",
 	] {
 		assert!(payload.get(key).is_some(), "get_settings is missing {key}: {payload}");
 	}
-	assert_eq!(payload.as_object().unwrap().len(), 10, "get_settings grew a field");
+	assert_eq!(payload.as_object().unwrap().len(), 11, "get_settings grew a field");
 	assert_eq!(payload["shortcuts"]["capture"], "Shift Shift");
 	assert_eq!(payload["shortcuts"]["summon"], "Ctrl+Shift+Space");
 	// The shipped defaults, which are the whole of "this task changes no
@@ -392,6 +393,11 @@ fn settings_cross_the_boundary_in_camel_case() {
 	// with: the setting exists to let the user turn the band off, not to change
 	// what an upgraded install does before they touch it.
 	assert_eq!(payload["alwaysOnTop"], true);
+	// Task-016's timestamp line ships hidden. The `created` it would show has been
+	// on every note since task-003, so this reveals existing history rather than
+	// starting to record any — which is why turning it on is safe at any time and
+	// why leaving it off changes nothing about an upgraded install.
+	assert_eq!(payload["showCreated"], false);
 }
 
 #[test]

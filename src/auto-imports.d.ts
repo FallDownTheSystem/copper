@@ -232,6 +232,7 @@ declare global {
   const useNoteDisclosure: typeof import('./composables/useNoteDisclosure').useNoteDisclosure
   const useNoteDrag: typeof import('./composables/useNoteDrag').useNoteDrag
   const useNoteEditor: typeof import('./composables/useNoteEditor').useNoteEditor
+  const useNoteList: typeof import('./composables/useNoteList').useNoteList
   const useNoteSearch: typeof import('./composables/useNoteSearch').useNoteSearch
   const useNow: typeof import('@vueuse/core').useNow
   const useObjectUrl: typeof import('@vueuse/core').useObjectUrl
@@ -358,6 +359,9 @@ declare global {
   // @ts-ignore
   export type { EditSession } from './composables/useNoteEditor'
   import('./composables/useNoteEditor')
+  // @ts-ignore
+  export type { DoneFilter, SortMode } from './composables/useNoteList'
+  import('./composables/useNoteList')
   // @ts-ignore
   export type { SwitcherHost } from './composables/useSections'
   import('./composables/useSections')
@@ -610,6 +614,7 @@ declare module 'vue' {
     readonly useNoteDisclosure: UnwrapRef<typeof import('./composables/useNoteDisclosure')['useNoteDisclosure']>
     readonly useNoteDrag: UnwrapRef<typeof import('./composables/useNoteDrag')['useNoteDrag']>
     readonly useNoteEditor: UnwrapRef<typeof import('./composables/useNoteEditor')['useNoteEditor']>
+    readonly useNoteList: UnwrapRef<typeof import('./composables/useNoteList')['useNoteList']>
     readonly useNoteSearch: UnwrapRef<typeof import('./composables/useNoteSearch')['useNoteSearch']>
     readonly useNow: UnwrapRef<typeof import('@vueuse/core')['useNow']>
     readonly useObjectUrl: UnwrapRef<typeof import('@vueuse/core')['useObjectUrl']>

@@ -21,6 +21,7 @@ const { beginEdit } = useNoteEditor()
 const { interactionRowId, enter, reconcile } = useInteractionMode()
 const { hasQuery, resultCount } = useNoteSearch()
 const { setCollapsed, collapseEnabled } = useSections()
+const { doneOnly } = useNoteList()
 const { toggleDone } = useNoteActions()
 const { dropTarget } = useNoteDrag()
 
@@ -40,6 +41,19 @@ const renderedSections = computed(() => {
 /** A query that matched nothing. A zero count with no query is simply an empty
  *  space, which is task-004's own presentation and not this state. */
 const noMatches = computed(() => hasQuery.value && resultCount.value === 0)
+
+/**
+ * The done filter left nothing on screen.
+ *
+ * A separate condition from `noMatches` rather than a wider version of it,
+ * because the two can disagree: a query can match three notes of which none are
+ * done, and `resultCount` — which counts matches in the document, not survivors
+ * of the filter — is 3. `noMatches` takes precedence when both hold, since the
+ * query is the narrower explanation and clearing it is the shorter way back.
+ */
+const noDone = computed(
+	() => doneOnly.value && !noMatches.value && renderedSections.value.length === 0,
+)
 
 /** The roving target has to actually hold DOM focus, or arrow navigation moves
  *  a highlight the screen reader never follows. */
@@ -257,5 +271,6 @@ watch(() => space.value, reconcile)
 		/>
 
 		<SearchEmptyState v-if="noMatches" />
+		<DoneEmptyState v-else-if="noDone" />
 	</div>
 </template>

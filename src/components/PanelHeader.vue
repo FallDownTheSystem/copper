@@ -140,9 +140,14 @@ defineExpose({ focusSearch, query })
 		</div>
 
 		<!-- Directly under the field, labelling the list below it. Its own row, so
-		     it can never push the search field sideways. -->
-		<div class="flex min-w-0">
+		     neither the chip nor the done filter beside it can ever push the search
+		     field sideways — which is what satisfies AC10 structurally rather than by
+		     sizing the two to fit. The chip truncates (`min-w-0`) and the filter holds
+		     its width (`shrink-0`), so a long section name loses characters instead of
+		     pushing a control off the edge. -->
+		<div class="flex min-w-0 items-center gap-2">
 			<ActiveSectionChip @closed="emit('switcherClosed', $event)" />
+			<DoneFilter />
 		</div>
 	</header>
 </template>

@@ -23,6 +23,7 @@ const {
 	insertionPoint,
 	doubleClickAction,
 	alwaysOnTop,
+	showCreated,
 	errorFor,
 	refresh,
 	setTheme,
@@ -31,6 +32,7 @@ const {
 	setMotion,
 	setInsertionPoint,
 	setDoubleClick,
+	setShowCreated,
 	setAlwaysOnTop,
 } = useSettings()
 const { isRecording, cancel } = useShortcutRecorder()
@@ -57,6 +59,7 @@ const motionError = errorFor('motion')
 const insertionError = errorFor('insertionPoint')
 const doubleClickError = errorFor('doubleClick')
 const alwaysOnTopError = errorFor('alwaysOnTop')
+const showCreatedError = errorFor('showCreated')
 const summonError = errorFor('summon')
 const captureError = errorFor('capture')
 
@@ -329,6 +332,24 @@ const captureNote = computed(() => {
 						:options="DOUBLE_CLICK_OPTIONS"
 						label="What double-clicking a note does"
 						@update:model-value="setDoubleClick"
+					/>
+				</SettingsRow>
+
+				<!-- The description says the date is already there rather than promising
+				     it from now on: `created` has been recorded on every note since the
+				     store's first version, so turning this on reveals the whole history
+				     at once instead of starting a new one. Without that sentence the
+				     switch looks like it begins collecting something. -->
+				<SettingsRow
+					label="Date added"
+					description="Show when each note was created. Every note already carries its date; this only shows it."
+					label-for="show-created"
+					:error="showCreatedError"
+				>
+					<SettingsSwitch
+						id="show-created"
+						:model-value="showCreated"
+						@update:model-value="setShowCreated"
 					/>
 				</SettingsRow>
 			</SettingsSection>
