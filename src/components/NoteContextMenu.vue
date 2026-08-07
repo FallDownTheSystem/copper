@@ -12,6 +12,7 @@ const {
 	everyTargetDone,
 	copyNotes,
 	copyAsList,
+	copySelectionAsMarkdown,
 	toggleDone,
 	expand,
 	edit,
@@ -42,6 +43,17 @@ const {
 		<ContextMenuItem class="min-h-6" @select="copyAsList">
 			Copy as list
 			<ContextMenuShortcut>{{ CHORDS.copyAsList.display }}</ContextMenuShortcut>
+		</ContextMenuItem>
+
+		<!-- Task-013's selection scope. It sits beside `Copy as list` rather than
+		     replacing it: that one is a flat bulleted list with deliberately no
+		     checkboxes and no headings, because it exists to be pasted into an LLM
+		     prompt. This one is the structured export, and its `as Markdown` suffix
+		     is shared with the section menu's entry and the `...` menu's so the
+		     three read as one format at three scopes. No chord — Ctrl+Shift+C stays
+		     with the list form. -->
+		<ContextMenuItem class="min-h-6" @select="copySelectionAsMarkdown">
+			Copy as Markdown
 		</ContextMenuItem>
 
 		<!-- A control names the action it performs, not the state it is in — so

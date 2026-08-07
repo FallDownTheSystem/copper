@@ -745,7 +745,8 @@ pub fn patch_settings(shared: &SharedStore, patch: SettingsPatch) -> Result<Sett
 /// retry that duplicates the note.
 pub fn append_capture(shared: &SharedStore, body: &str) -> Result<String> {
 	let mut guard = lock(shared);
-	let (id, doc) = guard.mutate(|space| ops::add_note(space, body, None, &[]))?;
+	let at = guard.settings().insertion();
+	let (id, doc) = guard.mutate(|space| ops::add_note(space, body, None, &[], at))?;
 	let path = guard.active_path().map(path_string).unwrap_or_default();
 	let produced = vec![StoreEvent::SpaceChanged(SpaceChanged {
 		id: doc.id,

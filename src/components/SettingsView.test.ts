@@ -31,6 +31,8 @@ function makeSettings(over: Partial<Settings> = {}): Settings {
 		theme: 'system',
 		sounds: false,
 		motion: 'auto',
+		insertionPoint: 'bottom',
+		doubleClick: 'copy',
 		...over,
 	}
 }
@@ -151,5 +153,77 @@ describe('the sound and motion rows', () => {
 		await flush()
 
 		expect(patchesSent()).toEqual([{ sounds: true }])
+	})
+})
+
+/**
+ * Task-013's two rows. Both are two-value *choices* rather than booleans, which
+ * is why they are radio groups and not switches — and the ARIA is the whole
+ * point of that decision, so it is what this asserts.
+ */
+describe('the notes rows', () => {
+	function group(wrapper: ReturnType<typeof mount>, label: string) {
+		return wrapper.get(`[role="radiogroup"][aria-label="${label}"]`)
+	}
+
+	function segment(wrapper: ReturnType<typeof mount>, label: string, text: string) {
+		const found = group(wrapper, label)
+			.findAll('[role="radio"]')
+			.find((item) => item.text() === text)
+		if (!found) throw new Error(`no ${text} segment in ${label}`)
+		return found
+	}
+
+	it('renders each as one radiogroup rather than a row of independent toggles', async () => {
+		const wrapper = await openSettings()
+
+		for (const label of ['Where new notes go', 'What double-clicking a note does']) {
+			const radios = group(wrapper, label).findAll('[role="radio"]')
+			expect(radios).toHaveLength(2)
+			// `aria-pressed` here would mean two independent toggle buttons, which is
+			// exactly what `ToggleGroup` would have produced and why it was declined.
+			for (const radio of radios) expect(radio.attributes('aria-checked')).toBeDefined()
+		}
+	})
+
+	it('shows the shipped defaults, which are what every earlier build did', async () => {
+		const wrapper = await openSettings()
+
+		expect(segment(wrapper, 'Where new notes go', 'Bottom').attributes('aria-checked')).toBe('true')
+		expect(
+			segment(wrapper, 'What double-clicking a note does', 'Copy').attributes('aria-checked'),
+		).toBe('true')
+	})
+
+	it('reflects a stored top and edit', async () => {
+		const wrapper = await openSettings({ insertionPoint: 'top', doubleClick: 'edit' })
+
+		expect(segment(wrapper, 'Where new notes go', 'Top').attributes('aria-checked')).toBe('true')
+		expect(
+			segment(wrapper, 'What double-clicking a note does', 'Edit').attributes('aria-checked'),
+		).toBe('true')
+	})
+
+	it('writes one key per choice, so neither row can clear the other', async () => {
+		const wrapper = await openSettings()
+
+		await segment(wrapper, 'Where new notes go', 'Top').trigger('click')
+		await flush()
+		expect(patchesSent()).toEqual([{ insertionPoint: 'top' }])
+
+		await segment(wrapper, 'What double-clicking a note does', 'Edit').trigger('click')
+		await flush()
+		expect(patchesSent()).toEqual([{ insertionPoint: 'top' }, { doubleClick: 'edit' }])
+	})
+
+	/** A hand-edited value nothing recognises collapses to the default on read
+	 *  rather than leaving the control showing nothing at all. */
+	it('falls back to the default for a name it does not recognise', async () => {
+		const wrapper = await openSettings({ insertionPoint: 'sideways', doubleClick: 'launch' })
+
+		expect(segment(wrapper, 'Where new notes go', 'Bottom').attributes('aria-checked')).toBe('true')
+		expect(
+			segment(wrapper, 'What double-clicking a note does', 'Copy').attributes('aria-checked'),
+		).toBe('true')
 	})
 })

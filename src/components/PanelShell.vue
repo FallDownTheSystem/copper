@@ -11,7 +11,11 @@ const {
 	spaceName,
 	activeSectionObject,
 	initialize,
+	addNote,
+	clearActionError,
+	reportActionError,
 } = useSpace()
+const { pasteAttachment } = useAttachments()
 const { setClampHeight } = useNoteDisclosure()
 const { ensureHighlighter } = useMarkdown()
 // `setOverlayHost` below is what fills the two refs every menu reads; each menu
@@ -264,6 +268,59 @@ function onShellKeydown(event: KeyboardEvent) {
 		void moveFocusedBy(event.key === 'ArrowDown' ? 1 : -1)
 	}
 }
+
+/**
+ * **Zero-focus paste.** `Ctrl+V` anywhere in the open panel except a text
+ * surface captures the clipboard, with no click into the composer first.
+ *
+ * A DOM `paste` listener rather than a chord in the layer above, and rather than
+ * a new Rust clipboard reader. Chromium dispatches `paste` for `Ctrl+V` whatever
+ * the focused element is, and its `clipboardData` carries the text — so the text
+ * branch needs no round trip at all, and the attachment branch reaches
+ * `attach_paste`, which opens the clipboard itself and was never focus-driven.
+ * The alternative was a second IPC command whose only job would be to hand the
+ * frontend a copy of text the event already has.
+ *
+ * On `document`, not on the panel root: `document.body` is an *ancestor* of that
+ * root, so a press delivered there — which is where focus sits after the tray
+ * shows the panel — would never bubble down to it. The listener goes with this
+ * component, so the settings view has none.
+ *
+ * **Text wins, and the rule is still Rust's.** A clipboard carrying text takes
+ * the note branch here; one that does not falls through to `attach_paste`, which
+ * returns nothing the moment `CF_UNICODETEXT` is present. The two agree because
+ * the second is a strict subset of the first, so there is no second copy of the
+ * rule to drift — only an ordering.
+ *
+ * Both branches report on the composer's surface, which is where `DropTarget`
+ * puts a failed drop and for the same reason: the pending tray a paste fills
+ * lives there, and a panel-level ingest still has to explain itself somewhere the
+ * user is looking.
+ */
+async function onPaste(event: ClipboardEvent) {
+	// The composer, the inline editor, the search field and both rename fields all
+	// resolve here, and in every one of them Ctrl+V has a text-editing meaning that
+	// this must not take. An open menu owns the keyboard the same way it does in
+	// the chord layer.
+	if (inTextSurface(event.target) || inOverlay(event.target)) return
+
+	const text = event.clipboardData?.getData('text/plain') ?? ''
+	// Cleared before the attempt and reported after it, which is the rule every
+	// ingest path follows — see `Composer`'s `beginAttach`.
+	clearActionError('composer')
+
+	if (text.trim().length > 0) {
+		await addNote(text)
+		return
+	}
+
+	// No text: an image or a file list, or nothing at all. An empty clipboard is a
+	// silent no-op — `pasteAttachment` reports `handled: false` and says nothing.
+	const outcome = await pasteAttachment()
+	if (outcome.message) reportActionError('composer', outcome.message)
+}
+
+useEventListener(document, 'paste', onPaste)
 
 /**
  * The default WebView context menu is suppressed everywhere except the two text

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test'
 
+import { useSections } from './useSections'
 import { noteRow, sectionRow, useSelection } from './useSelection'
 import type { Note, Space } from './useSpace'
 
@@ -38,6 +39,7 @@ function document2(
 }
 
 const selection = useSelection()
+const sections = useSections()
 
 beforeEach(() => {
 	selection.resetForNewSpace()
@@ -153,13 +155,58 @@ describe('extendFocus', () => {
 })
 
 describe('selectAll and clear', () => {
-	it('selects every rendered note and then clears the anchor too', () => {
+	afterEach(() => sections.reset())
+
+	it('selects every note and then clears the anchor too', () => {
 		selection.selectAll()
 		expect(selection.selectedIds.value).toEqual(['n1', 'n2', 'n3', 'n4'])
 
 		selection.clear()
 		expect(selection.selectedIds.value).toEqual([])
 		expect(selection.anchorId.value).toBeNull()
+	})
+
+	/** Task-013 AC16. Collapsing folds rows away; it never narrows what an action
+	 *  targets, and taking the *visible* order made Ctrl+A silently skip a folded
+	 *  section while every other action still reached into it. */
+	it('reaches notes inside a collapsed section', () => {
+		sections.setCollapsed('sec_b', true)
+		expect(selection.visibleNoteIds.value).toEqual(['n1', 'n2'])
+
+		selection.selectAll()
+		expect(selection.selectedIds.value).toEqual(['n1', 'n2', 'n3', 'n4'])
+	})
+})
+
+describe('selectSection', () => {
+	afterEach(() => sections.reset())
+
+	it('takes only that section and lands focus on its header', () => {
+		selection.selectSection('sec_b')
+
+		expect(selection.selectedIds.value).toEqual(['n3', 'n4'])
+		// The header rather than the first note: the target rule reads a focused
+		// header as "take the selection", and the section may have no note rows.
+		expect(selection.focusedId.value).toBe(sectionRow('sec_b'))
+		expect(selection.anchorId.value).toBe('n3')
+	})
+
+	it('still takes a collapsed section, whose notes have no rows at all', () => {
+		sections.setCollapsed('sec_a', true)
+
+		selection.selectSection('sec_a')
+
+		expect(selection.selectedIds.value).toEqual(['n1', 'n2'])
+		expect(selection.focusedId.value).toBe(sectionRow('sec_a'))
+	})
+
+	it('empties the selection for a section that is not there', () => {
+		selection.select('n1')
+		selection.selectSection('sec_missing')
+
+		expect(selection.selectedIds.value).toEqual([])
+		// Focus is left where it was: there is no row to move it to.
+		expect(selection.focusedId.value).toBe(noteRow('n1'))
 	})
 })
 

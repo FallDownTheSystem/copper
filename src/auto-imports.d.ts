@@ -361,10 +361,10 @@ declare global {
   export type { ScrollAnchor, SelectionSnapshot } from './composables/useSelection'
   import('./composables/useSelection')
   // @ts-ignore
-  export type { ThemePreference, MotionPreference, ShortcutState, ShortcutTarget, SettingsScope } from './composables/useSettings'
+  export type { ThemePreference, MotionPreference, InsertionPoint, DoubleClickAction, ShortcutState, ShortcutTarget, SettingsScope } from './composables/useSettings'
   import('./composables/useSettings')
   // @ts-ignore
-  export type { Note, Section, Space, StoreStatus, Settings, SpaceView, NoteView, ChangeReason, SpaceChangedPayload, StoreErrorPayload, SubmitOutcome, SubmitResult, LoadState, ActionErrorScope, ActionError, MutationResult } from './composables/useSpace'
+  export type { Note, Section, Space, StoreStatus, Settings, SpaceView, NoteView, ChangeReason, SpaceChangedPayload, StoreErrorPayload, SubmitOutcome, AddNoteResult, SubmitResult, LoadState, ActionErrorScope, ActionError, MutationResult } from './composables/useSpace'
   import('./composables/useSpace')
   // @ts-ignore
   export type { UnavailableReason, Availability, RecentEntry, ActivateOutcome } from './composables/useSpaces'

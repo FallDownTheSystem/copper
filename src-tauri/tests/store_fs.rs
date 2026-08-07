@@ -22,7 +22,7 @@ use copper_lib::store::error::StoreError;
 use copper_lib::store::events::{ChangeReason, EventSink, RecordingSink, StoreEvent};
 use copper_lib::attachments;
 use copper_lib::store::model::{Attachment, Note, Section, Space};
-use copper_lib::store::settings::Settings;
+use copper_lib::store::settings::{InsertionPoint, Settings};
 use copper_lib::store::{self, atomic, format, ops, settings, SharedStore, Store, StoreStatus};
 
 /// Windows sharing modes, from `winnt.h`. Used to induce the transient failures
@@ -92,7 +92,7 @@ impl Harness {
 	fn add(&self, body: &str) -> Result<String, StoreError> {
 		let body = body.to_string();
 		store::lock(&self.shared)
-			.mutate(|doc| ops::add_note(doc, &body, None, &[]))
+			.mutate(|doc| ops::add_note(doc, &body, None, &[], InsertionPoint::Bottom))
 			.map(|(id, _)| id)
 	}
 
@@ -432,7 +432,7 @@ fn every_structural_operation_leaves_an_undo_that_restores_exactly() {
 
 	let operations: Vec<(&str, Operation)> = vec![
 		("add", {
-			Box::new(|doc: &mut Space| ops::add_note(doc, "gamma", None, &[]).map(|_| ()))
+			Box::new(|doc: &mut Space| ops::add_note(doc, "gamma", None, &[], InsertionPoint::Bottom).map(|_| ()))
 		}),
 		("done", {
 			let ids = vec![first.clone()];
@@ -790,7 +790,7 @@ fn a_failed_operation_writes_nothing_and_pushes_no_snapshot() {
 fn external_note(harness: &Harness, body: &str) -> String {
 	let mut doc = format::from_json(&harness.text()).unwrap();
 	let section = doc.active_section.clone();
-	ops::add_note(&mut doc, body, Some(&section), &[]).unwrap();
+	ops::add_note(&mut doc, body, Some(&section), &[], InsertionPoint::Bottom).unwrap();
 	let text = format::to_git_json(&doc).unwrap();
 	external_write(&harness.path(), &text);
 	text
@@ -916,7 +916,7 @@ fn a_write_landing_before_the_watch_registers_is_reconciled() {
 	let path = store::lock(&shared).active_path().unwrap().to_path_buf();
 	let mut doc = format::from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
 	let section = doc.active_section.clone();
-	ops::add_note(&mut doc, "written into the gap", Some(&section), &[]).unwrap();
+	ops::add_note(&mut doc, "written into the gap", Some(&section), &[], InsertionPoint::Bottom).unwrap();
 	external_write(&path, &format::to_git_json(&doc).unwrap());
 
 	let produced = store::attach_watcher(&shared);
@@ -1001,7 +1001,13 @@ fn an_external_write_during_the_backoff_is_not_overwritten() {
 		drop(lock);
 		let mut doc = format::from_json(&std::fs::read_to_string(&writer_path).unwrap()).unwrap();
 		let section = doc.active_section.clone();
-		ops::add_note(&mut doc, "theirs, during the backoff", Some(&section), &[]).unwrap();
+		ops::add_note(
+			&mut doc,
+			"theirs, during the backoff",
+			Some(&section),
+			&[],
+			InsertionPoint::Bottom,
+		).unwrap();
 		external_write(&writer_path, &format::to_git_json(&doc).unwrap());
 	});
 
@@ -1040,7 +1046,7 @@ fn three_exhausted_attempts_change_nothing() {
 		let mut external = base.clone();
 		external.name = format!("generation {}", generation.fetch_add(1, Ordering::SeqCst));
 		external_write(&write_path, &format::to_git_json(&external).unwrap());
-		ops::add_note(doc, "should never land", None, &[]).map(|_| ())
+		ops::add_note(doc, "should never land", None, &[], InsertionPoint::Bottom).map(|_| ())
 	});
 
 	let err = result.unwrap_err();

@@ -95,6 +95,10 @@ export type Settings = {
 	 *  the value is narrowed. Typed loosely here for the same reason `theme` is:
 	 *  this mirrors the file, and the file can hold anything. */
 	motion: string
+	/** `'top' | 'bottom'` and `'copy' | 'edit'` — narrowed in `useSettings` for
+	 *  the same reason `theme` and `motion` are. */
+	insertionPoint: string
+	doubleClick: string
 }
 
 /**
@@ -115,10 +119,13 @@ export type StoreErrorPayload = { kind: string; message: string }
 /** What a composer submission turned out to be. `# Name` is classified in Rust,
  *  above the store, so the composer path and the capture path cannot drift.
  *
- *  There is no type for `add_note` here any more: the panel submits through
- *  `submit_entry`, and `add_note` is now reached only from Rust, by the capture
- *  path. */
+ *  The panel *composes* through `submit_entry`, which is the only entry point
+ *  that reads a body as anything but opaque text. `add_note` below is the other
+ *  one: the capture path reaches it from Rust and task-013's zero-focus paste
+ *  reaches it from here, because a pasted `# Heading` is a note rather than a
+ *  section directive. */
 export type SubmitOutcome = 'note' | 'section-created' | 'section-activated'
+export type AddNoteResult = { space: Space; noteId: string }
 export type SubmitResult = {
 	space: Space
 	outcome: SubmitOutcome
@@ -599,6 +606,31 @@ async function submitEntry(body: string, attachments: Attachment[] = []) {
 	return result
 }
 
+/**
+ * Task-013's zero-focus paste. Maps to `add_note`, **not** to `submit_entry`.
+ *
+ * A paste is a capture, not a composition: text lifted out of a document whose
+ * whole body happens to be `# Heading` has to become a note, and `submit_entry`
+ * would read it as a section directive and silently create a section instead.
+ * That split is the same one the global capture relies on, and it lives in Rust
+ * so the two paths cannot drift.
+ *
+ * No `section` argument, for the reason `submitEntry` gives: the store already
+ * defaults to `activeSection`, and sending our own view of it would race an
+ * external change.
+ *
+ * Focus is deliberately not moved. The note lands silently in the active
+ * section, wherever the user was looking — that is what makes this different
+ * from a composer submit, which puts the roving target on what it just created.
+ */
+async function addNote(body: string) {
+	return mutate(
+		() => invoke<AddNoteResult>('add_note', { body, section: null }),
+		(value) => value.space,
+		{ scope: 'composer' },
+	)
+}
+
 /** Maps to `edit_note` — not to a command named after this method. */
 async function updateNoteBody(id: string, body: string) {
 	return mutate(
@@ -857,6 +889,7 @@ export function useSpace() {
 		retry,
 		adopt,
 		submitEntry,
+		addNote,
 		updateNoteBody,
 		setNotesDone,
 		setActiveSection,

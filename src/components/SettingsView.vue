@@ -12,18 +12,24 @@
  * over an acrylic backdrop; a second layer would make this view visibly darker
  * than the list it transitions from.
  */
+import type { DoubleClickAction, InsertionPoint } from '@/composables/useSettings'
+
 const {
 	shortcuts,
 	autostartEnabled,
 	theme,
 	soundsEnabled,
 	motionPreference,
+	insertionPoint,
+	doubleClickAction,
 	errorFor,
 	refresh,
 	setTheme,
 	setAutostart,
 	setSounds,
 	setMotion,
+	setInsertionPoint,
+	setDoubleClick,
 } = useSettings()
 const { isRecording, cancel } = useShortcutRecorder()
 const { showList } = useView()
@@ -46,6 +52,8 @@ const themeError = errorFor('theme')
 const autostartError = errorFor('autostart')
 const soundsError = errorFor('sounds')
 const motionError = errorFor('motion')
+const insertionError = errorFor('insertionPoint')
+const doubleClickError = errorFor('doubleClick')
 const summonError = errorFor('summon')
 const captureError = errorFor('capture')
 
@@ -116,6 +124,19 @@ function onEscape(event: KeyboardEvent) {
 function setAnimations(on: boolean) {
 	void setMotion(on ? 'auto' : 'off')
 }
+
+/** Both task-013 preferences are two-value *choices* rather than booleans —
+ *  neither `top`/`bottom` nor `copy`/`edit` has an "off" reading — so they are
+ *  segmented controls and not switches. */
+const INSERTION_OPTIONS = [
+	{ value: 'bottom', label: 'Bottom' },
+	{ value: 'top', label: 'Top' },
+] as const satisfies readonly { value: InsertionPoint; label: string }[]
+
+const DOUBLE_CLICK_OPTIONS = [
+	{ value: 'copy', label: 'Copy' },
+	{ value: 'edit', label: 'Edit' },
+] as const satisfies readonly { value: DoubleClickAction; label: string }[]
 
 /** The summon binding's error is either a live failure from a rebind the user
  *  just attempted or the startup registration failure, which has no action behind
@@ -255,6 +276,37 @@ const captureNote = computed(() => {
 						:error="summonRowError"
 					/>
 				</template>
+			</SettingsSection>
+
+			<!-- Below Shortcuts because both are about capturing: the row above says
+			     which keys save a selection, and the first row here says where it
+			     lands. -->
+			<SettingsSection title="Notes">
+				<SettingsRow
+					label="New notes go"
+					description="Where a capture, a paste or a composed note lands in its section."
+					:error="insertionError"
+				>
+					<SettingsChoice
+						:model-value="insertionPoint"
+						:options="INSERTION_OPTIONS"
+						label="Where new notes go"
+						@update:model-value="setInsertionPoint"
+					/>
+				</SettingsRow>
+
+				<SettingsRow
+					label="Double-click a note"
+					description="Copy it to the clipboard, or open it for editing."
+					:error="doubleClickError"
+				>
+					<SettingsChoice
+						:model-value="doubleClickAction"
+						:options="DOUBLE_CLICK_OPTIONS"
+						label="What double-clicking a note does"
+						@update:model-value="setDoubleClick"
+					/>
+				</SettingsRow>
 			</SettingsSection>
 
 			<SettingsSection title="Sound and motion">

@@ -446,7 +446,13 @@ mod tests {
 		// diff a capture actually produces — including whatever `add_note` and
 		// `normalise` do to the rest of the document on the way.
 		let added_id =
-			crate::store::ops::add_note(&mut after_doc, "a captured note", Some("sec_b2000002"), &[])
+			crate::store::ops::add_note(
+				&mut after_doc,
+				"a captured note",
+				Some("sec_b2000002"),
+				&[],
+				crate::store::settings::InsertionPoint::Bottom,
+			)
 				.unwrap();
 
 		let before = to_git_json(&before_doc).unwrap();
@@ -483,7 +489,14 @@ mod tests {
 		before_doc.notes.clear();
 		let before_doc = normalised(before_doc);
 		let mut after_doc = before_doc.clone();
-		crate::store::ops::add_note(&mut after_doc, "the first note", None, &[]).unwrap();
+		crate::store::ops::add_note(
+			&mut after_doc,
+			"the first note",
+			None,
+			&[],
+			crate::store::settings::InsertionPoint::Bottom,
+		)
+		.unwrap();
 
 		let before = to_git_json(&before_doc).unwrap();
 		let after = to_git_json(&after_doc).unwrap();

@@ -8,7 +8,12 @@
  * duplicates it.
  */
 
-import { buildCopyMarkdown, buildListMarkdown } from '@/lib/noteMarkdown'
+import {
+	buildCopyMarkdown,
+	buildListMarkdown,
+	buildSectionMarkdown,
+	type MarkdownSection,
+} from '@/lib/noteMarkdown'
 
 import { useAttachments } from './useAttachments'
 import { useSystemClipboard } from './useSystemClipboard'
@@ -17,6 +22,7 @@ import { useNoteDisclosure } from './useNoteDisclosure'
 import { useNoteEditor } from './useNoteEditor'
 import { useNoteSearch } from './useNoteSearch'
 import { focusRowSoon, noteRow, sectionRow, takeRow, useSelection } from './useSelection'
+import { useSettings } from './useSettings'
 import { countMessage, useStatusMessage } from './useStatusMessage'
 import { useSpace } from './useSpace'
 
@@ -29,6 +35,7 @@ const handoff = useEditorHandoff()
 const disclosure = useNoteDisclosure()
 const status = useStatusMessage()
 const attachments = useAttachments()
+const settings = useSettings()
 
 /**
  * **The one target rule, used by every action in this file.**
@@ -128,19 +135,32 @@ function serialize<T>(run: () => Promise<T>): Promise<T> {
 
 // --- copy --------------------------------------------------------------------
 
-async function copyBodies(build: (bodies: readonly string[]) => string) {
-	const notes = targetNotes()
-	if (notes.length === 0) return
-
-	const written = await clipboard.writeText(build(notes.map((note) => note.body)))
+/**
+ * The one clipboard write every copy affordance ends in, message included.
+ *
+ * `count` is what the toast says rather than what the text contains, so a
+ * document-wide copy reports notes and not sections.
+ *
+ * A copy of no notes writes nothing and says nothing, whichever scope produced
+ * it. Section headings alone are not worth putting on the clipboard, and
+ * replacing whatever was there with them would be a small theft.
+ */
+async function writeCopy(text: string, count: number) {
+	if (count === 0) return
+	const written = await clipboard.writeText(text)
 	status.setMessage(
 		written
-			? countMessage(notes.length, {
+			? countMessage(count, {
 					one: 'Copied 1 note',
-					many: (count) => `Copied ${count} notes`,
+					many: (n) => `Copied ${n} notes`,
 				})
 			: 'Couldn’t write to the clipboard.',
 	)
+}
+
+async function copyBodies(build: (bodies: readonly string[]) => string) {
+	const notes = targetNotes()
+	await writeCopy(build(notes.map((note) => note.body)), notes.length)
 }
 
 function copyNotes() {
@@ -149,6 +169,73 @@ function copyNotes() {
 
 function copyAsList() {
 	return copyBodies(buildListMarkdown)
+}
+
+// --- copy as Markdown, in three scopes ---------------------------------------
+
+/**
+ * Every section of the document, in document order — which is the display order,
+ * since the store repairs each one it loads into it — carrying whichever of its
+ * notes the caller says are in scope.
+ *
+ * The three scopes differ only in this function's argument and in what they
+ * filter out of its result, which is what makes them one renderer rather than
+ * three. `id` rides along for that filtering and is ignored by the renderer.
+ *
+ * Built per call rather than memoised: each scope copies once, on a deliberate
+ * gesture, over at most a few hundred notes.
+ */
+function scopedSections(
+	notesOf: (sectionId: string) => readonly { id: string; done: boolean; body: string }[],
+): (MarkdownSection & { id: string })[] {
+	return space.sections.value.map((section) => ({
+		id: section.id,
+		name: section.name,
+		notes: notesOf(section.id).map((note) => ({ done: note.done, body: note.body })),
+	}))
+}
+
+async function copyMarkdown(sections: readonly MarkdownSection[]) {
+	const count = sections.reduce((total, section) => total + section.notes.length, 0)
+	await writeCopy(buildSectionMarkdown(sections), count)
+}
+
+/**
+ * The `...` menu's `Copy all as Markdown`: the whole document, every section,
+ * **whatever the search field holds**.
+ *
+ * A query narrows what an action targets everywhere else in this file, and this
+ * is the deliberate exception: a "copy all" that quietly copied a filtered subset
+ * would be the one export nobody could trust, and the filtered form is a
+ * selection copy away.
+ */
+function copyDocumentAsMarkdown() {
+	return copyMarkdown(scopedSections((id) => space.notesInSection(id)))
+}
+
+/** The section context menu's copy: one section and all of its notes, the whole
+ *  section rather than whatever a query left showing — matching the document
+ *  scope above. */
+function copySectionAsMarkdown(sectionId: string) {
+	return copyMarkdown(
+		scopedSections((id) => space.notesInSection(id)).filter((section) => section.id === sectionId),
+	)
+}
+
+/**
+ * The note menu's `Copy as Markdown`: the same targets every other note action
+ * resolves, grouped under the headings of the sections they came from.
+ *
+ * Sections contributing nothing are dropped, so copying two notes out of one
+ * section produces one heading rather than the whole document's outline.
+ */
+function copySelectionAsMarkdown() {
+	const targeted = new Set(targetIds())
+	return copyMarkdown(
+		scopedSections((id) => space.notesInSection(id).filter((note) => targeted.has(note.id))).filter(
+			(section) => section.notes.length > 0,
+		),
+	)
 }
 
 // --- mark as done ------------------------------------------------------------
@@ -398,6 +485,27 @@ function edit() {
 	if (note) editor.beginEdit(current, note)
 }
 
+/**
+ * What a double-click on a note body means, which is a setting.
+ *
+ * The gesture arrives already resolved: two clicks have run the row's own
+ * pointer-select, so the note is selected and focused and both branches target
+ * it with no argument. `NoteCard` decides *whether* a double-click counts —
+ * excluding the grip, the controls and a drag — and this decides what it does.
+ *
+ * The native word-select the gesture performed on the way here is collapsed
+ * rather than treated as a reason to decline. `.note-prose` is `select-text`, so
+ * a body double-click always leaves a non-empty selection by the time `dblclick`
+ * fires — reading `getSelection()` here would suppress the feature exactly where
+ * it is meant to work — and a highlighted word left standing after "act on this
+ * note" is a leftover from a gesture that meant something else.
+ */
+function doubleClickNote() {
+	window.getSelection()?.removeAllRanges()
+	if (settings.doubleClickAction.value === 'edit') edit()
+	else void copyNotes()
+}
+
 // --- editor handoff ----------------------------------------------------------
 
 async function openInEditor() {
@@ -522,6 +630,9 @@ export function useNoteActions() {
 		isRedundantTarget,
 		copyNotes,
 		copyAsList,
+		copyDocumentAsMarkdown,
+		copySectionAsMarkdown,
+		copySelectionAsMarkdown,
 		toggleDone,
 		moveTo,
 		merge,
@@ -530,6 +641,7 @@ export function useNoteActions() {
 		moveFocusedBy,
 		expand,
 		edit,
+		doubleClickNote,
 		openInEditor,
 		stopHandoff,
 		undo,

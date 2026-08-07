@@ -31,6 +31,8 @@ function makeSettings(motion: string): Settings {
 		theme: 'system',
 		sounds: false,
 		motion,
+		insertionPoint: 'bottom',
+		doubleClick: 'copy',
 	}
 }
 

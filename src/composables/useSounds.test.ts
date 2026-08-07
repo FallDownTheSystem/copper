@@ -47,6 +47,8 @@ function makeSettings(sounds: boolean): Settings {
 		theme: 'system',
 		sounds,
 		motion: 'auto',
+		insertionPoint: 'bottom',
+		doubleClick: 'copy',
 	}
 }
 

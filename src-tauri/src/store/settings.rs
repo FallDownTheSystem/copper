@@ -41,6 +41,22 @@ pub struct Settings {
 	pub theme: String,
 	pub sounds: bool,
 	pub motion: String,
+	pub insertion_point: String,
+	pub double_click: String,
+}
+
+/// Where a fresh note goes inside its section.
+///
+/// Narrowed from the stored string by name rather than deserialised as an enum,
+/// the same split `theme` and `motion` use: the store repairs a wrong *type*, and
+/// a value of the right type that names nothing collapses to the default on read.
+/// Modelling it as a serde enum would make one hand-edited word quarantine the
+/// whole file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InsertionPoint {
+	#[default]
+	Bottom,
+	Top,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,6 +85,10 @@ impl Default for Settings {
 			// decision and should be made as one.
 			sounds: false,
 			motion: "auto".to_string(),
+			// Appending is what every earlier build did, so the default is the
+			// behaviour a user upgrading into this feature already has.
+			insertion_point: "bottom".to_string(),
+			double_click: "copy".to_string(),
 		}
 	}
 }
@@ -104,6 +124,8 @@ struct RawSettings {
 	theme: Value,
 	sounds: Value,
 	motion: Value,
+	insertion_point: Value,
+	double_click: Value,
 }
 
 impl RawSettings {
@@ -172,14 +194,7 @@ impl RawSettings {
 
 		let shortcuts = repair_shortcuts(self.shortcuts, &mut notices);
 
-		let theme = match self.theme {
-			Value::Null => defaults.theme,
-			Value::String(theme) => theme,
-			_ => {
-				notices.push("\"theme\" was not a name and has been reset to \"system\".".into());
-				defaults.theme
-			}
-		};
+		let theme = repair_named(self.theme, "theme", defaults.theme, &mut notices);
 
 		// Absent from every `settings.json` written before task-012, so `Value::Null`
 		// is the ordinary case here rather than the damaged one and must stay
@@ -193,17 +208,19 @@ impl RawSettings {
 			}
 		};
 
-		// Checked by name on the frontend, not here, exactly as `theme` is: a value
-		// of the right *type* that names nothing is repairable locally, and only a
-		// wrong type is worth a notice.
-		let motion = match self.motion {
-			Value::Null => defaults.motion,
-			Value::String(motion) => motion,
-			_ => {
-				notices.push("\"motion\" was not a name and has been reset to \"auto\".".into());
-				defaults.motion
-			}
-		};
+		let motion = repair_named(self.motion, "motion", defaults.motion, &mut notices);
+		let insertion_point = repair_named(
+			self.insertion_point,
+			"insertionPoint",
+			defaults.insertion_point,
+			&mut notices,
+		);
+		let double_click = repair_named(
+			self.double_click,
+			"doubleClick",
+			defaults.double_click,
+			&mut notices,
+		);
 
 		let mut settings = Settings {
 			recents,
@@ -213,9 +230,31 @@ impl RawSettings {
 			theme,
 			sounds,
 			motion,
+			insertion_point,
+			double_click,
 		};
 		settings.clamp();
 		(settings, notices)
+	}
+}
+
+/// A preference stored as a bare name and narrowed on the frontend — `theme`,
+/// `motion`, `insertionPoint`, `doubleClick`.
+///
+/// Only the *type* is repaired here. A `Value::Null` is the ordinary case for a
+/// key written before its feature existed and must stay silent, or an older file
+/// looks broken; a string that names nothing collapses to the default wherever it
+/// is read, so it is not damage either.
+fn repair_named(raw: Value, key: &str, default: String, notices: &mut Vec<String>) -> String {
+	match raw {
+		Value::Null => default,
+		Value::String(name) => name,
+		_ => {
+			notices.push(format!(
+				"\"{key}\" was not a name and has been reset to \"{default}\"."
+			));
+			default
+		}
 	}
 }
 
@@ -255,6 +294,19 @@ impl Settings {
 	fn clamp(&mut self) {
 		if self.active_space >= self.recents.len() {
 			self.active_space = 0;
+		}
+	}
+
+	/// Where the next note goes.
+	///
+	/// Read on the store side rather than taken as a command parameter, which is
+	/// what keeps the capture path — whose only caller is Rust — consistent with
+	/// the composer's without a second place to remember.
+	pub fn insertion(&self) -> InsertionPoint {
+		if self.insertion_point == "top" {
+			InsertionPoint::Top
+		} else {
+			InsertionPoint::Bottom
 		}
 	}
 
@@ -313,6 +365,12 @@ impl Settings {
 		if let Some(motion) = patch.motion {
 			self.motion = motion;
 		}
+		if let Some(insertion_point) = patch.insertion_point {
+			self.insertion_point = insertion_point;
+		}
+		if let Some(double_click) = patch.double_click {
+			self.double_click = double_click;
+		}
 	}
 }
 
@@ -331,6 +389,10 @@ pub struct SettingsPatch {
 	pub sounds: Option<bool>,
 	#[serde(default)]
 	pub motion: Option<String>,
+	#[serde(default)]
+	pub insertion_point: Option<String>,
+	#[serde(default)]
+	pub double_click: Option<String>,
 }
 
 /// Distinguishes "key absent" from "key present and null".
@@ -540,8 +602,68 @@ mod tests {
 			"{\n  \"recents\": [],\n  \"activeSpace\": 0,\n  \"panelPosition\": null,\n  \
 			 \"shortcuts\": {\n    \"capture\": \"Shift Shift\",\n    \"summon\": \
 			 \"Ctrl+Shift+Space\"\n  },\n  \"theme\": \"system\",\n  \"sounds\": false,\n  \
-			 \"motion\": \"auto\"\n}\n"
+			 \"motion\": \"auto\",\n  \"insertionPoint\": \"bottom\",\n  \"doubleClick\": \
+			 \"copy\"\n}\n"
 		);
+	}
+
+	/// Task-013's two keys join `sounds` and `motion` in the same guarantee: a
+	/// file written before they existed must read as documented defaults, silently.
+	#[test]
+	fn a_file_without_the_task_013_keys_reads_as_defaults_without_a_notice() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"theme":"dark","motion":"off"}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(loaded.notice.is_none(), "absence was reported as damage: {:?}", loaded.notice);
+		assert_eq!(loaded.settings.insertion_point, "bottom");
+		assert_eq!(loaded.settings.double_click, "copy");
+		assert_eq!(loaded.settings.insertion(), InsertionPoint::Bottom);
+	}
+
+	#[test]
+	fn insertion_is_narrowed_by_name_and_anything_unrecognised_appends() {
+		let mut settings = Settings::default();
+		assert_eq!(settings.insertion(), InsertionPoint::Bottom);
+
+		settings.insertion_point = "top".to_string();
+		assert_eq!(settings.insertion(), InsertionPoint::Top);
+
+		// A value of the right type that names nothing is not damage — it collapses
+		// to the default here rather than being repaired on load.
+		settings.insertion_point = "sideways".to_string();
+		assert_eq!(settings.insertion(), InsertionPoint::Bottom);
+	}
+
+	#[test]
+	fn wrong_typed_task_013_values_are_repaired_and_reported() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"insertionPoint":3,"doubleClick":true}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert_eq!(loaded.settings.insertion_point, "bottom");
+		assert_eq!(loaded.settings.double_click, "copy");
+		let notice = loaded.notice.expect("repairs must be reported");
+		for expected in ["insertionPoint", "doubleClick"] {
+			assert!(notice.contains(expected), "{expected} unreported in: {notice}");
+		}
+	}
+
+	#[test]
+	fn a_patch_sets_the_task_013_keys_independently() {
+		let mut settings = Settings::default();
+
+		settings.apply_patch(patch(r#"{"insertionPoint":"top"}"#));
+		assert_eq!(settings.insertion_point, "top");
+		assert_eq!(settings.double_click, "copy", "an absent key must leave the stored value alone");
+
+		settings.apply_patch(patch(r#"{"doubleClick":"edit"}"#));
+		assert_eq!(settings.insertion_point, "top", "a doubleClick patch must not clear insertionPoint");
+		assert_eq!(settings.double_click, "edit");
 	}
 
 	/// Task-012 AC13. A `settings.json` written by any earlier build has neither

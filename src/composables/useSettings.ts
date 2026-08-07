@@ -41,6 +41,14 @@ export type ThemePreference = 'system' | 'light' | 'dark'
  */
 export type MotionPreference = 'auto' | 'off'
 
+/** Where a fresh capture or composed note lands in its section. */
+export type InsertionPoint = 'top' | 'bottom'
+
+/** What double-clicking a note's body does. Both values are actions the user
+ *  already has by keyboard, so neither is an "off" and this is a choice rather
+ *  than a switch. */
+export type DoubleClickAction = 'copy' | 'edit'
+
 /** Everything `get_shortcut_state` carries: current bindings, the shipped
  *  defaults so Reset needs no second copy of them here, and whether registration
  *  actually took. */
@@ -64,7 +72,13 @@ export type ShortcutTarget = 'summon' | 'capture'
 /** Which row an error belongs under. A failure has to render next to the control
  *  that produced it, exactly as `useSpace`'s scoped action errors do. */
 export type SettingsScope = PreferenceScope | ShortcutTarget
-type PreferenceScope = 'theme' | 'autostart' | 'sounds' | 'motion'
+type PreferenceScope =
+	| 'theme'
+	| 'autostart'
+	| 'sounds'
+	| 'motion'
+	| 'insertionPoint'
+	| 'doubleClick'
 
 // --- module-scope state ------------------------------------------------------
 
@@ -87,6 +101,16 @@ const soundsEnabled = computed(() => settings.value?.sounds === true)
  *  collapses to the default on read. */
 const motionPreference = computed<MotionPreference>(() =>
 	settings.value?.motion === 'off' ? 'off' : 'auto',
+)
+
+/** Bottom unless the file says `top`, which is what every build before this
+ *  feature did — so an upgrade changes nothing until the user asks it to. */
+const insertionPoint = computed<InsertionPoint>(() =>
+	settings.value?.insertionPoint === 'top' ? 'top' : 'bottom',
+)
+
+const doubleClickAction = computed<DoubleClickAction>(() =>
+	settings.value?.doubleClick === 'edit' ? 'edit' : 'copy',
 )
 
 function fail(scope: SettingsScope, error: unknown) {
@@ -235,6 +259,8 @@ const rowWrites: Record<SettingsScope, Generation> = {
 	autostart: generations(),
 	sounds: generations(),
 	motion: generations(),
+	insertionPoint: generations(),
+	doubleClick: generations(),
 	summon: generations(),
 	capture: generations(),
 }
@@ -311,6 +337,14 @@ function setSounds(enabled: boolean): Promise<boolean> {
 
 function setMotion(preference: MotionPreference): Promise<boolean> {
 	return patchSettings('motion', { motion: preference })
+}
+
+function setInsertionPoint(point: InsertionPoint): Promise<boolean> {
+	return patchSettings('insertionPoint', { insertionPoint: point })
+}
+
+function setDoubleClick(action: DoubleClickAction): Promise<boolean> {
+	return patchSettings('doubleClick', { doubleClick: action })
 }
 
 function setAutostart(enabled: boolean): Promise<boolean> {
@@ -398,6 +432,8 @@ export function useSettings() {
 		theme,
 		soundsEnabled,
 		motionPreference,
+		insertionPoint,
+		doubleClickAction,
 		errorFor,
 		initialize,
 		dispose,
@@ -405,6 +441,8 @@ export function useSettings() {
 		setTheme,
 		setSounds,
 		setMotion,
+		setInsertionPoint,
+		setDoubleClick,
 		setAutostart,
 		beginRecording,
 		commitRecording,

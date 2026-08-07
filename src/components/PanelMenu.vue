@@ -25,6 +25,7 @@ const { recents, probeRecents, openSpace, pickAndOpenSpace, createSpace, removeR
 	useSpaces()
 const { sections, addSection, errorFor } = useSpace()
 const { isSwitcherOpenIn, setSwitcherOpen, closeSwitcher } = useSections()
+const { copyDocumentAsMarkdown } = useNoteActions()
 const { showSettings } = useView()
 /** The band's message for this surface's failures. Read back after a refused
  *  create so the inline field can repeat the store's own cause. */
@@ -335,6 +336,22 @@ function onSectionInput(event: Event) {
 					<button type="button" class="panel-button py-0.5" @click="submitSection">Create</button>
 				</div>
 			</div>
+
+			<DropdownMenuSeparator />
+
+			<!-- The whole document, every section, whatever the search field holds —
+			     a "copy all" that quietly copied a filtered subset would be the one
+			     export nobody could trust. The selection-scoped and section-scoped
+			     forms live in the two context menus and share this renderer, which is
+			     what the common `as Markdown` suffix is saying.
+
+			     Above Settings and below the section group: it operates on the open
+			     document, and the grouping rule at the bottom of this menu is that
+			     everything which does is above the entry that leaves it. -->
+			<DropdownMenuItem class="min-h-6" @select="copyDocumentAsMarkdown()">
+				<IconLucideClipboardList class="size-4" aria-hidden="true" focusable="false" />
+				Copy all as Markdown
+			</DropdownMenuItem>
 
 			<DropdownMenuSeparator />
 

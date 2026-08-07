@@ -7,6 +7,8 @@ const { boundary, portalTo } = useOverlayHost()
 const { sections, notesInSection, deleteSection, reorderSection, setActiveSection } = useSpace()
 const { beginRename } = useSectionEditor()
 const { setMessage } = useStatusMessage()
+const { selectSection } = useSelection()
+const { copySectionAsMarkdown } = useNoteActions()
 
 const index = computed(() => sections.value.findIndex((entry) => entry.id === props.section.id))
 const isFirst = computed(() => index.value <= 0)
@@ -62,6 +64,24 @@ function move(delta: number) {
 		<ContextMenuItem :disabled="isLast" class="min-h-6" @select="move(1)"
 			>Move down</ContextMenuItem
 		>
+
+		<ContextMenuSeparator />
+
+		<!-- Below the four entries that operate on the section itself, because these
+		     two reach its *notes*. `Select all` is scoped to this section, unlike
+		     Ctrl+A, and works while the section is collapsed — folding rows away
+		     never narrowed what an action targets. `Copy section as Markdown` shares
+		     its renderer and its suffix with the note menu's `Copy as Markdown` and
+		     the `...` menu's `Copy all as Markdown`, so all three read as one format
+		     at three scopes; it takes the whole section rather than whatever a query
+		     left showing, matching the document-wide copy. -->
+		<ContextMenuItem class="min-h-6" @select="selectSection(section.id)">
+			Select all
+		</ContextMenuItem>
+
+		<ContextMenuItem class="min-h-6" @select="copySectionAsMarkdown(section.id)">
+			Copy section as Markdown
+		</ContextMenuItem>
 
 		<ContextMenuSeparator />
 

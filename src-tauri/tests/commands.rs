@@ -364,16 +364,21 @@ fn settings_cross_the_boundary_in_camel_case() {
 		"theme",
 		"sounds",
 		"motion",
+		"insertionPoint",
+		"doubleClick",
 	] {
 		assert!(payload.get(key).is_some(), "get_settings is missing {key}: {payload}");
 	}
-	assert_eq!(payload.as_object().unwrap().len(), 7, "get_settings grew a field");
+	assert_eq!(payload.as_object().unwrap().len(), 9, "get_settings grew a field");
 	assert_eq!(payload["shortcuts"]["capture"], "Shift Shift");
 	assert_eq!(payload["shortcuts"]["summon"], "Ctrl+Shift+Space");
 	// The shipped defaults, which are the whole of "this task changes no
-	// behaviour": sound is off, and motion defers to Windows.
+	// behaviour": sound is off, motion defers to Windows, and task-013's two
+	// preferences describe what every earlier build already did.
 	assert_eq!(payload["sounds"], false);
 	assert_eq!(payload["motion"], "auto");
+	assert_eq!(payload["insertionPoint"], "bottom");
+	assert_eq!(payload["doubleClick"], "copy");
 }
 
 #[test]

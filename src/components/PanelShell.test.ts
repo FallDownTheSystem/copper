@@ -14,6 +14,7 @@ import { useNoteEditor } from '@/composables/useNoteEditor'
 import { useNoteSearch } from '@/composables/useNoteSearch'
 import { useSections } from '@/composables/useSections'
 import { noteRow, takeRow, useSelection } from '@/composables/useSelection'
+import { useSettings } from '@/composables/useSettings'
 import { useSpace } from '@/composables/useSpace'
 import type { Space, StoreStatus } from '@/composables/useSpace'
 
@@ -24,6 +25,7 @@ const editor = useNoteEditor()
 const search = useNoteSearch()
 const sections = useSections()
 const selection = useSelection()
+const settings = useSettings()
 const space = useSpace()
 
 // happy-dom implements no Web Animations API, and auto-animate calls
@@ -143,15 +145,56 @@ const STATUS: StoreStatus = {
 	startupNotice: null,
 }
 
+const SHORTCUTS = {
+	capture: 'Shift Shift',
+	summon: 'Ctrl+Shift+Space',
+	defaults: { capture: 'Shift Shift', summon: 'Ctrl+Shift+Space' },
+	summonRegistered: true,
+	summonError: null,
+	captureRegistered: true,
+	captureError: null,
+	captureFallback: null,
+}
+
+/**
+ * What `get_settings` answers, as a mutable object so a test can change a
+ * preference and re-pull.
+ *
+ * `useSettings` is initialised by `App`, not by this component, so a test that
+ * needs a non-default preference has to ask for the refresh itself — see the
+ * double-click cases.
+ */
+let settingsPayload: Record<string, unknown> = {}
+
+function defaultSettings() {
+	return {
+		recents: [],
+		activeSpace: 0,
+		panelPosition: null,
+		shortcuts: {},
+		theme: 'system',
+		sounds: false,
+		motion: 'auto',
+		insertionPoint: 'bottom',
+		doubleClick: 'copy',
+	}
+}
+
 /** The store as every test finds it. Named so a test that replaces it can put it
  *  back — see the teardown below. */
 async function baseInvoke(command: string) {
 	if (command === 'get_active_space') return SPACE
 	if (command === 'get_status') return STATUS
-	if (command === 'get_settings') {
-		return { recents: [], activeSpace: 0, panelPosition: null, shortcuts: {}, theme: 'system' }
-	}
+	if (command === 'get_settings') return settingsPayload
+	if (command === 'get_shortcut_state') return SHORTCUTS
+	if (command === 'get_autostart_enabled') return false
 	if (command === 'clipboard_write_text') return null
+	// Task-013's zero-focus paste. The text branch is a capture, so it reaches
+	// `add_note` rather than `submit_entry`; the other branch asks `attach_paste`
+	// what the clipboard holds, and an empty list is its "there was text, or
+	// nothing" answer.
+	if (command === 'add_note') return { space: SPACE, noteId: 'nte_1' }
+	if (command === 'attach_paste') return []
 	if (command === 'hide_panel') return null
 	if (command === 'editor_handoffs') return []
 	if (command === 'set_notes_done') return SPACE
@@ -184,6 +227,7 @@ async function installDocument(next: Space) {
 beforeEach(() => {
 	vi.resetModules()
 	mocks.invoke.mockReset()
+	settingsPayload = defaultSettings()
 	mocks.invoke.mockImplementation(baseInvoke)
 })
 
@@ -216,8 +260,12 @@ afterEach(async () => {
 	// hands it to every test after it. Restoring here rather than asking each such
 	// test to remember is the difference between one line and a class of failures
 	// that only show up in file order.
+	settingsPayload = defaultSettings()
 	mocks.invoke.mockImplementation(baseInvoke)
 	await space.refresh()
+	// `useSettings` is module-scoped too, and a test that stored a non-default
+	// preference would otherwise hand it to every test after it.
+	await settings.refresh()
 
 	document.body.innerHTML = ''
 })
@@ -2499,5 +2547,300 @@ describe('reordering', () => {
 
 			expect(selection.selectedIds.value).toEqual(['nte_2'])
 		})
+	})
+})
+
+/**
+ * Task-013 feature 1. `Ctrl+V` with nothing focused captures the clipboard, and
+ * the listener sits on `document` — `document.body` is an *ancestor* of the panel
+ * root, so a press delivered there would never bubble down to it.
+ */
+describe('zero-focus paste', () => {
+	/** A `paste` whose `clipboardData` is stubbed rather than built from a real
+	 *  `DataTransfer`: only `getData('text/plain')` is read, and the two branches
+	 *  are "there was text" and "there was not". */
+	function paste(text: string) {
+		const event = new Event('paste', { bubbles: true, cancelable: true })
+		Object.defineProperty(event, 'clipboardData', {
+			value: { getData: () => text },
+		})
+		return event
+	}
+
+	function calls(command: string) {
+		return mocks.invoke.mock.calls.filter((call) => call[0] === command)
+	}
+
+	it('captures clipboard text as a note in the active section', async () => {
+		await mountPanel()
+
+		document.body.dispatchEvent(paste('pasted text'))
+		await settle(3)
+
+		// `add_note`, not `submit_entry`: a paste is a capture, so a body that is
+		// entirely `# Heading` has to become a note rather than a section directive.
+		expect(calls('add_note')).toHaveLength(1)
+		expect(calls('add_note')[0]?.[1]).toEqual({ body: 'pasted text', section: null })
+		expect(calls('submit_entry')).toHaveLength(0)
+	})
+
+	it('leaves a `# Heading` a note rather than a section directive', async () => {
+		await mountPanel()
+
+		document.body.dispatchEvent(paste('# Research'))
+		await settle(3)
+
+		expect(calls('add_note')[0]?.[1]).toEqual({ body: '# Research', section: null })
+	})
+
+	it('does not move focus into the composer or scroll to it', async () => {
+		const wrapper = await mountPanel()
+		takeRow(noteRow('nte_2'))
+		await settle(2)
+
+		document.body.dispatchEvent(paste('pasted text'))
+		await settle(3)
+
+		// The note lands silently: the roving target stays where the user left it,
+		// unlike a composer submit, which follows what it just created.
+		expect(selection.focusedId.value).toBe(noteRow('nte_2'))
+		expect(document.activeElement).not.toBe(wrapper.find('[data-composer]').element)
+	})
+
+	it('routes a clipboard with no text to the attachment ingest', async () => {
+		await mountPanel()
+
+		document.body.dispatchEvent(paste(''))
+		await settle(3)
+
+		expect(calls('attach_paste')).toHaveLength(1)
+		expect(calls('add_note')).toHaveLength(0)
+	})
+
+	it('is a silent no-op on an empty clipboard', async () => {
+		const wrapper = await mountPanel()
+
+		// `attach_paste` answers with an empty list, which is its "text, or nothing"
+		// signal — and with no text either there is nothing to do.
+		document.body.dispatchEvent(paste(''))
+		await settle(3)
+
+		expect(calls('add_note')).toHaveLength(0)
+		expect(wrapper.find('[role="alert"]').text()).toBe('')
+	})
+
+	it('declines while a text surface has focus, so the native paste runs', async () => {
+		const wrapper = await mountPanel()
+
+		// The composer, the inline editor, the search field and both rename fields
+		// all resolve through the same predicate; the composer is the one that
+		// already has a `paste` handler of its own.
+		wrapper.find('[data-composer]').element.dispatchEvent(paste('typed into the field'))
+		wrapper.find('[data-search]').element.dispatchEvent(paste('a query'))
+		await settle(3)
+
+		expect(calls('add_note')).toHaveLength(0)
+	})
+
+	it('whitespace alone is not text', async () => {
+		await mountPanel()
+
+		document.body.dispatchEvent(paste('   \n\t '))
+		await settle(3)
+
+		// The store would refuse an empty body anyway; asking `attach_paste` instead
+		// is what makes a stray whitespace clipboard silent rather than an error.
+		expect(calls('add_note')).toHaveLength(0)
+		expect(calls('attach_paste')).toHaveLength(1)
+	})
+})
+
+/**
+ * Task-013 feature 3. Double-clicking a note body runs the action the setting
+ * names — and must not fire from the row's controls, the grip, or a drag.
+ */
+describe('the double-click action', () => {
+	function bodyOf(wrapper: Awaited<ReturnType<typeof mountPanel>>, rowId: string) {
+		return wrapper.get(`[data-row-id="${rowId}"] .note-prose`)
+	}
+
+	async function useEdit() {
+		settingsPayload = { ...defaultSettings(), doubleClick: 'edit' }
+		await settings.refresh()
+	}
+
+	it('copies the note by default', async () => {
+		const wrapper = await mountPanel()
+		const body = bodyOf(wrapper, 'n:nte_1')
+
+		await body.trigger('click')
+		await body.trigger('dblclick')
+		await settle(3)
+
+		const written = mocks.invoke.mock.calls.filter((call) => call[0] === 'clipboard_write_text')
+		expect(written).toHaveLength(1)
+		expect(written[0]?.[1]).toEqual({ text: 'first note' })
+		expect(editor.editingNoteId.value).toBeNull()
+	})
+
+	it('opens the inline editor when the setting says edit', async () => {
+		const wrapper = await mountPanel()
+		await useEdit()
+		const body = bodyOf(wrapper, 'n:nte_1')
+
+		await body.trigger('click')
+		await body.trigger('dblclick')
+		await settle(3)
+
+		expect(editor.editingNoteId.value).toBe('nte_1')
+		expect(
+			mocks.invoke.mock.calls.filter((call) => call[0] === 'clipboard_write_text'),
+		).toHaveLength(0)
+	})
+
+	it('collapses the word the gesture selected rather than declining because of it', async () => {
+		// `.note-prose` is `select-text`, so a body double-click always leaves a
+		// non-empty selection by the time `dblclick` fires — reading
+		// `getSelection()` as a guard would suppress the feature exactly where it is
+		// meant to work.
+		const wrapper = await mountPanel()
+		const body = bodyOf(wrapper, 'n:nte_1')
+		const range = document.createRange()
+		range.selectNodeContents(body.element)
+		window.getSelection()?.addRange(range)
+
+		await body.trigger('click')
+		await body.trigger('dblclick')
+		await settle(3)
+
+		expect(
+			mocks.invoke.mock.calls.filter((call) => call[0] === 'clipboard_write_text'),
+		).toHaveLength(1)
+		expect(window.getSelection()?.toString()).toBe('')
+	})
+
+	it('does not fire from the completion box or the grip', async () => {
+		const wrapper = await mountPanel()
+		const row = wrapper.get('[data-row-id="n:nte_1"]')
+
+		await row.get('button').trigger('dblclick')
+		await row.get('[data-drag-handle]').trigger('dblclick')
+		await settle(3)
+
+		expect(
+			mocks.invoke.mock.calls.filter((call) => call[0] === 'clipboard_write_text'),
+		).toHaveLength(0)
+	})
+})
+
+/**
+ * Task-013 feature 4. Three scopes, one renderer — so what these assert is the
+ * *scope resolution*: which sections and which notes each affordance hands over.
+ * The formatting itself is `noteMarkdown.test.ts`.
+ */
+describe('copy as Markdown', () => {
+	const RESEARCH = ['# Research', '- [ ] first note', '- [x] ```js', '  const a = 1', '  ```'].join(
+		'\n',
+	)
+
+	function copied() {
+		const written = mocks.invoke.mock.calls.filter((call) => call[0] === 'clipboard_write_text')
+		return (written.at(-1)?.[1] as { text: string } | undefined)?.text ?? null
+	}
+
+	it('copies the whole document, empty sections included', async () => {
+		await mountPanel()
+
+		await actions.copyDocumentAsMarkdown()
+		await settle(2)
+
+		// `Inbox` holds nothing and still gets its heading: the scope is the
+		// document, and a section that is in scope is in the output.
+		expect(copied()).toBe(`${RESEARCH}\n\n# Inbox`)
+	})
+
+	/** AC5. A "copy all" that quietly copied a filtered subset would be the one
+	 *  export nobody could trust. */
+	it('ignores an active search', async () => {
+		const wrapper = await mountPanel()
+		await wrapper.find('#panel-search').setValue('const')
+		await settle(3)
+		expect(search.resultCount.value).toBe(1)
+
+		await actions.copyDocumentAsMarkdown()
+		await settle(2)
+
+		expect(copied()).toBe(`${RESEARCH}\n\n# Inbox`)
+	})
+
+	it('copies one section, whole, from the section menu', async () => {
+		await mountPanel()
+
+		await actions.copySectionAsMarkdown('sec_a')
+		await settle(2)
+
+		expect(copied()).toBe(RESEARCH)
+	})
+
+	it('writes nothing for a section holding no notes', async () => {
+		await mountPanel()
+
+		await actions.copySectionAsMarkdown('sec_b')
+		await settle(2)
+
+		// A heading on its own is not worth replacing the clipboard with — the
+		// same rule every other empty copy follows. Its heading still appears in
+		// the document-wide copy above, where there are notes to carry it.
+		expect(copied()).toBeNull()
+	})
+
+	/** AC8/AC9. A selection copy groups by the sections its notes came from, and
+	 *  a section contributing nothing is dropped rather than emitted empty. */
+	it('groups a selection under the sections its notes came from', async () => {
+		await mountPanel()
+		selection.selectAll()
+
+		await actions.copySelectionAsMarkdown()
+		await settle(2)
+
+		expect(copied()).toBe(RESEARCH)
+	})
+
+	it('copies a single selected note under its own heading', async () => {
+		await mountPanel()
+		selection.select('nte_1')
+
+		await actions.copySelectionAsMarkdown()
+		await settle(2)
+
+		expect(copied()).toBe('# Research\n- [ ] first note')
+	})
+
+	/** AC16. Folding a section away never narrows what an action targets, so a
+	 *  select-all-then-copy over a collapsed section still carries its notes. */
+	it('reaches a collapsed section through select-all', async () => {
+		const wrapper = await mountPanel()
+		await wrapper
+			.find('button[aria-label="Collapse Research"], button[aria-label="Expand Research"]')
+			.trigger('click')
+		await settle(3)
+		expect(wrapper.find('[data-row-id="n:nte_1"]').exists()).toBe(false)
+
+		selection.selectAll()
+		await actions.copySelectionAsMarkdown()
+		await settle(2)
+
+		expect(copied()).toBe(RESEARCH)
+	})
+
+	it('writes nothing at all when there is nothing selected', async () => {
+		await mountPanel()
+		selection.clear()
+		selection.focusRow(null)
+
+		await actions.copySelectionAsMarkdown()
+		await settle(2)
+
+		expect(copied()).toBeNull()
 	})
 })

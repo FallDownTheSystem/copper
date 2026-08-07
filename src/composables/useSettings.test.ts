@@ -28,6 +28,8 @@ const SETTINGS = {
 	theme: 'system',
 	sounds: false,
 	motion: 'auto',
+	insertionPoint: 'bottom',
+	doubleClick: 'copy',
 }
 
 const SHORTCUTS = {

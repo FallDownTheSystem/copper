@@ -124,7 +124,12 @@ pub async fn add_note(
 	section: Option<String>,
 	state: State<'_, SharedStore>,
 ) -> Reply<AddNoteResult> {
-	let (note_id, space) = lock(&state).mutate(|doc| ops::add_note(doc, &body, section.as_deref(), &[]))?;
+	let mut guard = lock(&state);
+	// Read here rather than taken as a parameter: `insertAt` would be the store's
+	// first multi-word parameter name, and the capture path — which has no frontend
+	// caller to pass one — has to agree with this one anyway.
+	let at = guard.settings().insertion();
+	let (note_id, space) = guard.mutate(|doc| ops::add_note(doc, &body, section.as_deref(), &[], at))?;
 	Ok(AddNoteResult { space, note_id })
 }
 
@@ -177,9 +182,11 @@ pub fn submit(shared: &SharedStore, body: &str, attachments: &[Attachment]) -> R
 		crate::attachments::commands::require_present(&space, attachments)?;
 	}
 
+	let at = guard.settings().insertion();
 	let name = match classify(body) {
 		Entry::Note { body } => {
-			let (note_id, space) = guard.mutate(|doc| ops::add_note(doc, body, None, attachments))?;
+			let (note_id, space) =
+				guard.mutate(|doc| ops::add_note(doc, body, None, attachments, at))?;
 			// Read back off the document rather than tracked through the op: the
 			// store defaults an unaddressed note to `activeSection`, and re-deriving
 			// that here would be a second copy of a rule that can change.

@@ -20,10 +20,10 @@ const { isEditing } = useNoteEditor()
 // row in the list. They are still the wrapping row's state either way.
 const { focusedId, isSelected, select } = useSelection()
 const { isHandingOff, isConflicted } = useEditorHandoff()
-const { stopHandoff } = useNoteActions()
+const { stopHandoff, doubleClickNote } = useNoteActions()
 const { hasQuery } = useNoteSearch()
 const { setMessage } = useStatusMessage()
-const { beginDrag, consumeDragClick } = useNoteDrag()
+const { beginDrag, consumeDragClick, draggingNoteId } = useNoteDrag()
 
 /** The field is omitted from the document when empty, so it arrives undefined
  *  on every note written before this feature existed. */
@@ -60,6 +60,30 @@ function onContextMenu() {
 function onGripClick(event: MouseEvent) {
 	if (consumeDragClick()) event.stopPropagation()
 }
+
+/**
+ * Task-013's double-click action, which is a setting: copy or edit.
+ *
+ * **The body, not the row's controls.** Everything with its own meaning is
+ * excluded by target rather than by each control stopping propagation: the
+ * completion box and the `Stop` button already `@click.stop`, but `dblclick` is
+ * a separate event they say nothing about. `button` covers the attachment card
+ * too — it is one, deliberately, and opening the file *is* its double-click. A
+ * link is excluded because following it is what a double-click there means.
+ *
+ * **The grip is excluded twice over.** A completed drag ends with a `pointerup`
+ * on the grip that the browser counts as a click, and `useNoteDrag` arms
+ * `dragClickPending` for exactly that — but the flag is one-shot and belongs to
+ * the click handler above, so consuming it here would swallow the click that
+ * selects. Declining by target, and declining while a drag is still live, leaves
+ * that mechanism alone.
+ */
+function onDoubleClick(event: MouseEvent) {
+	if (draggingNoteId.value !== null) return
+	const target = event.target as HTMLElement | null
+	if (target?.closest('button, a[href], input, textarea, [data-drag-handle]')) return
+	doubleClickNote()
+}
 </script>
 
 <template>
@@ -91,6 +115,7 @@ function onGripClick(event: MouseEvent) {
 					'hover:bg-surface-hover transition-colors duration-fast',
 				]"
 				@click="emit('pointerSelect', $event)"
+				@dblclick="onDoubleClick"
 				@contextmenu="onContextMenu"
 			>
 				<!-- A grid rather than a flex row, for `content-center` alone. The row

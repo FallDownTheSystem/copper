@@ -24,6 +24,7 @@ use super::error::{Result, StoreError};
 use super::format::{normalise, now_rfc3339};
 use super::ids;
 use super::model::{Attachment, Note, Section, Space};
+use super::settings::InsertionPoint;
 
 // --- shared validation -------------------------------------------------------
 
@@ -159,7 +160,13 @@ fn clean_attachments(attachments: &[Attachment]) -> Result<Vec<Attachment>> {
 	Ok(attachments.to_vec())
 }
 
-/// Appends a note to `section`, or to the active section when none is given.
+/// Adds a note to `section`, or to the active section when none is given, at
+/// whichever end of the group `at` names.
+///
+/// `at` is a value rather than a lookup because ops are pure over the document:
+/// the setting is read by the caller that already holds the guard, so a
+/// re-application after a write conflict places the note the same way it did the
+/// first time.
 ///
 /// `attachments` is a slice rather than an owned `Vec` because ops are `Fn` and
 /// have to survive being re-applied to a freshly re-read document after a write
@@ -169,6 +176,7 @@ pub fn add_note(
 	body: &str,
 	section: Option<&str>,
 	attachments: &[Attachment],
+	at: InsertionPoint,
 ) -> Result<String> {
 	let body = clean_body(body)?;
 	let attachments = clean_attachments(attachments)?;
@@ -182,9 +190,19 @@ pub fn add_note(
 
 	let id = ids::unique_id(ids::NOTE, |candidate| space.note(candidate).is_some());
 	let now = now_rfc3339();
+	// `-1` rather than a splice and a renumbering pass: `order` is advisory on the
+	// way in (model.rs) because `normalise` below regroups, sorts and renumbers
+	// every group from zero, so sorting ahead of position 0 is all "top" has to
+	// mean — and no other note's `order` is touched. Consecutive captures stack
+	// newest-first because each one is normalised before the next is placed, which
+	// leaves the previous note at 0 and the new one below it at -1.
+	let order = match at {
+		InsertionPoint::Top => -1,
+		InsertionPoint::Bottom => group_len(space, &section),
+	};
 	space.notes.push(Note {
 		id: id.clone(),
-		order: group_len(space, &section),
+		order,
 		section,
 		done: false,
 		body,
@@ -587,7 +605,7 @@ mod tests {
 	#[test]
 	fn add_note_appends_to_the_active_section() {
 		let mut space = space();
-		let id = add_note(&mut space, "fresh", None, &[]).unwrap();
+		let id = add_note(&mut space, "fresh", None, &[], InsertionPoint::Bottom).unwrap();
 
 		let note = space.note(&id).unwrap();
 		assert_eq!(note.section, "sec_aaaaaaaa");
@@ -596,31 +614,67 @@ mod tests {
 		assert_eq!(ids_in(&space, "sec_aaaaaaaa").last().unwrap(), &id);
 	}
 
+	/// Task-013 feature 2. The note leads its own section and every other note in
+	/// it keeps its relative position — `normalise` renumbers, so `-1` is a
+	/// placement rather than a stored value.
+	#[test]
+	fn add_note_at_the_top_leads_its_section_without_disturbing_the_rest() {
+		let mut space = space();
+		let existing = ids_in(&space, "sec_aaaaaaaa");
+
+		let id = add_note(&mut space, "fresh", None, &[], InsertionPoint::Top).unwrap();
+
+		let note = space.note(&id).unwrap();
+		assert_eq!(note.order, 0);
+		let after = ids_in(&space, "sec_aaaaaaaa");
+		assert_eq!(after.first().unwrap(), &id);
+		assert_eq!(after[1..], existing[..]);
+		// The other sections are untouched by an insertion into this one.
+		assert_eq!(ids_in(&space, "sec_bbbbbbbb").len(), 2);
+	}
+
+	/// Consecutive top insertions stack newest-first, which is the whole point of
+	/// the setting. It works because every op normalises before the next one runs.
+	#[test]
+	fn consecutive_top_insertions_stack_newest_first() {
+		let mut space = space();
+		let first = add_note(&mut space, "first", None, &[], InsertionPoint::Top).unwrap();
+		let second = add_note(&mut space, "second", None, &[], InsertionPoint::Top).unwrap();
+
+		let ids = ids_in(&space, "sec_aaaaaaaa");
+		assert_eq!(ids[0], second);
+		assert_eq!(ids[1], first);
+	}
+
 	#[test]
 	fn add_note_targets_a_named_section() {
 		let mut space = space();
-		let id = add_note(&mut space, "fresh", Some("sec_bbbbbbbb"), &[]).unwrap();
+		let id =
+			add_note(&mut space, "fresh", Some("sec_bbbbbbbb"), &[], InsertionPoint::Bottom).unwrap();
 		assert_eq!(space.note(&id).unwrap().section, "sec_bbbbbbbb");
 	}
 
 	#[test]
 	fn add_note_trims_trailing_whitespace_and_keeps_leading() {
 		let mut space = space();
-		let id = add_note(&mut space, "    indented code   \n\n", None, &[]).unwrap();
+		let id =
+			add_note(&mut space, "    indented code   \n\n", None, &[], InsertionPoint::Bottom)
+				.unwrap();
 		assert_eq!(space.note(&id).unwrap().body, "    indented code");
 	}
 
 	#[test]
 	fn add_note_rejects_an_empty_body() {
 		let mut space = space();
-		let err = add_note(&mut space, "   \n\t ", None, &[]).unwrap_err();
+		let err = add_note(&mut space, "   \n\t ", None, &[], InsertionPoint::Bottom).unwrap_err();
 		assert_eq!(err.kind(), "invalid");
 	}
 
 	#[test]
 	fn add_note_rejects_an_unknown_section() {
 		let mut space = space();
-		let err = add_note(&mut space, "fresh", Some("sec_nope"), &[]).unwrap_err();
+		let err =
+			add_note(&mut space, "fresh", Some("sec_nope"), &[], InsertionPoint::Bottom).unwrap_err();
 		assert_eq!(err.kind(), "not-found");
 		assert_eq!(space.notes.len(), 5);
 	}

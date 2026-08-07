@@ -244,8 +244,49 @@ function extendTo(noteId: string) {
 	focusedId.value = noteRow(noteId)
 }
 
+/**
+ * Over `actionableNoteIds`, not `visibleNoteIds`.
+ *
+ * The difference is a collapsed section, and taking the visible order made Ctrl+A
+ * silently skip every note inside one — while `Ctrl+C` on the result then
+ * happily targeted notes in collapsed sections that had been selected some other
+ * way. Select-all now means the same thing every other action already means by
+ * `actionableNoteIds`: a query narrows what an action reaches, folding a section
+ * shut does not.
+ */
 function selectAll() {
-	setSelection([...visibleNoteIds.value])
+	setSelection([...actionableNoteIds.value])
+}
+
+/**
+ * The notes of one section an action may target — `actionableNoteIds`' rule
+ * narrowed to a single group, so a collapsed section still answers with its
+ * notes and an active query still narrows them.
+ */
+function actionableInSection(sectionId: string): string[] {
+	const matched = matchedIds.value
+	const group = documentGroups.value.find((entry) => entry.sectionId === sectionId)
+	if (!group) return []
+	return matched ? group.noteIds.filter((id) => matched.has(id)) : group.noteIds
+}
+
+/**
+ * The section context menu's `Select all`, and the first thing there that writes
+ * the selection.
+ *
+ * Focus lands on the **header** rather than on the first note, and not only
+ * because the section may be collapsed and have no note rows at all: the target
+ * rule in `useNoteActions` reads a focused header as "take the selection", which
+ * is exactly what a copy or a delete after this should do. Landing on the first
+ * note would be indistinguishable from the user having clicked it.
+ */
+function selectSection(sectionId: string) {
+	const ids = actionableInSection(sectionId)
+	setSelection(ids)
+	anchorId.value = ids[0] ?? null
+
+	const key = sectionRow(sectionId)
+	if (rowIds.value.includes(key)) takeRow(key)
 }
 
 function clear() {
@@ -765,6 +806,7 @@ export function useSelection() {
 		extendTo,
 		extendFocus,
 		selectAll,
+		selectSection,
 		clear,
 		focusRow,
 		moveFocus,
