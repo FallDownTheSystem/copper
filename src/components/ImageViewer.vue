@@ -3,7 +3,7 @@
  * The full-size image overlay: an in-panel sheet, not a window.
  *
  * **Fit to the panel, with no zoom or pan.** The specification offers that as an
- * explicit first pass and it is the one taken: at 390 × 660 a zoom control is a
+ * explicit first pass and it is the one taken: at 440 × 760 a zoom control is a
  * lot of surface for a viewer whose job is "let me see the screenshot I pasted",
  * and task-011's OS-viewer path — still one keystroke away on `Space` — is where
  * a genuine close look belongs.
@@ -77,7 +77,7 @@ watch(
 		<div class="grid min-h-0 flex-1 place-items-center p-2" @click.self="close">
 			<!-- No `alt` of its own beyond the filename: the dialog is already labelled
 			     with it, and `object-contain` is what keeps a wide screenshot inside the
-			     390px width instead of cropping it. -->
+			     panel's width instead of cropping it. -->
 			<!-- `@error` because Rust gating the bytes as an image is not the same
 			     claim as the WebView being able to decode them: a truncated or
 			     malformed file passes the magic-number check and then renders as a

@@ -56,7 +56,7 @@ watch([list, reduced], ([element]) => {
 			<span>{{ pendingLabel }}</span>
 		</p>
 
-		<!-- A list rather than a row of chips: filenames are long, the panel is 390px
+		<!-- A list rather than a row of chips: filenames are long, the panel is 440px
 		     wide, and side-by-side chips would each truncate to nothing. -->
 		<ul ref="list" class="flex min-w-0 flex-col gap-1">
 			<li

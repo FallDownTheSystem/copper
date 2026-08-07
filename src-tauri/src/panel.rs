@@ -24,9 +24,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
 pub const PANEL_LABEL: &str = "main";
 
 /// The panel's fixed logical size, as declared in `tauri.conf.json`. The window
-/// is `resizable: false`, so this cannot drift at runtime.
-const PANEL_WIDTH: f64 = 390.0;
-const PANEL_HEIGHT: f64 = 660.0;
+/// is `resizable: false`, so this cannot drift at runtime — but these two and the
+/// config are separate declarations of one fact and **have to be changed
+/// together**. Nothing enforces it: the placement below would keep positioning a
+/// 390-wide panel perfectly while a 440-wide one hung over the edge of the work
+/// area, and no test would fail.
+const PANEL_WIDTH: f64 = 440.0;
+const PANEL_HEIGHT: f64 = 760.0;
 
 /// The height of the draggable header, matching `h-12` in `SettingsView` and
 /// `PanelHeader`. It is what the visibility test below is written against: a
@@ -738,9 +742,12 @@ pub fn flush_position(app: &AppHandle) {
 mod tests {
 	use super::*;
 
+	/// The panel as the clamp sees it: its full width, and only the header's
+	/// height. Derived from the constant rather than repeating its number, so a
+	/// resize cannot leave these tests asserting about the old window.
 	const GRAB: GrabRect = GrabRect {
-		width: 390,
-		height: 48,
+		width: PANEL_WIDTH as i64,
+		height: HEADER_HEIGHT as i64,
 	};
 
 	const PRIMARY: MonitorRect = MonitorRect {
@@ -757,7 +764,12 @@ mod tests {
 		height: 1040,
 	};
 
-	const FALLBACK: PanelPosition = PanelPosition { x: 1506, y: 190 };
+	/// What `default_position` produces on `PRIMARY` at scale 1: inset from the
+	/// right edge, centred vertically. Written out rather than computed, so the
+	/// arithmetic cannot agree with itself — and tied to the real function by
+	/// `the_fallback_fixture_is_the_real_default` below, which is what keeps these
+	/// tests describing the panel that actually ships after a resize.
+	const FALLBACK: PanelPosition = PanelPosition { x: 1456, y: 140 };
 
 	fn clamp(saved: PanelPosition, monitors: &[MonitorRect]) -> PanelPosition {
 		clamp_to_visible_monitor(saved, GRAB, monitors, FALLBACK)
@@ -884,10 +896,19 @@ mod tests {
 		assert!(crate::store::settings::Settings::default().always_on_top);
 	}
 
+	/// The panel's size lives in three places — `tauri.conf.json`, the two
+	/// constants above, and every fixture in here — and only this test notices when
+	/// they stop agreeing. It failed on the 390×660 → 440×760 change, which is the
+	/// whole reason it exists.
+	#[test]
+	fn the_fallback_fixture_is_the_real_default() {
+		assert_eq!(default_position(PRIMARY, 1.0), FALLBACK);
+	}
+
 	#[test]
 	fn the_default_respects_a_monitor_that_does_not_start_at_the_origin() {
 		let placed = default_position(SECOND, 1.0);
 		assert!(placed.x >= SECOND.x);
-		assert!(placed.x + 390 <= SECOND.x + SECOND.width as i32);
+		assert!(placed.x + PANEL_WIDTH as i32 <= SECOND.x + SECOND.width as i32);
 	}
 }

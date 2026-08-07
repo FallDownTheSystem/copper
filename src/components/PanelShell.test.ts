@@ -1087,7 +1087,7 @@ describe('the active-section chip', () => {
 
 	it('carries the full name in a title, so a truncated one is still readable', async () => {
 		const wrapper = await mountPanel()
-		const long = 'A section name long enough to need an ellipsis in a 390px panel'
+		const long = 'A section name long enough to need an ellipsis in a narrow panel'
 		await installDocument({ ...SPACE, sections: [{ id: 'sec_a', name: long, order: 0 }] })
 		await settle(3)
 

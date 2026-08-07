@@ -14,8 +14,8 @@
 			{
 				"label": "main",
 				"title": "Copper",
-				"width": 390,
-				"height": 660,
+				"width": 440,
+				"height": 760,
 				"resizable": false,
 				"decorations": false,
 				"transparent": true,

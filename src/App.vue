@@ -52,7 +52,7 @@ onMounted(() => {
 <template>
 	<div class="panel-surface h-full w-full">
 		<!-- `mode="wait"` rather than an overlap: two full-height views crossing
-		     inside a 390×660 window would each need absolute positioning and would
+		     inside a 440×760 window would each need absolute positioning and would
 		     show through one another over a translucent backdrop. -->
 		<AnimatePresence mode="wait" :initial="false">
 			<motion.div

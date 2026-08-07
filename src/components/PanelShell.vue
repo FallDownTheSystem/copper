@@ -374,9 +374,20 @@ function onContextMenu(event: MouseEvent) {
 		     html/body/#app. `min-w-0` is the horizontal equivalent and a separate
 		     failure mode — a wide code fence or Markdown table widens the document
 		     without it. -->
+		<!-- **`scrollbar-gutter: auto` here, against `.thin-scrollbar`'s `stable`.**
+		     The utility reserves the gutter permanently so the text column cannot
+		     change width as the list crosses the overflow threshold — which is right
+		     for the menus that also use it, and wrong for the one surface whose
+		     edges the reader compares. A short list reserved 11px on the right and
+		     nothing on the left, so the notes sat visibly off-centre in the panel
+		     with no scrollbar on screen to explain it.
+
+		     What this trades away is real and much smaller: crossing the threshold
+		     now re-wraps the note bodies once, where before it never did. A rare,
+		     transient re-wrap against a permanent, always-visible asymmetry. -->
 		<main
 			data-scroll-region
-			class="thin-scrollbar min-h-0 min-w-0 overflow-y-auto overscroll-contain"
+			class="thin-scrollbar min-h-0 min-w-0 overflow-y-auto overscroll-contain [scrollbar-gutter:auto]"
 			:aria-busy="refreshing"
 		>
 			<h1 class="sr-only">{{ spaceName || 'Copper' }}</h1>

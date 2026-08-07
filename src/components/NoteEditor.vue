@@ -135,7 +135,7 @@ async function keepMine() {
 			@compositionend="setComposing(false)"
 		/>
 
-		<!-- Stacked and labelled, never side by side: the panel is ~390px wide and
+		<!-- Stacked and labelled, never side by side: the panel is ~440px wide and
 		     two columns of Markdown at that width are unreadable. -->
 		<div
 			v-if="conflict !== null"

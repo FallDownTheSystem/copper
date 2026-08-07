@@ -163,9 +163,18 @@ function onDoubleClick(event: MouseEvent) {
 				     underneath it: the gutter is reserved by the layout at all times, so
 				     nothing depends on a `pr-*` matching the grip's width by hand. It
 				     holds its width while the grip is invisible, so revealing the grip on
-				     hover shifts no text either. -->
+				     hover shifts no text either.
+
+				     **`1rem`, which is the completion box's width, and that is the whole
+				     point.** The two outer columns are now the same 16px with the same
+				     `gap-2` beside them, so the text column is centred in the row and the
+				     grip's inset from the right edge is the box's inset from the left.
+				     At `1.25rem` the column was 4px wider than the mark it holds, and
+				     `justify-center` split the difference — the grip sat 2px further in
+				     than the box opposite it, and every line of every note was 4px
+				     off-centre. -->
 				<div
-					class="grid min-h-11 min-w-0 grid-cols-[auto_minmax(0,1fr)_1.25rem] content-center items-start gap-2 px-3 py-2"
+					class="grid min-h-11 min-w-0 grid-cols-[auto_minmax(0,1fr)_1rem] content-center items-start gap-2 px-3 py-2"
 					role="gridcell"
 				>
 					<!-- A rounded square rather than task-004's circle, so the squircle
@@ -303,8 +312,10 @@ function onDoubleClick(event: MouseEvent) {
    taller.
 
    The width is exactly the gutter it lives in — the row's 12px right padding,
-   plus the 20px grip column, plus the 8px column gap — so a generous grab area
-   still never covers a word of the note.
+   plus the 16px grip column, plus the 8px column gap — so a generous grab area
+   still never covers a word of the note. It follows the column: at 20px this was
+   2.5rem, and leaving it there after narrowing the column would put 4px of the
+   strip over the text.
 
    **Fine pointers only, and `touch-action` with it.** Both halves of this exist
    to help someone aiming a cursor at a 16px mark. On a touchscreen they do the
@@ -323,7 +334,7 @@ function onDoubleClick(event: MouseEvent) {
 		top: 0;
 		right: 0;
 		bottom: 0;
-		width: 2.5rem;
+		width: 2.25rem;
 	}
 }
 
