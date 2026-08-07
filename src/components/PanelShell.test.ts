@@ -14,8 +14,10 @@ import { useNoteEditor } from '@/composables/useNoteEditor'
 import { useNoteSearch } from '@/composables/useNoteSearch'
 import { useSections } from '@/composables/useSections'
 import { noteRow, takeRow, useSelection } from '@/composables/useSelection'
+import { useImageViewer } from '@/composables/useImageViewer'
 import { useSettings } from '@/composables/useSettings'
 import { useSpace } from '@/composables/useSpace'
+import { useSpaces } from '@/composables/useSpaces'
 import type { Space, StoreStatus } from '@/composables/useSpace'
 
 const actions = useNoteActions()
@@ -26,7 +28,9 @@ const search = useNoteSearch()
 const sections = useSections()
 const selection = useSelection()
 const settings = useSettings()
+const viewer = useImageViewer()
 const space = useSpace()
+const spaces = useSpaces()
 
 // happy-dom implements no Web Animations API, and auto-animate calls
 // `el.animate` from a MutationObserver callback — so a test that adds or removes
@@ -189,6 +193,7 @@ function defaultSettings() {
 		motion: 'auto',
 		insertionPoint: 'bottom',
 		doubleClick: 'copy',
+		alwaysOnTop: true,
 	}
 }
 
@@ -273,6 +278,9 @@ afterEach(async () => {
 	// press but Tab, so a later test's arrow keys move nothing and fail with focus
 	// simply sitting where it started.
 	interaction.exit()
+	// And so does the image viewer, whose overlay would otherwise still be up in
+	// the next test — declining every chord and swallowing the Escape ladder.
+	viewer.close()
 
 	// The *document* is module-scoped too, and `initialize()` is memoised — so a
 	// second mount does not re-pull it and a test that installed a different one
@@ -620,6 +628,95 @@ describe('search', () => {
 		expect(mocks.invoke).not.toHaveBeenCalledWith('set_active_section', expect.anything())
 		expect(wrapper.find('#composer').attributes('placeholder')).toContain('development')
 	})
+
+	/** Task-014. The query is a character sequence now, so a match no longer has
+	 *  to be a word the note contains. */
+	it('matches characters spread across the body', async () => {
+		const wrapper = await mountPanel()
+		await typeQuery(wrapper, 'fnote')
+
+		expect(wrapper.findAll('[data-row-id^="n:"]')).toHaveLength(1)
+		expect(wrapper.find('[data-row-id="n:nte_1"]').exists()).toBe(true)
+	})
+
+	/**
+	 * Task-014's ranking, and the two halves of the decision it records: the best
+	 * match rises **inside** its section, and the sections themselves do not move.
+	 */
+	it('ranks matches within a section without reordering the sections', async () => {
+		const ranked: Space = {
+			...SPACE,
+			notes: [
+				// Written so the three scores are unambiguous: a scattered match, a
+				// contiguous one that does not start a word, and a contiguous one that
+				// does. The last is the highest of the three and is in the *second*
+				// section, which is what makes this test about ordering rather than
+				// about scoring.
+				{
+					...SPACE.notes[0]!,
+					id: 'nte_1',
+					section: 'sec_a',
+					body: 'silently reordering the arguments',
+				},
+				{ ...SPACE.notes[0]!, id: 'nte_2', section: 'sec_a', body: 'a resort' },
+				{ ...SPACE.notes[0]!, id: 'nte_3', section: 'sec_b', body: 'sort by date' },
+			],
+		}
+		mocks.invoke.mockImplementation(async (command: string) => {
+			if (command === 'get_active_space') return ranked
+			return baseInvoke(command)
+		})
+		const wrapper = await mountPanel()
+		await space.refresh()
+		await settle(2)
+
+		await typeQuery(wrapper, 'sort')
+
+		// `sec_a` holds the two notes it held before, with the tighter match first —
+		// and `sec_b`, whose only match scores highest of the three, has not jumped
+		// above it.
+		expect(selection.rowIds.value).toEqual(['s:sec_a', 'n:nte_2', 'n:nte_1', 's:sec_b', 'n:nte_3'])
+	})
+})
+
+describe('the always-on-top pin', () => {
+	/** The header control and the settings row are the same state, so the header
+	 *  has to read the pulled value rather than a local default. */
+	async function mountWith(alwaysOnTop: boolean) {
+		settingsPayload = { ...defaultSettings(), alwaysOnTop }
+		const wrapper = await mountPanel()
+		await settings.refresh()
+		await settle(2)
+		return wrapper
+	}
+
+	it('shows the stored state and toggles it through the Rust command', async () => {
+		const wrapper = await mountWith(true)
+
+		const pin = wrapper.find('[aria-label="Keep on top: on"]')
+		expect(pin.exists()).toBe(true)
+		expect(pin.attributes('aria-pressed')).toBe('true')
+
+		settingsPayload = { ...defaultSettings(), alwaysOnTop: false }
+		mocks.invoke.mockImplementation(async (command: string) => {
+			if (command === 'set_always_on_top') return settingsPayload
+			return baseInvoke(command)
+		})
+
+		await pin.trigger('click')
+		await settle(2)
+
+		// Its own command rather than the generic settings patch: this preference has
+		// a native side, and Rust applies the band before persisting it.
+		expect(mocks.invoke).toHaveBeenCalledWith('set_always_on_top', { enabled: false })
+		expect(wrapper.find('[aria-label="Keep on top: off"]').attributes('aria-pressed')).toBe('false')
+	})
+
+	it('renders unpinned from a settings file that says so', async () => {
+		const wrapper = await mountWith(false)
+
+		expect(wrapper.find('[aria-label="Keep on top: off"]').exists()).toBe(true)
+	})
 })
 
 describe('the Escape ladder', () => {
@@ -901,6 +998,93 @@ describe('the active-section chip', () => {
 		// It updates when the active section changes — that is the whole reason it
 		// exists, since the section's own header row scrolls out of view.
 		expect(heading(wrapper).text()).toContain(long)
+	})
+})
+
+/**
+ * Task-014's fourth feature is a rename rather than a new surface: the recents
+ * list was already the first group of the `...` menu, ordered by recency, with
+ * the active entry marked and the whole group capped and scrolled. What changed
+ * is the word — the user calls a `.copper` file a *project*, and every visible
+ * label had to follow while the format, the commands and the code kept saying
+ * "space".
+ */
+describe('the projects list in the menu', () => {
+	const RECENTS = [
+		{
+			path: 'C:\\notes.copper',
+			displayPath: 'C:\\notes.copper',
+			key: 'c:\\notes.copper',
+			name: 'development',
+			active: true,
+			availability: { state: 'available' as const },
+		},
+		{
+			path: 'D:\\archive.copper',
+			displayPath: 'D:\\archive.copper',
+			key: 'd:\\archive.copper',
+			name: 'archive',
+			active: false,
+			availability: {
+				state: 'unavailable' as const,
+				reason: 'drive-unavailable' as const,
+				message: "The drive this project is on isn't connected.",
+			},
+		},
+	]
+
+	async function openMenu() {
+		mocks.invoke.mockImplementation(async (command: string) => {
+			if (command === 'list_recents') return RECENTS
+			if (command === 'refresh_recents') return null
+			return baseInvoke(command)
+		})
+		const wrapper = await mountPanel()
+		await spaces.refresh()
+		await wrapper.find('[aria-label="More actions"]').trigger('click')
+		await settle(3)
+		return document.querySelector<HTMLElement>('[data-slot="dropdown-menu-content"]')
+	}
+
+	it('lists every project by name, in recency order, without a submenu', async () => {
+		const menu = await openMenu()
+
+		expect(menu?.textContent).toContain('Projects')
+		expect(menu?.textContent).toContain('Open project…')
+		expect(menu?.textContent).toContain('New project…')
+		// Reachable directly rather than behind a nested trigger, which is what AC1
+		// asks for.
+		const rows = [...(menu?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])].filter(
+			(row) => row.textContent?.includes('.copper'),
+		)
+		expect(rows).toHaveLength(2)
+		expect(rows[0]?.textContent).toContain('development')
+		expect(rows[1]?.textContent).toContain('archive')
+	})
+
+	it('marks the open project and says so without relying on colour', async () => {
+		const menu = await openMenu()
+
+		const active = menu?.querySelector<HTMLElement>('[aria-current="true"]')
+		expect(active?.textContent).toContain('development')
+		expect(active?.textContent).toContain('active project')
+	})
+
+	/** A26 unchanged: an entry that is not on disk still says why, still shows its
+	 *  last-known path, and stays clickable — clicking it is the retry after the
+	 *  drive comes back, and Rust refuses it with the probe's own sentence. */
+	it('shows an unavailable project with its cause and its path, still selectable', async () => {
+		const menu = await openMenu()
+
+		const rows = [...(menu?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])]
+		const dead = rows.find((row) => row.textContent?.includes('archive'))
+		expect(dead?.textContent).toContain('D:\\archive.copper')
+		expect(dead?.textContent).toContain("The drive this project is on isn't connected.")
+		expect(dead?.getAttribute('data-disabled')).toBeNull()
+
+		dead?.click()
+		await settle(2)
+		expect(mocks.invoke).toHaveBeenCalledWith('activate_space', { path: 'D:\\archive.copper' })
 	})
 })
 
@@ -1498,6 +1682,11 @@ describe('attachments', () => {
 	 *  hands it to `URL.createObjectURL`, which happy-dom stubs. */
 	const THUMB_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47]).buffer
 
+	/** The full-size read's answer. Unlike the thumbnail, this one has to carry a
+	 *  whole PNG signature: `attachment_full` returns raw bytes and the frontend
+	 *  recovers the type from them to build the `Blob`. */
+	const FULL_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]).buffer
+
 	/**
 	 * `baseInvoke` plus the attachment surface. Written as an override rather
 	 * than a replacement so a test that only cares about pasting still gets the
@@ -1765,14 +1954,17 @@ describe('attachments', () => {
 		await mountPanel()
 		await installWithAttachments(documentWith([PNG, PDF]))
 
-		const cards = document.querySelectorAll<HTMLElement>(
-			'[data-note-row] button[aria-label^="Open"]',
-		)
+		const cards = document.querySelectorAll<HTMLElement>('[data-note-row] button[aria-label*=".p"]')
 		expect(cards).toHaveLength(2)
+		// Task-014 split the two destinations, and the label follows: something with
+		// a picture is *viewed* in the panel, and everything else still *opens*
+		// through the OS.
+		expect(cards[0]?.getAttribute('aria-label')).toContain(`View ${PNG.name}`)
 		expect(cards[0]?.textContent).toContain(PNG.name)
 		expect(cards[0]?.querySelector('img')).not.toBeNull()
 		// A file with no preview is not a broken image: it renders a glyph and
 		// stays enabled, because the blob is there.
+		expect(cards[1]?.getAttribute('aria-label')).toContain(`Open ${PDF.name}`)
 		expect(cards[1]?.textContent).toContain(PDF.name)
 		expect(cards[1]?.querySelector('img')).toBeNull()
 		expect(cards[1]?.hasAttribute('disabled')).toBe(false)
@@ -1835,9 +2027,12 @@ describe('attachments', () => {
 	})
 
 	it('opens on double-click and not on a single click', async () => {
+		// A `.pdf`, so this stays about the *gesture*: an attachment with no picture
+		// still goes to the OS on a double-click, which is task-011's behaviour
+		// unchanged. The image half is task-014's viewer, below.
 		withAttachmentCommands()
 		await mountPanel()
-		await installWithAttachments(documentWith([PNG]))
+		await installWithAttachments(documentWith([PDF]))
 
 		const card = document.querySelector<HTMLElement>('button[aria-label^="Open"]')
 		card?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -1846,7 +2041,131 @@ describe('attachments', () => {
 
 		card?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
 		await settle(2)
+		expect(mocks.invoke).toHaveBeenCalledWith('attachment_open', { file: PDF.file })
+	})
+
+	// --- the in-panel image viewer (task-014) ---
+
+	/** The thumbnail bytes plus a full-size read, which is what makes a card
+	 *  *viewable* rather than merely present. */
+	function withImagePreview(overrides: Record<string, unknown> = {}) {
+		withAttachmentCommands({
+			attachment_thumb: (args?: Record<string, unknown>) =>
+				args?.file === PNG.file ? THUMB_BYTES : new ArrayBuffer(0),
+			attachment_full: () => FULL_BYTES,
+			...overrides,
+		})
+	}
+
+	async function openViewer() {
+		const card = document.querySelector<HTMLElement>('button[aria-label^="View"]')
+		expect(card, 'no viewable attachment card rendered').not.toBeNull()
+		card!.focus()
+		card!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+		await settle(3)
+		return card!
+	}
+
+	function viewer() {
+		return document.querySelector<HTMLElement>('[role="dialog"][aria-modal="true"]')
+	}
+
+	it('opens the in-panel viewer for an image rather than the OS one', async () => {
+		withImagePreview()
+		await mountPanel()
+		await installWithAttachments(documentWith([PNG]))
+
+		await openViewer()
+
+		expect(mocks.invoke).toHaveBeenCalledWith('attachment_full', { file: PNG.file })
+		// The OS route is still there — it moved to `Space` — but a double-click must
+		// not take both.
+		expect(mocks.invoke).not.toHaveBeenCalledWith('attachment_open', expect.anything())
+		expect(viewer()?.querySelector('img')).not.toBeNull()
+	})
+
+	it('keeps the OS viewer on Space, so task-011 does not lose its route', async () => {
+		withImagePreview()
+		await mountPanel()
+		await installWithAttachments(documentWith([PNG]))
+
+		const card = document.querySelector<HTMLElement>('button[aria-label^="View"]')
+		card?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }))
+		await settle(2)
+
 		expect(mocks.invoke).toHaveBeenCalledWith('attachment_open', { file: PNG.file })
+		expect(viewer()).toBeNull()
+	})
+
+	/** The viewer is hand-rolled, so `inOverlay` does not see it and it needs a
+	 *  rung of its own — one that fires above every other level of the ladder. */
+	it('closes on Escape before any other rung, and hands focus back', async () => {
+		withImagePreview()
+		const wrapper = await mountPanel()
+		await installWithAttachments(documentWith([PNG]))
+		selection.select('nte_1')
+		search.query.value = 'first'
+		await settle(2)
+
+		const card = await openViewer()
+		expect(viewer()).not.toBeNull()
+
+		await wrapper.trigger('keydown', { key: 'Escape' })
+		await settle(2)
+
+		expect(viewer()).toBeNull()
+		// Every rung below it is untouched: one press closed one thing.
+		expect(search.query.value).toBe('first')
+		expect(selection.selectedIds.value).toEqual(['nte_1'])
+		expect(mocks.invoke).not.toHaveBeenCalledWith('hide_panel')
+		// Focus goes back where the press came from, not to the body — which is an
+		// ancestor of the panel root and therefore outside the ladder entirely.
+		expect(document.activeElement).toBe(card)
+	})
+
+	it('owns the keyboard while it is up, exactly as an open menu does', async () => {
+		withImagePreview()
+		const wrapper = await mountPanel()
+		await installWithAttachments(documentWith([PNG]))
+		selection.select('nte_1')
+
+		await openViewer()
+		await wrapper.trigger('keydown', { key: 'Delete' })
+		await settle(2)
+
+		expect(mocks.invoke).not.toHaveBeenCalledWith('delete_notes', expect.anything())
+		expect(viewer()).not.toBeNull()
+	})
+
+	it('reports a refused read rather than showing an empty sheet', async () => {
+		withImagePreview({
+			attachment_full: () => {
+				throw { kind: 'invalid', message: 'that image is 1.0 GB and the limit is 10.0 MB' }
+			},
+		})
+		await mountPanel()
+		await installWithAttachments(documentWith([PNG]))
+
+		await openViewer()
+
+		expect(viewer()?.textContent).toContain('the limit is 10.0 MB')
+		expect(viewer()?.querySelector('img')).toBeNull()
+	})
+
+	/** A space switch revokes every object URL, this one included — so an open
+	 *  viewer would be left holding a blob nothing can decode. */
+	it('closes when the preview cache is revoked under it', async () => {
+		withImagePreview()
+		await mountPanel()
+		await installWithAttachments(documentWith([PNG]))
+
+		await openViewer()
+		expect(viewer()).not.toBeNull()
+
+		attachments.clearPreviews()
+		await settle(2)
+
+		expect(viewer()).toBeNull()
 	})
 
 	/** AC20. `Copy` and `Copy as list` are about bodies; a local file path means

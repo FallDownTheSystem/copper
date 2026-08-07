@@ -6,6 +6,17 @@
  */
 const { query, hasQuery, clearQuery } = useNoteSearch()
 
+/**
+ * The pin, mirroring the settings row rather than owning a second copy of the
+ * state: both write through the same setter, so a click here and a switch there
+ * cannot disagree.
+ *
+ * It lives in the header because "put this behind the window I am reading" is
+ * something you want while the panel is in the way, and having to open Settings
+ * to do it means covering the thing you were trying to see.
+ */
+const { alwaysOnTop, setAlwaysOnTop } = useSettings()
+
 /** Forwarded from the section heading to the composer, which is the only place
  *  that knows whether the switcher was opened from a half-typed line. */
 const emit = defineEmits<{ switcherClosed: [event: Event] }>()
@@ -79,6 +90,28 @@ defineExpose({ focusSearch, query })
 					@keydown="onKeydown"
 				/>
 			</div>
+
+			<!-- Its own control rather than a menu entry: a menu you have to open to
+			     read the state is a state you cannot see. `aria-pressed` carries the
+			     toggle to a screen reader, and the glyph carries it to everyone else —
+			     the slashed pin is the non-colour half of the same cue. Outside any
+			     drag region, like the menu trigger beside it. -->
+			<button
+				type="button"
+				class="icon-button shrink-0"
+				:aria-pressed="alwaysOnTop"
+				:aria-label="alwaysOnTop ? 'Keep on top: on' : 'Keep on top: off'"
+				:title="alwaysOnTop ? 'Stop keeping on top' : 'Keep on top'"
+				@click="setAlwaysOnTop(!alwaysOnTop)"
+			>
+				<IconLucidePin
+					v-if="alwaysOnTop"
+					class="text-accent-text size-4"
+					aria-hidden="true"
+					focusable="false"
+				/>
+				<IconLucidePinOff v-else class="size-4" aria-hidden="true" focusable="false" />
+			</button>
 
 			<PanelMenu />
 		</div>

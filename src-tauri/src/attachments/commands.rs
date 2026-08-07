@@ -1,4 +1,4 @@
-//! The five commands the panel reaches attachments through.
+//! The six commands the panel reaches attachments through.
 //!
 //! They follow the store's two conventions unchanged: **every parameter name is
 //! a single word**, so Tauri's snake↔camel conversion stays a no-op and the
@@ -50,8 +50,8 @@ pub fn require_present(space: &Path, attachments: &[Attachment]) -> Result<()> {
 	for attachment in attachments {
 		resolve_existing(space, &attachment.file).map_err(|_| {
 			StoreError::Invalid(format!(
-				"{} is not in this space's attachments — it may have been attached before you \
-				 switched space",
+				"{} is not in this project's attachments — it may have been attached before you \
+				 switched project",
 				attachment.name
 			))
 		})?;
@@ -254,6 +254,52 @@ pub async fn attachment_thumb(
 	})
 	.await
 	.map_err(|err| StoreError::Io(format!("the preview could not be built: {err}")))?
+}
+
+/// The original bytes of an image attachment, for the in-panel viewer.
+///
+/// **This is the one place a full-size image reaches the WebView**, and it is a
+/// separate command rather than a flag on [`attachment_thumb`] because that one
+/// downscales and re-encodes *unconditionally* — including for an image already
+/// inside the box — precisely so its own rule cannot depend on the source
+/// happening to be small. Widening it would have retired that property for every
+/// caller; this leaves it intact and states its own bound instead.
+///
+/// **Nothing is decoded in Rust**, so `thumb`'s pixel and allocation ceilings do
+/// not apply and no second decode path is added. The bytes are bounded twice by
+/// `read_blob`: `ATTACHMENT_MAX_BYTES` at ingest and again here, because the
+/// document's `bytes` field is hand-editable. The WebView decodes in its own
+/// sandbox, where an image it cannot handle is a broken picture rather than this
+/// process's memory.
+///
+/// A non-image is an **error**, not an empty response: the viewer is only ever
+/// opened for something the frontend already believes has a preview, so an empty
+/// reply would be a state it has nothing useful to do with. The gate is the
+/// sniffed mime, never the extension and never the document's `mime` (AC22).
+///
+/// In `spawn_blocking`, like every other command here: it is a blob read of up to
+/// ten megabytes.
+#[tauri::command]
+pub async fn attachment_full(
+	file: String,
+	state: State<'_, SharedStore>,
+) -> Reply<tauri::ipc::Response> {
+	let space = space_path(&state)?;
+
+	tauri::async_runtime::spawn_blocking(move || {
+		let bytes = read_blob(&space, &file)?;
+		let mime = sniff_mime(&bytes);
+		if !thumb::is_thumbnailable(mime) {
+			return Err(StoreError::Invalid(format!(
+				"{mime} attachments have no preview"
+			)));
+		}
+		// Raw, like the thumbnail: a plain `Vec<u8>` return is serialised as a JSON
+		// array of numbers, which would quadruple ten megabytes on the wire.
+		Ok(tauri::ipc::Response::new(bytes))
+	})
+	.await
+	.map_err(|err| StoreError::Io(format!("the image could not be read: {err}")))?
 }
 
 /// Images open in the OS viewer; **everything else is revealed in Explorer**.

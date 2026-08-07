@@ -52,7 +52,7 @@ const COMMANDS: [&str; 21] = [
 ];
 
 /// The commands later phases added beside the store's twenty.
-const EXTRA_COMMANDS: [&str; 29] = [
+const EXTRA_COMMANDS: [&str; 31] = [
 	"clipboard_write_text",
 	"editor_handoffs",
 	"editor_open_note",
@@ -90,6 +90,14 @@ const EXTRA_COMMANDS: [&str; 29] = [
 	"attach_paths",
 	"attachment_thumb",
 	"attachment_open",
+	// Task-014. The one command that hands the WebView a full-size image, kept
+	// separate from `attachment_thumb` precisely so that command keeps its own
+	// "never full-size" property rather than growing a flag that retires it.
+	"attachment_full",
+	// Task-014's pin. A command rather than `core:window:allow-set-always-on-top`,
+	// because `removeUnusedCommands` prunes an ungranted window command out of the
+	// binary and because window operations are centralised in `panel.rs`.
+	"set_always_on_top",
 	// Task-009. Note what is *not* here: nothing for `tauri-plugin-updater`'s own
 	// four commands. The whole update flow is driven from Rust behind these three,
 	// so no `updater:*` permission is granted, the plugin's IPC surface stays
@@ -366,10 +374,11 @@ fn settings_cross_the_boundary_in_camel_case() {
 		"motion",
 		"insertionPoint",
 		"doubleClick",
+		"alwaysOnTop",
 	] {
 		assert!(payload.get(key).is_some(), "get_settings is missing {key}: {payload}");
 	}
-	assert_eq!(payload.as_object().unwrap().len(), 9, "get_settings grew a field");
+	assert_eq!(payload.as_object().unwrap().len(), 10, "get_settings grew a field");
 	assert_eq!(payload["shortcuts"]["capture"], "Shift Shift");
 	assert_eq!(payload["shortcuts"]["summon"], "Ctrl+Shift+Space");
 	// The shipped defaults, which are the whole of "this task changes no
@@ -379,6 +388,10 @@ fn settings_cross_the_boundary_in_camel_case() {
 	assert_eq!(payload["motion"], "auto");
 	assert_eq!(payload["insertionPoint"], "bottom");
 	assert_eq!(payload["doubleClick"], "copy");
+	// Task-014's pin ships on, matching the `alwaysOnTop` the window is created
+	// with: the setting exists to let the user turn the band off, not to change
+	// what an upgraded install does before they touch it.
+	assert_eq!(payload["alwaysOnTop"], true);
 }
 
 #[test]

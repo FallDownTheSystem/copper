@@ -43,6 +43,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
 		attachments::commands::attach_pick,
 		attachments::commands::attach_paths,
 		attachments::commands::attachment_thumb,
+		attachments::commands::attachment_full,
 		attachments::commands::attachment_open,
 		editor::editor_handoffs,
 		editor::editor_open_note,
@@ -66,6 +67,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
 		updater::get_app_version,
 		updater::check_for_update,
 		updater::install_update,
-		panel::hide_panel
+		panel::hide_panel,
+		panel::set_always_on_top
 	]
 }

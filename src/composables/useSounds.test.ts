@@ -49,6 +49,7 @@ function makeSettings(sounds: boolean): Settings {
 		motion: 'auto',
 		insertionPoint: 'bottom',
 		doubleClick: 'copy',
+		alwaysOnTop: true,
 	}
 }
 

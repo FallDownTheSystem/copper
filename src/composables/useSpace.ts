@@ -99,6 +99,9 @@ export type Settings = {
 	 *  the same reason `theme` and `motion` are. */
 	insertionPoint: string
 	doubleClick: string
+	/** Whether the panel window sits in the topmost band. A genuine boolean,
+	 *  unlike the four above — there is nothing for a name to say here. */
+	alwaysOnTop: boolean
 }
 
 /**

@@ -86,6 +86,16 @@ const { isCollapsed } = useSections()
  * control that expands it again. And unlike a search miss, collapsing never
  * touches the selection — `reconcile` prunes against the whole document, so a
  * selected note inside a collapsed section is still a target for `Ctrl+C`.
+ *
+ * **Task-014's ranking is applied inside each section, and the sections do not
+ * move.** The alternative readings were both worse. Flattening the list during a
+ * search would drop the section headers that make a result's origin visible, and
+ * they are focusable rows in this same order — so it would change what `rowIds`
+ * means, on every keystroke, while the collapse walk, the drag guards and the
+ * roving-focus watcher all read it. Reordering the *sections* by their best note
+ * would make the headings themselves jump around as the query is typed. Ranking
+ * within a section moves only rows that are already siblings, and leaves
+ * membership — the thing the roving-focus watcher reacts to — untouched.
  */
 const orders = computed(() => {
 	const matched = matchedIds.value
@@ -95,8 +105,15 @@ const orders = computed(() => {
 	const actionable: string[] = []
 
 	for (const group of documentGroups.value) {
-		const members = matched ? group.noteIds.filter((id) => matched.has(id)) : group.noteIds
-		if (matched && members.length === 0) continue
+		let members = group.noteIds
+		if (matched) {
+			members = group.noteIds.filter((id) => matched.has(id))
+			if (members.length === 0) continue
+			// `sort` is stable, so notes that score the same keep the document order
+			// they arrived in — which is what makes a query produce the same list twice
+			// rather than one that reshuffles its ties.
+			members.sort((a, b) => (matched.get(b) ?? 0) - (matched.get(a) ?? 0))
+		}
 
 		// One walk for both orders. `actionable` takes every match; the collapse test
 		// is the whole difference between it and the rows below.

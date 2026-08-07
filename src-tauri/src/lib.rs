@@ -279,6 +279,11 @@ pub fn run() {
 			app.manage(panel::PositionState::default());
 			panel::restore_position(&window, store::lock(&shared).settings().panel_position);
 			theme::install(app.handle(), &window);
+			// Beside the theme rather than in the window config: `tauri.conf.json`
+			// declares the band the window is *born* in, and this is the stored
+			// preference that may contradict it. Before the first reveal, so an
+			// unpinned panel is never briefly topmost.
+			panel::install_always_on_top(app.handle(), &window);
 
 			// Scavenged *before* the registry exists, so no live handoff can have its
 			// temp tree deleted out from under it. Startup scavenging is what makes

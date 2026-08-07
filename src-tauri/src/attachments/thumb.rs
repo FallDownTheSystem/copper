@@ -10,9 +10,16 @@
 //! persistence" decision already means the app reads user-chosen paths through
 //! its own commands; attachments stay inside that shape.
 //!
-//! **A full-size image is never loaded into the WebView.** [`THUMB_MAX_EDGE`]
-//! is small enough that the IPC cost is irrelevant at this panel's note counts,
-//! and opening the real thing goes to the OS instead.
+//! **No full-size image reaches the WebView through *this* module.**
+//! [`THUMB_MAX_EDGE`] is small enough that the IPC cost is irrelevant at this
+//! panel's note counts, and [`thumbnail`] re-encodes even an image already inside
+//! the box so the rule cannot depend on the source happening to be small.
+//!
+//! Task-014's in-panel viewer does hand the original bytes over, through
+//! `commands::attachment_full` — a separate command precisely so this one keeps
+//! the property above rather than growing a flag that retires it. That path
+//! decodes nothing in Rust, so the ceilings below never enter it; its bound is
+//! `ATTACHMENT_MAX_BYTES`, applied by the read itself.
 
 use std::io::Cursor;
 

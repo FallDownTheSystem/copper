@@ -258,7 +258,7 @@ impl Store {
 		let open = self.open.as_mut().ok_or_else(no_space)?;
 		if let Some(reason) = &open.doc_error {
 			return Err(StoreError::Unavailable(format!(
-				"this space cannot be written while its file is unreadable: {reason}"
+				"this project cannot be written while its file is unreadable: {reason}"
 			)));
 		}
 		Ok(open)
@@ -495,7 +495,7 @@ impl Store {
 		let path = canonical(path)?;
 		if path.is_dir() {
 			return Err(StoreError::Invalid(format!(
-				"{} is a folder, not a space",
+				"{} is a folder, not a project",
 				path.display()
 			)));
 		}
@@ -525,7 +525,7 @@ impl Store {
 	) -> Result<(Space, Vec<StoreEvent>)> {
 		let name = name.trim();
 		if name.is_empty() {
-			return Err(StoreError::Invalid("a space needs a name".into()));
+			return Err(StoreError::Invalid("a project needs a name".into()));
 		}
 		let dir = atomic::parent_dir(path)?;
 		std::fs::create_dir_all(dir).map_err(|err| io_err(dir, "create", &err))?;
@@ -888,7 +888,7 @@ pub fn path_string(path: &Path) -> String {
 }
 
 fn no_space() -> StoreError {
-	StoreError::Unavailable("no space is open".into())
+	StoreError::Unavailable("no project is open".into())
 }
 
 /// A brand-new document: one section, named per the design, already active.

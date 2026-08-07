@@ -204,11 +204,11 @@ impl CaptureFailure {
 			// its interface narrow. `unavailable` is already one of task-003's error
 			// kinds, so the case was reachable before it had wording of its own.
 			Self::NotSaved { kind } => match *kind {
-				"conflict" => "Couldn't save — the space file kept changing.".to_owned(),
+				"conflict" => "Couldn't save — the project file kept changing.".to_owned(),
 				"parse" => {
-					"Couldn't save — Copper won't overwrite a space file it can't read.".to_owned()
+					"Couldn't save — Copper won't overwrite a project file it can't read.".to_owned()
 				}
-				"unavailable" => "Couldn't save — the active space isn't available.".to_owned(),
+				"unavailable" => "Couldn't save — the active project isn't available.".to_owned(),
 				_ => "Captured, but couldn't save it.".to_owned(),
 			},
 			// Two outcomes, two sentences. Telling the user their trigger is broken

@@ -8,15 +8,16 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::diagnostics;
-use crate::store::settings::{PanelPosition, SettingsPatch};
+use crate::store::settings::{PanelPosition, Settings, SettingsPatch};
+use crate::{store, ShellError};
 use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindow};
 use windows::Win32::Graphics::Dwm::{
 	DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
 	DWM_WINDOW_CORNER_PREFERENCE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-	SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
-	SW_SHOWNOACTIVATE,
+	SetWindowPos, ShowWindow, HWND_TOP, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+	SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
 };
 
 /// Label of the single panel window, as declared in `tauri.conf.json`.
@@ -130,9 +131,13 @@ pub fn reveal(window: &WebviewWindow) -> tauri::Result<()> {
 /// above: a capture must never move focus, so the user keeps typing into
 /// whatever they were typing into while the notice is on screen.
 ///
-/// `HWND_TOPMOST` rather than `HWND_TOP` because the panel is configured
-/// `alwaysOnTop: true`, and `HWND_TOP` would move it to the top of the
-/// *non-topmost* band — dropping it out of the band it is supposed to live in.
+/// **This is the one call in the app that names a z-order band, so it is the one
+/// call the pin has to be read from.** `HWND_TOPMOST` while pinned, because
+/// `HWND_TOP` would move a topmost window to the top of the *non-topmost* band
+/// and drop it out of the band it is supposed to live in. `HWND_TOP` while
+/// unpinned, for the mirror-image reason: `HWND_TOPMOST` would promote the window
+/// back into the topmost band, and a failed capture would silently undo the
+/// user's unpin. Both raise without activating, which is all the notice needs.
 ///
 /// Must be called on the main thread, like every other window operation.
 ///
@@ -143,13 +148,14 @@ pub fn reveal_without_activating(
 	window: &WebviewWindow,
 ) -> Result<(), Box<dyn std::error::Error>> {
 	let hwnd = window.hwnd()?;
+	let band = if pinned() { HWND_TOPMOST } else { HWND_TOP };
 	// SAFETY: `hwnd` is a live window handle owned by Tauri for the lifetime of
 	// this call, and both calls are made on the thread that owns the window.
 	unsafe {
 		let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
 		SetWindowPos(
 			hwnd,
-			Some(HWND_TOPMOST),
+			Some(band),
 			0,
 			0,
 			0,
@@ -158,6 +164,84 @@ pub fn reveal_without_activating(
 		)?;
 	}
 	Ok(())
+}
+
+// --- always on top -----------------------------------------------------------
+
+/// The live pin state, mirroring `settings.json`'s `alwaysOnTop`.
+///
+/// An atomic for the same reason `theme`'s preference is one: the only reader is
+/// [`reveal_without_activating`], which runs on the main thread inside a window
+/// operation, and one byte there is cheaper than resolving managed state. It
+/// starts `true` because `tauri.conf.json` declares the window `alwaysOnTop`, so
+/// until [`install_always_on_top`] has run the mirror and the window agree.
+static PINNED: AtomicBool = AtomicBool::new(true);
+
+fn pinned() -> bool {
+	PINNED.load(Ordering::Relaxed)
+}
+
+/// Applies the band to the window and records it for the reveal path.
+///
+/// The mirror is written whatever the window call does. A `set_always_on_top`
+/// that failed leaves the two disagreeing either way; recording the *intent* at
+/// least keeps the capture notice from re-promoting a window the user asked to
+/// unpin, which is the failure this mirror exists to prevent.
+fn apply_always_on_top(window: &WebviewWindow, enabled: bool) -> tauri::Result<()> {
+	PINNED.store(enabled, Ordering::Relaxed);
+	window.set_always_on_top(enabled)
+}
+
+/// Startup. Never fails the launch, exactly as `theme::install` does not: a pin
+/// that could not be applied costs the user one window behaviour, and returning
+/// `Err` from `setup()` would cost them the whole app.
+pub fn install_always_on_top(app: &AppHandle, window: &WebviewWindow) {
+	let enabled = store::commands::settings(app).always_on_top;
+	if let Err(err) = apply_always_on_top(window, enabled) {
+		diagnostics::log_error(&format!(
+			"[copper] panel: could not apply the always-on-top setting: {err}"
+		));
+	}
+}
+
+/// Applies first, persists second, and undoes the application if the write
+/// fails — `theme::set_theme_preference`'s shape, for the same reason it has it.
+///
+/// A command rather than `getCurrentWindow().setAlwaysOnTop()` from JS. The
+/// capability for that is not granted and `build.removeUnusedCommands` prunes an
+/// ungranted window command out of the binary, so the first call would be a
+/// runtime "command not found" — but the stronger reason is the one `hide_panel`
+/// records: window operations are centralised here, and this one also owns the
+/// mirror the capture notice reads.
+#[tauri::command]
+pub async fn set_always_on_top(enabled: bool, app: AppHandle) -> Result<Settings, ShellError> {
+	let Some(window) = app.get_webview_window(PANEL_LABEL) else {
+		return Err(ShellError::Invalid(
+			"The panel window is not available.".to_owned(),
+		));
+	};
+
+	let previous = pinned();
+	if let Err(err) = apply_always_on_top(&window, enabled) {
+		return Err(ShellError::Invalid(format!(
+			"Copper couldn't change the window's always-on-top state: {err}"
+		)));
+	}
+
+	let patch = SettingsPatch {
+		always_on_top: Some(enabled),
+		..SettingsPatch::default()
+	};
+	match store::commands::patch_settings(&app, patch) {
+		Ok(settings) => Ok(settings),
+		Err(err) => {
+			let _ = apply_always_on_top(&window, previous);
+			Err(ShellError::Persist(format!(
+				"Copper couldn't save the always-on-top setting: {}",
+				err.message()
+			)))
+		}
+	}
 }
 
 /// Hides the panel. The window is never destroyed, only hidden.
@@ -733,6 +817,36 @@ mod tests {
 				"scale {scale}: the fallback position is not reachable"
 			);
 		}
+	}
+
+	/// The mirror the capture notice reads, and the reason it exists: with the pin
+	/// off, `reveal_without_activating` must pick the non-topmost band, or a failed
+	/// capture silently undoes the unpin.
+	///
+	/// The initial value is deliberately *not* asserted here. `PINNED` is a process
+	/// static and the test binary is threaded, so "what it was before anything
+	/// touched it" is a claim about test ordering rather than about the code —
+	/// `the_shipped_default_is_pinned` below makes the same claim in a form that
+	/// cannot flake.
+	#[test]
+	fn the_pin_mirror_round_trips() {
+		let held = pinned();
+
+		PINNED.store(false, Ordering::Relaxed);
+		assert!(!pinned());
+
+		PINNED.store(true, Ordering::Relaxed);
+		assert!(pinned());
+
+		PINNED.store(held, Ordering::Relaxed);
+	}
+
+	#[test]
+	fn the_shipped_default_is_pinned() {
+		// The static's initial value, `tauri.conf.json`'s `alwaysOnTop` and the
+		// store's default all have to agree, or the first launch runs with the window
+		// in one band and the file naming the other.
+		assert!(crate::store::settings::Settings::default().always_on_top);
 	}
 
 	#[test]

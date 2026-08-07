@@ -33,7 +33,7 @@ onBeforeUnmount(() => clearTimeout(timer))
  *  writable, so the two must never share one presentation. */
 const erroredMessage = computed(() =>
 	storeStatus.value.errored
-		? (storeErrorEvent.value?.message ?? 'This space cannot be read right now.')
+		? (storeErrorEvent.value?.message ?? 'This project cannot be read right now.')
 		: null,
 )
 </script>
@@ -51,7 +51,7 @@ const erroredMessage = computed(() =>
 			v-if="erroredMessage"
 			class="text-text-primary border-destructive/40 bg-destructive/10 mx-3 mt-2 rounded-md border px-2 py-1.5 text-meta"
 		>
-			<span class="font-semibold">This space is out of sync.</span>
+			<span class="font-semibold">This project is out of sync.</span>
 			{{ erroredMessage }} Changes cannot be saved until it can be read again.
 		</p>
 
@@ -85,7 +85,7 @@ const erroredMessage = computed(() =>
 		     space. Retry re-opens by path; `get_active_space` would return the
 		     in-memory document and appear to succeed while changing nothing. -->
 		<div v-else-if="loadState === 'error'" class="px-3 pt-3">
-			<p class="text-text-primary text-body font-semibold">Couldn't open this space.</p>
+			<p class="text-text-primary text-body font-semibold">Couldn't open this project.</p>
 			<p class="text-text-secondary mt-1 text-meta">Check the file still exists, then try again.</p>
 			<p v-if="loadError" class="text-text-secondary mt-1 text-meta">{{ loadError }}</p>
 			<button type="button" class="panel-button mt-2" @click="retry">Try again</button>

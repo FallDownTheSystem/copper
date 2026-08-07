@@ -43,6 +43,7 @@ pub struct Settings {
 	pub motion: String,
 	pub insertion_point: String,
 	pub double_click: String,
+	pub always_on_top: bool,
 }
 
 /// Where a fresh note goes inside its section.
@@ -89,6 +90,10 @@ impl Default for Settings {
 			// behaviour a user upgrading into this feature already has.
 			insertion_point: "bottom".to_string(),
 			double_click: "copy".to_string(),
+			// The band the window was born in (`alwaysOnTop` in `tauri.conf.json`).
+			// Defaulting to `false` would change what every existing install does on
+			// its first launch after an upgrade, over a setting nobody had asked for.
+			always_on_top: true,
 		}
 	}
 }
@@ -126,6 +131,7 @@ struct RawSettings {
 	motion: Value,
 	insertion_point: Value,
 	double_click: Value,
+	always_on_top: Value,
 }
 
 impl RawSettings {
@@ -170,7 +176,7 @@ impl RawSettings {
 				.map_or(0, |index| if index < 0 { 0 } else { index as usize }),
 			_ => {
 				notices.push(
-					"\"activeSpace\" was not a number; the first space has been made active."
+					"\"activeSpace\" was not a number; the first project has been made active."
 						.into(),
 				);
 				0
@@ -196,17 +202,13 @@ impl RawSettings {
 
 		let theme = repair_named(self.theme, "theme", defaults.theme, &mut notices);
 
-		// Absent from every `settings.json` written before task-012, so `Value::Null`
-		// is the ordinary case here rather than the damaged one and must stay
-		// silent — a notice would make an older file look broken.
-		let sounds = match self.sounds {
-			Value::Null => defaults.sounds,
-			Value::Bool(on) => on,
-			_ => {
-				notices.push("\"sounds\" was not true or false and has been turned off.".into());
-				defaults.sounds
-			}
-		};
+		let sounds = repair_flag(self.sounds, "sounds", defaults.sounds, &mut notices);
+		let always_on_top = repair_flag(
+			self.always_on_top,
+			"alwaysOnTop",
+			defaults.always_on_top,
+			&mut notices,
+		);
 
 		let motion = repair_named(self.motion, "motion", defaults.motion, &mut notices);
 		let insertion_point = repair_named(
@@ -232,6 +234,7 @@ impl RawSettings {
 			motion,
 			insertion_point,
 			double_click,
+			always_on_top,
 		};
 		settings.clamp();
 		(settings, notices)
@@ -252,6 +255,25 @@ fn repair_named(raw: Value, key: &str, default: String, notices: &mut Vec<String
 		_ => {
 			notices.push(format!(
 				"\"{key}\" was not a name and has been reset to \"{default}\"."
+			));
+			default
+		}
+	}
+}
+
+/// A preference stored as a plain boolean — `sounds`, `alwaysOnTop`.
+///
+/// The `Value::Null` arm carries the same weight it does in [`repair_named`]: it
+/// is the ordinary case for a key written before its feature existed, and a
+/// notice there would make an older `settings.json` look damaged when the
+/// recovery path discards the whole file.
+fn repair_flag(raw: Value, key: &str, default: bool, notices: &mut Vec<String>) -> bool {
+	match raw {
+		Value::Null => default,
+		Value::Bool(on) => on,
+		_ => {
+			notices.push(format!(
+				"\"{key}\" was not true or false and has been reset to {default}."
 			));
 			default
 		}
@@ -371,6 +393,9 @@ impl Settings {
 		if let Some(double_click) = patch.double_click {
 			self.double_click = double_click;
 		}
+		if let Some(always_on_top) = patch.always_on_top {
+			self.always_on_top = always_on_top;
+		}
 	}
 }
 
@@ -393,6 +418,8 @@ pub struct SettingsPatch {
 	pub insertion_point: Option<String>,
 	#[serde(default)]
 	pub double_click: Option<String>,
+	#[serde(default)]
+	pub always_on_top: Option<bool>,
 }
 
 /// Distinguishes "key absent" from "key present and null".
@@ -603,8 +630,59 @@ mod tests {
 			 \"shortcuts\": {\n    \"capture\": \"Shift Shift\",\n    \"summon\": \
 			 \"Ctrl+Shift+Space\"\n  },\n  \"theme\": \"system\",\n  \"sounds\": false,\n  \
 			 \"motion\": \"auto\",\n  \"insertionPoint\": \"bottom\",\n  \"doubleClick\": \
-			 \"copy\"\n}\n"
+			 \"copy\",\n  \"alwaysOnTop\": true\n}\n"
 		);
+	}
+
+	/// The pin joins `sounds`, `motion` and task-013's two keys in the same
+	/// guarantee — with the twist that its default is `true`, so an absent key must
+	/// read as *on* rather than as the `false` a bare `Default` would give.
+	#[test]
+	fn a_file_without_the_always_on_top_key_reads_as_pinned_without_a_notice() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"theme":"dark","sounds":true}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(loaded.notice.is_none(), "absence was reported as damage: {:?}", loaded.notice);
+		assert!(loaded.settings.always_on_top, "an absent pin must keep the window topmost");
+	}
+
+	#[test]
+	fn a_wrong_typed_always_on_top_is_repaired_to_pinned_and_reported() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"alwaysOnTop":"yes"}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(loaded.settings.always_on_top);
+		let notice = loaded.notice.expect("repairs must be reported");
+		assert!(notice.contains("alwaysOnTop"), "{notice}");
+	}
+
+	#[test]
+	fn an_explicit_false_always_on_top_survives_a_load() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"alwaysOnTop":false}"#);
+
+		let loaded = load(&path);
+
+		assert!(loaded.notice.is_none());
+		assert!(!loaded.settings.always_on_top);
+	}
+
+	#[test]
+	fn a_patch_sets_always_on_top_without_touching_its_neighbours() {
+		let mut settings = Settings::default();
+
+		settings.apply_patch(patch(r#"{"alwaysOnTop":false}"#));
+		assert!(!settings.always_on_top);
+		assert_eq!(settings.theme, "system", "an absent key must leave the stored value alone");
+
+		settings.apply_patch(patch(r#"{"theme":"dark"}"#));
+		assert!(!settings.always_on_top, "a theme patch must not re-pin the window");
 	}
 
 	/// Task-013's two keys join `sounds` and `motion` in the same guarantee: a

@@ -22,6 +22,7 @@ const {
 	motionPreference,
 	insertionPoint,
 	doubleClickAction,
+	alwaysOnTop,
 	errorFor,
 	refresh,
 	setTheme,
@@ -30,6 +31,7 @@ const {
 	setMotion,
 	setInsertionPoint,
 	setDoubleClick,
+	setAlwaysOnTop,
 } = useSettings()
 const { isRecording, cancel } = useShortcutRecorder()
 const { showList } = useView()
@@ -54,6 +56,7 @@ const soundsError = errorFor('sounds')
 const motionError = errorFor('motion')
 const insertionError = errorFor('insertionPoint')
 const doubleClickError = errorFor('doubleClick')
+const alwaysOnTopError = errorFor('alwaysOnTop')
 const summonError = errorFor('summon')
 const captureError = errorFor('capture')
 
@@ -248,6 +251,27 @@ const captureNote = computed(() => {
 					:error="themeError"
 				>
 					<ThemeToggle :model-value="theme" @update:model-value="setTheme" />
+				</SettingsRow>
+			</SettingsSection>
+
+			<!-- Beside Theme rather than beside Startup: both are about the window
+			     itself, and the pin is the one setting here the user can also reach
+			     without opening this view. -->
+			<SettingsSection title="Panel">
+				<!-- The description says what turning it *off* costs, because that is the
+				     half nobody expects: the summon chord and the tray still work, and
+				     the panel simply stops floating over whatever is in front. -->
+				<SettingsRow
+					label="Keep on top"
+					description="Float the panel above other windows. Off, the summon shortcut and the tray still bring it back."
+					label-for="always-on-top"
+					:error="alwaysOnTopError"
+				>
+					<SettingsSwitch
+						id="always-on-top"
+						:model-value="alwaysOnTop"
+						@update:model-value="setAlwaysOnTop"
+					/>
 				</SettingsRow>
 			</SettingsSection>
 

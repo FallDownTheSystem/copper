@@ -12,6 +12,9 @@ const props = defineProps<{
 const emit = defineEmits<{ message: [string] }>()
 
 const { previewFor, requestPreview, previewEpoch, openAttachment } = useAttachments()
+const { open: openViewer } = useImageViewer()
+
+const button = useTemplateRef<HTMLButtonElement>('button')
 
 // The ask, driven from a watcher rather than from the read below: `previewFor`
 // is consumed by a computed, and requesting as a side effect of reading would
@@ -66,7 +69,39 @@ const boxStyle = computed(() => {
 	}
 })
 
-async function open() {
+/**
+ * Whether this attachment has a picture, which is the only signal the frontend
+ * has for "is this an image" — `is_thumbnailable` is decided in Rust from the
+ * bytes on disk, and the document's `mime` is hand-editable.
+ *
+ * A `ready` preview with a **null** url is the honest description of a `.pdf`,
+ * and it has to fall to the OS path below: opening the viewer on one would show
+ * an empty sheet with no way to reach the file at all.
+ */
+const viewable = computed(() => preview.value.state === 'ready' && preview.value.url !== null)
+
+/**
+ * The primary gesture, and task-014 moves what it means.
+ *
+ * Double-click and `Enter` were task-011's route to the OS viewer; they are the
+ * two gestures a file has everywhere, so they belong to the thing the user is
+ * most likely to want — and for a screenshot pasted into a note, that is looking
+ * at it, not launching Photos over the top of Copper. The OS route keeps `Space`,
+ * which was already bound here and did the same thing as `Enter`.
+ *
+ * Anything with no picture keeps the old behaviour on every gesture: the viewer
+ * has nothing to show it, and `attachment_open` reveals it in Explorer.
+ */
+async function activate() {
+	if (unavailable.value) return
+	if (viewable.value) {
+		void openViewer(props.attachment, button.value)
+		return
+	}
+	await openInSystem()
+}
+
+async function openInSystem() {
 	if (unavailable.value) return
 	const failure = await openAttachment(props.attachment.file)
 	if (failure) emit('message', failure)
@@ -78,21 +113,26 @@ async function open() {
 	     one. `@click.prevent` neutralises the button's own activation without
 	     stopping propagation, so a single click still reaches the row and selects
 	     the note — opening is deliberately the *double*-click, matching how a file
-	     behaves everywhere else. -->
+	     behaves everywhere else.
+
+	     The label names the primary gesture's destination rather than listing both:
+	     a screen reader reading "View or open" on every thumbnail would be reading
+	     the implementation. -->
 	<button
+		ref="button"
 		type="button"
 		:tabindex="tabIndex"
 		:disabled="unavailable"
 		:aria-label="
 			unavailable
 				? `${attachment.name} — unavailable`
-				: `Open ${attachment.name}, ${formatBytes(attachment.bytes)}`
+				: `${viewable ? 'View' : 'Open'} ${attachment.name}, ${formatBytes(attachment.bytes)}`
 		"
 		class="squircle border-separator hover:bg-surface-hover outline-focus-ring flex min-h-16 w-full min-w-0 items-center gap-2 rounded-lg border p-1.5 text-left transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-2 disabled:cursor-default disabled:hover:bg-transparent"
 		@click.prevent
-		@dblclick.stop.prevent="open"
-		@keydown.enter.prevent="open"
-		@keydown.space.prevent="open"
+		@dblclick.stop.prevent="activate"
+		@keydown.enter.prevent="activate"
+		@keydown.space.prevent="openInSystem"
 	>
 		<span
 			class="bg-surface-hover text-text-disabled grid shrink-0 place-items-center overflow-hidden rounded-sm"

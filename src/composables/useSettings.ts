@@ -79,6 +79,7 @@ type PreferenceScope =
 	| 'motion'
 	| 'insertionPoint'
 	| 'doubleClick'
+	| 'alwaysOnTop'
 
 // --- module-scope state ------------------------------------------------------
 
@@ -112,6 +113,12 @@ const insertionPoint = computed<InsertionPoint>(() =>
 const doubleClickAction = computed<DoubleClickAction>(() =>
 	settings.value?.doubleClick === 'edit' ? 'edit' : 'copy',
 )
+
+/** On unless the file explicitly says otherwise — the opposite default to
+ *  `sounds`, because this one describes the band the window is created in and an
+ *  unreadable `settings.json` must not silently drop the panel behind everything
+ *  the user is working in. */
+const alwaysOnTop = computed(() => settings.value?.alwaysOnTop !== false)
 
 function fail(scope: SettingsScope, error: unknown) {
 	errors.value = { ...errors.value, [scope]: errorMessage(error) }
@@ -276,6 +283,7 @@ const rowWrites: Record<SettingsScope, Generation> = {
 	motion: generations(),
 	insertionPoint: generations(),
 	doubleClick: generations(),
+	alwaysOnTop: generations(),
 	summon: generations(),
 	capture: generations(),
 }
@@ -360,6 +368,28 @@ function setInsertionPoint(point: InsertionPoint): Promise<boolean> {
 
 function setDoubleClick(action: DoubleClickAction): Promise<boolean> {
 	return patchSettings('doubleClick', { doubleClick: action })
+}
+
+/**
+ * Its own command rather than the patch above, for the reason stated there in
+ * reverse: this preference *does* have a native side. Rust applies the window
+ * band first, persists second, and undoes the application if the write fails —
+ * leaving the window floating while the file says otherwise is a contradiction
+ * the user meets again on the next launch, when the file wins.
+ *
+ * Two controls write it — the settings row and the header pin — and both come
+ * through here, so the `attempt` generation discipline covers a pair of clicks
+ * whose replies cross the boundary out of order.
+ */
+function setAlwaysOnTop(enabled: boolean): Promise<boolean> {
+	return attempt(
+		settingsWrites,
+		'alwaysOnTop',
+		() => invoke<Settings>('set_always_on_top', { enabled }),
+		(value) => {
+			settings.value = value
+		},
+	)
 }
 
 function setAutostart(enabled: boolean): Promise<boolean> {
@@ -449,6 +479,7 @@ export function useSettings() {
 		motionPreference,
 		insertionPoint,
 		doubleClickAction,
+		alwaysOnTop,
 		errorFor,
 		initialize,
 		dispose,
@@ -458,6 +489,7 @@ export function useSettings() {
 		setMotion,
 		setInsertionPoint,
 		setDoubleClick,
+		setAlwaysOnTop,
 		setAutostart,
 		beginRecording,
 		commitRecording,

@@ -534,7 +534,7 @@ pub fn delete_section(space: &mut Space, id: &str) -> Result<()> {
 		.ok_or_else(|| no_such_section(id))?;
 	if space.sections.len() == 1 {
 		return Err(StoreError::Invalid(
-			"the last section cannot be deleted — a space always needs somewhere to capture into"
+			"the last section cannot be deleted — a project always needs somewhere to capture into"
 				.into(),
 		));
 	}

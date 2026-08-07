@@ -33,6 +33,7 @@ function makeSettings(over: Partial<Settings> = {}): Settings {
 		motion: 'auto',
 		insertionPoint: 'bottom',
 		doubleClick: 'copy',
+		alwaysOnTop: true,
 		...over,
 	}
 }
@@ -74,6 +75,11 @@ async function openSettings(stored: Partial<Settings> = {}) {
 				return '0.1.0'
 			case 'update_settings':
 				return makeSettings({ ...stored, ...(args?.patch as Partial<Settings>) })
+			// Its own command rather than a patch, because it has a native side to
+			// apply — so the responder has to answer with the whole settings object
+			// the same way `set_theme_preference` does.
+			case 'set_always_on_top':
+				return makeSettings({ ...stored, alwaysOnTop: args?.enabled as boolean })
 			default:
 				throw { kind: 'invalid', message: `no responder: ${command}` }
 		}
@@ -161,6 +167,51 @@ describe('the sound and motion rows', () => {
  * is why they are radio groups and not switches — and the ARIA is the whole
  * point of that decision, so it is what this asserts.
  */
+describe('the always-on-top row', () => {
+	it('renders on by default and turns off through its own Rust command', async () => {
+		const wrapper = await openSettings()
+
+		const control = wrapper.get('#always-on-top')
+		expect(control.attributes('role')).toBe('switch')
+		expect(control.attributes('aria-checked')).toBe('true')
+		expect(wrapper.find('label[for="always-on-top"]').exists()).toBe(true)
+
+		await control.trigger('click')
+		await flush()
+
+		// Not `update_settings`. Unlike `sounds` and `motion` this preference has a
+		// native side — the window's z-order band — so it goes through the command
+		// that applies it before persisting it, exactly as the theme does.
+		expect(patchesSent()).toEqual([])
+		expect(mocks.invoke).toHaveBeenCalledWith('set_always_on_top', { enabled: false })
+		expect(wrapper.get('#always-on-top').attributes('aria-checked')).toBe('false')
+	})
+
+	it('reads a stored false as off', async () => {
+		const wrapper = await openSettings({ alwaysOnTop: false })
+
+		expect(wrapper.get('#always-on-top').attributes('aria-checked')).toBe('false')
+	})
+
+	/** The row's own error slot, not the panel's band: a failure here has to
+	 *  render next to the control that produced it. */
+	it('reports a refused write on its own row and leaves the switch where it was', async () => {
+		const wrapper = await openSettings()
+		mocks.invoke.mockImplementation(async (command: string) => {
+			if (command === 'set_always_on_top') {
+				throw { kind: 'persist', message: "Copper couldn't save the always-on-top setting" }
+			}
+			throw { kind: 'invalid', message: `no responder: ${command}` }
+		})
+
+		await wrapper.get('#always-on-top').trigger('click')
+		await flush()
+
+		expect(wrapper.text()).toContain("Copper couldn't save the always-on-top setting")
+		expect(wrapper.get('#always-on-top').attributes('aria-checked')).toBe('true')
+	})
+})
+
 describe('the notes rows', () => {
 	function group(wrapper: ReturnType<typeof mount>, label: string) {
 		return wrapper.get(`[role="radiogroup"][aria-label="${label}"]`)

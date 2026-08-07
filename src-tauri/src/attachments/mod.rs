@@ -166,7 +166,7 @@ pub fn resolve_existing(space_path: &Path, file: &str) -> Result<PathBuf> {
 	let metadata = std::fs::symlink_metadata(&path).map_err(|err| io_err(&path, "read", &err))?;
 	if !metadata.is_file() {
 		return Err(StoreError::Invalid(format!(
-			"{file} is not a file in this space's attachments"
+			"{file} is not a file in this project's attachments"
 		)));
 	}
 	Ok(path)

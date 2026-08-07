@@ -17,7 +17,27 @@
  * Feature-detected rather than branched into the renderer: where
  * `CSS.highlights` is absent (happy-dom, an older WebView) every call is a
  * no-op and the results are simply not painted.
+ *
+ * **A subsequence match spans text nodes, so this walks the rendered text as one
+ * string.** Task-006 looked for literal substrings inside each text node
+ * independently, which was enough while the query was a list of words. Task-014's
+ * matcher takes the query as one character sequence, and `http req` against
+ * `<strong>HTTP</strong> requests` has its match straddling the boundary between
+ * two nodes — so the nodes are concatenated, matched once, and the resulting
+ * positions mapped back. Ranges are still cut at every node boundary: a `Range`
+ * that spanned two nodes would paint everything between them, including markup
+ * the user cannot see.
+ *
+ * **The string matched here is not the string that was scored.** `useNoteSearch`
+ * ranks notes by their `body`; this paints the *rendered* text, where markdown
+ * syntax is gone and code has been tokenised. There is no mapping between the
+ * two, so the match is simply re-run here. A note can therefore rank on one
+ * arrangement of characters and be painted on another — which is visible only in
+ * bodies whose markup changes the text, and is the honest alternative to painting
+ * nothing at all.
  */
+
+import { fuzzyMatch } from './fuzzyMatch'
 
 export const HIGHLIGHT_NAME = 'copper-search-match'
 
@@ -44,77 +64,78 @@ function registry(): HighlightRegistry | null {
 	return css.highlights
 }
 
-/** A term with the folded form the walk compares against, lowered once for the
- *  whole tree rather than once per text node. */
-type Term = { raw: string; needle: string }
+/** One text node and where its text begins in the concatenation. */
+type Piece = { node: Node; text: string; start: number }
 
-/**
- * Case-insensitive occurrences of `term` in `text`, as offsets **into `text`**.
- *
- * `haystack` is `text` already folded, because one fold serves every term, and
- * the caller owns the length guard, so a node no term could fit in is never
- * folded at all.
- *
- * Searching a wholesale-lowercased copy is wrong for the same reason it is
- * tempting: `String.prototype.toLowerCase` is not length-preserving. `İ` folds to
- * two code units and `ẞ` to `ss`, so every offset after one of those in the same
- * text node is shifted, and the range lands on the wrong characters — or throws
- * for running off the end. Each candidate window is folded on its own instead, so
- * an offset is always an index into the original string.
- */
-function occurrences(text: string, haystack: string, term: Term): number[] {
-	const { raw, needle } = term
-	const found: number[] = []
-
-	// The fast path, and the one essentially every body takes: folding left the
-	// length alone, so an offset into the folded string is an offset into the
-	// original and the engine's own substring search can be used. Advancing by one
-	// rather than by the term length keeps overlapping matches of a repeated term.
-	if (haystack.length === text.length) {
-		for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + 1)) {
-			found.push(at)
-		}
-		return found
-	}
-
-	// Otherwise fold each window on its own. Slower, and always right. A match
-	// that itself spans a length-changing fold is not found by a fixed-width
-	// window and simply goes unpainted — which is the safe direction, since the
-	// alternative is a range over the wrong characters.
-	for (let at = 0; at + raw.length <= text.length; at++) {
-		if (text.slice(at, at + raw.length).toLowerCase() === needle) found.push(at)
-	}
-	return found
-}
-
-function collect(root: HTMLElement, terms: readonly Term[]): Range[] {
+/** Every text node under `root`, in document order, with the string they spell
+ *  between them. */
+function pieces(root: HTMLElement): { pieces: Piece[]; text: string } {
 	const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-	const collected: Range[] = []
+	const found: Piece[] = []
+	let text = ''
 
 	for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-		const text = node.nodeValue
-		if (!text) continue
-
-		// Folded on first use and then reused. Shiki's output is mostly text nodes
-		// too short to hold a term, so the guard keeps those free, and folding per
-		// (node × term) made the per-character half of a keystroke scale with the
-		// number of terms typed.
-		let haystack: string | null = null
-
-		for (const term of terms) {
-			if (term.raw.length === 0 || term.raw.length > text.length) continue
-			haystack ??= text.toLowerCase()
-
-			for (const at of occurrences(text, haystack, term)) {
-				const range = document.createRange()
-				range.setStart(node, at)
-				range.setEnd(node, at + term.raw.length)
-				collected.push(range)
-			}
-		}
+		const value = node.nodeValue
+		if (!value) continue
+		found.push({ node, text: value, start: text.length })
+		text += value
 	}
 
+	return { pieces: found, text }
+}
+
+/**
+ * Turns matched positions into as few ranges as will cover them.
+ *
+ * A run is broken by either of two things: a gap in the positions — a
+ * subsequence match is mostly gaps — or a node boundary. The second is the one
+ * worth stating: `Range` happily spans nodes, and a range from the end of one
+ * text node to the start of the next would paint every element in between, which
+ * in a rendered body is markup rather than text.
+ */
+function rangesFor(found: Piece[], positions: readonly number[]): Range[] {
+	const collected: Range[] = []
+	// The positions are ascending, so one cursor walks the pieces alongside them.
+	let index = 0
+	let runStart = -1
+	let runEnd = -1
+	let runPiece: Piece | null = null
+
+	const flush = () => {
+		if (!runPiece) return
+		const range = document.createRange()
+		range.setStart(runPiece.node, runStart - runPiece.start)
+		range.setEnd(runPiece.node, runEnd + 1 - runPiece.start)
+		collected.push(range)
+		runPiece = null
+	}
+
+	for (const at of positions) {
+		let piece = found[index]
+		while (piece && index < found.length - 1 && at >= piece.start + piece.text.length) {
+			piece = found[++index]
+		}
+		if (!piece) break
+
+		if (runPiece === piece && at === runEnd + 1) {
+			runEnd = at
+			continue
+		}
+		flush()
+		runPiece = piece
+		runStart = at
+		runEnd = at
+	}
+	flush()
+
 	return collected
+}
+
+function collect(root: HTMLElement, needle: string): Range[] {
+	const { pieces: found, text } = pieces(root)
+	const match = fuzzyMatch(text, needle)
+	if (!match) return []
+	return rangesFor(found, match.positions)
 }
 
 /**
@@ -166,27 +187,25 @@ function schedulePublish() {
 }
 
 /**
- * Records one rendered body's matches. Call after render and whenever the terms
- * change; an empty `terms` clears this element's contribution.
+ * Records one rendered body's matches. Call after render and whenever the needle
+ * changes; an empty `needle` clears this element's contribution.
+ *
+ * `needle` is the query already through `fuzzyNeedle` — whitespace stripped and
+ * folded. Taking it pre-normalised rather than raw is what keeps the characters
+ * painted here and the score `useNoteSearch` ranked by derived from the same
+ * sequence.
  *
  * Writes to the map only — the registry is updated once for the whole flush.
  */
-export function applyHighlight(root: HTMLElement | null, terms: readonly string[]) {
+export function applyHighlight(root: HTMLElement | null, needle: string) {
 	if (!registry()) return
 
 	if (!root) {
 		schedulePublish()
 		return
 	}
-	if (terms.length === 0) ranges.delete(root)
-	else
-		ranges.set(
-			root,
-			collect(
-				root,
-				terms.map((raw) => ({ raw, needle: raw.toLowerCase() })),
-			),
-		)
+	if (needle.length === 0) ranges.delete(root)
+	else ranges.set(root, collect(root, needle))
 
 	schedulePublish()
 }

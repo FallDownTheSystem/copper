@@ -21,6 +21,7 @@ const { hasQuery, clearQuery, resultCount } = useNoteSearch()
 const { openSwitcher } = useSections()
 const { selectedIds, clear } = useSelection()
 const { editingNoteId, cancel } = useNoteEditor()
+const { isOpen: viewerOpen, close: closeViewer } = useImageViewer()
 const { interactionRowId, exit } = useInteractionMode()
 const { initialize: initializeHandoffs } = useEditorHandoff()
 const { initialize: initializeSpaces } = useSpaces()
@@ -138,9 +139,18 @@ watch([hasQuery, resultCount], announceResults)
  *
  * The composer is a deliberate exception and not a rung: task-004 binds `Escape`
  * there to "move focus to the last note", and it consumes the press itself.
+ *
+ * **Task-014's image viewer is the new top rung, and unlike the section switcher
+ * it is a real one.** The switcher is reka's, so it traps focus and resolves at
+ * the `inOverlay` guard before this is ever consulted; the viewer is hand-rolled
+ * and matches no reka slot, so without this rung `Escape` over an open image
+ * would clear the search or hide the panel while the image stayed up.
  */
 function onEscape(event: KeyboardEvent) {
-	if (editingNoteId.value) {
+	if (viewerOpen.value) {
+		event.preventDefault()
+		closeViewer()
+	} else if (editingNoteId.value) {
 		event.preventDefault()
 		cancel()
 	} else if (interactionRowId.value) {
@@ -179,6 +189,14 @@ function onShellKeydown(event: KeyboardEvent) {
 		onEscape(event)
 		return
 	}
+
+	// **The image viewer owns the keyboard while it is up**, exactly as an open
+	// menu does — and below the ladder rather than above it for the same reason
+	// the menu guard is above: this one has to let `Escape` through, because
+	// closing the viewer is the ladder's job and there is no reka layer here to do
+	// it. Without this, `Delete` over an open image would delete the notes
+	// underneath it.
+	if (viewerOpen.value) return
 
 	// **Above the suppression guard, and the only chord that is.** Task-006's rule
 	// is that no in-panel chord fires from a text surface; this is the documented
@@ -303,7 +321,9 @@ function onPaste(event: ClipboardEvent) {
 	// resolve here, and in every one of them Ctrl+V has a text-editing meaning that
 	// this must not take. An open menu owns the keyboard the same way it does in
 	// the chord layer.
-	if (inTextSurface(event.target) || inOverlay(event.target)) return
+	// The open image viewer joins them: it is not a text surface and not a reka
+	// overlay, but a paste while it is up would silently add a note behind it.
+	if (inTextSurface(event.target) || inOverlay(event.target) || viewerOpen.value) return
 
 	// Read here rather than inside the queued action: `clipboardData` is live only
 	// while the event is dispatching.
@@ -374,7 +394,7 @@ function onContextMenu(event: MouseEvent) {
 					<div v-if="empty" class="px-3 pt-4">
 						<p class="text-text-primary text-body font-semibold">No notes yet</p>
 						<p class="text-text-secondary mt-1 text-meta">
-							Add one below. It lands in {{ activeSectionObject?.name ?? 'this space' }}.
+							Add one below. It lands in {{ activeSectionObject?.name ?? 'this project' }}.
 						</p>
 					</div>
 
@@ -411,6 +431,10 @@ function onContextMenu(event: MouseEvent) {
 			<StatusLine />
 			<CaptureNotice />
 		</div>
+
+		<!-- After the band it has to paint over, and at a z-index between the band's
+		     `z-20` and the portal host's `z-30`: above the list, below any menu. -->
+		<ImageViewer />
 
 		<!-- Pre-rendered and empty. Injecting the element and its text together
 		     does not announce; only a text change inside a live region already in

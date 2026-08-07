@@ -204,6 +204,7 @@ declare global {
   const useId: typeof import('vue').useId
   const useIdle: typeof import('@vueuse/core').useIdle
   const useImage: typeof import('@vueuse/core').useImage
+  const useImageViewer: typeof import('./composables/useImageViewer').useImageViewer
   const useInfiniteScroll: typeof import('@vueuse/core').useInfiniteScroll
   const useInteractionMode: typeof import('./composables/useInteractionMode').useInteractionMode
   const useIntersectionObserver: typeof import('@vueuse/core').useIntersectionObserver
@@ -351,6 +352,9 @@ declare global {
   // @ts-ignore
   export type { HandoffState, OpenOutcome } from './composables/useEditorHandoff'
   import('./composables/useEditorHandoff')
+  // @ts-ignore
+  export type { ViewerImage } from './composables/useImageViewer'
+  import('./composables/useImageViewer')
   // @ts-ignore
   export type { EditSession } from './composables/useNoteEditor'
   import('./composables/useNoteEditor')
@@ -578,6 +582,7 @@ declare module 'vue' {
     readonly useId: UnwrapRef<typeof import('vue')['useId']>
     readonly useIdle: UnwrapRef<typeof import('@vueuse/core')['useIdle']>
     readonly useImage: UnwrapRef<typeof import('@vueuse/core')['useImage']>
+    readonly useImageViewer: UnwrapRef<typeof import('./composables/useImageViewer')['useImageViewer']>
     readonly useInfiniteScroll: UnwrapRef<typeof import('@vueuse/core')['useInfiniteScroll']>
     readonly useInteractionMode: UnwrapRef<typeof import('./composables/useInteractionMode')['useInteractionMode']>
     readonly useIntersectionObserver: UnwrapRef<typeof import('@vueuse/core')['useIntersectionObserver']>

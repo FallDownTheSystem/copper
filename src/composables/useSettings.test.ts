@@ -30,6 +30,7 @@ const SETTINGS = {
 	motion: 'auto',
 	insertionPoint: 'bottom',
 	doubleClick: 'copy',
+	alwaysOnTop: true,
 }
 
 const SHORTCUTS = {

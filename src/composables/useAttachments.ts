@@ -26,6 +26,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 
+import { imageMime } from '@/lib/imageMime'
 import { errorMessage } from '@/lib/rustError'
 
 import { useSounds } from './useSounds'
@@ -230,6 +231,53 @@ function clearPreviews() {
 	previews.value = new Map()
 }
 
+// --- the full-size read ------------------------------------------------------
+
+/**
+ * The whole image, for the in-panel viewer.
+ *
+ * **Deliberately not through `pump`.** That queue exists to stop two hundred
+ * cards asking for two thousand decodes at once; this is one request the user
+ * made by opening one image, and putting it behind four thumbnail decodes would
+ * make the viewer feel broken for the sake of a bound it does not stress.
+ *
+ * **Not cached either.** A ten-megabyte blob per image the user has ever glanced
+ * at is not a cache, it is a leak with a lookup table; the URL is revoked when
+ * the viewer closes. It still joins `objectUrls`, so a space switch mid-view
+ * revokes it along with everything else rather than leaving one URL alive in an
+ * epoch nobody is looking at.
+ *
+ * The epoch guard is the thumbnail path's, for the same reason: a response
+ * landing after a switch describes a space that is no longer open.
+ */
+async function loadFullImage(file: string): Promise<{ url: string } | { reason: string }> {
+	const issued = generation.value
+	try {
+		const bytes = await invoke<ArrayBuffer>('attachment_full', { file })
+		if (issued !== generation.value) return { reason: 'The project changed while loading.' }
+
+		const type = imageMime(bytes)
+		if (!type) {
+			// Rust gates on the sniffed type before sending anything, so this means the
+			// two sniffs disagree rather than that the user attached something odd.
+			return { reason: 'Copper could not tell what kind of image this is.' }
+		}
+
+		const url = URL.createObjectURL(new Blob([bytes], { type }))
+		objectUrls.add(url)
+		return { url }
+	} catch (error) {
+		return { reason: errorMessage(error) }
+	}
+}
+
+/** Drops one full-size URL. Separate from `clearPreviews` because the viewer
+ *  closing is not an epoch change: every thumbnail on screen stays valid. */
+function revokeFullImage(url: string) {
+	if (!objectUrls.delete(url)) return
+	URL.revokeObjectURL(url)
+}
+
 // --- the pending tray --------------------------------------------------------
 
 /** How many more files the tray will take. Whatever does not fit is truncated
@@ -356,6 +404,8 @@ export function useAttachments() {
 		 *  preview was just revoked to ask again. */
 		previewEpoch: readonly(generation),
 		clearPreviews,
+		loadFullImage,
+		revokeFullImage,
 		pasteAttachment,
 		pickAttachments,
 		attachPaths,

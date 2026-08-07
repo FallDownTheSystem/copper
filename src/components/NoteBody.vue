@@ -7,7 +7,7 @@ const props = defineProps<{ note: Note }>()
 
 const { renderNote } = useMarkdown()
 const { canExpand, isExpanded, measure, toggle, clampHeight } = useNoteDisclosure()
-const { matchTerms } = useNoteSearch()
+const { matchNeedle } = useNoteSearch()
 
 const html = computed(() => renderNote(props.note))
 const bodyId = computed(() => `note-body-${props.note.id}`)
@@ -43,8 +43,8 @@ watch([clampHeight, html], () => void nextTick(remeasure))
  * address text nodes the render has just replaced.
  */
 watch(
-	[html, matchTerms],
-	() => void nextTick(() => applyHighlight(contentRef.value, matchTerms.value)),
+	[html, matchNeedle],
+	() => void nextTick(() => applyHighlight(contentRef.value, matchNeedle.value)),
 	{ immediate: true },
 )
 
