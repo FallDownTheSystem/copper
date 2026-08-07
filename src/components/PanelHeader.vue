@@ -86,7 +86,7 @@ defineExpose({ focusSearch, query })
 		<!-- Directly under the field, labelling the list below it. Its own row, so
 		     it can never push the search field sideways. -->
 		<div class="flex min-w-0">
-			<ActiveSectionHeading @closed="emit('switcherClosed', $event)" />
+			<ActiveSectionChip @closed="emit('switcherClosed', $event)" />
 		</div>
 	</header>
 </template>

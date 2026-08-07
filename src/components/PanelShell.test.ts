@@ -714,10 +714,35 @@ describe('the composer submit', () => {
 	})
 })
 
-describe('the active-section heading', () => {
+describe('the active-section chip', () => {
 	function heading(wrapper: Awaited<ReturnType<typeof mountPanel>>) {
 		return wrapper.find('[data-slot="dropdown-menu-trigger"][title]')
 	}
+
+	it('shows the active section and how many notes are in it', async () => {
+		const wrapper = await mountPanel()
+
+		// `sec_a` holds both of the document's notes; `sec_b` holds none.
+		expect(heading(wrapper).text()).toContain('Research')
+		expect(heading(wrapper).text()).toContain('2')
+		// The numeral is unambiguous to look at and meaningless read aloud, so the
+		// spoken form carries the unit.
+		expect(heading(wrapper).attributes('aria-label')).toBe(
+			'Active section: Research, 2 notes. Switch section',
+		)
+	})
+
+	it('counts what the section holds, not what a search left on screen', async () => {
+		// The chip says where the next capture lands and what is already there.
+		// Counting the filtered list would make the destination look emptier than it
+		// is for as long as a query is active.
+		const wrapper = await mountPanel()
+		await wrapper.find('#panel-search').setValue('first')
+		await settle(3)
+
+		expect(selection.visibleNoteIds.value).toEqual(['nte_1'])
+		expect(heading(wrapper).text()).toContain('2')
+	})
 
 	it('names the active section without touching the placeholder', async () => {
 		const wrapper = await mountPanel()
@@ -829,6 +854,33 @@ describe('the section switcher', () => {
 		expect(content()?.querySelector('[aria-current="true"]')?.textContent).toContain(
 			'(active section)',
 		)
+	})
+
+	it('shows each section with its own note count', async () => {
+		// The count is what makes one destination worth picking over another, and it
+		// is the document's rather than the filtered list's — a query narrows what is
+		// on screen, not what a section holds.
+		const wrapper = await mountPanel()
+		await openWithChord(wrapper)
+
+		const rows = [...(content()?.querySelectorAll('[role="menuitem"]') ?? [])]
+		expect(rows[0]?.textContent).toContain('Research')
+		expect(rows[0]?.textContent).toContain('2 notes')
+		// An empty section still says so rather than showing nothing.
+		expect(rows[1]?.textContent).toContain('Inbox')
+		expect(rows[1]?.textContent).toContain('0 notes')
+	})
+
+	it('offers one field that both filters and creates', async () => {
+		// Not two inputs. A dedicated "new section" field beside the filter would
+		// fork the keyboard path — two places for Enter to mean something — and
+		// duplicate a creation route that already exists.
+		const wrapper = await mountPanel()
+		await openWithChord(wrapper)
+
+		expect(content()?.querySelectorAll('input')).toHaveLength(1)
+		const filter = content()!.querySelector<HTMLInputElement>('#section-filter')!
+		expect(filter.placeholder).toBe('Filter or create a section…')
 	})
 
 	it('stays suppressed in the search field and the inline editor', async () => {
@@ -1104,6 +1156,36 @@ describe('collapsible sections', () => {
 		await disclosure(wrapper, 'Research').trigger('click')
 		await settle(3)
 		expect(wrapper.findAll('[data-row-id^="n:"]')).toHaveLength(2)
+	})
+
+	it('puts the chevron after the section name, not in front of it', async () => {
+		// The heading starts at the row's own left edge and the disclosure sits beside
+		// what it discloses. Asserted on DOM order rather than on classes, because
+		// that is the thing the requirement is about and the thing a later restyle
+		// could quietly undo.
+		const wrapper = await mountPanel()
+		const cell = wrapper.find('[data-row-id="s:sec_a"] [role="gridcell"]').element
+		const children = [...cell.children]
+
+		const heading = children.findIndex((child) => child.tagName === 'H2')
+		const chevron = children.findIndex((child) => child.matches('button[aria-expanded]'))
+
+		expect(heading).toBeGreaterThanOrEqual(0)
+		expect(chevron).toBeGreaterThan(heading)
+	})
+
+	it('keeps the chevron after the name once the section is collapsed', async () => {
+		const wrapper = await mountPanel()
+		await disclosure(wrapper, 'Research').trigger('click')
+		await settle(3)
+
+		const cell = wrapper.find('[data-row-id="s:sec_a"] [role="gridcell"]').element
+		const children = [...cell.children]
+		const heading = children.findIndex((child) => child.tagName === 'H2')
+		const chevron = children.findIndex((child) => child.matches('button[aria-expanded]'))
+
+		expect(chevron).toBeGreaterThan(heading)
+		expect(disclosure(wrapper, 'Research').attributes('aria-expanded')).toBe('false')
 	})
 
 	it('collapses with ArrowLeft and expands with ArrowRight on the header row', async () => {

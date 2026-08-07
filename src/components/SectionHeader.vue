@@ -123,36 +123,22 @@ function onKeydown(event: KeyboardEvent) {
 					</template>
 
 					<template v-else>
-						<!-- Withdrawn while a query is active rather than rendered inert.
-						     Search already decides what is on screen and overrides collapse
-						     entirely, so a control that rotated its chevron and changed
-						     nothing visible would read as broken. The stored state survives
-						     and comes back when the query clears; the fixed-width stand-in
-						     keeps the heading from shifting sideways in the meantime. -->
-						<button
-							v-if="collapseEnabled"
-							type="button"
-							tabindex="-1"
-							:aria-expanded="!collapsed"
-							:aria-label="`${collapsed ? 'Expand' : 'Collapse'} ${section.name}`"
-							class="text-text-disabled hover:bg-surface-hover hover:text-text-secondary outline-focus-ring grid size-5 shrink-0 place-items-center rounded transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
-							@click="toggle"
-						>
-							<IconLucideChevronRight
-								class="size-3.5 transition-transform duration-fast"
-								:class="collapsed ? '' : 'rotate-90'"
-								aria-hidden="true"
-								focusable="false"
-							/>
-						</button>
-						<span v-else aria-hidden="true" class="size-5 shrink-0" />
+						<!-- The name leads and the chevron follows it, so the heading starts
+						     at the row's own left edge rather than behind a control. The
+						     chevron is a disclosure sitting beside what it discloses, and
+						     still rotates to point down while the section is open.
 
-						<h2 :id="headingId" class="min-w-0 shrink-0">
+						     `shrink` rather than `shrink-0`, and that is what the reordering
+						     costs: with the chevron behind it, a long name could only push
+						     the separator away, but ahead of it an unshrinkable name would
+						     push the chevron itself out of the row. The name truncates now,
+						     which is what the inner `truncate` was always for. -->
+						<h2 :id="headingId" class="min-w-0">
 							<button
 								type="button"
 								tabindex="-1"
 								:aria-current="active ? 'true' : undefined"
-								class="hover:bg-surface-hover active:bg-surface-active flex items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors duration-fast"
+								class="hover:bg-surface-hover active:bg-surface-active flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors duration-fast"
 								:class="active ? 'text-accent-text' : 'text-text-secondary'"
 								@click="emit('activate')"
 							>
@@ -172,6 +158,31 @@ function onKeydown(event: KeyboardEvent) {
 								</ActiveMarker>
 							</button>
 						</h2>
+
+						<!-- Withdrawn while a query is active rather than rendered inert.
+						     Search already decides what is on screen and overrides collapse
+						     entirely, so a control that rotated its chevron and changed
+						     nothing visible would read as broken. The stored state survives
+						     and comes back when the query clears; the fixed-width stand-in
+						     keeps the separator from shifting sideways in the meantime. -->
+						<button
+							v-if="collapseEnabled"
+							type="button"
+							tabindex="-1"
+							:aria-expanded="!collapsed"
+							:aria-label="`${collapsed ? 'Expand' : 'Collapse'} ${section.name}`"
+							class="text-text-disabled hover:bg-surface-hover hover:text-text-secondary outline-focus-ring grid size-5 shrink-0 place-items-center rounded transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
+							@click="toggle"
+						>
+							<IconLucideChevronRight
+								class="size-3.5 transition-transform duration-fast"
+								:class="collapsed ? '' : 'rotate-90'"
+								aria-hidden="true"
+								focusable="false"
+							/>
+						</button>
+						<span v-else aria-hidden="true" class="size-5 shrink-0" />
+
 						<span aria-hidden="true" class="bg-separator h-px min-w-0 flex-1" />
 					</template>
 				</div>

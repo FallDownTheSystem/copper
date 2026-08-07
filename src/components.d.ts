@@ -12,7 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     ActiveMarker: typeof import('./components/ActiveMarker.vue')['default']
-    ActiveSectionHeading: typeof import('./components/ActiveSectionHeading.vue')['default']
+    ActiveSectionChip: typeof import('./components/ActiveSectionChip.vue')['default']
     AttachmentCard: typeof import('./components/AttachmentCard.vue')['default']
     AttachmentTray: typeof import('./components/AttachmentTray.vue')['default']
     CaptureNotice: typeof import('./components/CaptureNotice.vue')['default']

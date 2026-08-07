@@ -1,20 +1,33 @@
 <script setup lang="ts">
 /**
- * The switcher's contents: a filter field, the active space's sections, and a
- * way to create one that does not exist yet.
+ * The switcher's contents: a field, the active space's sections with their note
+ * counts, and a way to create one that does not exist yet.
  *
  * **The body only, not the menu around it** — exactly as `MoveToSubmenu` renders
  * items for whichever content element hosts it. There are two entry points, and
- * one list: `Ctrl+K` opens it as a dropdown anchored on the composer's chip, and
- * `Switch section ▸` opens it as a submenu of `...`. Building a second list for
- * the second trigger is how they would come to disagree.
+ * one list: `Ctrl+K` opens it as a dropdown anchored on the chip under the search
+ * field, and `Switch section ▸` opens it as a submenu of `...`. Building a second
+ * list for the second trigger is how they would come to disagree.
  *
- * It lists **all** the active space's sections regardless of the search query.
+ * **One field does the filtering and the creating**, which is why it is named for
+ * both. A second, dedicated "new section" input at the top would fork the
+ * keyboard path — two places for `Enter` to mean something — and duplicate a
+ * creation route that already exists. Typing a name nothing matches turns the
+ * list into the offer to create it, so the field a user types a new name into is
+ * the field that was already there.
+ *
+ * It lists **all** the active space's sections regardless of the search query,
+ * and counts what the document holds rather than what the query left on screen.
  * It is a destination picker, not a view of the filtered list.
+ *
+ * Spaces are not switched from here. That lives behind `...`, because a section
+ * and a space are different scopes and one menu offering both is one menu in
+ * which the wrong row is easy to hit.
  */
 
 import { isComposing } from '@/lib/chords'
 import { normaliseSectionName } from '@/lib/sectionName'
+import { countMessage } from '@/composables/useStatusMessage'
 
 /**
  * Emitted once an action has actually succeeded, so the host closes itself.
@@ -26,8 +39,17 @@ import { normaliseSectionName } from '@/lib/sectionName'
  */
 const emit = defineEmits<{ close: [] }>()
 
-const { sections, activeSection, submitEntry, setActiveSection } = useSpace()
+const { sections, activeSection, notesInSection, submitEntry, setActiveSection } = useSpace()
 const { filterQuery } = useSections()
+
+/** Spoken rather than shown: the bare numeral beside a name is unambiguous to a
+ *  reader looking at it and means nothing read aloud on its own. */
+function spokenCount(sectionId: string) {
+	return countMessage(notesInSection(sectionId).length, {
+		one: '1 note',
+		many: (total) => `${total} notes`,
+	})
+}
 
 const input = useTemplateRef<HTMLInputElement>('input')
 
@@ -154,14 +176,16 @@ function onKeydown(event: KeyboardEvent) {
 	     is labelled and fully operable by keyboard, and the switcher's axe
 	     assertion names the rule and this reason rather than passing quietly. -->
 	<div class="px-1 pb-1">
-		<label for="section-filter" class="sr-only">Filter sections</label>
+		<!-- Named for both jobs, because it does both: what it filters to nothing it
+		     offers to create. -->
+		<label for="section-filter" class="sr-only">Filter or create a section</label>
 		<input
 			id="section-filter"
 			ref="input"
 			v-model="filterQuery"
 			type="text"
 			autocomplete="off"
-			placeholder="Filter sections…"
+			placeholder="Filter or create a section…"
 			class="panel-field h-7 w-full min-w-0 px-1.5"
 			@keydown="onKeydown"
 		/>
@@ -191,6 +215,14 @@ function onKeydown(event: KeyboardEvent) {
 					{{ section.name }}
 				</span>
 			</ActiveMarker>
+
+			<!-- How much is in each destination, which is the thing that makes one
+			     worth picking over another. `tabular-nums` so a column of counts lines
+			     up on its digits. -->
+			<span aria-hidden="true" class="text-text-secondary shrink-0 tabular-nums">
+				{{ notesInSection(section.id).length }}
+			</span>
+			<span class="sr-only">{{ spokenCount(section.id) }}</span>
 		</DropdownMenuItem>
 
 		<DropdownMenuItem

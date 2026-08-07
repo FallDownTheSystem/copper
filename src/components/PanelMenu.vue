@@ -262,7 +262,8 @@ function onSectionInput(event: Event) {
 			<!-- The section group. `Switch section` leads it because picking an
 			     existing destination is the common case and creating one is the
 			     exception — and both are the same list, since the submenu renders the
-			     component the composer's chip does rather than a second copy of it. -->
+			     component the chip under the search field does rather than a second
+			     copy of it. -->
 			<!-- Controlled, not left to reka. The switcher's filter is module state
 			     shared with the chip's host, so an uncontrolled submenu never ran the
 			     open/close lifecycle: its query survived every dismissal, a reopened
