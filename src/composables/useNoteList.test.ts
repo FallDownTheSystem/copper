@@ -125,54 +125,64 @@ describe('the done filter', () => {
 	})
 })
 
-describe('per-section sort', () => {
-	/** AC13. */
-	it('orders one section by created without touching the other', () => {
-		list.setSort('sec_a', 'oldest')
-		expect(selection.visibleNoteIds.value).toEqual(['n2', 'n3', 'n1', 'n4', 'n5'])
+describe('sort', () => {
+	/** AC13, and the scope the mode being document-wide did *not* change: notes are
+	 *  ordered inside their own section, and the sections themselves neither move
+	 *  nor interleave. */
+	it('orders the notes inside every section by created', () => {
+		list.setSort('oldest')
+		expect(selection.visibleNoteIds.value).toEqual(['n2', 'n3', 'n1', 'n5', 'n4'])
 
-		list.setSort('sec_a', 'newest')
+		list.setSort('newest')
 		expect(selection.visibleNoteIds.value).toEqual(['n1', 'n3', 'n2', 'n4', 'n5'])
 	})
 
-	/** AC12. Each section keeps its own choice; they do not share one. */
-	it('holds a separate mode per section', () => {
-		list.setSort('sec_a', 'newest')
-		list.setSort('sec_b', 'oldest')
+	/** AC12, restated for one mode: every section is on it, and the headers stay
+	 *  where they are with the same notes under them. */
+	it('applies the one mode to every section, headers included', () => {
+		list.setSort('newest')
 
-		expect(list.sortOf('sec_a')).toBe('newest')
-		expect(list.sortOf('sec_b')).toBe('oldest')
-		expect(selection.visibleNoteIds.value).toEqual(['n1', 'n3', 'n2', 'n5', 'n4'])
+		expect(list.sortMode.value).toBe('newest')
+		expect(list.isSorted.value).toBe(true)
+		expect(selection.rowIds.value).toEqual([
+			sectionRow('sec_a'),
+			noteRow('n1'),
+			noteRow('n3'),
+			noteRow('n2'),
+			sectionRow('sec_b'),
+			noteRow('n4'),
+			noteRow('n5'),
+		])
 	})
 
 	/** AC15. */
 	it('returns to document order on Manual', () => {
-		list.setSort('sec_a', 'newest')
-		list.setSort('sec_a', 'manual')
+		list.setSort('newest')
+		list.setSort('manual')
 
-		expect(list.isSorted('sec_a')).toBe(false)
+		expect(list.isSorted.value).toBe(false)
 		expect(selection.visibleNoteIds.value).toEqual(['n1', 'n2', 'n3', 'n4', 'n5'])
 	})
 
 	/** The order is a *presentation* of the set. A multi-note copy out of a
-	 *  newest-first section must still come out in document order, which is the
+	 *  newest-first list must still come out in document order, which is the
 	 *  same contract the search ranking already respects. */
 	it('reorders the rows but not what an action targets', () => {
-		list.setSort('sec_a', 'newest')
+		list.setSort('newest')
 		expect(selection.actionableNoteIds.value).toEqual(['n1', 'n2', 'n3', 'n4', 'n5'])
 	})
 
 	/** An explicit sort outranks the implicit relevance ranking: relevance is
 	 *  something the search computed, a mode is something the user went and chose. */
 	it('wins over the search ranking where both apply', () => {
-		list.setSort('sec_a', 'oldest')
+		list.setSort('oldest')
 		search.query.value = 'n'
 		expect(selection.visibleNoteIds.value.slice(0, 3)).toEqual(['n2', 'n3', 'n1'])
 	})
 
 	it('composes with the done filter', () => {
 		list.setDoneFilter('done')
-		list.setSort('sec_a', 'oldest')
+		list.setSort('oldest')
 		expect(selection.visibleNoteIds.value).toEqual(['n2', 'n5'])
 	})
 
@@ -184,10 +194,10 @@ describe('per-section sort', () => {
 		list.rebuild(doc)
 		selection.syncDocument(doc)
 
-		list.setSort('sec_a', 'oldest')
+		list.setSort('oldest')
 		expect(selection.visibleNoteIds.value.slice(0, 3)).toEqual(['n2', 'n3', 'n1'])
 
-		list.setSort('sec_a', 'newest')
+		list.setSort('newest')
 		expect(selection.visibleNoteIds.value.slice(0, 3)).toEqual(['n3', 'n2', 'n1'])
 	})
 
@@ -220,38 +230,39 @@ describe('per-section sort', () => {
 
 		// Oldest first: it appended-and-re-sorted into last place despite being
 		// written first.
-		list.setSort('sec_a', 'oldest')
+		list.setSort('oldest')
 		expect(selection.visibleNoteIds.value.slice(0, 4)).toEqual(['n2', 'n3', 'n1', 'n6'])
 	})
 
-	it('drops every mode when the space is replaced', () => {
-		list.setSort('sec_a', 'newest')
+	it('drops the mode when the space is replaced', () => {
+		list.setSort('newest')
 		list.reset()
-		expect(list.sortOf('sec_a')).toBe('manual')
+		expect(list.sortMode.value).toBe('manual')
 	})
 
 	/**
-	 * A mode for a section that no longer exists is dead weight nothing can
-	 * remove — and if the id comes back, which an undone section delete does
-	 * exactly, the section would return mysteriously sorted.
+	 * The mode names no section, so nothing about a document can invalidate it.
+	 *
+	 * While the modes were per section, `rebuild` had to prune the ones naming a
+	 * deleted section: dead weight nothing could remove, and since an undone
+	 * section delete restores exactly the id it removed, the section came back
+	 * mysteriously sorted. One document-wide mode outlives a section delete, a
+	 * capture and a null document alike — like the filter, it says how to read
+	 * whatever the document turns out to hold, and a document change is not a
+	 * change of intent.
 	 */
-	/** `rebuild` brings the sort map into line with the document it is handed, and
-	 *  a null document has no sections — so every mode in it names something that
-	 *  does not exist. Contract consistency, not a reachable bug. */
-	it('drops every mode when the document goes away', () => {
-		list.setSort('sec_a', 'oldest')
-		list.rebuild(null)
-		expect(list.sortOf('sec_a')).toBe('manual')
-	})
-
-	it('prunes a mode whose section is gone', () => {
-		list.setSort('sec_b', 'newest')
+	it('survives a document change, a section going away and a null document', () => {
+		list.setSort('newest')
+		list.rebuild(document2())
+		expect(list.sortMode.value).toBe('newest')
 
 		const doc = document2()
 		doc.sections = doc.sections.filter((section) => section.id !== 'sec_b')
 		doc.notes = doc.notes.filter((entry) => entry.section !== 'sec_b')
 		list.rebuild(doc)
+		expect(list.sortMode.value).toBe('newest')
 
-		expect(list.sortOf('sec_b')).toBe('manual')
+		list.rebuild(null)
+		expect(list.sortMode.value).toBe('newest')
 	})
 })

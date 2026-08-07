@@ -15,19 +15,6 @@ const { focusedId } = useSelection()
 const { renaming, draft, setDraft, endRename, cancelRename } = useSectionEditor()
 const { renameSection } = useSpace()
 const { isCollapsedStored, toggleCollapsed, collapseEnabled } = useSections()
-const { sortOf } = useNoteList()
-
-/**
- * The sort marker, present only when the section is not on Manual.
- *
- * This is the discoverability half of putting the sort control in the context
- * menu, and it is also where AC14's explanation lives: the drag grip is
- * `role="presentation"` and carries no accessible name, so it has nowhere to say
- * why it has gone. A section whose order is computed says so on its own header,
- * and names the menu that gives reordering back.
- */
-const sortMode = computed(() => sortOf(props.section.id))
-const sortLabel = computed(() => (sortMode.value === 'oldest' ? 'Oldest first' : 'Newest first'))
 
 const focused = computed(() => focusedId.value === props.rowId)
 const headingId = computed(() => `section-heading-${props.section.id}`)
@@ -136,16 +123,16 @@ function onKeydown(event: KeyboardEvent) {
 					</template>
 
 					<template v-else>
-						<!-- The name leads and the chevron follows it, so the heading starts
-						     at the row's own left edge rather than behind a control. The
-						     chevron is a disclosure sitting beside what it discloses, and
-						     still rotates to point down while the section is open.
+						<!-- The name leads, so the heading starts at the row's own left edge
+						     rather than behind a control, and the chevron is pushed to the
+						     far end by the separator rule between them: the two things a
+						     section row can be grabbed by sit at its two extremes, with the
+						     whole width of the row as target in between. It still rotates to
+						     point down while the section is open.
 
-						     `shrink` rather than `shrink-0`, and that is what the reordering
-						     costs: with the chevron behind it, a long name could only push
-						     the separator away, but ahead of it an unshrinkable name would
-						     push the chevron itself out of the row. The name truncates now,
-						     which is what the inner `truncate` was always for. -->
+						     The name shrinks rather than holding its width — with the
+						     chevron at the end of the row, an unshrinkable one would push it
+						     out. The inner `truncate` is what makes that safe. -->
 						<h2 :id="headingId" class="min-w-0">
 							<button
 								type="button"
@@ -172,12 +159,15 @@ function onKeydown(event: KeyboardEvent) {
 							</button>
 						</h2>
 
+						<span aria-hidden="true" class="bg-separator h-px min-w-0 flex-1" />
+
 						<!-- Withdrawn while a query is active rather than rendered inert.
 						     Search already decides what is on screen and overrides collapse
 						     entirely, so a control that rotated its chevron and changed
 						     nothing visible would read as broken. The stored state survives
 						     and comes back when the query clears; the fixed-width stand-in
-						     keeps the separator from shifting sideways in the meantime. -->
+						     keeps the separator from growing and shrinking as a query is
+						     typed. -->
 						<button
 							v-if="collapseEnabled"
 							type="button"
@@ -195,32 +185,6 @@ function onKeydown(event: KeyboardEvent) {
 							/>
 						</button>
 						<span v-else aria-hidden="true" class="size-5 shrink-0" />
-
-						<!-- Absent on Manual rather than rendered inert, unlike the collapse
-						     control's stand-in above: this marks a state most sections are
-						     never in, so reserving a permanent slot for it would cost every
-						     section header width to say nothing. It appears beside the
-						     chevron and pushes only the separator rule, which has nothing to
-						     align with.
-
-						     Not a button — the control is the context menu's `Sort` submenu,
-						     and a second affordance doing the same thing is a second thing to
-						     keep in step. The `title` is the pointer's explanation and the
-						     `sr-only` text is the same sentence for a screen reader, which is
-						     where AC14's "clarify why reordering is off" is satisfied. -->
-						<span
-							v-if="sortMode !== 'manual'"
-							:title="`Sorted ${sortLabel.toLowerCase()} · reorder by hand from the section menu’s Sort ▸ Manual`"
-							class="text-text-secondary flex shrink-0 items-center gap-1"
-						>
-							<IconLucideArrowDownUp class="size-3.5" aria-hidden="true" focusable="false" />
-							<span class="sr-only">
-								Sorted {{ sortLabel.toLowerCase() }}. Reordering by hand is unavailable until this
-								section’s sort is set back to Manual.
-							</span>
-						</span>
-
-						<span aria-hidden="true" class="bg-separator h-px min-w-0 flex-1" />
 					</template>
 				</div>
 			</div>

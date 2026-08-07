@@ -498,17 +498,18 @@ function deleteDoneInActiveSection() {
  * position it would write is one the sort immediately overrules on the next
  * render, which reads as a drag that silently sprang back.
  *
- * The sections are passed rather than read off the focused row because a move can
- * *cross* sections: an Alt+Arrow out of a manual section into a sorted one is
- * still a reorder whose destination index is meaningless. Nulls are accepted so
- * callers can hand over an unresolved neighbour without checking first. The filter
- * and the query take no section argument because neither is per-section: both
- * narrow every group at once.
+ * All three take no argument, because none of them is per-section: each narrows
+ * or permutes every group at once. The sort used to be the exception and had to be
+ * asked about both ends of a move — an Alt+Arrow out of a manual section into a
+ * sorted one is still a reorder whose destination index is meaningless — which is
+ * why callers passed the sections they were about to touch. One document-wide mode
+ * makes both ends the same answer, so a single check at the top of a move now
+ * covers a destination the caller has not even resolved yet.
  *
  * The drag grip is hidden under all three conditions, so this guards the keyboard
  * path and anything that slips past that.
  */
-function reorderBlocked(...sectionIds: (string | null | undefined)[]): boolean {
+function reorderBlocked(): boolean {
 	if (search.hasQuery.value) {
 		status.setMessage('Clear the search to reorder notes.')
 		return true
@@ -517,10 +518,10 @@ function reorderBlocked(...sectionIds: (string | null | undefined)[]): boolean {
 		status.setMessage('Show all notes to reorder them.')
 		return true
 	}
-	if (sectionIds.some((id) => id != null && list.isSorted(id))) {
+	if (list.isSorted.value) {
 		// Names the control that gives reordering back, which is what AC14's label
 		// has to do — the grip is `role="presentation"` and has nowhere to say it.
-		status.setMessage('Set the section’s sort to Manual to reorder notes.')
+		status.setMessage('Set the sort to Manual to reorder notes.')
 		return true
 	}
 	return false
@@ -541,9 +542,7 @@ function finishDrag(noteId: string, sectionId: string, index: number) {
 	return serialize(async () => {
 		const note = space.noteById(noteId)
 		if (!note) return
-		// Both ends: dragging *out* of a sorted section is as meaningless as dragging
-		// into one, and a cross-section drop involves two orders.
-		if (reorderBlocked(note.section, sectionId)) return
+		if (reorderBlocked()) return
 
 		// A drag that changed nothing must not push an undo entry.
 		if (note.section === sectionId && positionOf(noteId) === index) return
@@ -589,8 +588,9 @@ function moveFocusedBy(delta: number) {
 	// landed on the previous press rather than recomputing the same destination.
 	return serialize(async () => {
 		const noteId = selection.focusedNoteId.value
-		// The query half up front: it refuses whichever sections turn out to be
-		// involved, and the index arithmetic below depends on it having refused.
+		// Once, up front, and it covers the neighbouring section this step may cross
+		// into as well: every reason to refuse is document-wide. The index arithmetic
+		// below depends on it having refused.
 		if (noteId === null || reorderBlocked()) return
 
 		const groups = selection.visibleGroups.value
@@ -619,11 +619,6 @@ function moveFocusedBy(delta: number) {
 			// section here and never a filtered subset of it.
 			index = delta > 0 ? 0 : space.notesInSection(neighbour.sectionId).length
 		}
-
-		// The sort half, once both ends are known. A step at a section boundary
-		// crosses into a neighbour whose order may be computed, and writing a
-		// position into one is a move the next render silently overrules.
-		if (reorderBlocked(group.sectionId, sectionId)) return
 
 		if (!space.applied(await space.reorderNote(noteId, sectionId, index))) return
 

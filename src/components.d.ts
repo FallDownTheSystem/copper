@@ -92,6 +92,7 @@ declare module 'vue' {
     SettingsSwitch: typeof import('./components/SettingsSwitch.vue')['default']
     SettingsView: typeof import('./components/SettingsView.vue')['default']
     ShortcutRecorder: typeof import('./components/ShortcutRecorder.vue')['default']
+    SortControl: typeof import('./components/SortControl.vue')['default']
     StatusLine: typeof import('./components/StatusLine.vue')['default']
     ThemeToggle: typeof import('./components/ThemeToggle.vue')['default']
   }

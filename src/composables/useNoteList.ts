@@ -1,9 +1,9 @@
 /**
  * How the list is presented: which notes it shows, and in what order.
  *
- * Two pieces of view state live here — the done filter, which is document-wide,
- * and the sort mode, which is per section — plus the two facts about the document
- * that `useSelection`'s walk needs in order to apply them.
+ * Two pieces of view state live here — the done filter and the sort mode, both
+ * document-wide — plus the two facts about the document that `useSelection`'s
+ * walk needs in order to apply them.
  *
  * **One-directional, in the same way `useSelection`, `useNoteSearch` and
  * `useSections` are.** It imports no adapter, `invoke`s nothing and never assigns
@@ -11,16 +11,16 @@
  * `useSpace.applyDocument` beside `search.rebuild`. That is what lets
  * `useSelection` read it inside `orders` without a module cycle.
  *
- * Module scope, not per-caller: the header's filter control, the section menu's
- * sort submenu, the grid's traversal orders and the drag guards all have to be
- * looking at the same state.
+ * Module scope, not per-caller: the header's filter and sort controls, the grid's
+ * traversal orders and the drag guards all have to be looking at the same state.
  *
  * **Both are view state only**, for the reason `useSections` records about
  * collapse: they live in memory for the session, reset on a space switch, and
- * nothing about either reaches the `.copper` document or `settings.json`.
- * Persisting the sort would mean a new field on every `Section`, and task-003 §Q9
- * strips unknown keys on write — a schema change for something AC12 only asks to
- * survive "as long as the app is running".
+ * nothing about either reaches the `.copper` document or `settings.json`. That
+ * survived the sort becoming document-wide: a single mode would now fit
+ * `settings.json` where a per-section map needed a schema change, but AC12 only
+ * asks that it last "as long as the app is running", and a sort that outlived a
+ * restart would greet the user with a list whose order they cannot account for.
  *
  * **Why the document data lives here and not in the walk.** `documentGroups` in
  * `useSelection` carries ids only, so neither `done` nor `created` is reachable
@@ -43,9 +43,17 @@ export type DoneFilter = 'all' | 'done'
 
 const doneFilter = ref<DoneFilter>('all')
 
-/** Section id → mode, absent meaning `manual`. Not a `Map` mutated in place: a
- *  change has to be a new object for the computeds reading it to re-evaluate. */
-const sortModes = ref(new Map<string, SortMode>())
+/**
+ * One order for the whole document, applied *within* each section.
+ *
+ * **The scope of a sort and the scope of the setting are different questions**,
+ * and only the second one changed: notes are still ordered inside their own
+ * section and sections never interleave. What went away is the per-section map,
+ * and with it a state where two sections on screen at once are ordered by
+ * different rules — visible nowhere except on the header of each, and a
+ * permanent question about which of them the drag grip disappeared for.
+ */
+const sortMode = ref<SortMode>('manual')
 
 /**
  * The two document facts the walk needs, rebuilt wholesale on every applied
@@ -72,24 +80,13 @@ function createdOf(noteId: string): number | null {
 	return createdAt.value.get(noteId) ?? null
 }
 
-function sortOf(sectionId: string): SortMode {
-	return sortModes.value.get(sectionId) ?? 'manual'
-}
+/** Whether the order is computed, and therefore whether a drop index or an
+ *  Alt+Arrow step means anything anywhere. The drag guards and the grip both ask
+ *  this. */
+const isSorted = computed(() => sortMode.value !== 'manual')
 
-/** Whether this section's order is computed, and therefore whether a drop index
- *  or an Alt+Arrow step means anything in it. The drag guards and the grip both
- *  ask this. */
-function isSorted(sectionId: string) {
-	return sortOf(sectionId) !== 'manual'
-}
-
-function setSort(sectionId: string, mode: SortMode) {
-	const next = new Map(sortModes.value)
-	// `manual` is the absent state rather than a stored one, so a section put back
-	// to manual leaves no entry to prune later.
-	if (mode === 'manual') next.delete(sectionId)
-	else next.set(sectionId, mode)
-	sortModes.value = next
+function setSort(mode: SortMode) {
+	sortMode.value = mode
 }
 
 function setDoneFilter(next: DoneFilter) {
@@ -101,32 +98,24 @@ function toggleDoneFilter() {
 }
 
 /**
- * Brings both indexes and the sort map into line with a document that has just
- * been applied.
+ * Brings both indexes into line with a document that has just been applied.
  *
- * The sort map is pruned in the same walk, for the reason `useSections.reconcile`
- * prunes the collapse set: an entry whose section no longer exists is dead weight
- * nothing can remove, and if the id is ever reintroduced — an undone section
- * delete restores exactly the id it removed — the section comes back mysteriously
- * sorted.
+ * **Neither control is touched here**, and the sort's exemption is now the same
+ * one the filter always had rather than a second rule. A document change is not a
+ * change of intent: clearing the filter under a capture that landed while the
+ * user was reviewing done notes would take the view away mid-task, and the sort
+ * is a statement about how to read whatever the document turns out to hold.
  *
- * The filter is deliberately **not** reset here. A document change is not a
- * change of intent, and clearing the filter under a capture that landed while the
- * user was reviewing done notes would take the view away mid-task.
+ * While the modes were per section this function also had to prune them — an
+ * entry naming a deleted section was dead weight, and an undone section delete
+ * restores exactly the id it removed, so the section came back mysteriously
+ * sorted. One document-wide mode names no section and cannot go stale, which is
+ * the pruning walk and its whole failure mode gone rather than relocated.
  */
 function rebuild(space: SpaceView | null) {
 	if (!space) {
 		doneIds.value = new Set()
 		createdAt.value = new Map()
-		// Pruned here too, and the reason is the contract rather than a bug anyone
-		// can reach today: `rebuild` promises to bring the sort map into line with
-		// the document it is given, and a null document has no sections at all — so
-		// every mode in it names something that does not exist. Leaving them behind
-		// on this one branch would make an exported function mean two different
-		// things depending on its argument, which is the kind of asymmetry the next
-		// caller inherits without reading for it. `reset` is still the epoch path;
-		// this is only consistency.
-		sortModes.value = new Map()
 		return
 	}
 
@@ -138,16 +127,11 @@ function rebuild(space: SpaceView | null) {
 	}
 	doneIds.value = done
 	createdAt.value = created
-
-	if (sortModes.value.size === 0) return
-	const live = new Set(space.sections.map((section) => section.id))
-	if ([...sortModes.value.keys()].every((id) => live.has(id))) return
-	sortModes.value = new Map([...sortModes.value].filter(([id]) => live.has(id)))
 }
 
 /**
- * Space identity changed: section ids address a different document now, and the
- * filter was a question asked about the document that just went away.
+ * Space identity changed: both controls were answers about the document that just
+ * went away.
  *
  * This is the reset event AC3 asks for. The panel renders every section at once —
  * `activeSection` decides where a capture lands, not what is on screen — so there
@@ -157,7 +141,7 @@ function rebuild(space: SpaceView | null) {
  */
 function reset() {
 	doneFilter.value = 'all'
-	sortModes.value = new Map()
+	sortMode.value = 'manual'
 }
 
 export function useNoteList() {
@@ -168,7 +152,7 @@ export function useNoteList() {
 		toggleDoneFilter,
 		isDone,
 		createdOf,
-		sortOf,
+		sortMode: readonly(sortMode),
 		isSorted,
 		setSort,
 		rebuild,

@@ -71,7 +71,7 @@ const documentGroups = shallowRef<{ sectionId: string; noteIds: string[] }[]>([]
 
 const { matchedIds } = useNoteSearch()
 const { isCollapsed } = useSections()
-const { doneOnly, isDone, createdOf, sortOf } = useNoteList()
+const { doneOnly, isDone, createdOf, sortMode } = useNoteList()
 
 /**
  * Both orders are filtered, and filtering only one of them is the single easiest
@@ -113,15 +113,18 @@ const { doneOnly, isDone, createdOf, sortOf } = useNoteList()
  * document instead — see `deleteDoneInSection`, which must not be narrowed by a
  * search the way a selection legitimately is.)
  *
- * The per-section sort applies to the rows only, exactly as the ranking does, and
- * for the same reason: it is a presentation of the set, and a multi-note copy out
- * of a newest-first section must still come out in document order. **An explicit
- * sort outranks the search ranking** where both apply — relevance is implicit and
- * a sort mode is something the user went and chose.
+ * The sort applies to the rows only, exactly as the ranking does, and for the
+ * same reason: it is a presentation of the set, and a multi-note copy out of a
+ * newest-first list must still come out in document order. **An explicit sort
+ * outranks the search ranking** where both apply — relevance is implicit and a
+ * sort mode is something the user went and chose. It is one mode for the whole
+ * document, but it is applied *inside* each group here: sections keep their own
+ * membership and their own place, and only the notes within one move.
  */
 const orders = computed(() => {
 	const matched = matchedIds.value
 	const done = doneOnly.value
+	const mode = sortMode.value
 	const groups: { sectionId: string; noteIds: string[] }[] = []
 	const rows: string[] = []
 	const notes: string[] = []
@@ -151,7 +154,6 @@ const orders = computed(() => {
 		// arrived in — which is what makes a query produce the same list twice rather
 		// than one that reshuffles its ties. In place, on the array `filter` has
 		// already copied; a query is what guarantees that copy exists.
-		const mode = sortOf(group.sectionId)
 		if (matched && mode === 'manual') {
 			members.sort((a, b) => (matched.get(b) ?? 0) - (matched.get(a) ?? 0))
 		}

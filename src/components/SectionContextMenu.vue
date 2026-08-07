@@ -9,21 +9,6 @@ const { beginRename } = useSectionEditor()
 const { setMessage } = useStatusMessage()
 const { selectSection } = useSelection()
 const { copySectionAsMarkdown } = useNoteActions()
-const { sortOf, setSort } = useNoteList()
-
-/**
- * The three orders, named as the list will read rather than as the field they
- * sort by — "Oldest first" says what the top of the list will be, which is the
- * thing the user is choosing.
- *
- * `Manual` is first and is the document's own order: the one every drag and every
- * Alt+Arrow writes, and the only mode in which either is permitted.
- */
-const SORT_OPTIONS = [
-	{ mode: 'manual', label: 'Manual' },
-	{ mode: 'oldest', label: 'Oldest first' },
-	{ mode: 'newest', label: 'Newest first' },
-] as const
 
 const index = computed(() => sections.value.findIndex((entry) => entry.id === props.section.id))
 const isFirst = computed(() => index.value <= 0)
@@ -98,39 +83,11 @@ function move(delta: number) {
 			Copy section as Markdown
 		</ContextMenuItem>
 
-		<!-- Sorting lives here rather than in a control on the header row, and the
-		     reason is consistency rather than space: every other section-scoped
-		     operation — rename, reorder, select all, delete — is already in this
-		     menu, and a section is where you right-click to act on one. A permanent
-		     button in the header row would be the only per-section control in the
-		     list and would have to earn its width on every section forever.
-
-		     Discoverability is paid for on the other side instead: `SectionHeader`
-		     shows a marker whenever a section is not on Manual, so a computed order
-		     is never a mystery and there is somewhere to explain why the grip has
-		     gone. A submenu rather than three top-level items, so the menu does not
-		     grow by three rows for a setting most sections never leave. -->
-		<ContextMenuSub>
-			<ContextMenuSubTrigger class="min-h-6">Sort</ContextMenuSubTrigger>
-			<ContextMenuSubContent class="text-text-secondary w-44 text-meta">
-				<ContextMenuItem
-					v-for="option in SORT_OPTIONS"
-					:key="option.mode"
-					class="min-h-6"
-					@select="setSort(section.id, option.mode)"
-				>
-					<!-- The same marker the active section and the space list use, so
-					     "this is the one in effect" reads the same way everywhere. -->
-					<ActiveMarker
-						:active="sortOf(section.id) === option.mode"
-						:label="`${option.label} sort`"
-					>
-						<span class="truncate">{{ option.label }}</span>
-					</ActiveMarker>
-				</ContextMenuItem>
-			</ContextMenuSubContent>
-		</ContextMenuSub>
-
+		<!-- No `Sort` submenu: the order is one document-wide setting now, and this
+		     menu is where you act on *this* section. It lives in the header beside
+		     the done filter, where it states the mode in effect without anything
+		     having to be opened to read it — which is also what retired the marker
+		     `SectionHeader` used to carry. -->
 		<ContextMenuSeparator />
 
 		<ContextMenuItem :disabled="isOnly" variant="destructive" class="min-h-6" @select="remove">

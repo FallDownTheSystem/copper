@@ -1543,11 +1543,12 @@ describe('collapsible sections', () => {
 		expect(wrapper.findAll('[data-row-id^="n:"]')).toHaveLength(2)
 	})
 
-	it('puts the chevron after the section name, not in front of it', async () => {
-		// The heading starts at the row's own left edge and the disclosure sits beside
-		// what it discloses. Asserted on DOM order rather than on classes, because
-		// that is the thing the requirement is about and the thing a later restyle
-		// could quietly undo.
+	it('puts the chevron at the far end of the row, past the separator rule', async () => {
+		// The heading starts at the row's own left edge and the chevron finishes at
+		// the other one, with the rule spanning the distance — so the two things a
+		// section row can be grabbed by sit at its extremes. Asserted on DOM order
+		// rather than on classes, because that is the thing the requirement is about
+		// and the thing a later restyle could quietly undo.
 		const wrapper = await mountPanel()
 		const cell = wrapper.find('[data-row-id="s:sec_a"] [role="gridcell"]').element
 		const children = [...cell.children]
@@ -1555,21 +1556,21 @@ describe('collapsible sections', () => {
 		const heading = children.findIndex((child) => child.tagName === 'H2')
 		const chevron = children.findIndex((child) => child.matches('button[aria-expanded]'))
 
-		expect(heading).toBeGreaterThanOrEqual(0)
-		expect(chevron).toBeGreaterThan(heading)
+		expect(heading).toBe(0)
+		expect(chevron).toBe(children.length - 1)
+		expect(chevron).toBeGreaterThan(heading + 1)
 	})
 
-	it('keeps the chevron after the name once the section is collapsed', async () => {
+	it('keeps the chevron at the far end once the section is collapsed', async () => {
 		const wrapper = await mountPanel()
 		await disclosure(wrapper, 'Research').trigger('click')
 		await settle(3)
 
 		const cell = wrapper.find('[data-row-id="s:sec_a"] [role="gridcell"]').element
 		const children = [...cell.children]
-		const heading = children.findIndex((child) => child.tagName === 'H2')
 		const chevron = children.findIndex((child) => child.matches('button[aria-expanded]'))
 
-		expect(chevron).toBeGreaterThan(heading)
+		expect(chevron).toBe(children.length - 1)
 		expect(disclosure(wrapper, 'Research').attributes('aria-expanded')).toBe('false')
 	})
 
@@ -3699,6 +3700,21 @@ describe('the done filter', () => {
 		expect(wrapper.find('[data-delete-done]').exists()).toBe(true)
 	})
 
+	/**
+	 * At rest it is a trash icon and nothing else, so the accessible name is the
+	 * only name it has — and it has to carry the scope, since this deletes the
+	 * active section's done notes while the view behind it is document-wide.
+	 */
+	it('rests as an icon whose accessible name names the count and the section', async () => {
+		const { wrapper } = await mountWithDoneInBoth()
+		await wrapper.get('[data-done-filter]').trigger('click')
+		await settle(2)
+
+		const button = wrapper.get('[data-delete-done]')
+		expect(button.text()).toBe('')
+		expect(button.attributes('aria-label')).toBe('Delete 2 done notes in Research')
+	})
+
 	/** AC6. One press asks, the second acts — and the first press must not delete
 	 *  anything, which is the whole point of the confirmation. */
 	it('asks before deleting, and the first press deletes nothing', async () => {
@@ -3827,8 +3843,9 @@ describe('the done filter', () => {
 		await settle(3)
 
 		// The offer went away rather than silently re-aiming, so the next press arms
-		// against the new set instead of deleting the old one.
-		expect(wrapper.get('[data-delete-done]').text()).toContain('Delete done')
+		// against the new set instead of deleting the old one. Disarmed is the
+		// icon-only state, which is what having no label at all asserts here.
+		expect(wrapper.get('[data-delete-done]').text()).toBe('')
 		await wrapper.get('[data-delete-done]').trigger('click')
 		await settle(2)
 		expect(calls).toEqual([])
@@ -3889,7 +3906,7 @@ describe('the done filter', () => {
 	})
 })
 
-describe('per-section sort', () => {
+describe('sort', () => {
 	/** AC14. The grip is the pointer's only path to a reorder, and an index read
 	 *  off a permuted list means nothing — so it withdraws, exactly as it does
 	 *  under a search. */
@@ -3897,7 +3914,7 @@ describe('per-section sort', () => {
 		const wrapper = await mountPanel()
 		expect(wrapper.find('[data-drag-handle]').exists()).toBe(true)
 
-		list.setSort('sec_a', 'newest')
+		list.setSort('newest')
 		await settle(2)
 
 		expect(wrapper.find('[data-drag-handle]').exists()).toBe(false)
@@ -3907,7 +3924,7 @@ describe('per-section sort', () => {
 	 *  control which gives reordering back, then permitted again on Manual. */
 	it('refuses Alt+Arrow while sorted and allows it again on Manual', async () => {
 		const wrapper = await mountPanel()
-		list.setSort('sec_a', 'oldest')
+		list.setSort('oldest')
 		takeRow(noteRow('nte_1'))
 		await settle(2)
 
@@ -3915,25 +3932,55 @@ describe('per-section sort', () => {
 		await settle(3)
 
 		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_note', expect.anything())
-		expect(wrapper.text()).toContain('Set the section’s sort to Manual to reorder notes.')
+		expect(wrapper.text()).toContain('Set the sort to Manual to reorder notes.')
 
-		list.setSort('sec_a', 'manual')
+		list.setSort('manual')
 		await settle(2)
 		expect(wrapper.find('[data-drag-handle]').exists()).toBe(true)
 	})
 
-	/** The state is visible on the header, which is what makes a context-menu
-	 *  control discoverable enough and gives AC14's explanation somewhere to live
-	 *  — the grip is `role="presentation"` and has no accessible name. */
-	it('marks a sorted section on its own header', async () => {
+	/**
+	 * The mode is on the control itself, which is what a document-wide setting in
+	 * the header buys over a per-section submenu: nothing has to be opened to read
+	 * it, and there is no per-section marker to keep in step with it.
+	 *
+	 * The label is the state and it is blank on Manual — the order most lists are
+	 * in is not worth a word — so the accessible name is what carries the mode when
+	 * there is no visible text, and what says the press is about sorting at all.
+	 */
+	it('names the mode in effect and cycles through the three', async () => {
 		const wrapper = await mountPanel()
-		expect(wrapper.text()).not.toContain('Reordering by hand is unavailable')
+		const button = wrapper.get('[data-sort-mode]')
 
-		list.setSort('sec_a', 'newest')
+		expect(button.text()).toBe('')
+		expect(button.attributes('aria-label')).toContain('Manual order')
+
+		await button.trigger('click')
+		await settle(2)
+		expect(list.sortMode.value).toBe('oldest')
+		expect(button.text()).toContain('Oldest')
+
+		await button.trigger('click')
+		await settle(2)
+		expect(list.sortMode.value).toBe('newest')
+		expect(button.text()).toContain('Newest')
+
+		// Round to where it started, so every mode is one press from every other.
+		await button.trigger('click')
+		await settle(2)
+		expect(list.sortMode.value).toBe('manual')
+		expect(button.text()).toBe('')
+	})
+
+	/** The section headers carry no sort marker any more: the mode is one
+	 *  document-wide fact stated once in the header, and repeating it per section
+	 *  would be the same sentence as many times as there are sections. */
+	it('says nothing about the sort on the section headers', async () => {
+		const wrapper = await mountPanel()
+		list.setSort('newest')
 		await settle(2)
 
-		expect(wrapper.text()).toContain('Sorted newest first')
-		expect(wrapper.text()).toContain('Reordering by hand is unavailable')
+		expect(wrapper.text()).not.toContain('Sorted newest first')
 	})
 
 	/**

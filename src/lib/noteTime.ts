@@ -16,8 +16,9 @@
  * for a note whose own is unreadable would be worse than saying nothing.
  */
 
-/** Per-section order. `manual` is the document's own order — what a drag and
- *  Alt+Arrow write — and the only mode under which either is permitted. */
+/** How the list is ordered inside each section. `manual` is the document's own
+ *  order — what a drag and Alt+Arrow write — and the only mode under which
+ *  either is permitted. */
 export type SortMode = 'manual' | 'oldest' | 'newest'
 
 /** Epoch milliseconds, or null when the value is absent or unparseable. */

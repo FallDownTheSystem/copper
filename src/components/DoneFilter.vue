@@ -2,12 +2,12 @@
 /**
  * The done filter and, once it is on, the purge that goes with it.
  *
- * **It sits in the chip's row rather than the search row**, at the opposite end
- * from `ActiveSectionChip`. That row exists precisely so the heading area can gain
- * and lose controls without the search field ever moving (`PanelHeader`), which is
- * how AC10 is satisfied structurally rather than by careful sizing: the chip keeps
- * its `min-w-0` and truncates, this keeps `shrink-0`, and neither can push the
- * other out of the header.
+ * **It sits in the chip's row rather than the search row**, in the strip of list
+ * controls at the opposite end from `ActiveSectionChip`. That row exists precisely
+ * so the heading area can gain and lose controls without the search field ever
+ * moving (`PanelHeader`), which is how AC10 is satisfied structurally rather than
+ * by careful sizing: the chip keeps its `min-w-0` and truncates, the strip keeps
+ * `shrink-0`, and neither can push the other out of the header.
  *
  * The delete button appears only in the done view, which is AC5, and only when
  * there is something to delete — a button that explains it has nothing to do is
@@ -17,7 +17,7 @@ const { doneOnly, toggleDoneFilter } = useNoteList()
 const { doneCount, doneTargets, deleteDoneInActiveSection } = useNoteActions()
 const { activeSectionObject } = useSpace()
 
-/** Never blank, so the confirming label always names a scope. */
+/** Never blank, so the label always names a scope. */
 const sectionName = computed(() => activeSectionObject.value?.name ?? 'this section')
 
 /**
@@ -116,10 +116,64 @@ function onKeydown(event: KeyboardEvent) {
 	event.stopPropagation()
 	confirming.value = false
 }
+
+/** What the confirming press would take, in the words the armed button shows. */
+const confirmLabel = computed(() => `Delete ${doneCount.value} in ${sectionName.value}?`)
+
+/**
+ * The accessible name, which at rest is the *only* name this button has: it is an
+ * icon and nothing else until it is armed. It says the count and the section for
+ * the same reason the armed label does — the view is document-wide and this is
+ * not, so a screen reader landing on "Delete done notes" would be told a scope
+ * the button does not have.
+ */
+const label = computed(() =>
+	confirming.value
+		? confirmLabel.value
+		: countMessage(doneCount.value, {
+				one: `Delete 1 done note in ${sectionName.value}`,
+				many: (count) => `Delete ${count} done notes in ${sectionName.value}`,
+			}),
+)
 </script>
 
 <template>
-	<div class="ml-auto flex shrink-0 items-center gap-1">
+	<div class="flex shrink-0 items-center gap-1">
+		<!-- **Icon-only at rest, and it grows a label only while it is armed.** The
+		     resting button is one of three controls in a strip a panel wide, and
+		     "Delete done" beside a trash icon told the pointer nothing the icon had
+		     not; the accessible name carries it for everyone the icon does not reach.
+
+		     The armed state is the one place text is not decoration. This deletes the
+		     *active* section's done notes and leaves every other section alone (AC9),
+		     while the view behind it is document-wide — so the two can legitimately
+		     disagree, and a user looking at nine done notes across three sections can
+		     be offered two. A bare red icon confirms nothing at all, and a bare
+		     "Delete 2?" over a list of nine reads as a bug or, worse, is taken at
+		     face value. It is also the state that lasts seconds, so the width it
+		     borrows from the chip is borrowed and given back.
+
+		     It leads the strip rather than following the filter it belongs to: the
+		     destructive control is the one that must not sit where a mis-aimed press
+		     can find it, and the filter is what the pointer arrives for. -->
+		<button
+			v-if="doneOnly && doneCount > 0"
+			type="button"
+			data-delete-done
+			class="panel-button inline-flex min-h-6 shrink-0 items-center gap-1 px-1.5"
+			:class="confirming ? 'text-destructive' : 'text-text-secondary'"
+			:title="label"
+			:aria-label="label"
+			@click="press"
+			@keydown="onKeydown"
+			@blur="confirming = false"
+		>
+			<IconLucideTrash2 class="size-3.5 shrink-0" aria-hidden="true" focusable="false" />
+			<!-- `min-w-0` and `truncate`: the section name is user text of any length,
+			     and this button shares its row with the chip. -->
+			<span v-if="confirming" class="min-w-0 truncate text-label">{{ confirmLabel }}</span>
+		</button>
+
 		<!-- A toggle rather than a segmented "all / active / done": the unfiltered
 		     list already leads with the active notes, so a third state would divide
 		     the same set twice. `aria-pressed` carries the state to a screen reader
@@ -135,33 +189,6 @@ function onKeydown(event: KeyboardEvent) {
 		>
 			<IconLucideCircleCheck class="size-3.5 shrink-0" aria-hidden="true" focusable="false" />
 			<span class="text-label uppercase">Done</span>
-		</button>
-
-		<!-- **The confirming label names the section, not just the count.** This
-		     deletes the *active* section's done notes and leaves every other section
-		     alone (AC9), while the view behind it is document-wide — so the two can
-		     legitimately disagree, and a user looking at nine done notes across three
-		     sections can be offered two. A bare "Delete 2?" over a list of nine reads
-		     as a bug or, worse, is taken at face value. The scope belongs in the
-		     visible text rather than only in the `title`, which a keyboard user never
-		     sees and a touch user cannot hover. -->
-		<button
-			v-if="doneOnly && doneCount > 0"
-			type="button"
-			data-delete-done
-			class="panel-button inline-flex min-h-6 shrink-0 items-center gap-1 px-1.5"
-			:class="confirming ? 'text-destructive' : 'text-text-secondary'"
-			:title="`Delete the ${doneCount} done notes in ${sectionName}`"
-			@click="press"
-			@keydown="onKeydown"
-			@blur="confirming = false"
-		>
-			<IconLucideTrash2 class="size-3.5 shrink-0" aria-hidden="true" focusable="false" />
-			<!-- `min-w-0` and `truncate`: the section name is user text of any length,
-			     and this button shares its row with the chip. -->
-			<span class="min-w-0 truncate text-label">
-				{{ confirming ? `Delete ${doneCount} in ${sectionName}?` : 'Delete done' }}
-			</span>
 		</button>
 	</div>
 </template>
