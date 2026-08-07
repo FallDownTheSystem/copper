@@ -70,13 +70,22 @@ function onGripClick(event: MouseEvent) {
 	     note menu. -->
 	<ContextMenu>
 		<ContextMenuTrigger as-child>
+			<!-- `-outline-offset-4`, not `-2`, and that is the geometry half of making
+			     a focused *selected* row read as two rings rather than one. The
+			     selection ring below is `ring-inset`, so it paints the band from 0 to
+			     2px inside the edge — and a 2px outline offset by -2 paints exactly the
+			     same band. An outline paints above a box-shadow, so the focus ring
+			     simply replaced the selection ring and a selected focused row looked
+			     identical to an unselected focused one. At -4 the focus ring takes the
+			     band from 2 to 4px and the two sit side by side. The colour half of the
+			     same fix is `--focus-ring` in main.css. -->
 			<div
 				role="row"
 				:data-row-id="rowId"
 				data-note-row
 				:aria-selected="selected"
 				:tabindex="focused ? 0 : -1"
-				class="note-row group/row outline-focus-ring rounded-md focus-visible:outline-2 focus-visible:-outline-offset-2"
+				class="note-row group/row outline-focus-ring rounded-md focus-visible:outline-2 focus-visible:-outline-offset-4"
 				:class="[
 					selected ? 'row-selected ring-accent-ring ring-2 ring-inset' : '',
 					'hover:bg-surface-hover transition-colors duration-fast',
@@ -176,7 +185,7 @@ function onGripClick(event: MouseEvent) {
 						v-if="draggable"
 						data-drag-handle
 						role="presentation"
-						class="note-grip text-text-disabled hover:text-text-secondary flex cursor-grab touch-none justify-center pt-1 opacity-0 transition-opacity duration-fast group-focus-within/row:opacity-100 group-hover/row:opacity-100"
+						class="note-grip text-text-disabled hover:text-text-secondary flex cursor-grab justify-center pt-1 opacity-0 transition-opacity duration-fast group-focus-within/row:opacity-100 group-hover/row:opacity-100"
 						@pointerdown="beginDrag(note.id, $event)"
 						@click="onGripClick"
 					>
@@ -215,14 +224,27 @@ function onGripClick(event: MouseEvent) {
 
    The width is exactly the gutter it lives in — the row's 12px right padding,
    plus the 20px grip column, plus the 8px column gap — so a generous grab area
-   still never covers a word of the note. */
-.note-grip::before {
-	content: '';
-	position: absolute;
-	top: 0;
-	right: 0;
-	bottom: 0;
-	width: 2.5rem;
+   still never covers a word of the note.
+
+   **Fine pointers only, and `touch-action` with it.** Both halves of this exist
+   to help someone aiming a cursor at a 16px mark. On a touchscreen they do the
+   opposite: a full-height strip down the right edge of every row that refuses to
+   pan would make the list unscrollable exactly where a thumb naturally rests. A
+   coarse pointer gets the plain 20px mark and keeps its scrolling; reordering by
+   keyboard is Alt+Arrow either way. */
+@media (pointer: fine) {
+	.note-grip {
+		touch-action: none;
+	}
+
+	.note-grip::before {
+		content: '';
+		position: absolute;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		width: 2.5rem;
+	}
 }
 
 /* Lifted while it is carried. The row is translated under the pointer with

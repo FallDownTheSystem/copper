@@ -68,13 +68,17 @@
 	--separator: oklch(0.24 0.008 60 / 0.14);
 	--link: oklch(0.5 0.14 250);
 	/* Copper, like everything else the app draws attention with — the ring used to
-	   be the one blue thing in the panel that was not a link. It sits at the same
-	   hue as `--accent-ring` and is deliberately darker and more saturated than it:
-	   the accent ring only has to clear 3:1 as a component boundary, while a focus
-	   ring has to stay obvious over `--surface`, `--surface-hover` and the menus'
-	   `--popover` alike, and it is frequently drawn *inside* a selected row that is
-	   already wearing `--accent-ring`. */
-	--focus-ring: oklch(0.56 0.14 55);
+	   be the one blue thing in the panel that was not a link.
+
+	   Its distance from `--accent-ring` is the constraint that sets the value, not
+	   its distance from the surface. A focused row that is *also* selected wears
+	   both, as two 2px bands a couple of pixels apart, and at the 0.56 this started
+	   at they were 1.30:1 apart and read as one 4px smear. Deepened to 0.46 the two
+	   are 1.98:1, which is a visible step, and it clears 7.26:1 on `--surface`,
+	   6.26:1 on `--surface-hover` and 7.47:1 on the menus' `--popover`. The rings
+	   are also no longer drawn on top of each other — see `.note-row` in
+	   NoteCard.vue for the geometry half of the same fix. */
+	--focus-ring: oklch(0.46 0.15 55);
 	/* Copper carries exactly one meaning: selection and active state. Split in
 	   two because oklch(0.62 0.11 55) is 3.77:1 on white — a pass for a UI
 	   component at 3:1 and a failure for text at 4.5:1. */
@@ -130,9 +134,10 @@
 	--separator: oklch(1 0 0 / 0.14);
 	--link: oklch(0.76 0.12 240);
 	/* Brighter than `--accent-ring` here, for the same reason the light one is
-	   darker: the ring has to separate itself from the accent it may be drawn
-	   inside, and on a dark surface that direction is up. */
-	--focus-ring: oklch(0.82 0.13 55);
+	   deeper: the ring has to separate itself from the accent it is drawn beside,
+	   and on a dark surface that direction is up. 1.90:1 against `--accent-ring`,
+	   and 12.95:1 / 11.33:1 / 12.34:1 on surface, surface-hover and popover. */
+	--focus-ring: oklch(0.9 0.1 55);
 	--accent-ring: oklch(0.7 0.12 55);
 	--accent-text: oklch(0.78 0.1 60);
 	--scrollbar-thumb: oklch(1 0 0 / 0.22);

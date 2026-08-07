@@ -5,12 +5,13 @@ import { passedThreshold, resolveDrop, type DragLayout } from './dragGeometry'
 /**
  * Two sections with a gap between them, which is the shape every interesting
  * question here has: `sec_a` holds two notes, `sec_b` holds one, and 24px of
- * margin sits between the groups belonging to neither.
+ * margin sits between the groups belonging to neither. Each section's header
+ * occupies its first 16px, so `contentTop` is where its notes begin.
  */
 const LAYOUT: DragLayout = {
 	sections: [
-		{ sectionId: 'sec_a', top: 0, bottom: 100 },
-		{ sectionId: 'sec_b', top: 124, bottom: 200 },
+		{ sectionId: 'sec_a', top: 0, bottom: 100, contentTop: 16 },
+		{ sectionId: 'sec_b', top: 124, bottom: 200, contentTop: 140 },
 	],
 	rows: [
 		{ noteId: 'n1', sectionId: 'sec_a', top: 20, bottom: 60 },
@@ -65,18 +66,23 @@ describe('resolveDrop', () => {
 	it('accepts a drop into a section with no notes', () => {
 		const empty: DragLayout = {
 			sections: [
-				{ sectionId: 'sec_a', top: 0, bottom: 100 },
-				{ sectionId: 'sec_b', top: 124, bottom: 150 },
+				{ sectionId: 'sec_a', top: 0, bottom: 100, contentTop: 16 },
+				// Taller than its header, because an empty *active* section renders a
+				// "No notes in this section yet." row underneath it.
+				{ sectionId: 'sec_b', top: 124, bottom: 170, contentTop: 140 },
 			],
 			rows: LAYOUT.rows.filter((row) => row.sectionId === 'sec_a'),
 		}
 
 		// There is no row to compare against — only the band the section occupies —
-		// which is the whole reason sections are measured as well as rows.
-		expect(resolveDrop(140, empty, 'n1')).toEqual({
+		// which is the whole reason sections are measured as well as rows. The line
+		// goes just under the header, where the note lands, rather than at the
+		// section's bottom edge: that is below the placeholder row the note is about
+		// to replace, and a line there promises the wrong destination.
+		expect(resolveDrop(150, empty, 'n1')).toEqual({
 			sectionId: 'sec_b',
 			index: 0,
-			indicatorY: 150,
+			indicatorY: 142,
 		})
 	})
 

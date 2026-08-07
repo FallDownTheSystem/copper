@@ -9,6 +9,7 @@ import PanelShell from './PanelShell.vue'
 import { useAttachments, type Attachment } from '@/composables/useAttachments'
 import { useInteractionMode } from '@/composables/useInteractionMode'
 import { useNoteActions } from '@/composables/useNoteActions'
+import { useNoteDrag } from '@/composables/useNoteDrag'
 import { useNoteEditor } from '@/composables/useNoteEditor'
 import { useNoteSearch } from '@/composables/useNoteSearch'
 import { useSections } from '@/composables/useSections'
@@ -17,6 +18,7 @@ import { useSpace } from '@/composables/useSpace'
 import type { Space, StoreStatus } from '@/composables/useSpace'
 
 const actions = useNoteActions()
+const drag = useNoteDrag()
 const interaction = useInteractionMode()
 const editor = useNoteEditor()
 const search = useNoteSearch()
@@ -2029,6 +2031,46 @@ describe('reordering', () => {
 			expect(selection.focusedId.value).toBe('n:nte_2')
 		})
 
+		it('lands at the bottom of a collapsed section it travels up into', async () => {
+			// The comment above the code promises "entering from below lands at the
+			// bottom", and the index was counted off the *visible* walk — which
+			// publishes an empty list for a collapsed section. So an Alt+Up into a
+			// folded section put the note at the top, which is the opposite of the
+			// direction it was travelling.
+			const wrapper = await mountPanel()
+			const store = installReorderingStore()
+
+			// Get nte_1 into the second section first, so there is a section above it.
+			const row = wrapper.find('[data-row-id="n:nte_1"]').element as HTMLElement
+			row.click()
+			row.focus()
+			await settle()
+			for (const _ of [0, 1]) {
+				await wrapper
+					.find('[data-row-id="n:nte_1"]')
+					.trigger('keydown', { key: 'ArrowDown', altKey: true })
+				await settle(4)
+			}
+			expect(store.order('sec_b')).toEqual(['nte_1'])
+			expect(store.order('sec_a')).toEqual(['nte_2'])
+
+			// Folded through the state rather than by clicking its chevron: a click
+			// there deliberately takes the roving target onto the header row, which
+			// would leave this test asserting that a focused *header* reorders nothing.
+			sections.setCollapsed('sec_a', true)
+			await settle(3)
+
+			await wrapper
+				.find('[data-row-id="n:nte_1"]')
+				.trigger('keydown', { key: 'ArrowUp', altKey: true })
+			await settle(4)
+
+			// Index 1, after the note already there — not 0, which is what the empty
+			// published list produced.
+			expect(store.calls.at(-1)).toEqual({ id: 'nte_1', section: 'sec_a', index: 1 })
+			expect(store.order('sec_a')).toEqual(['nte_2', 'nte_1'])
+		})
+
 		it('does not collapse a multi-note selection as a side effect', async () => {
 			// Unlike a drag, this is a keyboard action on the *focused* note. Nudging
 			// one note is not a reason to throw away the others the user picked.
@@ -2065,7 +2107,15 @@ describe('reordering', () => {
 			'[data-section-id="sec_b"]': [124, 200],
 			'[data-row-id="n:nte_1"]': [20, 60],
 			'[data-row-id="n:nte_2"]': [64, 100],
+			'[data-section-row]': [0, 16],
 		}
+
+		/**
+		 * How far the region has been scrolled, subtracted from the list root's own
+		 * top exactly as a real scroll would move it. A test sets this and fires a
+		 * `scroll` event to move the content under a pointer that is holding still.
+		 */
+		let scrolledBy = 0
 
 		function stubLayout() {
 			const proto = Element.prototype as unknown as Record<string, unknown>
@@ -2073,10 +2123,21 @@ describe('reordering', () => {
 			proto.getBoundingClientRect = function (this: Element) {
 				const entry = Object.entries(BOXES).find(([selector]) => this.matches(selector))
 				const [top, bottom] = entry?.[1] ?? [0, 0]
-				return { top, bottom, left: 0, right: 390, width: 390, height: bottom - top }
+				// The scroll region itself is the viewport and does not move; everything
+				// inside it does.
+				const shift = this.matches('[data-scroll-region]') ? 0 : scrolledBy
+				return {
+					top: top - shift,
+					bottom: bottom - shift,
+					left: 0,
+					right: 390,
+					width: 390,
+					height: bottom - top,
+				}
 			}
 			return () => {
 				proto.getBoundingClientRect = real
+				scrolledBy = 0
 			}
 		}
 
@@ -2095,14 +2156,18 @@ describe('reordering', () => {
 			}
 		}
 
-		function pointer(name: string, clientY: number) {
+		function pointer(name: string, clientY: number, overrides: Record<string, unknown> = {}) {
 			const event = new Event(name, { bubbles: true, cancelable: true })
 			return Object.assign(event, {
 				pointerId: 1,
 				pointerType: 'mouse',
 				button: 0,
+				// A real primary pointer carries this, and the drag requires it — a pen
+				// barrel button and a second finger are both non-primary or non-zero.
+				isPrimary: true,
 				clientX: 300,
 				clientY,
+				...overrides,
 			})
 		}
 
@@ -2247,6 +2312,192 @@ describe('reordering', () => {
 			await settle(3)
 
 			expect(wrapper.find('[data-drag-handle]').exists()).toBe(false)
+		})
+
+		it('refuses a non-primary button, so a pen barrel does not reorder', async () => {
+			const wrapper = await mountPanel()
+			const store = installReorderingStore()
+			const grip = gripOf(wrapper, 'n:nte_1')
+
+			// A pen's barrel button and its eraser both arrive as a `pointerdown` that
+			// is not button 0. Testing `pointerType === 'mouse'` first let them through.
+			grip.dispatchEvent(pointer('pointerdown', 40, { pointerType: 'pen', button: 2 }))
+			window.dispatchEvent(pointer('pointermove', 90))
+			await settle()
+			expect(draggingRow()).toBeNull()
+
+			window.dispatchEvent(pointer('pointerup', 90))
+			await settle(3)
+			expect(store.calls).toEqual([])
+		})
+
+		it('ends the gesture when the window loses focus', async () => {
+			// The one way a `pointerup` never arrives at all: an alt-tab, or a click
+			// that raises another window, delivers the release somewhere else. Left
+			// running, the row keeps its transform and its raised stacking order,
+			// `isDragging` stays true so auto-animate never comes back, and the
+			// auto-scroll loop keeps asking for frames.
+			const wrapper = await mountPanel()
+			const store = installReorderingStore()
+			const grip = gripOf(wrapper, 'n:nte_1')
+
+			grip.dispatchEvent(pointer('pointerdown', 40))
+			window.dispatchEvent(pointer('pointermove', 90))
+			await settle()
+			expect(draggingRow()).not.toBeNull()
+
+			window.dispatchEvent(new Event('blur'))
+			await settle(2)
+
+			expect(draggingRow()).toBeNull()
+			expect(drag.isDragging.value).toBe(false)
+			expect(
+				wrapper
+					.findAll('[data-note-row]')
+					.filter((row) => (row.element as HTMLElement).style.transform),
+			).toHaveLength(0)
+
+			// The release that finally arrives belongs to nothing and commits nothing.
+			window.dispatchEvent(pointer('pointerup', 90))
+			await settle(3)
+			expect(store.calls).toEqual([])
+		})
+
+		it('recomputes the drop target when the list scrolls under a still pointer', async () => {
+			// The drop is a function of where the pointer is *in the content*, so it
+			// has to be recomputed when the content moves and not only when the pointer
+			// does. A wheel or a trackpad during a drag otherwise leaves the indicator
+			// pointing at the row that used to be there.
+			const wrapper = await mountPanel()
+			const store = installReorderingStore()
+			const grip = gripOf(wrapper, 'n:nte_1')
+
+			grip.dispatchEvent(pointer('pointerdown', 40))
+			window.dispatchEvent(pointer('pointermove', 90))
+			await settle()
+			expect(drag.dropTarget.value?.sectionId).toBe('sec_a')
+
+			// The content scrolls up by 60px while the pointer holds still, which puts
+			// the same screen position into the second section's band.
+			scrolledBy = 60
+			wrapper.find('[data-scroll-region]').element.dispatchEvent(new Event('scroll'))
+			await settle()
+
+			expect(drag.dropTarget.value?.sectionId).toBe('sec_b')
+
+			window.dispatchEvent(pointer('pointerup', 90))
+			await settle(4)
+			expect(store.calls).toEqual([{ id: 'nte_1', section: 'sec_b', index: 0 }])
+		})
+
+		it('abandons the drag when a document arrives mid-gesture', async () => {
+			// Every row position the drop resolves against was measured once, against a
+			// list that has now changed underneath the pointer. Committing on those
+			// numbers would move the note somewhere nobody pointed at.
+			const wrapper = await mountPanel()
+			const store = installReorderingStore()
+			const grip = gripOf(wrapper, 'n:nte_1')
+
+			grip.dispatchEvent(pointer('pointerdown', 40))
+			window.dispatchEvent(pointer('pointermove', 90))
+			await settle()
+			expect(draggingRow()).not.toBeNull()
+
+			// A capture landing from the global hotkey, or an edit to the file on disk.
+			await installDocument({
+				...SPACE,
+				notes: [{ ...SPACE.notes[0]!, body: 'changed underneath the drag' }, SPACE.notes[1]!],
+			})
+			await settle(3)
+
+			expect(draggingRow()).toBeNull()
+			expect(drag.isDragging.value).toBe(false)
+
+			window.dispatchEvent(pointer('pointerup', 90))
+			await settle(3)
+			expect(store.calls).toEqual([])
+		})
+
+		it('settles the list animation before it measures a single row', async () => {
+			// auto-animate is mid-FLIP for 150ms after any list change, and an animated
+			// row reports its *transformed* box — so a drag begun just after a capture
+			// landed would measure rows at positions they are still travelling away
+			// from. The stand-down watcher cannot be relied on for this: it runs
+			// asynchronously off the same flag the drag sets.
+			const wrapper = await mountPanel()
+			installReorderingStore()
+
+			const finish = vi.fn()
+			const proto = Element.prototype as unknown as Record<string, unknown>
+			proto.getAnimations = () => [{ playState: 'running', finish }]
+			restore.push(() => Reflect.deleteProperty(proto, 'getAnimations'))
+
+			const grip = gripOf(wrapper, 'n:nte_1')
+			grip.dispatchEvent(pointer('pointerdown', 40))
+			window.dispatchEvent(pointer('pointermove', 90))
+			await settle()
+
+			expect(finish).toHaveBeenCalled()
+
+			window.dispatchEvent(pointer('pointerup', 90))
+			await settle(3)
+		})
+
+		it('lands the grid a tab stop when a note is dropped into a collapsed section', async () => {
+			// `select` points the roving target at the dropped note unconditionally,
+			// but a collapsed destination renders no row for it — which would leave the
+			// grid with `tabindex="0"` on nothing and unreachable by Tab. The
+			// destination's header is the honest fallback, exactly as a `Move to ▸`
+			// into a folded section already does.
+			const wrapper = await mountPanel()
+			const store = installReorderingStore()
+
+			const inbox = wrapper.find(
+				'button[aria-label="Collapse Inbox"], button[aria-label="Expand Inbox"]',
+			)
+			await inbox.trigger('click')
+			await settle(3)
+
+			const grip = gripOf(wrapper, 'n:nte_1')
+			grip.dispatchEvent(pointer('pointerdown', 40))
+			// Into the collapsed second section's band.
+			window.dispatchEvent(pointer('pointermove', 150))
+			window.dispatchEvent(pointer('pointerup', 150))
+			await settle(4)
+
+			expect(store.calls).toEqual([{ id: 'nte_1', section: 'sec_b', index: 0 }])
+			// The note is still selected — collapse folds a row away, it never
+			// unselects — but the roving target went somewhere that exists.
+			expect(selection.selectedIds.value).toEqual(['nte_1'])
+			expect(wrapper.find('[data-row-id="n:nte_1"]').exists()).toBe(false)
+			expect(wrapper.findAll('[data-row-id][tabindex="0"]').length).toBeGreaterThan(0)
+			expect(selection.focusedId.value).toBe('s:sec_b')
+		})
+
+		it('does not select the row when a cancelled drag releases', async () => {
+			// Escape ends the drag, but the pointer is still down: the release that
+			// follows is a `click` on the grip by every definition the browser has, and
+			// the grip sits inside a row whose own click selects. Cancelling a reorder
+			// and then selecting the note anyway is not what Escape means.
+			const wrapper = await mountPanel()
+			installReorderingStore()
+			selection.select('nte_2')
+			const grip = gripOf(wrapper, 'n:nte_1')
+
+			grip.dispatchEvent(pointer('pointerdown', 40))
+			window.dispatchEvent(pointer('pointermove', 90))
+			await settle()
+
+			window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+			await settle(2)
+
+			// The click the browser synthesises from the down/up pair, which the
+			// existing Escape test never fired.
+			window.dispatchEvent(pointer('pointerup', 90))
+			grip.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+			await settle(2)
+
+			expect(selection.selectedIds.value).toEqual(['nte_2'])
 		})
 	})
 })

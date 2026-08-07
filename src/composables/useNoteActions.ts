@@ -169,6 +169,32 @@ function toggleDone() {
 	})
 }
 
+// --- where focus lands after a note moves -------------------------------------
+
+/**
+ * The row to hold after `noteId` lands in `sectionId` — the note's own row when
+ * it is on screen, and its destination's header row when it is not.
+ *
+ * **A destination can be collapsed, and then the moved note has no row at all.**
+ * AC22's auto-expand deliberately excludes a move: the destination was chosen
+ * rather than arrived at, so folding it open would undo the choice just made. A
+ * search the note does not match leaves the same hole, and so does a drag or an
+ * Alt+Arrow that carries a note into a folded section.
+ *
+ * `focusRow` validates nothing, so a key naming no row leaves the grid with no
+ * `tabindex="0"` anywhere and unreachable by Tab — the exact failure
+ * reconciliation exists to prevent. The section header is rendered whenever the
+ * section is, so it is the honest fallback; if even that is filtered away there
+ * is nothing to hold and the roving-target watcher owns the outcome.
+ *
+ * Read *after* the document has been applied, so `rowIds` already describes the
+ * list the user is about to be looking at.
+ */
+function landingRow(noteId: string, sectionId: string): string | null {
+	const rows = selection.rowIds.value
+	return [noteRow(noteId), sectionRow(sectionId)].find((row) => rows.includes(row)) ?? null
+}
+
 // --- move to -----------------------------------------------------------------
 
 function moveTo(sectionId: string) {
@@ -183,26 +209,13 @@ function moveTo(sectionId: string) {
 		if (!applied) return
 
 		// They stay selected — `move_notes` preserves relative order and appends
-		// them to the end of the target — and focus lands on the first of them.
-		//
-		// **Unless that row is not on screen.** A collapsed destination has no row
-		// for the moved note, and AC22's auto-expand deliberately excludes a move:
-		// this destination was chosen rather than arrived at, so folding it open
-		// would undo the choice just made. A search the note does not match leaves
-		// the same hole. `focusRow` validates nothing, so a key naming no row leaves
-		// the grid with no `tabindex="0"` anywhere and unreachable by Tab — the exact
-		// failure the reconciliation exists to prevent. The section header is
-		// rendered whenever the section is, so it is the honest fallback; if even
-		// that is filtered away there is nothing to hold and the roving-target
-		// watcher owns the outcome.
+		// them to the end of the target — and focus lands on the first of them, or
+		// on the destination's header when that row is not on screen.
 		const first = ids[0]
 		if (first === undefined) return
 
-		const rows = selection.rowIds.value
-		const target = [noteRow(first), sectionRow(sectionId)].find((row) => rows.includes(row))
-		if (target === undefined) return
-
-		takeRow(target)
+		const target = landingRow(first, sectionId)
+		if (target !== null) takeRow(target)
 	})
 }
 
@@ -293,8 +306,12 @@ function finishDrag(noteId: string, sectionId: string, index: number) {
 
 		if (!space.applied(await space.reorderNote(noteId, sectionId, index))) return
 
+		// Selected unconditionally — collapse folds a row away, it never unselects
+		// the note — but focus goes to whatever row actually exists, which is the
+		// destination's header when the note was dropped into a folded section.
 		selection.select(noteId)
-		focusRowSoon(noteRow(noteId))
+		const target = landingRow(noteId, sectionId)
+		if (target !== null) takeRow(target)
 	})
 }
 
@@ -337,7 +354,14 @@ function moveFocusedBy(delta: number) {
 			sectionId = neighbour.sectionId
 			// Entering from above lands at the top; entering from below lands at the
 			// bottom — the note keeps travelling in the direction it was going.
-			index = delta > 0 ? 0 : neighbour.noteIds.length
+			//
+			// Counted off the *document* rather than off `neighbour.noteIds`, which is
+			// what the visible walk publishes: a collapsed section publishes an empty
+			// list, so an Alt+Up into one landed the note at index 0 — the top — which
+			// is the opposite of what travelling upward means. Reordering is refused
+			// outright while a query is active, so the document count is the whole
+			// section here and never a filtered subset of it.
+			index = delta > 0 ? 0 : space.notesInSection(neighbour.sectionId).length
 		}
 
 		if (!space.applied(await space.reorderNote(noteId, sectionId, index))) return
@@ -350,7 +374,11 @@ function moveFocusedBy(delta: number) {
 		// all. The selection is deliberately left alone: unlike a drag, this is a
 		// keyboard action on the focused note, and collapsing a multi-note selection
 		// as a side effect of nudging one note is not something the user asked for.
-		takeRow(noteRow(noteId))
+		//
+		// Through `landingRow` because this can cross into a collapsed section, where
+		// the moved note has no row to hold.
+		const target = landingRow(noteId, sectionId)
+		if (target !== null) takeRow(target)
 	})
 }
 

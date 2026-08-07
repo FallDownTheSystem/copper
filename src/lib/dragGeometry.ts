@@ -28,6 +28,11 @@ export type DragSection = {
 	sectionId: string
 	top: number
 	bottom: number
+	/** Where the section's *notes* start, below its header row. An empty section
+	 *  is the only case that needs it, and it needs it because `bottom` is below
+	 *  the "No notes in this section yet." placeholder — which is not where the
+	 *  note lands. It lands first, at the top. */
+	contentTop: number
 }
 
 export type DragLayout = {
@@ -87,8 +92,11 @@ function indicatorFor(rows: readonly DragRow[], index: number, section: DragSect
 	if (after) return after.top - 2
 	if (before) return before.bottom + 2
 	// An empty section has no row to sit beside, so the line goes just under its
-	// header — which is where the note will land.
-	return section.bottom
+	// header — where the note will actually land. Not `bottom`: an empty *active*
+	// section renders a "No notes in this section yet." row, and a line drawn under
+	// that promises the note will arrive below a placeholder it is about to
+	// replace.
+	return section.contentTop + 2
 }
 
 /**

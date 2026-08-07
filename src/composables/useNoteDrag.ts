@@ -39,6 +39,7 @@ import {
 
 import { useNoteActions } from './useNoteActions'
 import { rowNoteId } from './useSelection'
+import { useSpace } from './useSpace'
 
 /** Distance from a scroll edge at which the list starts following the pointer. */
 const EDGE_PX = 48
@@ -94,6 +95,7 @@ let pointerClientY = 0
 let lastFrameAt = 0
 
 const actions = useNoteActions()
+const space = useSpace()
 
 /**
  * Measures every row and section once, at the moment the drag starts.
@@ -113,7 +115,16 @@ function measure(root: HTMLElement): DragLayout {
 		if (sectionId === undefined) continue
 
 		const box = group.getBoundingClientRect()
-		sections.push({ sectionId, top: box.top - origin, bottom: box.bottom - origin })
+		// Below the header row, which is where an empty section's first note lands.
+		// A section always renders one, so the fallback is only for a shape that
+		// does not currently exist.
+		const header = group.querySelector<HTMLElement>('[data-section-row]')
+		sections.push({
+			sectionId,
+			top: box.top - origin,
+			bottom: box.bottom - origin,
+			contentTop: (header?.getBoundingClientRect().bottom ?? box.top) - origin,
+		})
 
 		for (const row of group.querySelectorAll<HTMLElement>('[data-note-row]')) {
 			const noteId = rowNoteId(row.dataset.rowId ?? null)
@@ -196,9 +207,25 @@ function activate() {
 	const row = gesture.handle.closest<HTMLElement>('[data-note-row]')
 	if (!row) return
 
+	// **Settle the list before reading a single rect.** auto-animate is mid-FLIP
+	// for 150ms after any list change, and a row being animated reports its
+	// *transformed* box — so a drag begun just after a capture landed would measure
+	// rows at positions they are still travelling away from and drop the note
+	// somewhere nobody pointed at. Finishing the animations puts every row at its
+	// real place first. This also removes the ordering hazard in arming the drag:
+	// the auto-animate stand-down watcher runs asynchronously off `draggingNoteId`,
+	// so it cannot be relied on to have quieted anything by the time we measure.
+	for (const animation of gesture.root.getAnimations?.({ subtree: true }) ?? []) {
+		if (animation.playState === 'running') animation.finish()
+	}
+
 	layout = measure(gesture.root)
 	draggedRow = row
-	originY = contentY(gesture.root)
+	// Anchored to where the pointer went *down*, not to where it crossed the
+	// threshold. Measuring from the crossing leaves the row trailing the pointer by
+	// the activation distance for the whole gesture — the note never quite sits
+	// under the hand carrying it.
+	originY = gesture.startY - gesture.root.getBoundingClientRect().top
 	row.dataset.dragging = ''
 	draggingNoteId.value = gesture.noteId
 
@@ -211,13 +238,28 @@ function onUp(event: PointerEvent) {
 
 	const noteId = gesture.noteId
 	const target = draggingNoteId.value === null ? null : dropTarget.value
+	// `end` arms the click swallow itself whenever a drag was actually running, so
+	// the drop and every abort below are covered by one rule.
 	end()
 
 	if (!target) return
-	// The press became a drag, so the `click` the browser is about to synthesise
-	// belongs to the gesture rather than to the row under it.
-	dragClickPending = true
 	void actions.finishDrag(noteId, target.sectionId, target.index)
+}
+
+function onCancel(event: PointerEvent) {
+	if (!gesture || event.pointerId !== gesture.pointerId) return
+	end()
+}
+
+/**
+ * Capture lost to something other than us — the row unmounted underneath the
+ * pointer, or the browser took it back. The gesture cannot receive another move,
+ * so continuing to paint one would leave a row stuck under a pointer that no
+ * longer drives it.
+ */
+function onLostCapture(event: PointerEvent) {
+	if (!gesture || event.pointerId !== gesture.pointerId) return
+	end()
 }
 
 /** Escape abandons the drag and is consumed here rather than left to the shell's
@@ -231,9 +273,24 @@ function onKeydown(event: KeyboardEvent) {
 	end()
 }
 
-/** Unwinds everything the gesture put in place. Safe to call at any point in it,
- *  including before the drag threshold was ever crossed. */
+/**
+ * Unwinds everything the gesture put in place. Safe to call at any point in it,
+ * including before the drag threshold was ever crossed, and safe to call twice.
+ *
+ * **Every exit runs through here**, which is what makes the ghost-drag cases
+ * impossible rather than merely unlikely: a `pointerup` delivered to another
+ * window, a lost capture, an alt-tab, a document arriving from disk. Without it
+ * the row keeps its transform and its raised z-index, `isDragging` stays true and
+ * auto-animate stays switched off, and the auto-scroll loop keeps requesting
+ * frames for a gesture nobody is performing.
+ */
 function end() {
+	// A drag that got as far as moving a row is always followed by a synthesised
+	// `click` on the grip, whether it ended in a drop or was abandoned. Arming the
+	// swallow here rather than only on the drop path is what stops Escape from
+	// cancelling the reorder and then selecting the row anyway on release.
+	if (draggingNoteId.value !== null) dragClickPending = true
+
 	listeners?.abort()
 	listeners = null
 
@@ -259,6 +316,25 @@ function end() {
 }
 
 /**
+ * A document arriving mid-gesture ends it.
+ *
+ * The geometry was measured once, against a list that has now changed underneath
+ * the pointer — so every row position the drop is resolved against is a
+ * guess, and committing one would move a note somewhere nobody pointed at. A
+ * capture landing from the global hotkey or an external edit to the `.copper`
+ * file both land here. The drag the user was performing is abandoned rather than
+ * completed on stale numbers.
+ *
+ * Not triggered by the drag's own commit: `end` has already run by then.
+ */
+watch(
+	() => space.space.value,
+	() => {
+		if (draggingNoteId.value !== null) end()
+	},
+)
+
+/**
  * Arms a drag from the grip. Nothing is committed to yet — a press that never
  * travels far enough stays a press, which is what keeps the grip clickable and
  * keeps a twitchy mouse from reordering the list.
@@ -267,7 +343,10 @@ function end() {
  * the grip behind still delivers its moves here.
  */
 function beginDrag(noteId: string, event: PointerEvent) {
-	if (event.pointerType === 'mouse' && event.button !== 0) return
+	// The primary button of the primary pointer, whatever kind of pointer it is.
+	// Testing `pointerType === 'mouse'` first let a pen's barrel button and its
+	// eraser end start a drag, and let a second finger begin one mid-gesture.
+	if (event.button !== 0 || !event.isPrimary) return
 
 	const handle = event.currentTarget
 	if (!(handle instanceof HTMLElement)) return
@@ -296,8 +375,19 @@ function beginDrag(noteId: string, event: PointerEvent) {
 	const signal = listeners.signal
 	window.addEventListener('pointermove', onMove, { signal })
 	window.addEventListener('pointerup', onUp, { signal })
-	window.addEventListener('pointercancel', end, { signal })
+	window.addEventListener('pointercancel', onCancel, { signal })
+	window.addEventListener('lostpointercapture', onLostCapture, { signal })
 	window.addEventListener('keydown', onKeydown, { signal, capture: true })
+	// The window losing focus is the one way a `pointerup` never arrives at all:
+	// an alt-tab, or a click that raises another window, delivers the release
+	// somewhere else entirely. Without this the row stays stuck to the cursor and
+	// auto-animate stays switched off for the rest of the session.
+	window.addEventListener('blur', end, { signal })
+	// The list can also move underneath a pointer that is holding still — a wheel,
+	// a trackpad, a scrollbar drag. The drop target is a function of where the
+	// pointer is *in the content*, so it has to be recomputed when the content
+	// moves, not only when the pointer does.
+	region.addEventListener('scroll', update, { signal, passive: true })
 }
 
 /** True once per completed drag, for the grip to swallow the trailing click. */
