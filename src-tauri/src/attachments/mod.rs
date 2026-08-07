@@ -715,8 +715,9 @@ mod tests {
 	/// Stands in for the Recycle Bin: records what it was handed and takes the
 	/// file out of the assets directory, which is the half of a trash move the
 	/// sweep's own assertions are about. The other half — that the bytes are
-	/// still recoverable afterwards — belongs to the OS, and is checked by the
-	/// ignored test at the bottom of this module.
+	/// still recoverable afterwards — belongs to the OS, and no test here
+	/// exercises it: nothing in this suite may put a file in the real Recycle
+	/// Bin. AC2 is verified by hand, once, against a running build.
 	fn recorder(seen: &RefCell<Vec<PathBuf>>) -> impl Fn(&Path) -> Disposed + '_ {
 		|path| {
 			seen.borrow_mut().push(path.to_path_buf());
@@ -828,31 +829,6 @@ mod tests {
 
 		assert!(assets.join("kept.png").exists());
 		assert!(names(&seen).is_empty());
-	}
-
-	// --- integration: this one uses the real Recycle Bin -----------------------
-	// Ignored by default so `cargo test` stays hermetic — it leaves a file in the
-	// bin of whoever runs it. Run with:
-	//   cargo test -- --ignored recycling
-
-	/// Task-015 AC1, and the assertable half of AC2.
-	///
-	/// That the bytes are still *recoverable* afterwards is the half no test can
-	/// make: confirming it means opening the Recycle Bin and finding the name
-	/// this test printed. The half that is checkable here is the one the sweep
-	/// depends on — a successful move really does take the file out of its
-	/// directory, so [`sweep`] does not hand the same blob to the bin forever.
-	#[test]
-	#[ignore = "moves a real file to the real Recycle Bin"]
-	fn recycling_moves_a_real_file_out_of_its_directory() {
-		let dir = tempfile::tempdir().unwrap();
-		let path = dir.path().join("copper-recycle-bin-probe.png");
-		std::fs::write(&path, b"x").unwrap();
-		println!("look for {} in the Recycle Bin", path.display());
-
-		recycle(&path).expect("this volume has no usable Recycle Bin");
-
-		assert!(!path.exists(), "{} did not move", path.display());
 	}
 
 	/// The smallest valid PNG: 1×1, 8-bit greyscale.
