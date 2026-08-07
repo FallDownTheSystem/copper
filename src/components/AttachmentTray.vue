@@ -81,7 +81,7 @@ watch([list, reduced], ([element]) => {
 				     which the negative margin keeps out of the row's layout height. -->
 				<button
 					type="button"
-					class="text-text-disabled hover:text-text-primary outline-focus-ring -m-1 shrink-0 rounded p-1.5 transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
+					class="text-text-disabled hover:text-text-primary outline-focus-ring -m-1 shrink-0 rounded-sm p-1.5 transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
 					:aria-label="`Remove ${attachment.name}`"
 					@click="removePending(attachment.id)"
 				>

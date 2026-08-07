@@ -138,7 +138,7 @@ function onKeydown(event: KeyboardEvent) {
 								type="button"
 								tabindex="-1"
 								:aria-current="active ? 'true' : undefined"
-								class="hover:bg-surface-hover active:bg-surface-active flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors duration-fast"
+								class="hover:bg-surface-hover active:bg-surface-active flex min-w-0 items-center gap-1.5 rounded-sm px-1.5 py-1 transition-colors duration-fast"
 								:class="active ? 'text-accent-text' : 'text-text-secondary'"
 								@click="emit('activate')"
 							>
@@ -171,7 +171,7 @@ function onKeydown(event: KeyboardEvent) {
 							tabindex="-1"
 							:aria-expanded="!collapsed"
 							:aria-label="`${collapsed ? 'Expand' : 'Collapse'} ${section.name}`"
-							class="text-text-disabled hover:bg-surface-hover hover:text-text-secondary outline-focus-ring grid size-5 shrink-0 place-items-center rounded transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
+							class="text-text-disabled hover:bg-surface-hover hover:text-text-secondary outline-focus-ring grid size-5 shrink-0 place-items-center rounded-sm transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
 							@click="toggle"
 						>
 							<IconLucideChevronRight

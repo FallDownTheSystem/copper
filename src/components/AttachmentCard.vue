@@ -88,14 +88,14 @@ async function open() {
 				? `${attachment.name} — unavailable`
 				: `Open ${attachment.name}, ${formatBytes(attachment.bytes)}`
 		"
-		class="squircle border-separator hover:bg-surface-hover outline-focus-ring flex min-h-16 w-full min-w-0 items-center gap-2 rounded-md border p-1.5 text-left transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-2 disabled:cursor-default disabled:hover:bg-transparent"
+		class="squircle border-separator hover:bg-surface-hover outline-focus-ring flex min-h-16 w-full min-w-0 items-center gap-2 rounded-lg border p-1.5 text-left transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-2 disabled:cursor-default disabled:hover:bg-transparent"
 		@click.prevent
 		@dblclick.stop.prevent="open"
 		@keydown.enter.prevent="open"
 		@keydown.space.prevent="open"
 	>
 		<span
-			class="bg-surface-hover text-text-disabled grid shrink-0 place-items-center overflow-hidden rounded"
+			class="bg-surface-hover text-text-disabled grid shrink-0 place-items-center overflow-hidden rounded-sm"
 			:style="boxStyle"
 		>
 			<!-- No `alt` text of its own: the button already carries the filename, and

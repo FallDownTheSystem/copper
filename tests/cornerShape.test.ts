@@ -97,6 +97,35 @@ function supportsBlocksOnly(css: string) {
 }
 
 /**
+ * The radius ramp's anchor, in px. Every `rounded-*` in the panel is this value
+ * plus or minus a few pixels, so it is the one number that says how round the
+ * app is.
+ */
+function radiusAnchor(css: string) {
+	// `--radius:` and not `--radius-sm:` — the trailing colon is what separates
+	// the anchor from the four tokens derived off it.
+	const match = /--radius:\s*([\d.]+)rem/.exec(css)
+	if (!match) throw new Error(`no --radius anchor in the built stylesheet. ${REBUILD}`)
+
+	return Number(match[1]) * 16
+}
+
+/**
+ * Resolves the one shape the ramp emits — `calc(var(--radius) - Npx)`, or the
+ * bare `var(--radius)` at `lg` — against an anchor, in px.
+ */
+function resolveRadius(value: string, anchor: number) {
+	const derived = /calc\(\s*var\(--radius\)\s*([+-])\s*([\d.]+)px\s*\)/.exec(value)
+	if (derived) return anchor + (derived[1] === '-' ? -1 : 1) * Number(derived[2])
+	if (/^var\(--radius\)$/.test(value.trim())) return anchor
+
+	const literal = /^([\d.]+)px$/.exec(value.trim())
+	if (literal) return Number(literal[1])
+
+	throw new Error(`unrecognised radius expression: ${value}`)
+}
+
+/**
  * Cuts out every support block, prelude and all, so that what remains is exactly
  * the CSS that would still apply on a runtime without the property.
  */
@@ -159,6 +188,14 @@ describe('the squircle survives the production pipeline', () => {
 	 * Both halves matter and they live in different rules. The radius must be
 	 * **unconditional**, because it is the fallback; the corner shape must be
 	 * **guarded**, because it is the enhancement.
+	 *
+	 * The floor on that radius is not arbitrary and is not merely "not zero".
+	 * `corner-shape` bends the corner arc *within* the radius it is given, so the
+	 * superellipse and the circle converge as the radius shrinks: below roughly
+	 * 8px they are within a pixel of each other and every squircle in the panel
+	 * silently becomes a plain rounded rectangle — this whole file's subject
+	 * matter, defeated by a number in a different file. Checkbox.vue argues the
+	 * same threshold from the other end.
 	 */
 	it('composes the utility into panel-button without losing either half', () => {
 		const css = builtCss()
@@ -167,7 +204,7 @@ describe('the squircle survives the production pipeline', () => {
 		expect(plain, 'panel-button emitted no unguarded rule at all').not.toBeNull()
 		const radius = /border-radius:\s*([^;}]+)/.exec(plain?.[1] ?? '')
 		expect(radius, 'panel-button lost its fallback radius').not.toBeNull()
-		expect(radius?.[1].trim()).not.toMatch(/^0(px|%|em|rem)?$/)
+		expect(resolveRadius(radius?.[1] ?? '', radiusAnchor(css))).toBeGreaterThanOrEqual(8)
 
 		expect(supportsBlocksOnly(css)).toMatch(/\.panel-button\{corner-shape:\s*squircle/)
 	})
@@ -186,6 +223,12 @@ describe('the squircle survives the production pipeline', () => {
 		expect(rule, 'the .panel-surface rule was not emitted').not.toBeNull()
 		expect(rule?.[1]).toMatch(/corner-shape:\s*round/)
 		expect(rule?.[1]).not.toMatch(/corner-shape:\s*squircle/)
+		// And its radius comes off `--panel-radius`, never the ramp the rest of the
+		// panel scales with. The two are independent by design: `--panel-radius`
+		// tracks DWM's own window corner and only moves if DWM's does, so a sweep
+		// that makes every surface rounder must not carry the root along with it —
+		// that reopens the double-radius seam the token exists to close.
+		expect(rule?.[1]).toMatch(/border-radius:\s*var\(--panel-radius\)/)
 	})
 
 	/**

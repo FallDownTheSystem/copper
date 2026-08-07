@@ -85,7 +85,7 @@ function onGripClick(event: MouseEvent) {
 				data-note-row
 				:aria-selected="selected"
 				:tabindex="focused ? 0 : -1"
-				class="note-row group/row outline-focus-ring rounded-md focus-visible:outline-2 focus-visible:-outline-offset-4"
+				class="note-row group/row outline-focus-ring rounded-lg focus-visible:outline-2 focus-visible:-outline-offset-4"
 				:class="[
 					selected ? 'row-selected ring-accent-ring ring-2 ring-inset' : '',
 					'hover:bg-surface-hover transition-colors duration-fast',

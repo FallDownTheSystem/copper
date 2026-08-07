@@ -72,12 +72,17 @@ function onOpenChange(next: boolean) {
 		<!-- The accent colour and the weight are the list's own active-section
 		     header, so the two say the same thing the same way. The negative margin
 		     lets the chip's hover surface breathe without its text losing alignment
-		     with the search field above it. -->
+		     with the search field above it.
+
+		     `rounded-sm` rather than the default control corner: a `text-label` line
+		     inside `py-0.5` is about 21px tall, so `--radius-md` would land past the
+		     capsule threshold and the chip would stop reading as the same kind of
+		     object as the section header it mirrors. -->
 		<DropdownMenuTrigger
 			type="button"
 			:aria-label="`Active section: ${name}, ${spokenCount}. Switch section`"
 			:title="name"
-			class="text-accent-text hover:bg-surface-hover active:bg-surface-active outline-focus-ring squircle border-separator -mx-1 flex min-w-0 max-w-full items-center gap-1.5 rounded-md border px-1.5 py-0.5 transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
+			class="text-accent-text hover:bg-surface-hover active:bg-surface-active outline-focus-ring squircle border-separator -mx-1 flex min-w-0 max-w-full items-center gap-1.5 rounded-sm border px-1.5 py-0.5 transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
 		>
 			<IconLucideListTree class="size-3.5 shrink-0" aria-hidden="true" focusable="false" />
 			<span class="truncate text-label font-semibold uppercase">{{ name }}</span>

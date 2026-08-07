@@ -86,7 +86,7 @@ function onClick(event: MouseEvent) {
 			tabindex="-1"
 			:aria-expanded="expanded"
 			:aria-controls="bodyId"
-			class="text-text-secondary hover:bg-surface-hover active:bg-surface-active mt-1 rounded-md px-1.5 py-0.5 text-meta transition-colors duration-fast"
+			class="text-text-secondary hover:bg-surface-hover active:bg-surface-active mt-1 rounded-sm px-1.5 py-0.5 text-meta transition-colors duration-fast"
 			@click.stop="toggle(note.id)"
 		>
 			{{ expanded ? 'Show less' : 'Show more' }}

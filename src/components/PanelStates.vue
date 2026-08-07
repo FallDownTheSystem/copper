@@ -69,10 +69,14 @@ const erroredMessage = computed(() =>
 		     and flash an empty state. -->
 		<div v-if="loadState === 'loading'" aria-hidden="true">
 			<div v-if="skeletonVisible" class="px-3 pt-3">
-				<div class="bg-surface-hover h-3 w-24 rounded" />
+				<!-- The one place a capsule is the right shape: these bars stand for
+				     lines of text, not for controls, and at 12 and 16px tall no
+				     rectangular corner off the panel's scale survives the browser's
+				     radius clamping anyway. -->
+				<div class="bg-surface-hover h-3 w-24 rounded-full" />
 				<div v-for="row in 3" :key="row" class="mt-3 flex gap-2">
 					<div class="bg-surface-hover size-4 shrink-0 rounded-full" />
-					<div class="bg-surface-hover h-4 flex-1 rounded" />
+					<div class="bg-surface-hover h-4 flex-1 rounded-full" />
 				</div>
 			</div>
 		</div>

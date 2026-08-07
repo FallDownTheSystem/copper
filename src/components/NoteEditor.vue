@@ -139,7 +139,7 @@ async function keepMine() {
 		     two columns of Markdown at that width are unreadable. -->
 		<div
 			v-if="conflict !== null"
-			class="squircle border-separator mt-2 rounded-md border p-2"
+			class="squircle border-separator mt-2 rounded-lg border p-2"
 			role="group"
 			aria-label="This note changed on disk"
 		>
@@ -150,7 +150,7 @@ async function keepMine() {
 
 			<p class="text-text-secondary mt-2 text-meta font-semibold uppercase">On disk</p>
 			<pre
-				class="text-text-secondary bg-surface-hover mt-1 max-h-32 overflow-auto rounded p-1.5 text-meta whitespace-pre-wrap"
+				class="text-text-secondary bg-surface-hover mt-1 max-h-32 overflow-auto rounded-sm p-1.5 text-meta whitespace-pre-wrap"
 				>{{ conflict }}</pre>
 
 			<div class="mt-2 flex flex-wrap gap-2">

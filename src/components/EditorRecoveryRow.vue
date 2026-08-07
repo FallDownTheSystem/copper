@@ -31,7 +31,7 @@ async function copyDraft() {
 		v-if="recovery"
 		role="group"
 		aria-label="Unsaved draft"
-		class="border-separator mx-3 my-2 rounded-md border border-dashed p-2"
+		class="border-separator mx-3 my-2 rounded-lg border border-dashed p-2"
 	>
 		<p class="text-text-primary text-meta font-semibold">
 			The note you were editing is gone from this space.
@@ -39,7 +39,7 @@ async function copyDraft() {
 		<p class="text-text-secondary mt-0.5 text-meta">Your unsaved text is kept here.</p>
 
 		<pre
-			class="text-text-secondary bg-surface-hover mt-2 max-h-40 overflow-auto rounded p-1.5 text-meta whitespace-pre-wrap select-text"
+			class="text-text-secondary bg-surface-hover mt-2 max-h-40 overflow-auto rounded-sm p-1.5 text-meta whitespace-pre-wrap select-text"
 			>{{ recovery.draft }}</pre>
 
 		<div class="mt-2 flex flex-wrap items-center gap-2">

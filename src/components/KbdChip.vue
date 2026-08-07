@@ -11,6 +11,10 @@
  * gives the cap its slight lift without a shadow, which would read as elevation
  * this control does not have. (Said here rather than above the element, because a
  * comment before a template's root makes the component a fragment.)
+ *
+ * `rounded-sm`, one step below the panel's default control corner, because the cap
+ * is `h-6`: a 12px radius on a 24px box is a capsule exactly, and a key cap that
+ * has lost its corners no longer looks like a key.
  */
 const props = defineProps<{ label: string }>()
 
@@ -19,7 +23,7 @@ const shown = computed(() => (props.label === 'Super' ? 'Win' : props.label))
 
 <template>
 	<kbd
-		class="bg-kbd-surface ring-kbd-ring text-text-primary inline-flex h-6 items-center rounded-md px-1.5 font-mono text-meta ring-1 shadow-[inset_0_1px_0_var(--kbd-highlight)]"
+		class="bg-kbd-surface ring-kbd-ring text-text-primary inline-flex h-6 items-center rounded-sm px-1.5 font-mono text-meta ring-1 shadow-[inset_0_1px_0_var(--kbd-highlight)]"
 	>
 		{{ shown }}
 	</kbd>
