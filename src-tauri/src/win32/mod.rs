@@ -20,6 +20,18 @@ pub mod integrity;
 /// since there is no error to report.
 pub const EXTRA_INFO_SIGNATURE: usize = 0x0C0F_FEE0;
 
+/// Written into `KEYBDINPUT.dwExtraInfo` on the watchdog's liveness probe, and
+/// matched by the keyboard hook so the probe proves the callback is still being
+/// called without reaching anything else.
+///
+/// A second tag rather than a reuse of [`EXTRA_INFO_SIGNATURE`], because the two
+/// are handled differently in a way that matters: Copper's own `Ctrl+C` is passed
+/// on to the foreground application — it is *for* the foreground application —
+/// while the probe is swallowed, since nothing but Copper has any business seeing
+/// it. Sharing one tag would mean either delivering stray keystrokes or
+/// swallowing the copy that a capture depends on.
+pub const PROBE_SIGNATURE: usize = 0x0C0F_FEE1;
+
 /// Virtual-key codes, as the low-level hook reports them in `vkCode` and as
 /// `GetAsyncKeyState` takes them.
 ///
@@ -49,4 +61,8 @@ pub mod keys {
 	pub const VK_RMENU: u32 = keyboard::VK_RMENU.0 as u32;
 	pub const VK_LWIN: u32 = keyboard::VK_LWIN.0 as u32;
 	pub const VK_RWIN: u32 = keyboard::VK_RWIN.0 as u32;
+	/// The watchdog's probe key. Inert for the same reason `shortcuts` lets the
+	/// high function keys be bound bare: no keyboard emits one by accident and
+	/// nothing else on the machine is listening for it.
+	pub const VK_F24: u32 = keyboard::VK_F24.0 as u32;
 }

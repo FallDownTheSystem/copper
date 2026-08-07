@@ -14,17 +14,25 @@
 //! Task-001 measured this callback at **7.8 microseconds** worst case against
 //! that 1000 ms budget, over 500 injected double-taps that produced exactly 500
 //! triggers.
+//!
+//! Being fast turned out not to be sufficient. The timeout is wall-clock, so a
+//! thread that is not *scheduled* inside it misses it however little work it has
+//! to do — hence the time-critical priority [`install`] asks for, and the
+//! liveness probe `watchdog` sends, which is the only way the application can
+//! find out that a hook it still holds a handle for is gone.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::System::Threading::{
+	GetCurrentThread, GetCurrentThreadId, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VSC_TO_VK_EX};
 use windows::Win32::UI::WindowsAndMessaging::{
 	CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
@@ -37,7 +45,7 @@ use crate::win32::keys::{
 	VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT,
 	VK_SHIFT,
 };
-use crate::win32::EXTRA_INFO_SIGNATURE;
+use crate::win32::{EXTRA_INFO_SIGNATURE, PROBE_SIGNATURE};
 
 use super::{GAP_MAX_MS, TAP_MAX_MS};
 
@@ -378,6 +386,50 @@ impl TriggerKey {
 	}
 }
 
+// --- liveness ----------------------------------------------------------------
+
+/// Whether a hook is installed right now.
+///
+/// The startup install is only half the question. Windows removes a
+/// `WH_KEYBOARD_LL` hook whose callback keeps missing `LowLevelHooksTimeout` and
+/// tells the application nothing at all, so "did it install?" answered at startup
+/// stays `true` forever while capture has silently stopped working. This flag is
+/// the whole answer: [`install`] sets it, [`HookHandle::stop`] clears it, and the
+/// watchdog drives both when its liveness probe stops coming back.
+static HOOK_LIVE: AtomicBool = AtomicBool::new(false);
+
+/// When the callback last saw a liveness probe, in milliseconds since [`EPOCH`].
+///
+/// Milliseconds in an atomic rather than the `Instant` this is derived from,
+/// because an `Instant` does not fit in one and the callback may not take a lock.
+/// Zero means no probe has ever arrived.
+static PROBE_SEEN_MS: AtomicU64 = AtomicU64::new(0);
+
+/// The zero the probe stamp is measured from. Any fixed point in the process's
+/// life does; this one is simply the first time anything asks.
+static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// Whether the hook is installed and has not been torn down.
+pub fn alive() -> bool {
+	HOOK_LIVE.load(Ordering::Relaxed)
+}
+
+/// The current probe stamp, for the watchdog to compare against the one it read
+/// before injecting.
+///
+/// Comparing two readings rather than measuring an age is what makes the
+/// representation's wrap irrelevant, and it is also the only question worth
+/// asking: a stamp that moved proves the callback ran.
+pub fn probe_stamp() -> u64 {
+	PROBE_SEEN_MS.load(Ordering::Relaxed)
+}
+
+/// `Relaxed` for the same reason [`watched`] is: one independent value that
+/// publishes no other memory, read on the far side of a two-second grace window.
+fn note_probe() {
+	PROBE_SEEN_MS.store(EPOCH.elapsed().as_millis() as u64, Ordering::Relaxed);
+}
+
 // --- the hook thread ---------------------------------------------------------
 
 /// Sent on the key-up that completes a double-tap.
@@ -429,6 +481,22 @@ unsafe extern "system" fn keyboard_proc(ncode: i32, wparam: WPARAM, lparam: LPAR
 		// for those users.
 		if event.dwExtraInfo == EXTRA_INFO_SIGNATURE {
 			return CallNextHookEx(None, ncode, wparam, lparam);
+		}
+
+		// The watchdog's liveness probe, and **the one event this callback
+		// deliberately swallows** — see the note at the bottom of this function for
+		// the rule it breaks. A probe carries no meaning for anybody else: passing
+		// it on would type a stray F24 into whatever has focus every fifteen
+		// seconds, and this is the only place in the system where Copper can stop
+		// it. Reaching this branch is itself the proof the watchdog is after, since
+		// a hook Windows has removed never gets here at all.
+		//
+		// Second, not first, because a capture's own `Ctrl+C` is on the latency path
+		// of a gesture the user is waiting on and a probe arrives once per fifteen
+		// seconds. Both are one compare against a field already loaded.
+		if event.dwExtraInfo == PROBE_SIGNATURE {
+			note_probe();
+			return LRESULT(1);
 		}
 
 		let message = wparam.0 as u32;
@@ -495,8 +563,10 @@ unsafe extern "system" fn keyboard_proc(ncode: i32, wparam: WPARAM, lparam: LPAR
 			});
 		}
 
-		// Always pass the event on. Returning non-zero would swallow Shift from
-		// the target application.
+		// Pass the event on. Returning non-zero would swallow Shift from the target
+		// application, so the liveness probe above — which no application other
+		// than Copper has any use for — is the only event that ever takes the other
+		// path.
 		CallNextHookEx(None, ncode, wparam, lparam)
 	}
 }
@@ -537,6 +607,11 @@ impl HookHandle {
 	/// is waiting on that channel to close, so joining the worker after a failed
 	/// post would block forever — trading a leaked thread for a hung exit.
 	pub fn stop(&mut self) -> bool {
+		// Before the early return below, and unconditionally: whatever this handle
+		// once owned, the caller is asking for it to be gone, and a liveness flag
+		// that outlived the request would keep `shortcuts` from standing its
+		// insurance chord up.
+		HOOK_LIVE.store(false, Ordering::Relaxed);
 		let Some(join) = self.join.take() else {
 			// Already stopped. Reporting success is right: whatever the first call
 			// decided has already been acted on.
@@ -589,10 +664,37 @@ pub fn install(
 ) -> Result<HookHandle, HookError> {
 	let (ready_tx, ready_rx) = mpsc::channel::<Result<u32, String>>();
 
+	// Resolved here rather than on first use, so the callback's probe branch is a
+	// load and a store and never a one-time initialisation.
+	LazyLock::force(&EPOCH);
+
 	let join = thread::Builder::new()
 		.name("copper-hook".to_owned())
 		.spawn(move || {
 			let mut message = MSG::default();
+
+			// The whole incident this guards against is a scheduling one, not a slow
+			// one: the callback measures 7.8 microseconds against a 300 ms default
+			// budget, and still loses keystrokes machine-wide when this thread is not
+			// scheduled inside that window — under a debugger's suspension, or heavy
+			// CPU contention. Windows then removes the hook and says nothing.
+			//
+			// Time-critical cannot starve the app in return. This thread spends
+			// essentially all of its life blocked in `GetMessageW`, and the callback
+			// yields the instant it has classified one key event.
+			//
+			// Best-effort. A refusal costs the priority, not the hook, so there is
+			// nothing to abort for and the process still has a working callback.
+			// SAFETY: no preconditions; the pseudo-handle needs no close.
+			unsafe {
+				if let Err(err) = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) {
+					diagnostics::log_error(&format!(
+						"[copper] capture: the hook thread could not be raised to time-critical \
+						 ({err}); it runs at normal priority and is likelier to miss \
+						 LowLevelHooksTimeout under load"
+					));
+				}
+			}
 
 			// A thread has no message queue until it calls a message function.
 			// SAFETY: `message` is a live local for the call.
@@ -672,10 +774,13 @@ pub fn install(
 		.map_err(HookError::Spawn)?;
 
 	match ready_rx.recv() {
-		Ok(Ok(thread_id)) => Ok(HookHandle {
-			thread_id,
-			join: Some(join),
-		}),
+		Ok(Ok(thread_id)) => {
+			HOOK_LIVE.store(true, Ordering::Relaxed);
+			Ok(HookHandle {
+				thread_id,
+				join: Some(join),
+			})
+		}
 		Ok(Err(err)) => {
 			let _ = join.join();
 			Err(HookError::Install(err))
@@ -695,6 +800,8 @@ pub fn install(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	use windows::Win32::UI::WindowsAndMessaging::HC_ACTION;
 
 	const L: Observed = Observed::Trigger(KeySide::Left);
 	const R: Observed = Observed::Trigger(KeySide::Right);
@@ -967,6 +1074,99 @@ mod tests {
 		// binding" is the safe answer: capture stops rather than firing on a
 		// modifier nobody chose.
 		assert_eq!(ModifierFamily::from_code(9), ModifierFamily::Off);
+	}
+
+	// --- the callback itself ---------------------------------------------------
+	// `HOOK_STATE` is thread-local, so a test can install its own and drive the
+	// real `keyboard_proc` over a synthetic event. Everything below runs on one
+	// test thread and shares that state, which is why it is one test rather than
+	// several: two of them could otherwise interleave on the same thread-local.
+
+	/// Installs callback state the test can inspect, and hands back the trigger
+	/// channel.
+	fn install_test_state() -> mpsc::Receiver<Trigger> {
+		let (tx, rx) = mpsc::channel();
+		HOOK_STATE.with(|cell| {
+			*cell.borrow_mut() = Some(HookState {
+				machine: DoubleTap::new(DoubleTapConfig::default()),
+				family: ModifierFamily::Shift,
+				tx,
+				in_flight: Arc::new(AtomicBool::new(false)),
+				armed: Arc::new(AtomicBool::new(true)),
+			});
+		});
+		rx
+	}
+
+	/// Runs the real callback over one synthetic event.
+	fn feed(extra: usize, vk: u32, message: u32) -> LRESULT {
+		let mut event = KBDLLHOOKSTRUCT {
+			vkCode: vk,
+			dwExtraInfo: extra,
+			..Default::default()
+		};
+		// SAFETY: `event` outlives the call and `HC_ACTION` is the documented
+		// "process this event" code, which is what the pointer contract depends on.
+		unsafe {
+			keyboard_proc(
+				HC_ACTION as i32,
+				WPARAM(message as usize),
+				LPARAM(&mut event as *mut KBDLLHOOKSTRUCT as isize),
+			)
+		}
+	}
+
+	fn machine_is_idle() -> bool {
+		HOOK_STATE.with(|cell| {
+			cell.borrow()
+				.as_ref()
+				.is_some_and(|state| state.machine.state == State::Idle)
+		})
+	}
+
+	#[test]
+	fn the_two_tags_are_handled_differently_and_neither_reaches_the_machine() {
+		let triggers = install_test_state();
+		// The two tags have to be distinguishable in the first place, or one branch
+		// shadows the other and the difference below proves nothing.
+		assert_ne!(EXTRA_INFO_SIGNATURE, PROBE_SIGNATURE);
+
+		// A value no elapsed-millisecond count can be, so "the stamp moved" cannot
+		// be satisfied by the initial zero or by a probe that happened to land in
+		// the same millisecond as this baseline.
+		PROBE_SEEN_MS.store(u64::MAX, Ordering::Relaxed);
+
+		// The probe carries a vkCode that would otherwise open a double-tap, so a
+		// branch that fell through would leave the machine mid-sequence.
+		let swallowed = feed(PROBE_SIGNATURE, VK_LSHIFT, WM_KEYDOWN);
+		assert_ne!(
+			swallowed.0, 0,
+			"a probe must be swallowed, or every fifteen seconds an F24 lands in whatever has focus"
+		);
+		assert_ne!(
+			probe_stamp(),
+			u64::MAX,
+			"a probe must record that the callback ran; that recording is the whole watchdog"
+		);
+		assert!(machine_is_idle(), "a probe must not reach the tap machine");
+
+		// Copper's own injected Ctrl+C: filtered from the machine just the same, but
+		// passed on, because the foreground application is who it is for.
+		let passed = feed(EXTRA_INFO_SIGNATURE, VK_LSHIFT, WM_KEYDOWN);
+		assert_eq!(passed.0, 0, "Copper's own tag must still reach the next hook");
+		assert!(machine_is_idle());
+
+		// And an ordinary keystroke is unaffected by either branch: it reaches the
+		// machine, which is what the tags exist to keep them out of.
+		let real = feed(0, VK_LSHIFT, WM_KEYDOWN);
+		assert_eq!(real.0, 0);
+		assert!(!machine_is_idle(), "a real key-down must open a sequence");
+
+		assert!(
+			triggers.try_recv().is_err(),
+			"none of these events completes a double-tap"
+		);
+		HOOK_STATE.with(|cell| *cell.borrow_mut() = None);
 	}
 
 	/// The other half of the family swap: a partial sequence must not survive it.

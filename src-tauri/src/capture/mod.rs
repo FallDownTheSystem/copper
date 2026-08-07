@@ -6,11 +6,13 @@
 //! by grep rather than by trait, which is why the rule is written as a grep
 //! assertion in the task rather than as a principle.
 //!
-//! # Five threads
+//! # Six threads
 //!
-//! Four carry a capture; the fifth only expires notices. The notice timer is
-//! counted here because it exists precisely so a burst of failures cannot spawn
-//! a thread each, and a topology that did not mention it would be describing a
+//! Four carry a capture; the fifth only expires notices, and the sixth only
+//! proves the hook is still installed. Neither of the last two is incidental:
+//! the notice timer exists precisely so a burst of failures cannot spawn a
+//! thread each, and the watchdog exists because Windows removes a hook without
+//! telling anybody. A topology that did not mention them would be describing a
 //! design nobody built.
 //!
 //! ```text
@@ -27,6 +29,11 @@
 //!                                                                            │
 //!                              notice timer thread ◀── one deadline ─────────┘
 //!                              (one, shared)      ──── expiry ──────────────▶ emit + hide
+//!
+//!   watchdog thread
+//!    every 15s: SendInput(F24, PROBE_SIGNATURE) ──▶ hook proc swallows it
+//!    +2s: did the probe stamp move? ◀───────────────────────┘
+//!    3 misses → reinstall the hook, revisit the fallback chord, raise a notice
 //! ```
 //!
 //! The hook procedure is trivial on purpose: Windows silently uninstalls a
@@ -41,10 +48,11 @@ mod clipboard_fallback;
 mod hook;
 mod notice;
 mod uia;
+mod watchdog;
 mod worker;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Listener, Manager};
@@ -149,6 +157,14 @@ pub enum CaptureFailure {
 	NotSaved {
 		kind: &'static str,
 	},
+	/// Windows removed the keyboard hook and the watchdog caught it. The only
+	/// variant that describes no particular capture — it reports that the trigger
+	/// itself stopped existing, which is otherwise indistinguishable from a user
+	/// who has not double-tapped anything lately.
+	HookLost {
+		/// Whether reinstalling it worked.
+		recovered: bool,
+	},
 }
 
 impl CaptureFailure {
@@ -194,6 +210,18 @@ impl CaptureFailure {
 				"unavailable" => "Couldn't save — the active space isn't available.".to_owned(),
 				_ => "Captured, but couldn't save it.".to_owned(),
 			},
+			// Two outcomes, two sentences. Telling the user their trigger is broken
+			// when it has already been fixed would send them to the settings view for
+			// nothing; telling them it was fixed when it was not is worse, because the
+			// double-tap they then try does nothing at all.
+			Self::HookLost { recovered: true } => {
+				"Copper's keyboard shortcut stopped responding and had to be restarted.".to_owned()
+			}
+			Self::HookLost { recovered: false } => {
+				"Copper's keyboard shortcut stopped working, so double-tapping no longer captures. \
+				 Settings shows the key combination standing in for it."
+					.to_owned()
+			}
 		}
 	}
 
@@ -217,6 +245,7 @@ impl CaptureFailure {
 			Self::ClipboardBusy => "clipboard-busy",
 			Self::TooLarge { .. } => "too-large",
 			Self::NotSaved { .. } => "not-saved",
+			Self::HookLost { .. } => "hook-lost",
 		}
 	}
 }
@@ -388,7 +417,11 @@ pub fn normalise(text: &str) -> String {
 /// worker thread and the trigger channel that ends it, the notice controller,
 /// and the two flags that arm and stop the pipeline.
 pub struct CaptureHandle {
-	hook: Option<hook::HookHandle>,
+	/// Shared with the watchdog, which replaces what is in it when Windows takes
+	/// the hook away. Behind a lock rather than owned outright because the two
+	/// would otherwise each hold a handle to the same thread.
+	hook: Arc<Mutex<Option<hook::HookHandle>>>,
+	watchdog: watchdog::Watchdog,
 	worker: Option<std::thread::JoinHandle<()>>,
 	/// Dropping this closes the trigger channel, which is how the worker learns
 	/// to exit.
@@ -418,9 +451,14 @@ impl CaptureHandle {
 		}
 		// New triggers stop first, so nothing can be queued behind the shutdown.
 		self.armed.store(false, Ordering::SeqCst);
+		// Before the hook, and joined rather than merely signalled: the watchdog owns
+		// a trigger sender of its own, and the worker's receive loop below ends only
+		// when every sender has been dropped. It would also reinstall the very hook
+		// this is about to stop.
+		self.watchdog.shutdown();
 		// A hook that never installed holds no sender, so there is nothing to stop
 		// and nothing keeping the worker's channel open.
-		let hook_stopped = self.hook.as_mut().is_none_or(hook::HookHandle::stop);
+		let hook_stopped = lock(&self.hook).as_mut().is_none_or(hook::HookHandle::stop);
 		// Closing the channel is what ends the worker's receive loop.
 		self.trigger_tx.take();
 
@@ -490,26 +528,40 @@ pub fn start_capture(app: &AppHandle) -> Result<CaptureHandle, Box<dyn std::erro
 	// `Err` here and `setup()` propagated it, which for an app that starts hidden
 	// means the process exits with no window and no tray — every other feature
 	// lost because one of them could not start. task-008's fallback-chord
-	// insurance is the alternative: the pipeline stays up, `hook_installed`
-	// reports false, and `shortcuts` registers a conventional chord that reaches
-	// the same worker through `request_capture`.
-	let hook = match hook::install(
+	// insurance is the alternative: the pipeline stays up, `hook_alive` reports
+	// false, and `shortcuts` registers a conventional chord that reaches the same
+	// worker through `request_capture`.
+	let hook = Arc::new(Mutex::new(
+		match hook::install(
+			trigger_tx.clone(),
+			Arc::clone(&in_flight),
+			Arc::clone(&armed),
+		) {
+			Ok(hook) => Some(hook),
+			Err(err) => {
+				diagnostics::log_error(&format!(
+					"[copper] capture: the keyboard hook could not be installed ({err}); the \
+					 double-tap trigger is unavailable and capture falls back to a conventional chord"
+				));
+				None
+			}
+		},
+	));
+
+	// Started even when the install above failed, because a failed install is the
+	// one state it can recover from without anybody pressing anything.
+	let watchdog = watchdog::Watchdog::start(
+		app.clone(),
+		Arc::clone(&hook),
 		trigger_tx.clone(),
 		Arc::clone(&in_flight),
 		Arc::clone(&armed),
-	) {
-		Ok(hook) => Some(hook),
-		Err(err) => {
-			diagnostics::log_error(&format!(
-				"[copper] capture: the keyboard hook could not be installed ({err}); the double-tap \
-				 trigger is unavailable and capture falls back to a conventional chord"
-			));
-			None
-		}
-	};
+		Arc::clone(&notice),
+	);
 
 	Ok(CaptureHandle {
 		hook,
+		watchdog,
 		worker: Some(worker),
 		trigger_tx: Some(trigger_tx),
 		notice,
@@ -519,14 +571,25 @@ pub fn start_capture(app: &AppHandle) -> Result<CaptureHandle, Box<dyn std::erro
 	})
 }
 
-/// Whether the `WH_KEYBOARD_LL` hook is actually installed.
+/// Whether the `WH_KEYBOARD_LL` hook is installed **and still there**.
 ///
 /// Read by `shortcuts` to decide whether the fallback chord is needed, and by
 /// `get_shortcut_state` so the settings view can say why a double-tap binding is
 /// not working.
-pub fn hook_installed(app: &AppHandle) -> bool {
-	app.try_state::<CaptureState>()
-		.is_some_and(|state| lock(&state.0).hook.is_some())
+///
+/// This used to ask whether `start_capture` had produced a handle, which is a
+/// question answered once at startup and never revisited — so a hook Windows
+/// removed an hour later still reported `true`, the insurance chord was never
+/// registered, and capture stopped working with nothing said. The answer now
+/// comes from the flag the watchdog maintains, which covers both halves: the
+/// startup install and every liveness probe since.
+///
+/// An atomic rather than the pipeline's own state, so that `shortcuts` can read
+/// it while holding its registry lock. Reaching through `CaptureState` meant
+/// taking a second lock under the first, in the one module whose header rule is
+/// about exactly that.
+pub fn hook_alive() -> bool {
+	hook::alive()
 }
 
 /// Starts a capture from outside the hook — the conventional-chord capture
@@ -642,6 +705,8 @@ mod tests {
 			CaptureFailure::Unsupported,
 			CaptureFailure::ClipboardBusy,
 			CaptureFailure::TooLarge { chars: 123_456 },
+			CaptureFailure::HookLost { recovered: true },
+			CaptureFailure::HookLost { recovered: false },
 		];
 		all.extend(STORE_ERROR_KINDS.map(|kind| CaptureFailure::NotSaved { kind }));
 		all
@@ -656,19 +721,20 @@ mod tests {
 			every_failure().iter().map(CaptureFailure::cause).collect();
 		assert_eq!(
 			sampled.len(),
-			12,
-			"every_failure() must cover all twelve variants, found {sampled:?}"
+			13,
+			"every_failure() must cover all thirteen variants, found {sampled:?}"
 		);
 	}
 
 	#[test]
 	fn every_message_is_non_empty_and_belongs_to_one_variant() {
 		// The expected number of distinct messages is derived, not written down:
-		// one per variant, plus three extra because NotSaved renders four.
+		// one per variant, plus three extra because NotSaved renders four, plus one
+		// more because HookLost renders two.
 		let samples = every_failure();
 		let variants: std::collections::HashSet<_> =
 			samples.iter().map(CaptureFailure::cause).collect();
-		let expected_distinct = variants.len() + 3;
+		let expected_distinct = variants.len() + 3 + 1;
 
 		let mut owners: HashMap<String, &'static str> = HashMap::new();
 		for failure in &samples {
@@ -690,7 +756,7 @@ mod tests {
 		assert_eq!(
 			owners.len(),
 			expected_distinct,
-			"expected one message per variant plus NotSaved's two extra branches"
+			"expected one message per variant plus the extra branches NotSaved and HookLost render"
 		);
 	}
 

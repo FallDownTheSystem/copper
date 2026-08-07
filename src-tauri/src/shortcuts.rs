@@ -540,14 +540,14 @@ pub struct ShortcutState {
 	capture_fallback: Option<String>,
 }
 
-fn snapshot(app: &AppHandle, registry: &Registry) -> ShortcutState {
+fn snapshot(registry: &Registry) -> ShortcutState {
 	let (capture_registered, capture_error) = match &registry.capture {
 		// Nothing to register: the hook either recognises the double-tap or it is
 		// not installed, and the fallback chord is what covers the latter. A
 		// fallback that could not be had is therefore a *capture* failure, since
 		// between the two of them nothing on the machine can trigger one.
 		CaptureBinding::DoubleTap { .. } => (
-			capture::hook_installed(app) || registry.fallback.is_some(),
+			capture::hook_alive() || registry.fallback.is_some(),
 			registry.fallback_error.clone(),
 		),
 		CaptureBinding::Chord(binding) => (binding.registered, binding.error.clone()),
@@ -705,7 +705,7 @@ pub fn install(app: &AppHandle) {
 /// and the capture binding is a double-tap the hook can no longer recognise.
 fn ensure_fallback(app: &AppHandle, registry: &mut Registry) {
 	let wanted = matches!(registry.capture, CaptureBinding::DoubleTap { .. })
-		&& !capture::hook_installed(app);
+		&& !capture::hook_alive();
 
 	match (wanted, registry.fallback) {
 		(true, None) => match Shortcut::from_str(FALLBACK_CAPTURE_CHORD) {
@@ -749,6 +749,22 @@ fn ensure_fallback(app: &AppHandle, registry: &mut Registry) {
 	}
 }
 
+/// Re-decides the insurance chord after the keyboard hook changed hands.
+///
+/// Called by the capture watchdog, from a thread of its own — never from the
+/// main thread, per the module note: this takes the registry lock and
+/// [`ensure_fallback`] registers through the plugin, which blocks on the main
+/// thread from anywhere else.
+///
+/// It reads the hook's liveness through `capture::hook_alive`, the same canonical
+/// atomic the startup path reads, rather than being told what to do. A caller
+/// that passed the answer in could disagree with the flag, and the two would then
+/// have to be kept in step.
+pub fn revisit_fallback(app: &AppHandle) {
+	let mut registry = registry();
+	ensure_fallback(app, &mut registry);
+}
+
 /// Best-effort tidy-up at exit.
 ///
 /// `try_lock` rather than a blocking one: Windows releases a process's hotkey
@@ -785,7 +801,7 @@ pub fn shutdown(app: &AppHandle) {
 pub fn set_summon(app: &AppHandle, text: &str) -> Result<ShortcutState, ShellError> {
 	let mut registry = registry();
 	set_summon_locked(app, &mut registry, text)?;
-	Ok(snapshot(app, &registry))
+	Ok(snapshot(&registry))
 }
 
 /// The body, taking a guard the caller already holds.
@@ -882,7 +898,7 @@ fn summon_claims(registry: &Registry, chord: Shortcut) -> bool {
 pub fn set_capture(app: &AppHandle, text: &str) -> Result<ShortcutState, ShellError> {
 	let mut registry = registry();
 	set_capture_locked(app, &mut registry, text)?;
-	Ok(snapshot(app, &registry))
+	Ok(snapshot(&registry))
 }
 
 /// The body, taking a guard the caller already holds — see [`set_summon_locked`].
@@ -1139,7 +1155,7 @@ fn restore_lease(app: &AppHandle, registry: &mut Registry, replaced: Option<Role
 pub fn cancel_recording(app: &AppHandle) -> ShortcutState {
 	let mut registry = registry();
 	restore_lease(app, &mut registry, None);
-	snapshot(app, &registry)
+	snapshot(&registry)
 }
 
 /// Applies a recorded chord to one of the two bindings.
@@ -1192,7 +1208,7 @@ pub fn commit_recording(
 	// exactly as it was, which is what makes a refused chord a no-op rather than a
 	// lockout.
 	restore_lease(app, &mut registry, outcome.is_ok().then_some(role));
-	outcome.map(|()| snapshot(app, &registry))
+	outcome.map(|()| snapshot(&registry))
 }
 
 /// The main-thread-safe way to end a session — see the module note on the lock.
@@ -1214,9 +1230,9 @@ pub fn cancel_recording_off_thread(app: &AppHandle) {
 type Reply<T> = std::result::Result<T, ShellError>;
 
 #[tauri::command]
-pub async fn get_shortcut_state(app: AppHandle) -> Reply<ShortcutState> {
+pub async fn get_shortcut_state() -> Reply<ShortcutState> {
 	let registry = registry();
-	Ok(snapshot(&app, &registry))
+	Ok(snapshot(&registry))
 }
 
 #[tauri::command]
