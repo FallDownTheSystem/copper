@@ -30,6 +30,10 @@
 //! collected by [`sweep`] instead, at space close and at startup only — never
 //! mid-session, because the undo stack is session-scoped and a sweep during one
 //! would silently make an undo unrestorable.
+//!
+//! Even then the bytes are not destroyed. The sweep moves them to the Recycle
+//! Bin, so the last defence against a collection the user did not want is one
+//! the OS already provides and already knows how to undo.
 
 pub mod commands;
 pub mod thumb;
@@ -416,8 +420,29 @@ fn referenced(doc: &Space) -> std::collections::HashSet<&str> {
 		.collect()
 }
 
-/// Deletes blobs no note references and that nothing has touched for
-/// [`ORPHAN_GRACE`].
+/// The outcome of getting rid of one blob, spelled out in full because this
+/// module's own `Result` is the store's.
+type Disposed = std::result::Result<(), String>;
+
+/// Moves a collected blob to the Recycle Bin.
+///
+/// **Not `fs::remove_file`, and there is deliberately no fallback to it.** Every
+/// other failure in and around the sweep is already "log it and leave it for
+/// next time", and answering a failed gentle operation with a permanent delete
+/// would be the one place in this tree that escalates — reintroducing exactly
+/// the unrecoverable outcome this exists to remove. On a volume that can never
+/// recycle, the honest cost is that the same blob is retried and re-logged at
+/// every space close and every startup and the directory never shrinks. That
+/// cost is bounded and visible; a permanent delete's is neither.
+///
+/// The error is flattened to a `String` so the seam [`sweep_with`] takes stays
+/// free of `trash`'s types, which is what lets a test drive it.
+fn recycle(path: &Path) -> Disposed {
+	trash::delete(path).map_err(|err| err.to_string())
+}
+
+/// Moves blobs no note references, and that nothing has touched for
+/// [`ORPHAN_GRACE`], to the Recycle Bin.
 ///
 /// Best-effort throughout: every failure is logged and skipped, nothing is
 /// propagated, and a missing directory is the ordinary case for a space that
@@ -429,6 +454,19 @@ fn referenced(doc: &Space) -> std::collections::HashSet<&str> {
 /// two-lock discipline: walking a directory while holding the store mutex would
 /// stall every capture for the duration of the walk.
 pub fn sweep(space_path: &Path, doc: &Space) {
+	sweep_with(space_path, doc, recycle);
+}
+
+/// [`sweep`], with the disposal step as a parameter.
+///
+/// The seam is here for the tests and for nothing else — the one production
+/// caller passes [`recycle`]. A `cargo test` that reached the real Recycle Bin
+/// would deposit a file in the developer's bin on every run, and would go red on
+/// a runner whose temp volume has no bin at all, for a reason that has nothing
+/// to do with the code. It is also the only way to reach the failure branch
+/// below, since making a real trash move fail on demand needs a filesystem a
+/// test cannot conjure.
+fn sweep_with(space_path: &Path, doc: &Space, dispose: impl Fn(&Path) -> Disposed) {
 	let dir = assets_dir(space_path);
 	let entries = match std::fs::read_dir(&dir) {
 		Ok(entries) => entries,
@@ -458,10 +496,12 @@ pub fn sweep(space_path: &Path, doc: &Space) {
 		if !old_enough {
 			continue;
 		}
-		if let Err(err) = std::fs::remove_file(entry.path()) {
+		let path = entry.path();
+		if let Err(err) = dispose(&path) {
 			diagnostics::log_error(&format!(
-				"[copper] could not collect the unreferenced attachment {}: {err}",
-				entry.path().display()
+				"[copper] could not move the unreferenced attachment {} to the Recycle Bin, so it \
+				 stays where it is until the next sweep: {err}",
+				path.display()
 			));
 		}
 	}
@@ -469,6 +509,8 @@ pub fn sweep(space_path: &Path, doc: &Space) {
 
 #[cfg(test)]
 mod tests {
+	use std::cell::RefCell;
+
 	use super::*;
 
 	#[test]
@@ -670,7 +712,30 @@ mod tests {
 		file.set_modified(old).unwrap();
 	}
 
-	/// AC13, both halves: an old orphan goes and a young one stays.
+	/// Stands in for the Recycle Bin: records what it was handed and takes the
+	/// file out of the assets directory, which is the half of a trash move the
+	/// sweep's own assertions are about. The other half — that the bytes are
+	/// still recoverable afterwards — belongs to the OS, and is checked by the
+	/// ignored test at the bottom of this module.
+	fn recorder(seen: &RefCell<Vec<PathBuf>>) -> impl Fn(&Path) -> Disposed + '_ {
+		|path| {
+			seen.borrow_mut().push(path.to_path_buf());
+			std::fs::remove_file(path).map_err(|err| err.to_string())
+		}
+	}
+
+	/// What the disposer was handed, by name, in the order it was handed them.
+	fn names(seen: &RefCell<Vec<PathBuf>>) -> Vec<String> {
+		seen.borrow()
+			.iter()
+			.map(|path| path.file_name().unwrap_or_default().to_string_lossy().into_owned())
+			.collect()
+	}
+
+	/// AC13, both halves: an old orphan goes and a young one stays. Task-015
+	/// adds the third assertion — the set the disposer is handed is exactly the
+	/// set that goes, so a change to the delete mechanism cannot reach a blob
+	/// the gates above it meant to keep.
 	#[test]
 	fn the_sweep_collects_old_orphans_and_leaves_referenced_and_young_ones() {
 		let dir = tempfile::tempdir().unwrap();
@@ -683,8 +748,10 @@ mod tests {
 		age(&assets.join("kept.png"));
 		age(&assets.join("old-orphan.png"));
 
-		sweep(&space, &space_with(&["kept.png"]));
+		let seen = RefCell::new(Vec::new());
+		sweep_with(&space, &space_with(&["kept.png"]), recorder(&seen));
 
+		assert_eq!(names(&seen), ["old-orphan.png"], "the wrong set reached the bin");
 		assert!(assets.join("kept.png").exists(), "a referenced blob was collected");
 		assert!(
 			assets.join("young-orphan.png").exists(),
@@ -696,12 +763,51 @@ mod tests {
 		);
 	}
 
+	/// Task-015 AC3. A blob the bin refuses stays exactly where it is — there is
+	/// no falling back to a permanent delete — and the refusal does not stop the
+	/// sweep from reaching the orphans behind it.
+	#[test]
+	fn a_refused_move_leaves_the_blob_alone_and_the_sweep_carries_on() {
+		let dir = tempfile::tempdir().unwrap();
+		let space = dir.path().join("notes.copper");
+		let assets = assets_dir(&space);
+		std::fs::create_dir_all(&assets).unwrap();
+		for name in ["a-orphan.png", "b-orphan.png"] {
+			std::fs::write(assets.join(name), b"x").unwrap();
+			age(&assets.join(name));
+		}
+
+		let seen = RefCell::new(Vec::new());
+		sweep_with(&space, &space_with(&[]), |path| {
+			seen.borrow_mut().push(path.to_path_buf());
+			if path.ends_with("a-orphan.png") {
+				// What a volume with no Recycle Bin reports, near enough.
+				return Err("the operation is not supported here".to_string());
+			}
+			std::fs::remove_file(path).map_err(|err| err.to_string())
+		});
+
+		// Order-independent: whichever of the two `read_dir` yields first, both
+		// were attempted, which is the property — one refusal did not end the walk.
+		assert_eq!(names(&seen).len(), 2, "a refusal stopped the sweep short");
+		assert!(
+			assets.join("a-orphan.png").exists(),
+			"a blob the bin refused was deleted anyway"
+		);
+		assert!(
+			!assets.join("b-orphan.png").exists(),
+			"the orphan behind the refusal was never collected"
+		);
+	}
+
 	#[test]
 	fn sweeping_a_space_with_no_assets_directory_is_a_no_op() {
 		let dir = tempfile::tempdir().unwrap();
 		let space = dir.path().join("notes.copper");
-		sweep(&space, &space_with(&[]));
+		let seen = RefCell::new(Vec::new());
+		sweep_with(&space, &space_with(&[]), recorder(&seen));
 		assert!(!assets_dir(&space).exists());
+		assert!(names(&seen).is_empty());
 	}
 
 	/// A corrupt `file` value protects the blob it names rather than condemning
@@ -717,9 +823,36 @@ mod tests {
 
 		// The document spells it as an escaping path, which `resolve` refuses —
 		// but the intent still names these bytes.
-		sweep(&space, &space_with(&[r"..\kept.png", "kept.png"]));
+		let seen = RefCell::new(Vec::new());
+		sweep_with(&space, &space_with(&[r"..\kept.png", "kept.png"]), recorder(&seen));
 
 		assert!(assets.join("kept.png").exists());
+		assert!(names(&seen).is_empty());
+	}
+
+	// --- integration: this one uses the real Recycle Bin -----------------------
+	// Ignored by default so `cargo test` stays hermetic — it leaves a file in the
+	// bin of whoever runs it. Run with:
+	//   cargo test -- --ignored recycling
+
+	/// Task-015 AC1, and the assertable half of AC2.
+	///
+	/// That the bytes are still *recoverable* afterwards is the half no test can
+	/// make: confirming it means opening the Recycle Bin and finding the name
+	/// this test printed. The half that is checkable here is the one the sweep
+	/// depends on — a successful move really does take the file out of its
+	/// directory, so [`sweep`] does not hand the same blob to the bin forever.
+	#[test]
+	#[ignore = "moves a real file to the real Recycle Bin"]
+	fn recycling_moves_a_real_file_out_of_its_directory() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("copper-recycle-bin-probe.png");
+		std::fs::write(&path, b"x").unwrap();
+		println!("look for {} in the Recycle Bin", path.display());
+
+		recycle(&path).expect("this volume has no usable Recycle Bin");
+
+		assert!(!path.exists(), "{} did not move", path.display());
 	}
 
 	/// The smallest valid PNG: 1×1, 8-bit greyscale.

@@ -216,9 +216,12 @@ impl UiaService {
 }
 
 fn uia_thread(requests: Receiver<Request>, ready: Sender<bool>) {
-	// The only thread in the process that initialises COM. A UI Automation client
-	// must run MTA on a thread that owns no windows — which is why this cannot be
-	// the worker, whose clipboard writes need a message-only window of their own.
+	// A UI Automation client must run MTA on a thread that owns no windows — which
+	// is why this cannot be the worker, whose clipboard writes need a message-only
+	// window of their own. It is the only *MTA* thread in the process, and it used
+	// to be the only one initialising COM at all: task-015's `trash` initialises an
+	// STA on whichever thread runs the attachment sweep, which is never this one,
+	// so the two apartments never meet.
 	// SAFETY: called once on this thread, paired with CoUninitialize below.
 	let init = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
 	if init.is_err() {

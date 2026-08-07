@@ -132,6 +132,28 @@ image = { version = "0.25.10", default-features = false, features = [
 	"bmp",
 ] }
 
+# --- recycle bin (task-015) ---
+# The one dependency here that knowingly resolves a *second* copy of a crate
+# this file already pins: `trash` asks for `windows = "0.56"` against the
+# `=0.61.3` above, and the two are semver-incompatible, so cargo links both.
+# That is allowed here and nowhere else because of what the pin is actually for
+# — the no-cast HWND boundary, keeping every `windows` type this crate hands to
+# Tauri the same type Tauri expects. No `windows` type crosses `trash`'s API,
+# which takes `AsRef<Path>` and returns an error of its own, so the boundary the
+# pin protects is not one this dependency can reach. The cost is compile time
+# and a little binary size, paid to avoid hand-writing IFileOperation.
+#
+# `default-features = false` drops `chrono`, which feeds only the trash-listing
+# API this app never calls. `coinit_apartmentthreaded` is neither optional nor a
+# preference: one of the two coinit features must be named or the crate fails to
+# build on purpose, and its `CoInitializer::new()` **panics** on a failing
+# HRESULT rather than returning one. The cold-launch sweep runs on the main
+# thread, which tao has already made an STA — an apartment-threaded init there
+# returns S_FALSE and is fine, whereas `coinit_multithreaded` would return
+# RPC_E_CHANGED_MODE and panic inside `setup()`, which with `panic = "abort"`
+# below is a process abort before any window has been shown.
+trash = { version = "5.2", default-features = false, features = ["coinit_apartmentthreaded"] }
+
 [profile.release]
 # The no-unwrap()-in-setup() reasoning in lib.rs is about release behaviour, so
 # the release profile has to actually be the one described. Panic hooks still run
