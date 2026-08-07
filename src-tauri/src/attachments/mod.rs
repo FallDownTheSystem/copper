@@ -31,15 +31,16 @@
 //! mid-session, because the undo stack is session-scoped and a sweep during one
 //! would silently make an undo unrestorable.
 //!
-//! Even then the bytes are not destroyed. The sweep moves them to the Recycle
-//! Bin, so the last defence against a collection the user did not want is one
-//! the OS already provides and already knows how to undo.
+//! Even then the bytes are not destroyed. The sweep *renames* an orphan into a
+//! [`COLLECTED_DIR`] directory beside it and stops there — **nothing in Copper
+//! ever deletes a blob**. The accepted cost is that the directory only grows;
+//! emptying it is a manual lever the user pulls, and there is no auto-purge.
+//! See [`quarantine`] for why this is a rename and not the Recycle Bin.
 
 pub mod commands;
 pub mod thumb;
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
 use sha2::{Digest, Sha256};
@@ -425,105 +426,88 @@ fn referenced(doc: &Space) -> std::collections::HashSet<&str> {
 /// module's own `Result` is the store's.
 type Disposed = std::result::Result<(), String>;
 
-/// Moves a collected blob to the Recycle Bin.
+/// Where a collected blob goes: a directory inside the assets directory.
 ///
-/// **Not `fs::remove_file`, and there is deliberately no fallback to it.** Every
-/// other failure in and around the sweep is already "log it and leave it for
-/// next time", and answering a failed gentle operation with a permanent delete
-/// would be the one place in this tree that escalates — reintroducing exactly
-/// the unrecoverable outcome this exists to remove. On a volume that can never
-/// recycle, the honest cost is that the same blob is retried and re-logged at
-/// every space close and every startup and the directory never shrinks. That
-/// cost is bounded and visible; a permanent delete's is neither.
-///
-/// The error is flattened to a `String` so the seam [`sweep_with`] takes stays
-/// free of `trash`'s types, which is what lets a test drive it.
-fn recycle(path: &Path) -> Disposed {
-	trash::delete(path).map_err(|err| err.to_string())
-}
+/// The leading dot does real work. [`is_bare_filename`] rejects any name that
+/// starts with one, so no document can name this directory and [`resolve`] can
+/// never build a path into it — the quarantine is unreachable from every reader
+/// in the module by the same rule that keeps readers inside the assets
+/// directory at all.
+pub const COLLECTED_DIR: &str = ".collected";
 
-/// How the sweep gets rid of one blob.
+/// Moves a collected blob into [`COLLECTED_DIR`], which destroys nothing.
 ///
-/// A plain `fn` pointer rather than a boxed closure: the slot below has to live
-/// in a `static`, and this is the only shape that fits in one without an
-/// allocation or a lock on the disposal path.
-type Disposer = fn(&Path) -> Disposed;
-
-/// The disposer every sweep goes through, installed once by a test or never.
+/// **Why this is a rename and not the Recycle Bin.** Task-015 shipped the bin
+/// first and the mechanism was wrong. `IFileOperation` with `FOF_ALLOWUNDO`
+/// **permanently deletes the file and returns `S_OK`** when the shell cannot
+/// recycle — a bin over its quota, a bin switched off, a FAT32 stick, a network
+/// share — and `GetAnyOperationsAborted` stays `FALSE`, so no error ever reaches
+/// the caller and no failure branch can run. Measured on this Windows build,
+/// through the raw COM interface and through the `trash` crate alike. That
+/// inverts the entire point: the people the recovery window existed for were
+/// exactly the people whose bytes it destroyed without saying so.
 ///
-/// **Why a process-wide slot and not just the parameter [`sweep_with`] already
-/// takes.** That parameter reaches the unit tests in this file, and nothing
-/// else. The integration tests under `tests/` are a *separate crate* compiled
-/// against this library without `cfg(test)`, so all they can see is the public
-/// surface — and on that surface [`sweep`] is a two-argument function wired
-/// straight to the real Recycle Bin. Any test that reached a sweep would move a
-/// fixture's blobs into the developer's actual bin, which is not something a
-/// test suite may ever do to the person running it. The slot is what makes the
-/// real bin *unreachable* from a test process, rather than merely unreached by
-/// the tests that happen to exist today.
-static DISPOSER: OnceLock<Disposer> = OnceLock::new();
-
-/// The installed disposer, or the Recycle Bin if nothing installed one.
+/// A rename has no such mode. It moves a directory entry within one volume and
+/// either succeeds or returns an error, and every error takes the log-and-leave
+/// branch in [`sweep_with`]. The destination is a child of the blob's own
+/// directory, so it is the same volume by construction and the move can never
+/// degrade into a copy-and-delete across a boundary.
 ///
-/// The default lives here rather than in the `static` so the production path
-/// needs no initialising call at all: a process that never installs one pays a
-/// single atomic load and nothing else.
-fn disposer() -> Disposer {
-	DISPOSER.get().copied().unwrap_or(recycle)
-}
-
-/// The disposer a test installs: an ordinary permanent delete.
-///
-/// Safe precisely because it is the *test* path — what it deletes is a fixture
-/// under a `tempfile::tempdir()`, never a file a person put somewhere.
-fn remove_blob(path: &Path) -> Disposed {
-	std::fs::remove_file(path).map_err(|err| err.to_string())
-}
-
-/// Points every sweep in this process at `fs::remove_file` instead of the
-/// Recycle Bin, for the rest of the process.
-///
-/// **For tests, and deliberately public.** The integration tests are a separate
-/// crate, so `#[cfg(test)]` does not reach them and there is no way to hand them
-/// a safe disposer except through this library's public surface. Call it once
-/// when constructing a harness that can reach a sweep — one line per harness,
-/// not per test. Calling it from several harnesses is fine: they all install the
-/// same function and only the first `set` wins, which is why the result is
-/// discarded rather than unwrapped.
-///
-/// Nothing in the product calls this, and because the slot is a [`OnceLock`] a
-/// test process cannot be switched *back* to the real bin once this has run.
-#[doc(hidden)]
-pub fn install_test_disposer() {
-	let _ = DISPOSER.set(remove_blob);
+/// A name already in the quarantine is overwritten, and that is safe because the
+/// names are content addresses: the same sixteen hex characters mean the same
+/// bytes, so the file being replaced is a copy of the file replacing it. The
+/// exception is a deliberately engineered 64-bit prefix collision — and there
+/// the loss is one unreferenced orphan overwriting another, both already
+/// collected, which does not justify a second directory level to prevent.
+fn quarantine(path: &Path) -> Disposed {
+	let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+		return Err("it has no name inside a directory".to_string());
+	};
+	let collected = dir.join(COLLECTED_DIR);
+	// On demand rather than at startup: a space that never orphans a blob never
+	// grows the directory, and an empty one would only invite the question.
+	std::fs::create_dir_all(&collected).map_err(|err| err.to_string())?;
+	std::fs::rename(path, collected.join(name)).map_err(|err| err.to_string())
 }
 
 /// Moves blobs no note references, and that nothing has touched for
-/// [`ORPHAN_GRACE`], to the Recycle Bin.
+/// [`ORPHAN_GRACE`], into [`COLLECTED_DIR`].
 ///
 /// Best-effort throughout: every failure is logged and skipped, nothing is
 /// propagated, and a missing directory is the ordinary case for a space that
-/// has never had an attachment. It must never block a space switch — the user
-/// asked to change space, not to tidy a directory.
+/// has never had an attachment.
 ///
-/// **Called with no store lock held.** The caller clones the path and the
-/// document out of the store and drops the guard first, following task-006's
-/// two-lock discipline: walking a directory while holding the store mutex would
-/// stall every capture for the duration of the walk.
+/// **It runs on the thread that asked for it, not off it.**
+/// `spaces::sweep_detached` detaches the *snapshot*, not the execution: it
+/// clones the path and document out of the store and drops the guard before the
+/// walk, per task-006's two-lock discipline, so a directory walk never stalls a
+/// capture. The walk itself is synchronous, and on a slow volume it does hold up
+/// the switch that started it. That is the pre-existing arrangement and this
+/// mechanism does not change its cost — a same-volume rename is the same order
+/// of work as the `remove_file` it replaced — and the one sweep where the wait
+/// would have been felt, at startup, is already on a thread of its own.
+///
+/// **What a failure costs, stated plainly.** A blob whose move fails is logged
+/// and left where it is for the next sweep to retry. The log is
+/// `OutputDebugStringW` in a release build, so without DebugView attached nobody
+/// sees it: the retry is silent. And [`COLLECTED_DIR`] never shrinks on its own
+/// — it grows for the life of the space until somebody empties it by hand.
+/// Auto-purge was considered for task-015 and deliberately not built; the lever
+/// is a person deleting the directory, which is safe at any moment because
+/// nothing in Copper ever reads from it.
 pub fn sweep(space_path: &Path, doc: &Space) {
-	sweep_with(space_path, doc, disposer());
+	sweep_with(space_path, doc, quarantine);
 }
 
-/// [`sweep`], with the disposal step passed in rather than read from
-/// [`DISPOSER`].
+/// [`sweep`], with the disposal step as a parameter.
 ///
-/// The two seams answer different questions and both are load-bearing. This one
-/// is for the unit tests in this file, which need to drive a *particular*
-/// disposal — one that records what it was handed, or one that fails on demand
-/// so the refusal branch below is reachable at all. The slot is for the
-/// integration tests, which cannot reach this function because it is private to
-/// the crate and they are not in it.
-fn sweep_with(space_path: &Path, doc: &Space, dispose: impl Fn(&Path) -> Disposed) {
+/// The seam is for the unit tests in this file, which need to drive a
+/// *particular* disposal — one that records what it was handed, or one that
+/// fails on demand, which is the only way the failure branch below is reachable
+/// at all. The production path is safe to run in a test as it stands, since a
+/// rename inside a `tempfile::tempdir()` touches nothing outside it, so the
+/// tests that only care about the outcome call [`sweep`] itself.
+fn sweep_with(space_path: &Path, doc: &Space, mut dispose: impl FnMut(&Path) -> Disposed) {
 	let dir = assets_dir(space_path);
 	let entries = match std::fs::read_dir(&dir) {
 		Ok(entries) => entries,
@@ -556,7 +540,7 @@ fn sweep_with(space_path: &Path, doc: &Space, dispose: impl Fn(&Path) -> Dispose
 		let path = entry.path();
 		if let Err(err) = dispose(&path) {
 			diagnostics::log_error(&format!(
-				"[copper] could not move the unreferenced attachment {} to the Recycle Bin, so it \
+				"[copper] could not move the unreferenced attachment {} into {COLLECTED_DIR}, so it \
 				 stays where it is until the next sweep: {err}",
 				path.display()
 			));
@@ -566,8 +550,6 @@ fn sweep_with(space_path: &Path, doc: &Space, dispose: impl Fn(&Path) -> Dispose
 
 #[cfg(test)]
 mod tests {
-	use std::cell::RefCell;
-
 	use super::*;
 
 	#[test]
@@ -769,31 +751,18 @@ mod tests {
 		file.set_modified(old).unwrap();
 	}
 
-	/// Stands in for the Recycle Bin: records what it was handed and takes the
-	/// file out of the assets directory, which is the half of a trash move the
-	/// sweep's own assertions are about. The other half — that the bytes are
-	/// still recoverable afterwards — belongs to the OS, and no test here
-	/// exercises it: nothing in this suite may put a file in the real Recycle
-	/// Bin. AC2 is verified by hand, once, against a running build.
-	fn recorder(seen: &RefCell<Vec<PathBuf>>) -> impl Fn(&Path) -> Disposed + '_ {
-		|path| {
-			seen.borrow_mut().push(path.to_path_buf());
-			std::fs::remove_file(path).map_err(|err| err.to_string())
-		}
-	}
-
-	/// What the disposer was handed, by name, in the order it was handed them.
-	fn names(seen: &RefCell<Vec<PathBuf>>) -> Vec<String> {
-		seen.borrow()
-			.iter()
-			.map(|path| path.file_name().unwrap_or_default().to_string_lossy().into_owned())
-			.collect()
+	/// A path's own name, which is what every assertion below is really about.
+	fn file_name(path: &Path) -> String {
+		path.file_name().unwrap_or_default().to_string_lossy().into_owned()
 	}
 
 	/// AC13, both halves: an old orphan goes and a young one stays. Task-015
-	/// adds the third assertion — the set the disposer is handed is exactly the
-	/// set that goes, so a change to the delete mechanism cannot reach a blob
-	/// the gates above it meant to keep.
+	/// adds where it goes, and that is the assertion that matters most — the
+	/// bytes are still there afterwards, under their own name, byte for byte.
+	///
+	/// Runs the production [`sweep`], not the seam: the mechanism is a rename
+	/// inside the fixture's own `tempfile::tempdir()`, so there is nothing left
+	/// to protect the machine running the tests from.
 	#[test]
 	fn the_sweep_collects_old_orphans_and_leaves_referenced_and_young_ones() {
 		let dir = tempfile::tempdir().unwrap();
@@ -801,15 +770,13 @@ mod tests {
 		let assets = assets_dir(&space);
 		std::fs::create_dir_all(&assets).unwrap();
 		for name in ["kept.png", "old-orphan.png", "young-orphan.png"] {
-			std::fs::write(assets.join(name), b"x").unwrap();
+			std::fs::write(assets.join(name), name.as_bytes()).unwrap();
 		}
 		age(&assets.join("kept.png"));
 		age(&assets.join("old-orphan.png"));
 
-		let seen = RefCell::new(Vec::new());
-		sweep_with(&space, &space_with(&["kept.png"]), recorder(&seen));
+		sweep(&space, &space_with(&["kept.png"]));
 
-		assert_eq!(names(&seen), ["old-orphan.png"], "the wrong set reached the bin");
 		assert!(assets.join("kept.png").exists(), "a referenced blob was collected");
 		assert!(
 			assets.join("young-orphan.png").exists(),
@@ -819,13 +786,23 @@ mod tests {
 			!assets.join("old-orphan.png").exists(),
 			"an old orphan survived the sweep"
 		);
+		// The point of the whole task: collected is not destroyed.
+		assert_eq!(
+			std::fs::read(assets.join(COLLECTED_DIR).join("old-orphan.png")).unwrap(),
+			b"old-orphan.png",
+			"the collected blob was destroyed rather than moved aside"
+		);
 	}
 
-	/// Task-015 AC3. A blob the bin refuses stays exactly where it is — there is
-	/// no falling back to a permanent delete — and the refusal does not stop the
-	/// sweep from reaching the orphans behind it.
+	/// Task-015 AC3. A blob whose move fails stays exactly where it is — nothing
+	/// falls back to deleting it — and the failure does not stop the sweep from
+	/// reaching the orphans behind it.
+	///
+	/// **Every** disposal fails, which is what makes this deterministic. Failing
+	/// only the first entry would leave the assertion depending on `read_dir`
+	/// order, which is not defined and is not the same on every filesystem.
 	#[test]
-	fn a_refused_move_leaves_the_blob_alone_and_the_sweep_carries_on() {
+	fn a_failed_move_leaves_every_blob_alone_and_the_sweep_carries_on() {
 		let dir = tempfile::tempdir().unwrap();
 		let space = dir.path().join("notes.copper");
 		let assets = assets_dir(&space);
@@ -835,26 +812,62 @@ mod tests {
 			age(&assets.join(name));
 		}
 
-		let seen = RefCell::new(Vec::new());
+		let mut seen = Vec::new();
 		sweep_with(&space, &space_with(&[]), |path| {
-			seen.borrow_mut().push(path.to_path_buf());
-			if path.ends_with("a-orphan.png") {
-				// What a volume with no Recycle Bin reports, near enough.
-				return Err("the operation is not supported here".to_string());
-			}
-			std::fs::remove_file(path).map_err(|err| err.to_string())
+			seen.push(file_name(path));
+			Err("the volume is read-only".to_string())
 		});
 
-		// Order-independent: whichever of the two `read_dir` yields first, both
-		// were attempted, which is the property — one refusal did not end the walk.
-		assert_eq!(names(&seen).len(), 2, "a refusal stopped the sweep short");
-		assert!(
-			assets.join("a-orphan.png").exists(),
-			"a blob the bin refused was deleted anyway"
+		seen.sort();
+		assert_eq!(
+			seen,
+			["a-orphan.png", "b-orphan.png"],
+			"the sweep stopped at the first failure instead of carrying on"
 		);
+		assert!(assets.join("a-orphan.png").exists(), "a blob was deleted after a failure");
+		assert!(assets.join("b-orphan.png").exists(), "a blob was deleted after a failure");
+	}
+
+	/// The same content being collected twice is the ordinary case — one
+	/// screenshot attached, orphaned, re-attached and orphaned again — and it
+	/// must not fail. Content addressing is what makes overwriting safe: the
+	/// name already in the quarantine denotes these exact bytes.
+	#[test]
+	fn collecting_a_name_already_in_the_quarantine_succeeds() {
+		let dir = tempfile::tempdir().unwrap();
+		let assets = dir.path().join("notes.copper.assets");
+		std::fs::create_dir_all(assets.join(COLLECTED_DIR)).unwrap();
+		std::fs::write(assets.join(COLLECTED_DIR).join("dupe.png"), b"same").unwrap();
+		std::fs::write(assets.join("dupe.png"), b"same").unwrap();
+
+		quarantine(&assets.join("dupe.png")).expect("a repeat collection must not fail");
+
+		assert!(!assets.join("dupe.png").exists());
+		assert_eq!(
+			std::fs::read(assets.join(COLLECTED_DIR).join("dupe.png")).unwrap(),
+			b"same"
+		);
+	}
+
+	/// The quarantine is not itself swept. It is a directory, so the `is_file`
+	/// gate skips it — but a regression there would move `.collected` inside
+	/// itself on every startup, so it is worth an assertion of its own.
+	#[test]
+	fn a_second_sweep_leaves_the_quarantine_alone() {
+		let dir = tempfile::tempdir().unwrap();
+		let space = dir.path().join("notes.copper");
+		let assets = assets_dir(&space);
+		std::fs::create_dir_all(&assets).unwrap();
+		std::fs::write(assets.join("orphan.png"), b"x").unwrap();
+		age(&assets.join("orphan.png"));
+
+		sweep(&space, &space_with(&[]));
+		sweep(&space, &space_with(&[]));
+
+		assert!(assets.join(COLLECTED_DIR).join("orphan.png").is_file());
 		assert!(
-			!assets.join("b-orphan.png").exists(),
-			"the orphan behind the refusal was never collected"
+			!assets.join(COLLECTED_DIR).join(COLLECTED_DIR).exists(),
+			"the quarantine swept itself"
 		);
 	}
 
@@ -862,10 +875,8 @@ mod tests {
 	fn sweeping_a_space_with_no_assets_directory_is_a_no_op() {
 		let dir = tempfile::tempdir().unwrap();
 		let space = dir.path().join("notes.copper");
-		let seen = RefCell::new(Vec::new());
-		sweep_with(&space, &space_with(&[]), recorder(&seen));
+		sweep(&space, &space_with(&[]));
 		assert!(!assets_dir(&space).exists());
-		assert!(names(&seen).is_empty());
 	}
 
 	/// A corrupt `file` value protects the blob it names rather than condemning
@@ -881,11 +892,13 @@ mod tests {
 
 		// The document spells it as an escaping path, which `resolve` refuses —
 		// but the intent still names these bytes.
-		let seen = RefCell::new(Vec::new());
-		sweep_with(&space, &space_with(&[r"..\kept.png", "kept.png"]), recorder(&seen));
+		sweep(&space, &space_with(&[r"..\kept.png", "kept.png"]));
 
 		assert!(assets.join("kept.png").exists());
-		assert!(names(&seen).is_empty());
+		assert!(
+			!assets.join(COLLECTED_DIR).exists(),
+			"a protected blob was collected anyway"
+		);
 	}
 
 	/// The smallest valid PNG: 1×1, 8-bit greyscale.
