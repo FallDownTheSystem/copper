@@ -311,11 +311,19 @@ pub fn validate_summon_chord(text: &str) -> Result<Shortcut, ShellError> {
 
 /// The keys a global binding may claim with no modifier at all.
 ///
-/// **F13–F24 only, and F1–F12 deliberately not.** The high function keys exist
+/// **F13–F23 only, and F1–F12 deliberately not.** The high function keys exist
 /// for precisely this: no keyboard emits them by accident, and nothing else is
 /// listening for them. F1–F12 are live in almost every application — binding a
 /// bare F5 globally takes Refresh away from every browser on the machine — so
 /// they are treated like any other single key and need a modifier.
+///
+/// **F24 is the one Copper keeps for itself.** The capture watchdog injects a
+/// bare F24 as its liveness probe, and the hook swallows it — but only while the
+/// hook is alive, which is exactly the state the probe exists to doubt. In the
+/// window between the hook dying and the watchdog noticing, those probes reach
+/// the system, and a bare F24 binding would fire on Copper's own diagnostics. A
+/// modifier makes it unreachable by the probe, so `Ctrl+F24` and its like stay
+/// bindable.
 fn bindable_bare(key: Code) -> bool {
 	matches!(
 		key,
@@ -325,7 +333,6 @@ fn bindable_bare(key: Code) -> bool {
 			| Code::F18 | Code::F19
 			| Code::F20 | Code::F21
 			| Code::F22 | Code::F23
-			| Code::F24
 	)
 }
 
@@ -760,8 +767,17 @@ fn ensure_fallback(app: &AppHandle, registry: &mut Registry) {
 /// atomic the startup path reads, rather than being told what to do. A caller
 /// that passed the answer in could disagree with the flag, and the two would then
 /// have to be kept in step.
+///
+/// Checked against teardown **after** the lock is taken as well as before the
+/// thread was spawned. Waiting for this lock can take arbitrarily long — a rebind
+/// holds it across a main-thread round trip — and exit may well have begun in the
+/// meantime, at which point registering a chord is at best pointless and at worst
+/// holds the lock across [`shutdown`]'s `try_lock` and costs it every retirement.
 pub fn revisit_fallback(app: &AppHandle) {
 	let mut registry = registry();
+	if crate::shutting_down() {
+		return;
+	}
 	ensure_fallback(app, &mut registry);
 }
 
@@ -783,8 +799,14 @@ pub fn shutdown(app: &AppHandle) {
 			let _ = app.global_shortcut().unregister(binding.chord);
 		}
 	}
-	if let Some(chord) = registry.fallback {
+	// Cleared, not merely unregistered. `ensure_fallback` decides what to do from
+	// this field, so a `Some` left behind over a registration that is gone reads as
+	// "the chord is already up" and does nothing — which since the watchdog began
+	// calling it in the background is a reachable state rather than a theoretical
+	// one, and its symptom is capture with no trigger at all.
+	if let Some(chord) = registry.fallback.take() {
 		let _ = app.global_shortcut().unregister(chord);
+		CANONICAL_CAPTURE.store(NO_CHORD, Ordering::Relaxed);
 	}
 }
 
@@ -1336,13 +1358,25 @@ mod tests {
 
 	#[test]
 	fn the_high_function_keys_are_the_one_bare_exception() {
-		// F13–F24 exist for exactly this: no keyboard emits them by accident and
+		// F13–F23 exist for exactly this: no keyboard emits them by accident and
 		// nothing else is listening for them.
-		for chord in ["F13", "F19", "F24"] {
+		for chord in ["F13", "F19", "F23"] {
 			assert!(validate_summon_chord(chord).is_ok(), "{chord} was refused");
 		}
 		// And they are still fine with modifiers, which is the ordinary case.
 		assert!(validate_summon_chord("Ctrl+F13").is_ok());
+	}
+
+	#[test]
+	fn bare_f24_is_reserved_for_the_watchdogs_probe() {
+		// The capture watchdog injects a bare F24 to ask whether its hook is still
+		// alive. The hook swallows it — but only while the hook is alive, which is
+		// precisely the state the probe exists to doubt, so a bare F24 binding would
+		// fire on Copper's own diagnostics in the window this is all about.
+		assert_eq!(validate_summon_chord("F24").unwrap_err().kind(), "invalid-chord");
+		// A modifier puts it out of the probe's reach, so those stay bindable.
+		assert!(validate_summon_chord("Ctrl+F24").is_ok());
+		assert!(validate_summon_chord("Ctrl+Alt+Shift+F24").is_ok());
 	}
 
 	/// The guard that was inert. Both rebinds arrive inside a recording lease,

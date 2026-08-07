@@ -8,12 +8,23 @@
 //! detect that it happened**. Microsoft's own guidance is to run hooks on a
 //! dedicated thread that hands work off and returns immediately. So the callback
 //! classifies the event, feeds a small state machine, and on a trigger does one
-//! non-blocking channel send. Nothing else: no logging, no allocation, no Win32
-//! call beyond `CallNextHookEx`.
+//! non-blocking channel send.
 //!
-//! Task-001 measured this callback at **7.8 microseconds** worst case against
-//! that 1000 ms budget, over 500 injected double-taps that produced exactly 500
-//! triggers.
+//! What it costs, stated honestly rather than as a slogan, because a claim of
+//! "nothing at all" invites the next reader to add something: two relaxed atomic
+//! loads on every event; one `MapVirtualKeyW` on the generic two-sided modifier
+//! codes only, which remappers produce and ordinary keyboards do not; and on the
+//! key-up that completes a double-tap, an `Instant::now` and a send into an
+//! unbounded channel, which takes an uncontended lock and may allocate one node.
+//! The probe branch adds a second `usize` compare and, when it matches, an
+//! `Instant::elapsed` and a relaxed store. There is no logging on any path, and
+//! no blocking call on any path — the last is the invariant that actually
+//! matters, and the one to check anything new against.
+//!
+//! Task-001 measured the pre-probe callback at **7.8 microseconds** worst case
+//! against that 1000 ms budget, over 500 injected double-taps that produced
+//! exactly 500 triggers. The probe branch is not covered by that measurement; it
+//! is bounded by the same reasoning rather than by the same evidence.
 //!
 //! Being fast turned out not to be sufficient. The timeout is wall-clock, so a
 //! thread that is not *scheduled* inside it misses it however little work it has
@@ -22,7 +33,7 @@
 //! find out that a hook it still holds a handle for is gone.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, LazyLock};
 use std::thread::{self, JoinHandle};
@@ -42,8 +53,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::diagnostics;
 use crate::win32::keys::{
-	VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT,
-	VK_SHIFT,
+	VK_CONTROL, VK_F24, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_MENU, VK_RCONTROL, VK_RMENU,
+	VK_RSHIFT, VK_SHIFT,
 };
 use crate::win32::{EXTRA_INFO_SIGNATURE, PROBE_SIGNATURE};
 
@@ -388,15 +399,34 @@ impl TriggerKey {
 
 // --- liveness ----------------------------------------------------------------
 
-/// Whether a hook is installed right now.
+/// The generation of the hook that is live right now, or zero for none.
 ///
 /// The startup install is only half the question. Windows removes a
 /// `WH_KEYBOARD_LL` hook whose callback keeps missing `LowLevelHooksTimeout` and
 /// tells the application nothing at all, so "did it install?" answered at startup
-/// stays `true` forever while capture has silently stopped working. This flag is
-/// the whole answer: [`install`] sets it, [`HookHandle::stop`] clears it, and the
-/// watchdog drives both when its liveness probe stops coming back.
-static HOOK_LIVE: AtomicBool = AtomicBool::new(false);
+/// stays `true` forever while capture has silently stopped working.
+///
+/// A generation rather than a plain flag because hooks are now replaced while the
+/// app runs, and the thread being replaced may not have finished dying. Every
+/// clear is a compare-exchange against the clearing party's own generation, so an
+/// old thread reaching its exit path after its successor is already installed
+/// cannot report the *successor* as gone. A bare `AtomicBool` had exactly that
+/// hazard, and its symptom would be the watchdog reinstalling a healthy hook in a
+/// loop.
+static LIVE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Handed out by [`install`]. Starts at one so that zero can mean "none".
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// How many hook threads were abandoned because `WM_QUIT` would not reach them.
+///
+/// A watermark, never decremented: an abandoned thread is parked in `GetMessageW`
+/// forever, and its thread-local `HookState` still owns a clone of the trigger
+/// `Sender`. Nothing can observe it dying, so nothing may assume it did. The
+/// worker's receive loop ends only when every sender has been dropped, so
+/// `CaptureHandle::shutdown` has to read this before deciding a join is safe —
+/// the handle it tracks says nothing about the orphan.
+static DETACHED_HOOK_THREADS: AtomicUsize = AtomicUsize::new(0);
 
 /// When the callback last saw a liveness probe, in milliseconds since [`EPOCH`].
 ///
@@ -411,7 +441,42 @@ static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 /// Whether the hook is installed and has not been torn down.
 pub fn alive() -> bool {
-	HOOK_LIVE.load(Ordering::Relaxed)
+	LIVE_GENERATION.load(Ordering::Relaxed) != 0
+}
+
+/// Whether any hook thread was ever abandoned, and so may still hold a trigger
+/// sender open.
+pub fn any_detached() -> bool {
+	DETACHED_HOOK_THREADS.load(Ordering::Relaxed) > 0
+}
+
+/// Marks `generation` as no longer live — but only if it still is.
+///
+/// The compare-exchange is the whole point. Both the owning thread's exit path
+/// and [`HookHandle::stop`] call this, and a replacement hook may already have
+/// published a newer generation by the time either gets here.
+fn retire(generation: u64) {
+	let _ = LIVE_GENERATION.compare_exchange(
+		generation,
+		0,
+		Ordering::Relaxed,
+		Ordering::Relaxed,
+	);
+}
+
+/// Retires the hook thread's generation however the thread leaves — including a
+/// `GetMessageW` error, and a debug-build unwind out of the pump.
+///
+/// A plain call at the bottom of the closure covered neither: the flag stayed set
+/// over a thread that was gone, so the watchdog kept injecting probes nothing
+/// would swallow and `shortcuts` never stood up the chord that stands in for a
+/// dead hook.
+struct RetireOnExit(u64);
+
+impl Drop for RetireOnExit {
+	fn drop(&mut self) {
+		retire(self.0);
+	}
 }
 
 /// The current probe stamp, for the watchdog to compare against the one it read
@@ -483,25 +548,29 @@ unsafe extern "system" fn keyboard_proc(ncode: i32, wparam: WPARAM, lparam: LPAR
 			return CallNextHookEx(None, ncode, wparam, lparam);
 		}
 
-		// The watchdog's liveness probe, and **the one event this callback
-		// deliberately swallows** — see the note at the bottom of this function for
-		// the rule it breaks. A probe carries no meaning for anybody else: passing
-		// it on would type a stray F24 into whatever has focus every fifteen
-		// seconds, and this is the only place in the system where Copper can stop
-		// it. Reaching this branch is itself the proof the watchdog is after, since
-		// a hook Windows has removed never gets here at all.
-		//
-		// Second, not first, because a capture's own `Ctrl+C` is on the latency path
-		// of a gesture the user is waiting on and a probe arrives once per fifteen
-		// seconds. Both are one compare against a field already loaded.
-		if event.dwExtraInfo == PROBE_SIGNATURE {
-			note_probe();
-			return LRESULT(1);
-		}
-
 		let message = wparam.0 as u32;
 		let is_up = message == WM_KEYUP || message == WM_SYSKEYUP;
 		let is_down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
+
+		// The watchdog's liveness probe, and **the one event this callback
+		// deliberately swallows** — see the note at the bottom of this function for
+		// the rule it breaks. A probe carries no meaning for anybody else: passing
+		// it on would type a stray F24 into whatever has focus, and this is the only
+		// place in the system where Copper can stop it. Reaching this branch is
+		// itself the proof the watchdog is after, since a hook Windows has removed
+		// never gets here at all.
+		//
+		// All three conditions, not the tag alone. `dwExtraInfo` is a free-for-all
+		// that any application may write anything into, and the cost of a collision
+		// here is not a spurious probe — it is a real keystroke silently eaten,
+		// which is the exact failure this whole module exists to prevent. Requiring
+		// the probe's own key and a key message narrows a one-in-2^64 accident to
+		// one that also has to be an F24 press. The tag compare short-circuits
+		// first, so an ordinary keystroke still pays a single `usize` compare.
+		if event.dwExtraInfo == PROBE_SIGNATURE && vk == VK_F24 && (is_up || is_down) {
+			note_probe();
+			return LRESULT(1);
+		}
 
 		if is_up || is_down {
 			HOOK_STATE.with(|cell| {
@@ -595,7 +664,11 @@ impl std::error::Error for HookError {}
 /// Owns the hook thread.
 pub struct HookHandle {
 	thread_id: u32,
+	generation: u64,
 	join: Option<JoinHandle<()>>,
+	/// What the first [`stop`](HookHandle::stop) concluded, so a later call
+	/// reports the same thing.
+	outcome: Option<bool>,
 }
 
 impl HookHandle {
@@ -606,33 +679,52 @@ impl HookHandle {
 	/// and with it the thread-local state holding the trigger `Sender`. The worker
 	/// is waiting on that channel to close, so joining the worker after a failed
 	/// post would block forever — trading a leaked thread for a hung exit.
+	///
+	/// **A second call repeats the first's answer rather than inventing a better
+	/// one.** Returning `true` on the grounds that the work had already been done
+	/// turned a failed detach into a reported success, which is precisely the lie
+	/// that hangs the worker join: the orphan is no less alive for having been
+	/// abandoned twice.
 	pub fn stop(&mut self) -> bool {
-		// Before the early return below, and unconditionally: whatever this handle
-		// once owned, the caller is asking for it to be gone, and a liveness flag
-		// that outlived the request would keep `shortcuts` from standing its
-		// insurance chord up.
-		HOOK_LIVE.store(false, Ordering::Relaxed);
-		let Some(join) = self.join.take() else {
-			// Already stopped. Reporting success is right: whatever the first call
-			// decided has already been acted on.
-			return true;
-		};
-		// Check the post. A blind join after a failed post hangs shutdown forever;
-		// detaching the thread instead is survivable, a deadlock at exit is not.
-		// SAFETY: no preconditions; failure is reported through the Result.
-		match unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) } {
-			Ok(()) => {
-				let _ = join.join();
-				true
-			}
-			Err(err) => {
-				diagnostics::log_error(&format!(
-					"[copper] capture: could not post WM_QUIT to the hook thread ({err}); \
-					 detaching it rather than joining"
-				));
-				false
-			}
+		if let Some(outcome) = self.outcome {
+			return outcome;
 		}
+		// Whatever this handle once owned, the caller is asking for it to be gone.
+		// Qualified by generation, so a stop arriving after a replacement is already
+		// installed cannot report the replacement as dead.
+		retire(self.generation);
+
+		let outcome = match self.join.take() {
+			// Check the post. A blind join after a failed post hangs shutdown
+			// forever; detaching the thread instead is survivable, a deadlock at exit
+			// is not.
+			// SAFETY: no preconditions; failure is reported through the Result.
+			Some(join) => {
+				match unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) } {
+					Ok(()) => {
+						let _ = join.join();
+						true
+					}
+					Err(err) => {
+						// Dropping the handle without joining is what detaches it. Counted
+						// process-wide, because from here on nothing can observe that
+						// thread again and the sender it holds outlives this handle.
+						DETACHED_HOOK_THREADS.fetch_add(1, Ordering::Relaxed);
+						diagnostics::log_error(&format!(
+							"[copper] capture: could not post WM_QUIT to the hook thread ({err}); \
+							 detaching it rather than joining. It still holds a trigger sender, so \
+							 the worker thread will be left rather than joined at exit"
+						));
+						false
+					}
+				}
+			}
+			// No join handle and no recorded outcome can only mean this handle was
+			// built without one, which nothing does.
+			None => true,
+		};
+		self.outcome = Some(outcome);
+		outcome
 	}
 }
 
@@ -667,6 +759,13 @@ pub fn install(
 	// Resolved here rather than on first use, so the callback's probe branch is a
 	// load and a store and never a one-time initialisation.
 	LazyLock::force(&EPOCH);
+
+	// The thread publishes and retires this itself, rather than the installer
+	// doing it around the handshake. That is what makes the flag track the thread
+	// that actually owns the hook: a pump that exits on a `GetMessageW` error, or
+	// unwinds in a debug build, clears it on the way out with no cooperation from
+	// anybody.
+	let generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
 
 	let join = thread::Builder::new()
 		.name("copper-hook".to_owned())
@@ -736,6 +835,14 @@ pub fn install(
 				}
 			};
 
+			// Published here, before the handshake, so that every path out of this
+			// closure from this point on runs the guard's retire. Publishing from the
+			// installer instead left a window in which a thread that died immediately
+			// retired a generation that had not been announced yet, and the
+			// installer's store then resurrected it.
+			LIVE_GENERATION.store(generation, Ordering::Relaxed);
+			let _retire = RetireOnExit(generation);
+
 			// SAFETY: no preconditions.
 			let thread_id = unsafe { GetCurrentThreadId() };
 			if ready_tx.send(Ok(thread_id)).is_err() {
@@ -774,13 +881,12 @@ pub fn install(
 		.map_err(HookError::Spawn)?;
 
 	match ready_rx.recv() {
-		Ok(Ok(thread_id)) => {
-			HOOK_LIVE.store(true, Ordering::Relaxed);
-			Ok(HookHandle {
-				thread_id,
-				join: Some(join),
-			})
-		}
+		Ok(Ok(thread_id)) => Ok(HookHandle {
+			thread_id,
+			generation,
+			join: Some(join),
+			outcome: None,
+		}),
 		Ok(Err(err)) => {
 			let _ = join.join();
 			Err(HookError::Install(err))
@@ -1124,6 +1230,11 @@ mod tests {
 		})
 	}
 
+	/// A stamp value no elapsed-millisecond count can be, so "the stamp moved"
+	/// cannot be satisfied by the initial zero or by a probe landing in the same
+	/// millisecond as the baseline.
+	const NEVER: u64 = u64::MAX;
+
 	#[test]
 	fn the_two_tags_are_handled_differently_and_neither_reaches_the_machine() {
 		let triggers = install_test_state();
@@ -1131,21 +1242,15 @@ mod tests {
 		// shadows the other and the difference below proves nothing.
 		assert_ne!(EXTRA_INFO_SIGNATURE, PROBE_SIGNATURE);
 
-		// A value no elapsed-millisecond count can be, so "the stamp moved" cannot
-		// be satisfied by the initial zero or by a probe that happened to land in
-		// the same millisecond as this baseline.
-		PROBE_SEEN_MS.store(u64::MAX, Ordering::Relaxed);
-
-		// The probe carries a vkCode that would otherwise open a double-tap, so a
-		// branch that fell through would leave the machine mid-sequence.
-		let swallowed = feed(PROBE_SIGNATURE, VK_LSHIFT, WM_KEYDOWN);
+		PROBE_SEEN_MS.store(NEVER, Ordering::Relaxed);
+		let swallowed = feed(PROBE_SIGNATURE, VK_F24, WM_KEYDOWN);
 		assert_ne!(
 			swallowed.0, 0,
-			"a probe must be swallowed, or every fifteen seconds an F24 lands in whatever has focus"
+			"a probe must be swallowed, or it lands in whatever has focus"
 		);
 		assert_ne!(
 			probe_stamp(),
-			u64::MAX,
+			NEVER,
 			"a probe must record that the callback ran; that recording is the whole watchdog"
 		);
 		assert!(machine_is_idle(), "a probe must not reach the tap machine");
@@ -1166,6 +1271,39 @@ mod tests {
 			triggers.try_recv().is_err(),
 			"none of these events completes a double-tap"
 		);
+		HOOK_STATE.with(|cell| *cell.borrow_mut() = None);
+	}
+
+	#[test]
+	fn the_probe_branch_needs_all_three_of_its_conditions() {
+		let _triggers = install_test_state();
+
+		// `dwExtraInfo` is a free-for-all: any application may write any value into
+		// it, so a tag match on its own would let somebody else's collision eat a
+		// real keystroke — the exact failure the watchdog exists to prevent. Each
+		// case below carries the tag and fails one other condition, and must
+		// therefore be passed on untouched.
+		for (name, vk, message) in [
+			("the tag on a key that is not the probe's", VK_LSHIFT, WM_KEYDOWN),
+			("the tag on a key that is not the probe's", 0x41, WM_KEYUP),
+			("the tag on something that is not a key message", VK_F24, WM_USER),
+		] {
+			PROBE_SEEN_MS.store(NEVER, Ordering::Relaxed);
+			let result = feed(PROBE_SIGNATURE, vk, message);
+			assert_eq!(result.0, 0, "{name} must still reach the next hook");
+			assert_eq!(
+				probe_stamp(),
+				NEVER,
+				"{name} must not be recorded as proof the callback ran"
+			);
+		}
+
+		// And the key-up half of the real probe is swallowed just like its key-down,
+		// because the watchdog sends the pair rather than stranding F24 held.
+		PROBE_SEEN_MS.store(NEVER, Ordering::Relaxed);
+		assert_ne!(feed(PROBE_SIGNATURE, VK_F24, WM_KEYUP).0, 0);
+		assert_ne!(probe_stamp(), NEVER);
+
 		HOOK_STATE.with(|cell| *cell.borrow_mut() = None);
 	}
 

@@ -17,7 +17,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::Instant;
 
@@ -112,13 +112,26 @@ impl Shared {
 	}
 }
 
+/// The timer's inbox: a generation and the deadline it expires at.
+type Schedule = Sender<(u64, Instant)>;
+
 /// Owns the notice surface and the single expiry timer.
 pub struct NoticeController {
 	shared: Arc<Shared>,
 	/// One shared timer, not a thread per failure: a burst of failures would
 	/// otherwise spawn a burst of threads and the stated thread topology would
 	/// stop being true. Dropping the sender ends the timer thread.
-	schedule: Mutex<Option<Sender<(u64, Instant)>>>,
+	///
+	/// Behind an `Arc` so that [`show`](NoticeController::show) can hand a `Weak`
+	/// to the closure it queues onto the main thread rather than a clone. A clone
+	/// would keep the channel open from inside a closure whose execution the
+	/// joining thread controls, and that is a deadlock rather than a leak: on the
+	/// tray-Quit path teardown runs inside `RunEvent::Exit`, where the event loop
+	/// no longer dispatches queued work, so [`shutdown`](NoticeController::shutdown)
+	/// would wait for a timer whose last sender sits in a closure that will never
+	/// run. A `Weak` cannot upgrade once this `Arc` is dropped, so an undispatched
+	/// closure holds nothing.
+	schedule: Mutex<Option<Arc<Schedule>>>,
 	/// Held so shutdown can wait for the timer to actually be gone rather than
 	/// assume it. The controller lives in managed state and is never dropped, so
 	/// without an explicit teardown the thread would outlive the pipeline it
@@ -141,7 +154,7 @@ impl NoticeController {
 			.spawn(move || timer_loop(&timer_shared, &schedule_rx));
 
 		let (schedule, timer) = match spawned {
-			Ok(handle) => (Some(schedule_tx), Some(handle)),
+			Ok(handle) => (Some(Arc::new(schedule_tx)), Some(handle)),
 			Err(err) => {
 				// The notice can still be shown; it just will not clear itself.
 				// Better than no notice at all, and it says so.
@@ -166,6 +179,11 @@ impl NoticeController {
 	/// channel disconnected and the loop returns. Joining afterwards makes the
 	/// teardown observable rather than hopeful — the thread only ever queues work
 	/// onto the main thread and never blocks, so this cannot wedge shutdown.
+	///
+	/// That last claim only holds because [`show`](NoticeController::show) hands
+	/// its closure a `Weak`. Dropping the `Arc` here is what actually closes the
+	/// channel; a strong clone sitting in a queued closure would keep it open with
+	/// no way for this join to ever complete.
 	pub fn shutdown(&self) {
 		super::lock(&self.schedule).take();
 		let handle = super::lock(&self.timer).take();
@@ -193,7 +211,11 @@ impl NoticeController {
 		}
 
 		let shared = Arc::clone(&self.shared);
-		let schedule = super::lock(&self.schedule).clone();
+		// A `Weak`, so this closure cannot keep the timer's channel open. If it is
+		// never dispatched — which is what happens to anything queued after the
+		// event loop has stopped — the upgrade below simply fails and the timer
+		// still learns to exit when `shutdown` drops the `Arc`.
+		let schedule = super::lock(&self.schedule).as_ref().map(Arc::downgrade);
 
 		// Every window operation is marshalled to the main thread; the worker
 		// never touches a window handle itself.
@@ -219,8 +241,10 @@ impl NoticeController {
 			}
 
 			// Started only after the reveal decision has run, so the notice's
-			// lifetime is measured from when it is actually on screen.
-			if let Some(schedule) = schedule {
+			// lifetime is measured from when it is actually on screen. The upgrade
+			// fails once the controller has shut down, which is the right answer:
+			// there is no notice left to expire.
+			if let Some(schedule) = schedule.as_ref().and_then(Weak::upgrade) {
 				let _ = schedule.send((generation, Instant::now() + FAILURE_NOTICE_DURATION));
 			}
 		});

@@ -389,7 +389,31 @@ fn teardown(handle: &tauri::AppHandle) {
 	DONE.call_once(|| teardown_steps(handle));
 }
 
+/// Set the moment teardown begins, and never cleared.
+///
+/// Read by background work that would otherwise start something the exit path is
+/// in the middle of undoing — the capture watchdog's fallback re-registration is
+/// the case it was added for, since that takes the shortcut registry lock and
+/// `shortcuts::shutdown` gives that lock up rather than blocking exit for it.
+static SHUTTING_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the process has begun shutting down.
+///
+/// Advisory, not a barrier: a caller that reads `false` here and is descheduled
+/// can still find teardown underway by the time it acts. It shortens that window
+/// rather than closing it, which is why the things that read it also cost nothing
+/// when they lose the race — the worst case is `shortcuts::shutdown` skipping
+/// retirements that Windows reclaims at process exit anyway.
+pub fn shutting_down() -> bool {
+	SHUTTING_DOWN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn teardown_steps(handle: &tauri::AppHandle) {
+	// First, before any step that background work might race: everything below
+	// undoes state, and a thread starting fresh work against it is the one thing
+	// this ordering cannot absorb.
+	SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::Relaxed);
+
 	// Before anything slow, because it is the one step the user can see. Windows
 	// normally reaps a notification icon when its owner window is destroyed, but
 	// `std::process::exit(0)` destroys nothing — so on the update path the icon

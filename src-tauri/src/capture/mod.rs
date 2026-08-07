@@ -30,10 +30,11 @@
 //!                              notice timer thread ◀── one deadline ─────────┘
 //!                              (one, shared)      ──── expiry ──────────────▶ emit + hide
 //!
-//!   watchdog thread
-//!    every 15s: SendInput(F24, PROBE_SIGNATURE) ──▶ hook proc swallows it
-//!    +2s: did the probe stamp move? ◀───────────────────────┘
-//!    3 misses → reinstall the hook, revisit the fallback chord, raise a notice
+//!   watchdog thread                        (a healthy cycle is 15s + 2s ≈ 17s)
+//!    wait 15s, SendInput(F24, PROBE_SIGNATURE) ──▶ hook proc swallows it
+//!    wait 2s: did the probe stamp move? ◀────────────────────┘
+//!    3 misses  → reinstall, revisit the fallback chord, one notice per outage
+//!    8 refused injections → fallback chord only; never a reinstall
 //! ```
 //!
 //! The hook procedure is trivial on purpose: Windows silently uninstalls a
@@ -458,7 +459,15 @@ impl CaptureHandle {
 		self.watchdog.shutdown();
 		// A hook that never installed holds no sender, so there is nothing to stop
 		// and nothing keeping the worker's channel open.
-		let hook_stopped = lock(&self.hook).as_mut().is_none_or(hook::HookHandle::stop);
+		//
+		// Both halves are needed. The tracked handle answers only for the hook this
+		// pipeline currently holds; `any_detached` answers for every hook thread the
+		// watchdog abandoned along the way, each of which still owns a clone of the
+		// trigger sender the worker's receive loop is waiting to see dropped. Asking
+		// the tracked handle alone reported success over an orphan and hung the join
+		// below forever, which is the failure this gate exists to avoid.
+		let hook_stopped =
+			lock(&self.hook).as_mut().is_none_or(hook::HookHandle::stop) && !hook::any_detached();
 		// Closing the channel is what ends the worker's receive loop.
 		self.trigger_tx.take();
 
@@ -588,8 +597,27 @@ pub fn start_capture(app: &AppHandle) -> Result<CaptureHandle, Box<dyn std::erro
 /// it while holding its registry lock. Reaching through `CaptureState` meant
 /// taking a second lock under the first, in the one module whose header rule is
 /// about exactly that.
+///
+/// The second half is [`PROBE_BLOCKED`]: "we cannot tell" and "it is broken"
+/// cost the user the same thing, so both answer `false` here.
 pub fn hook_alive() -> bool {
-	hook::alive()
+	hook::alive() && !PROBE_BLOCKED.load(Ordering::Relaxed)
+}
+
+/// Set when the watchdog has been unable to inject its probe for long enough
+/// that it can no longer vouch for the hook.
+///
+/// Deliberately separate from the hook's own liveness. A probe that will not go
+/// out says nothing whatsoever about whether the callback is still being called,
+/// so nothing is reinstalled on this evidence — reinstall churn on a guess is
+/// worse than no reinstall at all. What it does justify is standing the
+/// insurance chord up, which costs one obscure hotkey and keeps capture
+/// reachable while the watchdog is blind.
+static PROBE_BLOCKED: AtomicBool = AtomicBool::new(false);
+
+/// Records whether the watchdog can still vouch for the hook.
+fn set_probe_blocked(blocked: bool) {
+	PROBE_BLOCKED.store(blocked, Ordering::Relaxed);
 }
 
 /// Starts a capture from outside the hook — the conventional-chord capture

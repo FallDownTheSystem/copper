@@ -13,6 +13,11 @@
 //! away never sees the event at all. That is the whole test: not "is the callback
 //! fast", which was never the problem, but "is the callback still being called".
 //!
+//! A healthy cycle costs [`PROBE_INTERVAL`] plus [`PROBE_GRACE`] — about
+//! seventeen seconds, not the fifteen the interval alone suggests — so
+//! [`MISS_THRESHOLD`] consecutive misses put detection between roughly
+//! thirty-six and fifty-one seconds after the hook actually died.
+//!
 //! Its shape follows the notice timer's — one long-lived thread, a channel whose
 //! disconnection is the shutdown signal, a join at teardown — for the reason
 //! stated there: a thread per probe would be a topology nobody designed. Nothing
@@ -40,12 +45,16 @@ use super::hook;
 use super::notice::NoticeController;
 use super::CaptureFailure;
 
-/// How often the hook is asked to prove it is still there.
+/// How long the watchdog waits between probe cycles.
 ///
 /// Deliberately slack. The hook is either installed or it is not, and nothing
 /// about the answer changes between one second and the next; probing hard would
 /// buy a few seconds of detection latency at the cost of a synthetic keystroke
 /// through the whole system's hook chain every time.
+///
+/// Not the cycle length: a cycle that actually probes also waits
+/// [`PROBE_GRACE`], so the healthy cadence is the two added together, about
+/// seventeen seconds.
 const PROBE_INTERVAL: Duration = Duration::from_secs(15);
 
 /// How long a probe has to make it back through the callback.
@@ -62,56 +71,127 @@ const PROBE_GRACE: Duration = Duration::from_secs(2);
 /// its timeout makes this thread late reading the answer, so a threshold of one
 /// would tear down and reinstall a perfectly healthy hook every time the machine
 /// got busy — and a reinstall is not free: it takes the hook down, and anything
-/// pressed in that window is genuinely not seen. Three costs roughly
-/// three-quarters of a minute before capture comes back, which is the right side
-/// of that trade for a failure that is otherwise permanent and silent.
+/// pressed in that window is genuinely not seen.
+///
+/// Three seventeen-second cycles puts detection between roughly thirty-six and
+/// fifty-one seconds after the hook dies, depending on where in a cycle it went.
+/// That is the right side of the trade for a failure that is otherwise permanent
+/// and silent.
 const MISS_THRESHOLD: u32 = 3;
 
+/// How many cycles in a row may fail to inject a probe at all before the
+/// watchdog admits it cannot vouch for the hook.
+///
+/// A cycle that cannot inject skips the grace wait, so eight of them is about two
+/// minutes. Much longer than [`MISS_THRESHOLD`] on purpose: this is not evidence
+/// of anything being wrong with the hook, only evidence that the watchdog has
+/// gone blind, and the response is correspondingly weaker — the insurance chord
+/// goes up, nothing is reinstalled.
+const UNPROBEABLE_THRESHOLD: u32 = 8;
+
+/// The two thresholds only mean anything relative to each other: being blind is a
+/// weaker claim than being broken, so it must take longer to make. Asserted at
+/// compile time because a later tuning pass that inverted them would produce a
+/// watchdog that gave up before it had tried.
+const _: () = assert!(UNPROBEABLE_THRESHOLD > MISS_THRESHOLD);
+
 // --- the pure rule -----------------------------------------------------------
-// No OS call below this line, so the counting is unit-testable on its own.
+// No OS call below this line, so the whole decision is unit-testable on its own.
 
-/// What one probe outcome means.
+/// What one cycle observed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Verdict {
-	/// The probe came back.
-	Healthy,
-	/// It did not, and that is not yet enough to act on.
-	Missed,
-	/// Enough of them in a row that the hook is no longer there.
-	Gone,
+enum Observation {
+	/// The probe came back through the callback.
+	Seen,
+	/// The probe went out and did not come back — or there was no hook to send it
+	/// to, which is the same evidence arrived at without spending a keystroke.
+	Missing,
+	/// The probe could not be put into the input stream at all.
+	Unsendable,
 }
 
-/// The consecutive-miss counter behind [`MISS_THRESHOLD`].
+/// What the loop should do about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Action {
+	/// Nothing. Either all is well, or not enough has gone wrong yet.
+	Wait,
+	/// The hook answered again after an outage.
+	Recovered,
+	/// The hook is gone and must be put back.
+	Reinstall { notify: bool },
+	/// The probe cannot be injected, so the hook can no longer be vouched for.
+	/// **Not** a reinstall: nothing here is evidence about the hook itself.
+	Unprobeable { notify: bool },
+}
+
+/// The whole decision: two independent run-lengths and one latch.
 #[derive(Debug)]
-struct Misses {
-	consecutive: u32,
-	threshold: u32,
+struct Health {
+	misses: u32,
+	unsendable: u32,
+	/// Whether an outage has already been reported.
+	///
+	/// The latch, and the reason it exists: without it every threshold crossing
+	/// fires a notice, so a hook that cannot be reinstalled reveals the panel and
+	/// plays the failure sound every fifty seconds or so for as long as the app
+	/// runs. Cleared only by a probe that actually comes back, so a *second*
+	/// notice means a genuine second outage rather than the same one still going.
+	reported: bool,
+	miss_threshold: u32,
+	unsendable_threshold: u32,
 }
 
-impl Misses {
-	fn new(threshold: u32) -> Self {
+impl Health {
+	fn new(miss_threshold: u32, unsendable_threshold: u32) -> Self {
 		Self {
-			consecutive: 0,
-			threshold,
+			misses: 0,
+			unsendable: 0,
+			reported: false,
+			miss_threshold,
+			unsendable_threshold,
 		}
 	}
 
-	/// Records one probe outcome.
+	/// Folds one cycle's observation in and says what follows from it.
 	///
-	/// The count is cleared on [`Verdict::Gone`] as well as on a success, which is
-	/// what stops a reinstall that did not take from reinstalling again on every
-	/// subsequent probe: the next attempt is a fresh threshold away.
-	fn record(&mut self, seen: bool) -> Verdict {
-		if seen {
-			self.consecutive = 0;
-			return Verdict::Healthy;
-		}
-		self.consecutive += 1;
-		if self.consecutive < self.threshold {
-			Verdict::Missed
-		} else {
-			self.consecutive = 0;
-			Verdict::Gone
+	/// Both run-lengths reset when they fire, which is what stops a response that
+	/// did not work from firing again on the very next cycle: the next attempt is
+	/// a fresh threshold away.
+	fn record(&mut self, observation: Observation) -> Action {
+		match observation {
+			Observation::Seen => {
+				self.misses = 0;
+				self.unsendable = 0;
+				if !self.reported {
+					return Action::Wait;
+				}
+				// The only path that clears the latch, and the only thing that earns
+				// the right to raise a second notice later.
+				self.reported = false;
+				Action::Recovered
+			}
+			Observation::Missing => {
+				self.unsendable = 0;
+				self.misses += 1;
+				if self.misses < self.miss_threshold {
+					return Action::Wait;
+				}
+				self.misses = 0;
+				Action::Reinstall {
+					notify: !std::mem::replace(&mut self.reported, true),
+				}
+			}
+			Observation::Unsendable => {
+				self.misses = 0;
+				self.unsendable += 1;
+				if self.unsendable < self.unsendable_threshold {
+					return Action::Wait;
+				}
+				self.unsendable = 0;
+				Action::Unprobeable {
+					notify: !std::mem::replace(&mut self.reported, true),
+				}
+			}
 		}
 	}
 }
@@ -140,10 +220,21 @@ impl Reviver {
 	/// threads and two `HHOOK`s, both live and both delivering every event, and the
 	/// handle for the first would be dropped — taking its thread with it at some
 	/// later and entirely unrelated moment.
+	///
+	/// A stop that fails is recorded rather than shrugged off, and the replacement
+	/// goes in either way. `HookHandle::stop` counts the orphan process-wide, which
+	/// is what `CaptureHandle::shutdown` reads before deciding whether joining the
+	/// worker can complete — the orphan still owns a trigger sender, and no local
+	/// bookkeeping here would reach the code that has to know.
 	fn revive(&self) -> bool {
 		let mut slot = super::lock(&self.hook);
 		if let Some(mut previous) = slot.take() {
-			previous.stop();
+			if !previous.stop() {
+				diagnostics::log_error(
+					"[copper] capture: the outgoing hook thread would not accept WM_QUIT and has been \
+					 detached; installing its replacement anyway, since the orphan exists either way",
+				);
+			}
 		}
 		match hook::install(
 			self.tx.clone(),
@@ -168,18 +259,22 @@ impl Reviver {
 
 // --- the probe ---------------------------------------------------------------
 
-/// Injects the one keystroke the callback is meant to swallow.
-///
-/// Down **and** up in a single call rather than a lone key-down. On the one path
-/// that matters — the hook is gone, which is exactly what this is looking for —
-/// nothing swallows the event, and a key-down with no matching key-up would leave
-/// F24 logically held for every application on the desktop. `clipboard_fallback`
-/// treats that hazard as a recovery obligation for the same reason.
-fn send_probe() -> bool {
+/// How much of the probe made it into the input stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Injected {
+	/// Nothing went in. No probe was ever in flight, and nothing is stranded.
+	Nothing,
+	/// The key-down went in and its key-up did not — so the probe *is* in flight,
+	/// and a key was left held until the recovery below dealt with it.
+	Partial,
+	Complete,
+}
+
+fn probe_event(up: bool) -> INPUT {
 	// SAFETY: no preconditions; an unmapped key yields scan code 0, which is
 	// acceptable for a virtual-key-driven injection.
 	let scan = unsafe { MapVirtualKeyW(VK_F24, MAPVK_VK_TO_VSC) } as u16;
-	let event = |up: bool| INPUT {
+	INPUT {
 		r#type: INPUT_KEYBOARD,
 		Anonymous: INPUT_0 {
 			ki: KEYBDINPUT {
@@ -196,12 +291,57 @@ fn send_probe() -> bool {
 				dwExtraInfo: PROBE_SIGNATURE,
 			},
 		},
-	};
+	}
+}
 
-	let sequence = [event(false), event(true)];
+/// Injects the one keystroke the callback is meant to swallow.
+///
+/// Down **and** up in a single call rather than a lone key-down. On the one path
+/// that matters — the hook is gone, which is exactly what this is looking for —
+/// nothing swallows the event, and a key-down with no matching key-up would leave
+/// F24 logically held for every application on the desktop until something else
+/// released it.
+///
+/// A short insert is therefore a recovery obligation, not a diagnostic one, and
+/// it is the same obligation `clipboard_fallback::send_ctrl_c` carries for its
+/// `Ctrl`: an insert of exactly one means the down went in alone, and the
+/// matching up has to be sent separately or the hazard is real. Reporting the
+/// short insert and moving on would leave a key stuck down system-wide, which is
+/// a far worse outcome than the missed probe it was trying to report.
+fn send_probe() -> Injected {
+	let sequence = [probe_event(false), probe_event(true)];
 	// SAFETY: `sequence` outlives the call and the size argument matches INPUT.
 	let inserted = unsafe { SendInput(&sequence, std::mem::size_of::<INPUT>() as i32) } as usize;
-	inserted == sequence.len()
+	if inserted == sequence.len() {
+		return Injected::Complete;
+	}
+	if inserted == 0 {
+		// UIPI and a locked desktop both land here, returning zero with nothing to
+		// distinguish them by. Nothing went in, so nothing is stuck.
+		diagnostics::log_error(
+			"[copper] capture: the liveness probe could not be injected; no key is left down",
+		);
+		return Injected::Nothing;
+	}
+
+	let recovery = [probe_event(true)];
+	// SAFETY: `recovery` outlives the call and the size argument matches INPUT.
+	let recovered = unsafe { SendInput(&recovery, std::mem::size_of::<INPUT>() as i32) } as usize;
+	if recovered == recovery.len() {
+		diagnostics::log_error(
+			"[copper] capture: the liveness probe inserted its key-down but not its key-up; the \
+			 recovery key-up went in, so no key is left down",
+		);
+	} else {
+		// Nothing further can be done — a third `SendInput` would fail the same way
+		// — so it is reported as loudly as this layer reports anything.
+		diagnostics::log_error(
+			"[copper] capture: RECOVERY KEY-UP FAILED — the liveness probe's F24 key-down was \
+			 inserted, its key-up was not, and the recovery key-up was refused too. F24 may be \
+			 stuck down system-wide until another key event releases it.",
+		);
+	}
+	Injected::Partial
 }
 
 // --- the thread --------------------------------------------------------------
@@ -279,54 +419,103 @@ fn wait(stop: &Receiver<()>, how_long: Duration) -> bool {
 	}
 }
 
+/// Hands the insurance-chord decision to a thread of its own.
+///
+/// Off the watchdog thread because registering a shortcut blocks on the main
+/// thread, and the main thread is what joins the watchdog at teardown — doing it
+/// inline is the deadlock this module's header note is about.
+///
+/// Gated on the teardown flag rather than fired blindly. A thread that reached
+/// the registry lock during exit would either register a chord the process is
+/// about to drop, or hold the lock across `shortcuts::shutdown`'s `try_lock` and
+/// make it skip every retirement it was there to do. `revisit_fallback` checks
+/// the same flag again once it holds the lock, which is what closes the gap
+/// between this check and that acquisition.
+fn revisit_fallback_off_thread(app: &AppHandle) {
+	if crate::shutting_down() {
+		return;
+	}
+	let app = app.clone();
+	thread::spawn(move || shortcuts::revisit_fallback(&app));
+}
+
 fn watch(
 	app: &AppHandle,
 	stop: &Receiver<()>,
 	reviver: &Reviver,
 	notice: &Arc<NoticeController>,
 ) {
-	let mut misses = Misses::new(MISS_THRESHOLD);
+	let mut health = Health::new(MISS_THRESHOLD, UNPROBEABLE_THRESHOLD);
 
 	while wait(stop, PROBE_INTERVAL) {
-		let seen = if hook::alive() {
-			let before = hook::probe_stamp();
-			if !send_probe() {
-				// `SendInput` came up short, so no probe was ever in flight. That says
-				// something about the input desktop, not about the hook, and counting it
-				// as a miss would reinstall a healthy hook on the strength of evidence
-				// that was never gathered.
-				continue;
-			}
-			if !wait(stop, PROBE_GRACE) {
-				return;
-			}
-			hook::probe_stamp() != before
-		} else {
-			// Nothing to probe, and nothing may be injected either: with no callback to
-			// swallow it, the F24 would land in whatever the user is typing. A hook
+		let observation = if !hook::alive() {
+			// Nothing to probe, and nothing may be injected either: with no callback
+			// to swallow it, the F24 would land in whatever the user is typing. A hook
 			// that is already down is itself the miss, so the same threshold that
-			// paces detection also paces the retries — rather than a fresh install
-			// attempt every fifteen seconds for as long as the app runs.
-			false
+			// paces detection also paces the reinstall attempts — rather than a fresh
+			// one every cycle for as long as the app runs.
+			Observation::Missing
+		} else {
+			let before = hook::probe_stamp();
+			match send_probe() {
+				// Nothing reached the input stream, so there is no probe to wait for.
+				// This is evidence about the desktop, not about the hook.
+				Injected::Nothing => Observation::Unsendable,
+				// A partial insert still put the key-**down** into the stream, which is
+				// all a probe is: if the callback is alive it has already stamped. The
+				// recovery key-up carries the same tag and would stamp again.
+				Injected::Partial | Injected::Complete => {
+					if !wait(stop, PROBE_GRACE) {
+						return;
+					}
+					if hook::probe_stamp() == before {
+						Observation::Missing
+					} else {
+						Observation::Seen
+					}
+				}
+			}
 		};
 
-		match misses.record(seen) {
-			Verdict::Healthy | Verdict::Missed => {}
-			Verdict::Gone => {
+		match health.record(observation) {
+			Action::Wait => {}
+			Action::Recovered => {
+				diagnostics::log("[copper] capture: the keyboard hook is answering its probe again");
+				super::set_probe_blocked(false);
+				// The insurance chord stood in for a hook that is back; retiring it is
+				// the same call that put it up.
+				revisit_fallback_off_thread(app);
+			}
+			Action::Reinstall { notify } => {
 				diagnostics::log_error(&format!(
 					"[copper] capture: the keyboard hook missed {MISS_THRESHOLD} liveness probes in a \
 					 row; reinstalling it"
 				));
+				// A reinstall settles the question either way, so any earlier doubt
+				// about the probe no longer describes anything.
+				super::set_probe_blocked(false);
 				let recovered = reviver.revive();
-
-				// Off this thread, both of them, and for the same reason. Registering a
-				// shortcut blocks on the main thread, and the main thread is what joins
-				// this one at teardown — so doing it here is the deadlock the whole
-				// module note is about. `show` only queues, but it takes the same route
-				// for consistency with the ordering it and the fallback need anyway.
-				let fallback_app = app.clone();
-				thread::spawn(move || shortcuts::revisit_fallback(&fallback_app));
-				notice.show(&CaptureFailure::HookLost { recovered });
+				revisit_fallback_off_thread(app);
+				if notify {
+					notice.show(&CaptureFailure::HookLost { recovered });
+				}
+			}
+			Action::Unprobeable { notify } => {
+				diagnostics::log_error(&format!(
+					"[copper] capture: the liveness probe has not been injectable for \
+					 {UNPROBEABLE_THRESHOLD} cycles; the hook cannot be vouched for, so the insurance \
+					 chord goes up. It is **not** reinstalled — nothing here is evidence about the \
+					 hook itself"
+				));
+				super::set_probe_blocked(true);
+				revisit_fallback_off_thread(app);
+				if notify {
+					// `recovered: false` because from the user's side that is the true
+					// part: the double-tap cannot be relied on and the settings view now
+					// names the chord standing in for it. Claiming a repair that was
+					// deliberately not attempted would be the worse of the two messages.
+					notice.show(&CaptureFailure::HookLost { recovered: false });
+				}
 			}
 		}
 	}
@@ -336,53 +525,123 @@ fn watch(
 mod tests {
 	use super::*;
 
-	#[test]
-	fn one_miss_is_not_evidence() {
-		let mut misses = Misses::new(3);
-		assert_eq!(misses.record(false), Verdict::Missed);
-		assert_eq!(misses.record(false), Verdict::Missed);
+	use Observation::{Missing, Seen, Unsendable};
+
+	/// The shipped thresholds, so the tests exercise the numbers that ship.
+	fn health() -> Health {
+		Health::new(MISS_THRESHOLD, UNPROBEABLE_THRESHOLD)
 	}
 
-	#[test]
-	fn the_threshold_is_consecutive_misses_not_a_total() {
-		let mut misses = Misses::new(3);
-		assert_eq!(misses.record(false), Verdict::Missed);
-		assert_eq!(misses.record(false), Verdict::Missed);
-		// A probe that comes back says the hook is there, whatever came before it.
-		assert_eq!(misses.record(true), Verdict::Healthy);
-		assert_eq!(misses.record(false), Verdict::Missed);
-		assert_eq!(misses.record(false), Verdict::Missed);
-		assert_eq!(misses.record(false), Verdict::Gone);
-	}
-
-	#[test]
-	fn three_in_a_row_is_the_verdict() {
-		let mut misses = Misses::new(MISS_THRESHOLD);
-		for _ in 1..MISS_THRESHOLD {
-			assert_eq!(misses.record(false), Verdict::Missed);
+	/// Feeds `observation` `times` over and returns the last action, asserting
+	/// every earlier one was `Wait`.
+	fn run(health: &mut Health, observation: Observation, times: u32) -> Action {
+		let mut last = Action::Wait;
+		for turn in 1..=times {
+			last = health.record(observation);
+			if turn < times {
+				assert_eq!(last, Action::Wait, "{observation:?} acted early on turn {turn}");
+			}
 		}
-		assert_eq!(misses.record(false), Verdict::Gone);
+		last
+	}
+
+	#[test]
+	fn a_healthy_hook_never_acts() {
+		let mut health = health();
+		for _ in 0..50 {
+			assert_eq!(health.record(Seen), Action::Wait);
+		}
+	}
+
+	#[test]
+	fn one_miss_is_not_evidence_and_the_threshold_is_consecutive() {
+		let mut health = health();
+		assert_eq!(health.record(Missing), Action::Wait);
+		assert_eq!(health.record(Missing), Action::Wait);
+		// A probe that comes back says the hook is there, whatever came before it.
+		assert_eq!(health.record(Seen), Action::Wait);
+		assert_eq!(run(&mut health, Missing, MISS_THRESHOLD), Action::Reinstall { notify: true });
 	}
 
 	#[test]
 	fn a_reinstall_that_did_not_take_waits_a_fresh_threshold() {
-		// The churn this exists to prevent: without the reset, every probe after the
-		// first verdict would be the threshold-th miss and would reinstall again.
-		let mut misses = Misses::new(3);
-		assert_eq!(misses.record(false), Verdict::Missed);
-		assert_eq!(misses.record(false), Verdict::Missed);
-		assert_eq!(misses.record(false), Verdict::Gone);
-
-		assert_eq!(misses.record(false), Verdict::Missed);
-		assert_eq!(misses.record(false), Verdict::Missed);
-		assert_eq!(misses.record(false), Verdict::Gone);
+		// The churn this exists to prevent: without the run-length reset, every
+		// cycle after the first verdict would be the threshold-th miss and would
+		// reinstall again.
+		let mut health = health();
+		assert_eq!(run(&mut health, Missing, MISS_THRESHOLD), Action::Reinstall { notify: true });
+		assert_eq!(run(&mut health, Missing, MISS_THRESHOLD), Action::Reinstall { notify: false });
 	}
 
 	#[test]
-	fn a_healthy_hook_never_reaches_a_verdict() {
-		let mut misses = Misses::new(MISS_THRESHOLD);
-		for _ in 0..50 {
-			assert_eq!(misses.record(true), Verdict::Healthy);
+	fn an_outage_that_never_recovers_is_reported_exactly_once() {
+		// The whole point of the latch. Every `notify: true` reveals the panel and
+		// plays the failure sound, so an unrecoverable hook without this would do
+		// both roughly every fifty seconds for as long as the app runs.
+		let mut health = health();
+		assert_eq!(run(&mut health, Missing, MISS_THRESHOLD), Action::Reinstall { notify: true });
+		for _ in 0..10 {
+			assert_eq!(
+				run(&mut health, Missing, MISS_THRESHOLD),
+				Action::Reinstall { notify: false }
+			);
 		}
+	}
+
+	#[test]
+	fn only_a_confirmed_recovery_re_arms_the_notice() {
+		let mut health = health();
+		assert_eq!(run(&mut health, Missing, MISS_THRESHOLD), Action::Reinstall { notify: true });
+		// A reinstall alone proves nothing; the probe coming back is what does.
+		assert_eq!(health.record(Seen), Action::Recovered);
+		// And a recovery is announced once, not on every subsequent healthy cycle.
+		assert_eq!(health.record(Seen), Action::Wait);
+		// A genuinely new outage is a genuinely new notice.
+		assert_eq!(run(&mut health, Missing, MISS_THRESHOLD), Action::Reinstall { notify: true });
+	}
+
+	#[test]
+	fn a_blocked_probe_never_reinstalls() {
+		// A probe that could not be injected says nothing about the hook, and
+		// reinstall churn on a guess is worse than no reinstall at all.
+		let mut health = health();
+		let action = run(&mut health, Unsendable, UNPROBEABLE_THRESHOLD);
+		assert_eq!(action, Action::Unprobeable { notify: true });
+	}
+
+	#[test]
+	fn the_blocked_probe_threshold_is_far_slacker_than_the_miss_threshold() {
+		// Being blind is a weaker claim than being broken, so it takes longer to
+		// make — see the compile-time assertion next to the constants.
+		let mut health = health();
+		assert_eq!(run(&mut health, Unsendable, MISS_THRESHOLD), Action::Wait);
+	}
+
+	#[test]
+	fn a_blocked_probe_shares_the_one_outage_latch() {
+		let mut health = health();
+		assert_eq!(
+			run(&mut health, Unsendable, UNPROBEABLE_THRESHOLD),
+			Action::Unprobeable { notify: true }
+		);
+		// The hook then goes for real while the outage is still open: acted on,
+		// because the response differs, but not reported twice.
+		assert_eq!(run(&mut health, Missing, MISS_THRESHOLD), Action::Reinstall { notify: false });
+		// One recovery closes whichever outage was open.
+		assert_eq!(health.record(Seen), Action::Recovered);
+	}
+
+	#[test]
+	fn the_two_run_lengths_do_not_contaminate_each_other() {
+		let mut health = health();
+		// Misses that are interrupted by a cycle the probe could not go out on are
+		// not consecutive misses: the interruption gathered no evidence either way.
+		assert_eq!(health.record(Missing), Action::Wait);
+		assert_eq!(health.record(Missing), Action::Wait);
+		assert_eq!(health.record(Unsendable), Action::Wait);
+		assert_eq!(health.record(Missing), Action::Wait);
+		assert_eq!(health.record(Missing), Action::Wait);
+		// Still one short, because the run restarted at the interruption.
+		assert_eq!(health.record(Missing), Action::Reinstall { notify: true });
 	}
 }
