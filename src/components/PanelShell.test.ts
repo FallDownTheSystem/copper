@@ -281,6 +281,10 @@ afterEach(async () => {
 	// And so does the image viewer, whose overlay would otherwise still be up in
 	// the next test — declining every chord and swallowing the Escape ladder.
 	viewer.close()
+	// The action-error band is module-scoped for the same reason everything above
+	// it is. A message left standing takes the status line's place, so the next
+	// test's "Copied 2 notes" is simply not on screen.
+	space.clearActionError('list')
 
 	// The *document* is module-scoped too, and `initialize()` is memoised — so a
 	// second mount does not re-pull it and a test that installed a different one
@@ -717,6 +721,33 @@ describe('the always-on-top pin', () => {
 
 		expect(wrapper.find('[aria-label="Keep on top: off"]').exists()).toBe(true)
 	})
+
+	/**
+	 * The settings row renders its failure inline, beside the control. This one is
+	 * a 32-pixel button in a header with no such slot, so a refused write would
+	 * flip nothing and explain nothing — the user would be left pressing a pin that
+	 * does not stick. It borrows the panel's one error band instead.
+	 */
+	it('reports a refused toggle in the status band rather than silently', async () => {
+		const wrapper = await mountWith(true)
+		mocks.invoke.mockImplementation(async (command: string) => {
+			if (command === 'set_always_on_top') {
+				throw {
+					kind: 'persist',
+					message: "Copper couldn't save the always-on-top setting: disk full",
+				}
+			}
+			return baseInvoke(command)
+		})
+
+		await wrapper.find('[aria-label="Keep on top: on"]').trigger('click')
+		await settle(3)
+
+		// Rust's own sentence, not one invented here: it names which half failed.
+		expect(wrapper.text()).toContain("Copper couldn't save the always-on-top setting: disk full")
+		// And the control still shows the state that is actually live.
+		expect(wrapper.find('[aria-label="Keep on top: on"]').exists()).toBe(true)
+	})
 })
 
 describe('the Escape ladder', () => {
@@ -800,6 +831,45 @@ describe('copy', () => {
 		await wrapper.vm.$nextTick()
 
 		expect(mocks.invoke).toHaveBeenCalledWith('clipboard_write_text', { text: 'first note' })
+	})
+
+	/**
+	 * Task-014 ranks a section's rows by score; `actionableNoteIds` is what an
+	 * *action* targets and its contract is the document's order. Letting the
+	 * ranking reach it would make a multi-note copy come out in whatever order the
+	 * query happened to score them, which is a silent change to the clipboard's
+	 * contents for a search the user has since cleared.
+	 */
+	it('copies in document order even while a search has reordered the rows', async () => {
+		const ranked: Space = {
+			...SPACE,
+			notes: [
+				{ ...SPACE.notes[0]!, id: 'nte_1', section: 'sec_a', body: 'a resort' },
+				{ ...SPACE.notes[0]!, id: 'nte_2', section: 'sec_a', body: 'sort by date' },
+			],
+		}
+		mocks.invoke.mockImplementation(async (command: string) => {
+			if (command === 'get_active_space') return ranked
+			return baseInvoke(command)
+		})
+		const wrapper = await mountPanel()
+		await space.refresh()
+		await settle(2)
+
+		await wrapper.find('#panel-search').setValue('sort')
+		await settle()
+
+		// The rows really are ranked, so this is not vacuous.
+		expect(selection.rowIds.value).toEqual(['s:sec_a', 'n:nte_2', 'n:nte_1'])
+		// ...and the order an action sees is not.
+		expect(selection.actionableNoteIds.value).toEqual(['nte_1', 'nte_2'])
+
+		selection.selectAll()
+		await actions.copyNotes()
+
+		expect(mocks.invoke).toHaveBeenCalledWith('clipboard_write_text', {
+			text: 'a resort\n\nsort by date',
+		})
 	})
 
 	it('joins several notes with a blank line and confirms the count', async () => {
@@ -1125,7 +1195,7 @@ describe('the New section field', () => {
 		await settle(3)
 
 		expect(document.querySelector('#new-section-error')?.textContent).toContain(
-			'This space already has a section with that name.',
+			'This project already has a section with that name.',
 		)
 		expect(mocks.invoke).not.toHaveBeenCalledWith('add_section', expect.anything())
 	})
@@ -2166,6 +2236,80 @@ describe('attachments', () => {
 		await settle(2)
 
 		expect(viewer()).toBeNull()
+	})
+
+	/**
+	 * The same revocation, with the overlay **not mounted** — which is the case a
+	 * component-scoped watcher cannot see.
+	 *
+	 * The tray's `open-settings` and the menu's Settings item both unmount
+	 * `PanelShell`, so a project opened from Explorer while the settings view was
+	 * up revoked the blob with nothing listening. Coming back then remounted the
+	 * overlay over a URL that no longer resolves.
+	 */
+	it('does not come back over a blob revoked while the settings view was up', async () => {
+		withImagePreview()
+		await mountPanel()
+		await installWithAttachments(documentWith([PNG]))
+		await openViewer()
+
+		// The settings view's door: this tree goes away entirely.
+		panel?.unmount()
+		panel = null
+		attachments.clearPreviews()
+		await settle(2)
+
+		withImagePreview()
+		await mountPanel()
+		await settle(2)
+
+		expect(viewer()).toBeNull()
+	})
+
+	/**
+	 * Closing must never leave focus on `document.body`. It is an *ancestor* of the
+	 * panel root, so a press there reaches neither the Escape ladder nor any chord
+	 * — the panel becomes mouse-only with nothing saying why.
+	 */
+	it('hands focus back to something real when the invoking card has gone', async () => {
+		withImagePreview()
+		const wrapper = await mountPanel()
+		await installWithAttachments(documentWith([PNG]))
+		await openViewer()
+
+		// What a project switch does to the element focus was going to return to:
+		// the list is replaced and the button the user pressed is detached.
+		await installWithAttachments({ ...SPACE, id: 'spc_2', notes: [] })
+		await settle(2)
+
+		await wrapper.trigger('keydown', { key: 'Escape' })
+		await settle(2)
+
+		expect(viewer()).toBeNull()
+		expect(document.activeElement).not.toBe(document.body)
+		expect(document.activeElement).not.toBeNull()
+		// Inside the panel root, which is the property that actually matters.
+		expect(
+			(document.activeElement as HTMLElement | null)?.closest('[data-panel-root]'),
+		).not.toBeNull()
+	})
+
+	/** Rust gating on the sniffed type says the bytes *begin* like an image, not
+	 *  that they are a whole one. A decode that fails must say so rather than
+	 *  leaving a broken glyph on a dark sheet. */
+	it('reports an image the WebView cannot decode', async () => {
+		withImagePreview()
+		await mountPanel()
+		await installWithAttachments(documentWith([PNG]))
+		await openViewer()
+
+		const image = viewer()?.querySelector('img')
+		expect(image).not.toBeNull()
+		image!.dispatchEvent(new Event('error'))
+		await settle(2)
+
+		expect(viewer()?.textContent).toContain('could not be displayed')
+		expect(viewer()?.querySelector('img')).toBeNull()
 	})
 
 	/** AC20. `Copy` and `Copy as list` are about bodies; a local file path means

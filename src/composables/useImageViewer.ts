@@ -37,12 +37,55 @@ const image = ref<ViewerImage>({ state: 'loading' })
  */
 let invoker: HTMLElement | null = null
 
+/** The row that element was in, as a fallback for when the element itself is
+ *  gone — see [`returnFocus`]. Recorded at open time for the same reason the
+ *  element is: afterwards there is nothing left to read it off. */
+let invokerRow: string | null = null
+
 /** Discards a read whose viewer has since been closed or re-pointed. Two
  *  double-clicks a moment apart are two reads, and the loser must not paint over
  *  the winner. */
 let session = 0
 
 const isOpen = computed(() => attachment.value !== null)
+
+/**
+ * Hands the keyboard back to something that exists.
+ *
+ * **Resolved inside the tick, not before it.** The overlay is still up when
+ * `close` runs and the list re-renders between the two, so an element that was
+ * connected at close time can be detached by the time focus would move to it —
+ * which is exactly what a project switch does, and it is not a race the check can
+ * be moved earlier to avoid. The whole ladder is therefore evaluated late.
+ *
+ * The last rung is the panel root rather than nothing at all. `document.body` is
+ * an *ancestor* of that root, so focus falling back to it puts every press
+ * outside the shell's keydown handler — no Escape ladder, no chords, and no way
+ * back in but the mouse. `useSelection`'s own relocation watcher ends the same
+ * way and for the same reason.
+ */
+function returnFocus() {
+	const element = invoker
+	const row = invokerRow
+	invoker = null
+	invokerRow = null
+
+	void nextTick(() => {
+		if (element?.isConnected) {
+			element.focus()
+			return
+		}
+		// Compared rather than selected: a row key carries the note's own id, and a
+		// hand-edited `.copper` can put a quote in one.
+		const rows = document.querySelectorAll<HTMLElement>('[data-row-id]')
+		for (const candidate of rows) {
+			if (candidate.dataset.rowId !== row) continue
+			candidate.focus()
+			return
+		}
+		document.querySelector<HTMLElement>('[data-panel-root]')?.focus()
+	})
+}
 
 /** The url currently held, so `close` revokes exactly what it created. Read from
  *  the ref rather than kept alongside it, since `image` is the only writer. */
@@ -60,6 +103,7 @@ async function open(target: Attachment, from: HTMLElement | null) {
 	attachment.value = target
 	image.value = { state: 'loading' }
 	invoker = from
+	invokerRow = from?.closest<HTMLElement>('[data-row-id]')?.dataset.rowId ?? null
 
 	const result = await useAttachments().loadFullImage(target.file)
 	if (token !== session) {
@@ -91,13 +135,49 @@ function close() {
 	attachment.value = null
 	image.value = { state: 'loading' }
 
-	const target = invoker
-	invoker = null
-	// After the overlay has come down, or focus lands on an element that is about
-	// to be unmounted and falls back to the body — which puts the keyboard outside
-	// the panel root, where the Escape ladder never sees it.
-	if (target?.isConnected) void nextTick(() => target.focus())
+	returnFocus()
 }
+
+/**
+ * The WebView could not decode what Rust sent.
+ *
+ * Rust gating on the sniffed type says the bytes *begin* like an image, not that
+ * they are a whole one — a file truncated by a failed copy or an interrupted
+ * write passes every check on both sides and then fails in the decoder. Without
+ * this the overlay shows a broken-image glyph and no reason; with it the failure
+ * reads the same way a refused read does. The URL is revoked here rather than at
+ * close, because nothing is ever going to render it.
+ */
+function reportBrokenImage() {
+	const url = heldUrl()
+	if (!url) return
+	useAttachments().revokeFullImage(url)
+	image.value = {
+		state: 'failed',
+		reason: 'That image could not be displayed — the file may be incomplete.',
+	}
+}
+
+/**
+ * A revoked preview cache closes the viewer, **and this watcher lives here rather
+ * than in the component**.
+ *
+ * `clearPreviews` revokes the blob the overlay is rendering, so the viewer has to
+ * go with it. Watching from `ImageViewer.vue` covered every case but one: the
+ * tray's `open-settings` and the menu's Settings item both unmount `PanelShell`
+ * and this component with it, so a project opened from Explorer while the
+ * settings view was up revoked the URL with nothing listening — and coming back
+ * remounted the overlay over a blob that no longer resolves. At module scope the
+ * reaction outlives the component, which is the only place it can be correct.
+ *
+ * `useAttachments()` is called lazily inside the getter rather than at module
+ * evaluation, so this file's import does not have to be ordered against a
+ * composable graph it is not otherwise part of.
+ */
+watch(
+	() => useAttachments().previewEpoch.value,
+	() => close(),
+)
 
 export function useImageViewer() {
 	return {
@@ -106,5 +186,6 @@ export function useImageViewer() {
 		isOpen,
 		open,
 		close,
+		reportBrokenImage,
 	}
 }

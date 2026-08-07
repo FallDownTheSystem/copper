@@ -37,7 +37,7 @@
  * nothing at all.
  */
 
-import { fuzzyMatch } from './fuzzyMatch'
+import { fuzzyMatch, type MatchSpan } from './fuzzyMatch'
 
 export const HIGHLIGHT_NAME = 'copper-search-match'
 
@@ -85,17 +85,17 @@ function pieces(root: HTMLElement): { pieces: Piece[]; text: string } {
 }
 
 /**
- * Turns matched positions into as few ranges as will cover them.
+ * Turns matched spans into as few ranges as will cover them.
  *
- * A run is broken by either of two things: a gap in the positions — a
- * subsequence match is mostly gaps — or a node boundary. The second is the one
- * worth stating: `Range` happily spans nodes, and a range from the end of one
- * text node to the start of the next would paint every element in between, which
- * in a rendered body is markup rather than text.
+ * A run is broken by either of two things: a gap in the spans — a subsequence
+ * match is mostly gaps — or a node boundary. The second is the one worth
+ * stating: `Range` happily spans nodes, and a range from the end of one text
+ * node to the start of the next would paint every element in between, which in a
+ * rendered body is markup rather than text.
  */
-function rangesFor(found: Piece[], positions: readonly number[]): Range[] {
+function rangesFor(found: Piece[], spans: readonly MatchSpan[]): Range[] {
 	const collected: Range[] = []
-	// The positions are ascending, so one cursor walks the pieces alongside them.
+	// The spans are ascending, so one cursor walks the pieces alongside them.
 	let index = 0
 	let runStart = -1
 	let runEnd = -1
@@ -105,26 +105,26 @@ function rangesFor(found: Piece[], positions: readonly number[]): Range[] {
 		if (!runPiece) return
 		const range = document.createRange()
 		range.setStart(runPiece.node, runStart - runPiece.start)
-		range.setEnd(runPiece.node, runEnd + 1 - runPiece.start)
+		range.setEnd(runPiece.node, runEnd - runPiece.start)
 		collected.push(range)
 		runPiece = null
 	}
 
-	for (const at of positions) {
+	for (const span of spans) {
 		let piece = found[index]
-		while (piece && index < found.length - 1 && at >= piece.start + piece.text.length) {
+		while (piece && index < found.length - 1 && span.start >= piece.start + piece.text.length) {
 			piece = found[++index]
 		}
 		if (!piece) break
 
-		if (runPiece === piece && at === runEnd + 1) {
-			runEnd = at
+		if (runPiece === piece && span.start === runEnd) {
+			runEnd = span.end
 			continue
 		}
 		flush()
 		runPiece = piece
-		runStart = at
-		runEnd = at
+		runStart = span.start
+		runEnd = span.end
 	}
 	flush()
 
@@ -135,7 +135,7 @@ function collect(root: HTMLElement, needle: string): Range[] {
 	const { pieces: found, text } = pieces(root)
 	const match = fuzzyMatch(text, needle)
 	if (!match) return []
-	return rangesFor(found, match.positions)
+	return rangesFor(found, match.spans)
 }
 
 /**

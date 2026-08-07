@@ -96,6 +96,9 @@ const { isCollapsed } = useSections()
  * would make the headings themselves jump around as the query is typed. Ranking
  * within a section moves only rows that are already siblings, and leaves
  * membership — the thing the roving-focus watcher reacts to — untouched.
+ *
+ * It also leaves `actionable` alone. That order is the document's by contract,
+ * and ranking is a presentation of the same set rather than a re-ordering of it.
  */
 const orders = computed(() => {
 	const matched = matchedIds.value
@@ -105,24 +108,29 @@ const orders = computed(() => {
 	const actionable: string[] = []
 
 	for (const group of documentGroups.value) {
-		let members = group.noteIds
-		if (matched) {
-			members = group.noteIds.filter((id) => matched.has(id))
-			if (members.length === 0) continue
-			// `sort` is stable, so notes that score the same keep the document order
-			// they arrived in — which is what makes a query produce the same list twice
-			// rather than one that reshuffles its ties.
-			members.sort((a, b) => (matched.get(b) ?? 0) - (matched.get(a) ?? 0))
-		}
+		const members = matched ? group.noteIds.filter((id) => matched.has(id)) : group.noteIds
+		if (matched && members.length === 0) continue
 
-		// One walk for both orders. `actionable` takes every match; the collapse test
-		// is the whole difference between it and the rows below.
+		// **`actionable` is filled before the ranking, and from the unsorted list.**
+		// Its contract is document order — every consumer that acts on several notes
+		// at once relies on it, and a multi-note copy or `Copy as Markdown` must not
+		// come out in the order a search happened to rank them. Ranking is a
+		// *presentation* of the same set, so it applies to the rows and to nothing
+		// else.
+		for (const id of members) actionable.push(id)
+
+		// `sort` is stable, so notes that score the same keep the document order they
+		// arrived in — which is what makes a query produce the same list twice rather
+		// than one that reshuffles its ties. In place, on the array `filter` has
+		// already copied; with no query `members` is the document's own array and
+		// there is nothing to sort.
+		if (matched) members.sort((a, b) => (matched.get(b) ?? 0) - (matched.get(a) ?? 0))
+
 		const folded = isCollapsed(group.sectionId)
 		groups.push({ sectionId: group.sectionId, noteIds: folded ? [] : members })
 		rows.push(sectionRow(group.sectionId))
+		if (folded) continue
 		for (const id of members) {
-			actionable.push(id)
-			if (folded) continue
 			rows.push(noteRow(id))
 			notes.push(id)
 		}

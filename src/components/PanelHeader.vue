@@ -15,7 +15,30 @@ const { query, hasQuery, clearQuery } = useNoteSearch()
  * something you want while the panel is in the way, and having to open Settings
  * to do it means covering the thing you were trying to see.
  */
-const { alwaysOnTop, setAlwaysOnTop } = useSettings()
+const { alwaysOnTop, setAlwaysOnTop, errorFor } = useSettings()
+const pinError = errorFor('alwaysOnTop')
+const { reportActionError, clearActionError } = useSpace()
+
+/**
+ * A refused pin has to say so *here*, because here is the only surface it has.
+ *
+ * The settings row renders its own failure inline, next to the control that
+ * produced it. This control has no such slot — it is a 32-pixel button in a
+ * header — so a rejected write would flip nothing and explain nothing, and the
+ * user would be left pressing a pin that does not stick. It borrows the panel's
+ * one error band, the same `list` scope the space actions in the `...` menu
+ * report through, since both are "something you asked the shell to do did not
+ * happen".
+ *
+ * The message is Rust's own, read back off the row rather than written again
+ * here: it names whether the window state or the file was the part that failed,
+ * and a sentence of our own could only be vaguer.
+ */
+async function togglePin() {
+	clearActionError('list')
+	if (await setAlwaysOnTop(!alwaysOnTop.value)) return
+	reportActionError('list', pinError.value ?? 'Copper could not change the always-on-top setting.')
+}
 
 /** Forwarded from the section heading to the composer, which is the only place
  *  that knows whether the switcher was opened from a half-typed line. */
@@ -102,7 +125,7 @@ defineExpose({ focusSearch, query })
 				:aria-pressed="alwaysOnTop"
 				:aria-label="alwaysOnTop ? 'Keep on top: on' : 'Keep on top: off'"
 				:title="alwaysOnTop ? 'Stop keeping on top' : 'Keep on top'"
-				@click="setAlwaysOnTop(!alwaysOnTop)"
+				@click="togglePin"
 			>
 				<IconLucidePin
 					v-if="alwaysOnTop"

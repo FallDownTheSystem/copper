@@ -7,7 +7,13 @@ import { fuzzyMatch, fuzzyNeedle } from './fuzzyMatch'
 function matched(haystack: string, query: string): string | null {
 	const found = fuzzyMatch(haystack, fuzzyNeedle(query))
 	if (!found) return null
-	return found.positions.map((at) => haystack.charAt(at)).join('')
+	return found.spans.map((span) => haystack.slice(span.start, span.end)).join('')
+}
+
+/** Where it landed, as code-unit starts. */
+function at(haystack: string, query: string): number[] | null {
+	const found = fuzzyMatch(haystack, fuzzyNeedle(query))
+	return found?.spans.map((span) => span.start) ?? null
 }
 
 function score(haystack: string, query: string): number {
@@ -37,12 +43,10 @@ describe('fuzzyMatch', () => {
 		expect(matched('abc', 'a b c')).toBe('abc')
 	})
 
-	it('is case-insensitive but reports positions in the original text', () => {
-		const found = fuzzyMatch('İstanbul', fuzzyNeedle('stan'))
-		// The regression the highlighter's own suite guards: `İ` folds to two code
-		// units, so any offset taken from a wholesale-lowercased copy is shifted by
-		// one and points at `tanb`.
-		expect(found?.positions).toEqual([1, 2, 3, 4])
+	it('is case-insensitive but reports spans in the original text', () => {
+		// `İ` folds to two code units, so any offset taken from a wholesale-lowercased
+		// copy is shifted by one and points at `tanb`.
+		expect(at('İstanbul', 'stan')).toEqual([1, 2, 3, 4])
 		expect(matched('İstanbul', 'stan')).toBe('stan')
 	})
 
@@ -59,13 +63,14 @@ describe('fuzzyMatch', () => {
 		expect(fuzzyMatch('anything at all', '')).toBeNull()
 	})
 
-	it('returns strictly ascending positions, one per needle character', () => {
+	it('returns ascending, non-overlapping spans, one per needle character', () => {
 		const found = fuzzyMatch('a quick brown fox', fuzzyNeedle('abf'))
-		expect(found?.positions).toHaveLength(3)
-		const ascending = found!.positions.every(
-			(at, index) => index === 0 || at > (found!.positions[index - 1] as number),
+		expect(found?.spans).toHaveLength(3)
+		const ordered = found!.spans.every(
+			(span, index) =>
+				span.end > span.start && (index === 0 || span.start >= found!.spans[index - 1]!.end),
 		)
-		expect(ascending).toBe(true)
+		expect(ordered).toBe(true)
 	})
 
 	describe('ranking', () => {
@@ -112,35 +117,124 @@ describe('fuzzyMatch', () => {
 		})
 	})
 
-	describe('choosing among several possible matches', () => {
+	describe('choosing among the possible matches', () => {
 		it('slides the match right so a contiguous run is found rather than the leftmost one', () => {
 			// A greedy left-to-right pass alone returns `a`(0) `b`(2) `c`(6) here, and
 			// the consecutive bonus would then almost never fire.
-			expect(fuzzyMatch('a-b-abc', fuzzyNeedle('abc'))?.positions).toEqual([4, 5, 6])
+			expect(at('a-b-abc', 'abc')).toEqual([4, 5, 6])
 		})
 
-		it('anchors on a later start when that is where the real match is', () => {
-			const found = fuzzyMatch('a lot of words in between here abc', fuzzyNeedle('abc'))
-			expect(found?.positions).toEqual([31, 32, 33])
+		it('keeps the leftmost assembly when sliding right would cost a word boundary', () => {
+			// Sliding is usually the improvement and is not always: here it moves `s`
+			// off the start of a word and onto the middle of one, and a boundary bonus
+			// outweighs the gap it closes. Scoring only the slid form loses this.
+			expect(at('assess results', 'sr')).toEqual([1, 7])
 		})
 
 		it('takes the earliest of two equally good matches', () => {
 			// Stability: the same text and query must always paint the same characters,
 			// or a re-render moves the highlight for no reason.
-			expect(fuzzyMatch('abc abc', fuzzyNeedle('abc'))?.positions).toEqual([0, 1, 2])
+			expect(at('abc abc', 'abc')).toEqual([0, 1, 2])
 		})
 
 		it('gives up on a text whose remaining characters cannot spell the needle', () => {
-			// The early `break`: once a greedy pass from one start fails, every later
-			// start has strictly less text to work with.
 			expect(fuzzyMatch('aaaaaaaaaaaaaaaaaaaaab', fuzzyNeedle('abc'))).toBeNull()
 		})
 
-		it('stays cheap on a text whose first needle character is everywhere', () => {
-			// The bound that keeps a keystroke from going quadratic. Not a timing
-			// assertion — just that a pathological text still answers.
-			const haystack = `${'a '.repeat(5000)}bc`
-			expect(fuzzyMatch(haystack, fuzzyNeedle('abc'))).not.toBeNull()
+		/**
+		 * The defect that retired the bounded-anchor scan, at the length the review
+		 * measured it: a body of ordinary prose whose letters happen to spell the
+		 * query long before the word itself appears. A scan that gave up after a fixed
+		 * number of anchors ranked this note on the scatter *and painted the scatter*.
+		 */
+		it('finds a verbatim word two hundred characters into realistic prose', () => {
+			const body =
+				'The panel refuses to reveal itself when every monitor reported by the ' +
+				'operating system has been unplugged, and the saved position no longer ' +
+				'names anywhere a person could reach it. A capture that fails now shows an ' +
+				'error notice instead of failing silently.'
+			const verbatim = body.indexOf('error')
+			// Comfortably past any bounded window of leading anchors.
+			expect(verbatim).toBeGreaterThan(200)
+
+			expect(at(body, 'error')).toEqual([
+				verbatim,
+				verbatim + 1,
+				verbatim + 2,
+				verbatim + 3,
+				verbatim + 4,
+			])
+			expect(matched(body, 'error')).toBe('error')
+		})
+
+		it('anchors on a later start when that is where the real match is', () => {
+			expect(at('a lot of words in between here abc', 'abc')).toEqual([31, 32, 33])
+		})
+	})
+
+	describe('code points', () => {
+		it('never assembles a match out of halves of different characters', () => {
+			// `🍎` is U+1F34E — the surrogate pair D83C DF4E — and `🍬` is U+1F36C, the
+			// pair D83C DF6C. They share a leading unit, so a code-unit matcher happily
+			// spells one out of the other's halves. Nothing here may.
+			expect(fuzzyMatch('🍎🍬', '🍬🍎')).toBeNull()
+			// And the needle's own halves are one character, not two to find.
+			expect(at('🍎x🍎', '🍎')).toEqual([0])
+		})
+
+		it('matches an astral character as itself, spanning both of its code units', () => {
+			const found = fuzzyMatch('a 🍎 b', fuzzyNeedle('🍎'))
+			expect(found?.spans).toEqual([{ start: 2, end: 4 }])
+		})
+
+		it('reports spans past an astral character at the right offsets', () => {
+			// The offset map earns its place here: the code-point index and the
+			// code-unit offset have diverged by one before `bc` is reached.
+			expect(at('🍎abc', 'bc')).toEqual([3, 4])
+		})
+
+		it('folds the whole string, so a Greek final sigma matches its lowercase form', () => {
+			// `'Σ'.toLowerCase()` is `σ` — folding one character at a time cannot know
+			// it ends a word. Folding the string once can.
+			expect(matched('ΟΔΟΣ', 'οδος')).toBe('ΟΔΟΣ')
+		})
+
+		it('leaves a character whose fold is several characters unmatched rather than misplaced', () => {
+			// `İ` folds to `i` plus a combining dot. Painting it for a query of `i`
+			// would put a span over one code unit of a two-unit fold.
+			expect(fuzzyMatch('İ', fuzzyNeedle('i'))).toBeNull()
+		})
+	})
+
+	describe('cost', () => {
+		/**
+		 * The shape rather than a wall-clock target: two hundred bodies is what a
+		 * keystroke actually costs, and the bounded-anchor scan this replaced did the
+		 * same work up to eight times over with two string allocations per character
+		 * compared. A budget this loose fails only on a return to that, or on a
+		 * genuinely quadratic scan.
+		 */
+		it('scans a keystroke’s worth of notes without going quadratic', () => {
+			const bodies = Array.from(
+				{ length: 200 },
+				(_, index) =>
+					`note ${index} ${'the quick brown fox jumps over the lazy dog and reports an error '.repeat(30)}`,
+			)
+
+			const started = performance.now()
+			let matches = 0
+			for (const body of bodies) if (fuzzyMatch(body, fuzzyNeedle('error'))) matches++
+			const elapsed = performance.now() - started
+
+			expect(matches).toBe(200)
+			expect(elapsed).toBeLessThan(500)
+		})
+
+		it('answers a text that is almost entirely needle characters', () => {
+			// The case the old cap existed to bound. Every position anchors a window,
+			// so this is where a scan with no cap has to be linear rather than lucky.
+			expect(fuzzyMatch('a'.repeat(20_000), fuzzyNeedle('aaa'))).not.toBeNull()
+			expect(fuzzyMatch(`${'a '.repeat(5000)}bc`, fuzzyNeedle('abc'))).not.toBeNull()
 		})
 	})
 })

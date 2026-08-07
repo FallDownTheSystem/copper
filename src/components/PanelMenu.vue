@@ -102,7 +102,7 @@ function validate(name: string): string | null {
 	const clash = sections.value.some(
 		(section) => normaliseSectionName(section.name).toLowerCase() === wanted,
 	)
-	if (clash) return 'This space already has a section with that name.'
+	if (clash) return 'This project already has a section with that name.'
 	return null
 }
 

@@ -19,23 +19,30 @@
  * the same reason an open menu declines them — so there is no second handler here
  * to fall out of step with that one.
  */
-const { attachment, image, isOpen, close } = useImageViewer()
-const { previewEpoch } = useAttachments()
+const { attachment, image, isOpen, close, reportBrokenImage } = useImageViewer()
 
 const closeButton = useTemplateRef<HTMLButtonElement>('closeButton')
 
 // Focus has to move into the overlay, or Escape and the close button are both
 // unreachable — and the press would fall through to whatever the thumbnail left
 // focused underneath. `useImageViewer.close` hands it back.
-watch(isOpen, (open) => {
-	if (open) void nextTick(() => closeButton.value?.focus())
-})
+//
+// `immediate`, because this component is not only mounted while the viewer is
+// shut: the tray's `open-settings` unmounts `PanelShell` and this with it, so a
+// viewer left open across a settings visit comes back with the overlay rendered
+// and nothing focused. A watcher that only fires on a *change* never runs on that
+// path.
+watch(
+	isOpen,
+	(open) => {
+		if (open) void nextTick(() => closeButton.value?.focus())
+	},
+	{ immediate: true },
+)
 
-// A space switch revokes every object URL, this one included, so an open viewer
-// would sit on a blob nobody can decode. The epoch is the signal that already
-// exists for exactly this; inventing a second one would be a second thing to
-// remember.
-watch(previewEpoch, () => close())
+// The epoch reaction that closes the viewer over a revoked blob lives in
+// `useImageViewer` at module scope, not here: it has to survive this component
+// being unmounted by the settings view.
 </script>
 
 <template>
@@ -71,12 +78,19 @@ watch(previewEpoch, () => close())
 			<!-- No `alt` of its own beyond the filename: the dialog is already labelled
 			     with it, and `object-contain` is what keeps a wide screenshot inside the
 			     390px width instead of cropping it. -->
+			<!-- `@error` because Rust gating the bytes as an image is not the same
+			     claim as the WebView being able to decode them: a truncated or
+			     malformed file passes the magic-number check and then renders as a
+			     broken glyph with nothing saying why. It reports through the same
+			     refusal state a failed read does, so there is one place that explains
+			     an image that will not appear. -->
 			<img
 				v-if="image.state === 'ready'"
 				:src="image.url"
 				:alt="attachment?.name ?? ''"
 				class="max-h-full max-w-full object-contain"
 				draggable="false"
+				@error="reportBrokenImage"
 			/>
 
 			<p

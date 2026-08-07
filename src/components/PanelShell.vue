@@ -357,6 +357,7 @@ function onContextMenu(event: MouseEvent) {
 <template>
 	<div
 		ref="root"
+		data-panel-root
 		tabindex="-1"
 		class="relative grid h-full min-h-0 w-full grid-rows-[auto_1fr_auto] outline-none select-none font-sans text-body"
 		@keydown="onShellKeydown"

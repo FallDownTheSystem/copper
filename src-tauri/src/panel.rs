@@ -132,12 +132,21 @@ pub fn reveal(window: &WebviewWindow) -> tauri::Result<()> {
 /// whatever they were typing into while the notice is on screen.
 ///
 /// **This is the one call in the app that names a z-order band, so it is the one
-/// call the pin has to be read from.** `HWND_TOPMOST` while pinned, because
-/// `HWND_TOP` would move a topmost window to the top of the *non-topmost* band
-/// and drop it out of the band it is supposed to live in. `HWND_TOP` while
-/// unpinned, for the mirror-image reason: `HWND_TOPMOST` would promote the window
-/// back into the topmost band, and a failed capture would silently undo the
-/// user's unpin. Both raise without activating, which is all the notice needs.
+/// call the pin has to be read from.**
+///
+/// `HWND_TOPMOST` while pinned. `HWND_TOP` does *not* clear `WS_EX_TOPMOST` —
+/// only `HWND_NOTOPMOST` does that — so on a pinned window it is close to a
+/// no-op: the window is already at the top of its own band and stays in it. The
+/// explicit `HWND_TOPMOST` is what makes the raise unambiguous rather than
+/// dependent on that.
+///
+/// `HWND_TOP` while unpinned, and *this* is the branch that matters: passing
+/// `HWND_TOPMOST` there sets `WS_EX_TOPMOST` and promotes the window into the
+/// topmost band, so a capture that failed would silently undo the user's unpin.
+/// The corollary is that nothing here needs `HWND_NOTOPMOST`: the pin's own
+/// setter has already cleared the style through `set_always_on_top`, and this
+/// call only has to avoid putting it back. Both raise without activating, which
+/// is all the notice needs.
 ///
 /// Must be called on the main thread, like every other window operation.
 ///
@@ -204,6 +213,21 @@ pub fn install_always_on_top(app: &AppHandle, window: &WebviewWindow) {
 	}
 }
 
+/// Serialises the apply-persist-undo sequence below.
+///
+/// The three steps are one transaction and nothing else made them one. Two
+/// requests a double-click apart interleave: both read `previous` before either
+/// has applied anything, so the loser's undo restores a band the winner had
+/// already replaced, and the *file* is then whichever `patch_settings` returned
+/// last. The window and `settings.json` end up disagreeing, which is exactly the
+/// contradiction the undo-on-failure step exists to prevent.
+///
+/// A lock rather than a generation counter, because the frontend already has the
+/// generation half — `useSettings.attempt` discards a stale *answer*. What it
+/// cannot do is stop two writes from being half-applied against each other on
+/// this side, and only the side holding the window can.
+static PIN_WRITE: Mutex<()> = Mutex::new(());
+
 /// Applies first, persists second, and undoes the application if the write
 /// fails — `theme::set_theme_preference`'s shape, for the same reason it has it.
 ///
@@ -221,6 +245,17 @@ pub async fn set_always_on_top(enabled: bool, app: AppHandle) -> Result<Settings
 		));
 	};
 
+	// Held across the whole sequence, and there is deliberately no `.await` inside
+	// it — every step below is blocking, so the guard cannot be carried across a
+	// suspension point. Poisoning is recovered from rather than propagated: the
+	// guarded value is `()`, so a panicking writer left no invariant broken, and
+	// refusing every later pin over it would be the worse outcome.
+	let _serialised = PIN_WRITE
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner);
+
+	// Read inside the lock. Read outside it, this is the value the *other* request
+	// is in the middle of replacing.
 	let previous = pinned();
 	if let Err(err) = apply_always_on_top(&window, enabled) {
 		return Err(ShellError::Invalid(format!(
