@@ -297,7 +297,7 @@ const captureNote = computed(() => {
 
 				<SettingsRow
 					label="Double-click a note"
-					description="Copy it to the clipboard, or open it for editing."
+					description="Copy runs the same Copy the context menu does; Edit opens the inline editor."
 					:error="doubleClickError"
 				>
 					<SettingsChoice

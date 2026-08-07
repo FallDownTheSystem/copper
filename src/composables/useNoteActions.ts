@@ -21,7 +21,7 @@ import { useEditorHandoff } from './useEditorHandoff'
 import { useNoteDisclosure } from './useNoteDisclosure'
 import { useNoteEditor } from './useNoteEditor'
 import { useNoteSearch } from './useNoteSearch'
-import { focusRowSoon, noteRow, sectionRow, takeRow, useSelection } from './useSelection'
+import { noteRow, sectionRow, takeRow, useSelection } from './useSelection'
 import { useSettings } from './useSettings'
 import { countMessage, useStatusMessage } from './useStatusMessage'
 import { useSpace } from './useSpace'
@@ -238,6 +238,43 @@ function copySelectionAsMarkdown() {
 	)
 }
 
+// --- zero-focus paste --------------------------------------------------------
+
+/**
+ * The mutating half of task-013's zero-focus paste, after `PanelShell` has read
+ * the event.
+ *
+ * **In the same queue as every other mutating action**, which is the whole reason
+ * it lives here rather than in the component. Two pastes a keystroke apart both
+ * resolve against the document as it was before either ran: under top insertion
+ * that is two notes racing for position 0, and either one can lose its place to a
+ * response that lands out of order. A bare in-flight flag would *drop* the second
+ * paste instead, which is the one outcome a capture tool may not have.
+ *
+ * The text arrives as an argument because `clipboardData` is live only while the
+ * event is dispatching, so it cannot be read from inside a queued callback.
+ * Everything after that read is an ordinary mutation.
+ *
+ * Cleared before the attempt and reported after it, which is the rule every
+ * ingest path follows — see `Composer`'s `beginAttach`.
+ */
+function capturePaste(text: string) {
+	return serialize(async () => {
+		space.clearActionError('composer')
+
+		if (text.trim().length > 0) {
+			await space.addNote(text)
+			return
+		}
+
+		// No text: an image or a file list, or nothing at all. An empty clipboard is
+		// a silent no-op — `pasteAttachment` reports `handled: false` and says
+		// nothing.
+		const outcome = await attachments.pasteAttachment()
+		if (outcome.message) space.reportActionError('composer', outcome.message)
+	})
+}
+
 // --- mark as done ------------------------------------------------------------
 
 /**
@@ -323,12 +360,27 @@ function merge() {
 		// survivor is whichever of the merged ids comes first in canonical order,
 		// and task-003 decides that against the document it actually merged — which
 		// after a conflict re-apply is the external one, where the order can differ
-		// from the one these ids were collected in. The survivor is simply the id
-		// that is still there.
-		const survivor = ids.find((id) => result?.value.notes.some((note) => note.id === id))
+		// from the one these ids were collected in. The survivor is simply the note
+		// that is still there — taken as the note rather than the id because its
+		// section is needed below and is knowable only from this document.
+		const survivor = result?.value.notes.find((note) => ids.includes(note.id))
 		if (survivor === undefined) return
-		selection.select(survivor)
-		focusRowSoon(noteRow(survivor))
+		selection.select(survivor.id)
+
+		// Through `landingRow`, like `moveTo` and the drag commit, rather than
+		// straight to the survivor's own row: merging inside a **collapsed** section
+		// leaves that note with no row at all. `select` had already pointed the
+		// roving target at it, and nothing was coming to correct that — `rowIds`
+		// changed while the document was applied, so its watcher had already run and
+		// seen a valid target by the time this code assigned an invalid one. The grid
+		// was left with `tabindex="0"` on nothing and unreachable by Tab.
+		//
+		// The section is read off the *returned* document for the same reason the
+		// survivor is: after a conflict re-apply the merge happened against the
+		// external document, where it may not be the section these ids were collected
+		// from.
+		const target = landingRow(survivor.id, survivor.section)
+		if (target !== null) takeRow(target)
 	})
 }
 
@@ -633,6 +685,7 @@ export function useNoteActions() {
 		copyDocumentAsMarkdown,
 		copySectionAsMarkdown,
 		copySelectionAsMarkdown,
+		capturePaste,
 		toggleDone,
 		moveTo,
 		merge,

@@ -7,11 +7,13 @@
  * over its input and unit-testable without mocking any IPC, and it is what lets
  * `useSpace` call into it during reconciliation without a module cycle.
  *
- * Two orders exist and must not be conflated. `rowIds` is every focusable row in
- * visual order, section headers included — arrow keys traverse this.
- * `visibleNoteIds` is note rows only in flattened order — selection, ranges and
- * Ctrl+A operate on this. Conflating them is what breaks Shift+Arrow across a
- * section boundary.
+ * Three orders exist and must not be conflated. `rowIds` is every focusable row
+ * in visual order, section headers included — arrow keys traverse this.
+ * `visibleNoteIds` is note rows only in flattened order — pointer selection and
+ * Shift ranges operate on this, and conflating it with `rowIds` is what breaks
+ * Shift+Arrow across a section boundary. `actionableNoteIds` is the same list
+ * without the collapse filter — what an *action* may target, and what Ctrl+A
+ * selects, because folding a section shut hides rows rather than narrowing scope.
  */
 
 import { useNoteSearch } from './useNoteSearch'

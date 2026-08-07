@@ -11,11 +11,7 @@ const {
 	spaceName,
 	activeSectionObject,
 	initialize,
-	addNote,
-	clearActionError,
-	reportActionError,
 } = useSpace()
-const { pasteAttachment } = useAttachments()
 const { setClampHeight } = useNoteDisclosure()
 const { ensureHighlighter } = useMarkdown()
 // `setOverlayHost` below is what fills the two refs every menu reads; each menu
@@ -31,6 +27,7 @@ const { initialize: initializeSpaces } = useSpaces()
 const {
 	copyNotes,
 	copyAsList,
+	capturePaste,
 	merge,
 	openInEditor,
 	deleteNotes,
@@ -288,36 +285,29 @@ function onShellKeydown(event: KeyboardEvent) {
  *
  * **Text wins, and the rule is still Rust's.** A clipboard carrying text takes
  * the note branch here; one that does not falls through to `attach_paste`, which
- * returns nothing the moment `CF_UNICODETEXT` is present. The two agree because
- * the second is a strict subset of the first, so there is no second copy of the
- * rule to drift — only an ordering.
+ * returns nothing the moment `CF_UNICODETEXT` is present. The containment runs
+ * this way round: taking the note branch requires *non-whitespace* text, and
+ * Rust declines to attach for **any** `CF_UNICODETEXT` at all — so the clipboards
+ * this treats as a note are a subset of the ones Rust would already have refused
+ * to attach, and the two can never both claim the same paste. The gap between the
+ * two conditions is a clipboard holding only whitespace, which falls to
+ * `attach_paste` and comes back empty: a silent no-op, which is what it should be.
  *
- * Both branches report on the composer's surface, which is where `DropTarget`
- * puts a failed drop and for the same reason: the pending tray a paste fills
- * lives there, and a panel-level ingest still has to explain itself somewhere the
- * user is looking.
+ * The decision is all this handler makes. The mutation goes through
+ * `capturePaste`, so it takes its turn in the same queue as every other action
+ * rather than racing a paste a keystroke behind it — and reports on the composer's
+ * surface, where `DropTarget` puts a failed drop and for the same reason.
  */
-async function onPaste(event: ClipboardEvent) {
+function onPaste(event: ClipboardEvent) {
 	// The composer, the inline editor, the search field and both rename fields all
 	// resolve here, and in every one of them Ctrl+V has a text-editing meaning that
 	// this must not take. An open menu owns the keyboard the same way it does in
 	// the chord layer.
 	if (inTextSurface(event.target) || inOverlay(event.target)) return
 
-	const text = event.clipboardData?.getData('text/plain') ?? ''
-	// Cleared before the attempt and reported after it, which is the rule every
-	// ingest path follows — see `Composer`'s `beginAttach`.
-	clearActionError('composer')
-
-	if (text.trim().length > 0) {
-		await addNote(text)
-		return
-	}
-
-	// No text: an image or a file list, or nothing at all. An empty clipboard is a
-	// silent no-op — `pasteAttachment` reports `handled: false` and says nothing.
-	const outcome = await pasteAttachment()
-	if (outcome.message) reportActionError('composer', outcome.message)
+	// Read here rather than inside the queued action: `clipboardData` is live only
+	// while the event is dispatching.
+	void capturePaste(event.clipboardData?.getData('text/plain') ?? '')
 }
 
 useEventListener(document, 'paste', onPaste)

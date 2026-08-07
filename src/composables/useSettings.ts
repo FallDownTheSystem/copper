@@ -131,9 +131,24 @@ function errorFor(scope: SettingsScope) {
 
 // --- pulls -------------------------------------------------------------------
 
+/**
+ * Under the same generation guard the setters use, and for the same reason they
+ * need one.
+ *
+ * This is a *reader* racing *writers*: a `settings-changed` fired by a Rust-side
+ * write — a space switch rewriting `recents`, a panel move — sends this pull out,
+ * and it can resolve after a setter the user has since triggered. Without the
+ * guard it applies the file as it was before that setter, and no further event is
+ * coming to correct it, because Rust emits nothing for a change the frontend
+ * itself made. That used to cost a stale toggle on screen; with `doubleClick` and
+ * `insertionPoint` in this object it costs the panel *behaving* as the older file
+ * said, which is why the pre-existing gap is worth closing now.
+ */
 async function pullSettings() {
+	const write = settingsWrites.issue()
 	try {
-		settings.value = await invoke<Settings>('get_settings')
+		const value = await invoke<Settings>('get_settings')
+		if (settingsWrites.settle(write)) settings.value = value
 	} catch (error) {
 		console.error('[copper] could not read settings', error)
 	}

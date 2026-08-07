@@ -124,12 +124,22 @@ pub async fn add_note(
 	section: Option<String>,
 	state: State<'_, SharedStore>,
 ) -> Reply<AddNoteResult> {
-	let mut guard = lock(&state);
+	add(&state, &body, section.as_deref())
+}
+
+/// The body of [`add_note`], as a plain function over the shared store.
+///
+/// Split out for the same reason [`submit`] is: `cargo test` has no Tauri runtime
+/// and so cannot construct a `State`, and asserting the insertion-point behaviour
+/// by re-implementing the command in the test would prove only that the test
+/// agrees with itself.
+pub fn add(shared: &SharedStore, body: &str, section: Option<&str>) -> Reply<AddNoteResult> {
+	let mut guard = lock(shared);
 	// Read here rather than taken as a parameter: `insertAt` would be the store's
 	// first multi-word parameter name, and the capture path — which has no frontend
 	// caller to pass one — has to agree with this one anyway.
 	let at = guard.settings().insertion();
-	let (note_id, space) = guard.mutate(|doc| ops::add_note(doc, &body, section.as_deref(), &[], at))?;
+	let (note_id, space) = guard.mutate(|doc| ops::add_note(doc, body, section, &[], at))?;
 	Ok(AddNoteResult { space, note_id })
 }
 

@@ -109,6 +109,19 @@ fn duplicates<'a>(ids: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
 /// from spec 1.5 as well — note count and the multiset of ids and bodies are
 /// unchanged, every reference resolves, and orders are contiguous from zero.
 pub fn normalise(space: &mut Space) {
+	// 0. Section names are single-line by contract, and this is where a document
+	//    that did not come from `ops` is held to it. A hand-edited `.copper` is an
+	//    explicitly supported entry point, and a name carrying a newline is not
+	//    merely untidy: it renders as one row in the list while carrying a second
+	//    line that a Markdown export puts at the start of a line, where a `#` or a
+	//    fence means what it says. Owned by the model rather than patched at each
+	//    consumer, so a consumer written later inherits the guarantee.
+	for section in &mut space.sections {
+		if section.name.contains(['\n', '\r']) {
+			section.name = single_line(&section.name);
+		}
+	}
+
 	// 1. A hand-emptied `sections` array still needs a capture target.
 	if space.sections.is_empty() {
 		space.sections.push(Section {
@@ -177,6 +190,30 @@ pub fn normalise(space: &mut Space) {
 		ordered.append(&mut group);
 	}
 	space.notes = ordered;
+}
+
+/// Every run of line breaks collapsed to one space.
+///
+/// Only line breaks, and deliberately not all whitespace: collapsing runs of
+/// ordinary spaces is [`crate::entry::normalise_name`]'s job and is used for
+/// *matching* names, whereas this is about what a name may contain at all. A
+/// leading or trailing run leaves no space behind, so it neither pads a name nor
+/// makes an otherwise-empty one look non-empty.
+pub fn single_line(name: &str) -> String {
+	let mut out = String::with_capacity(name.len());
+	let mut pending_break = false;
+	for character in name.chars() {
+		if character == '\n' || character == '\r' {
+			pending_break = !out.is_empty();
+			continue;
+		}
+		if pending_break {
+			out.push(' ');
+			pending_break = false;
+		}
+		out.push(character);
+	}
+	out
 }
 
 /// Parse, then normalise. The pairing every caller that is *not* startup wants.
@@ -284,6 +321,49 @@ mod tests {
 		normalise(&mut input);
 		assert_eq!(once, input, "normalise is not idempotent");
 		input
+	}
+
+	/// Task-013 review finding 3. A hand-edited `.copper` is a supported entry
+	/// point, and a section name is a single line by contract — one row in the
+	/// list, one ATX heading in a Markdown export. Without this the text after the
+	/// break reached the export at the start of a line, where a `#` opens a heading
+	/// the document never had.
+	#[test]
+	fn a_loaded_section_name_is_collapsed_to_one_line() {
+		let mut doc = space();
+		doc.sections[0].name = "Safe\n# Injected".to_string();
+		doc.sections[1].name = "Windows\r\nCRLF".to_string();
+
+		normalise(&mut doc);
+
+		let names: Vec<&str> = doc.sections.iter().map(|s| s.name.as_str()).collect();
+		assert_eq!(names[0], "Safe # Injected");
+		assert_eq!(names[1], "Windows CRLF");
+		for section in &doc.sections {
+			assert!(!section.name.contains(['\n', '\r']), "{:?}", section.name);
+		}
+	}
+
+	/// The same document read from disk rather than assembled in memory, since
+	/// that is the path a hand edit actually takes.
+	#[test]
+	fn parsing_a_document_with_a_multiline_name_yields_one_line() {
+		let text = to_git_json(&space())
+			.unwrap()
+			.replace("\"Research\"", "\"Safe\\n# Injected\"");
+
+		let parsed = parse_normalised(&text).unwrap();
+
+		assert!(parsed.sections.iter().any(|s| s.name == "Safe # Injected"), "{:?}", parsed.sections);
+	}
+
+	#[test]
+	fn single_line_leaves_a_name_with_no_breaks_alone() {
+		assert_eq!(single_line("Deep  Research"), "Deep  Research");
+		// A leading or trailing run leaves no space behind, so it cannot pad a name
+		// or make an empty one look non-empty.
+		assert_eq!(single_line("\n\nEdges\n\n"), "Edges");
+		assert_eq!(single_line("\n\n"), "");
 	}
 
 	#[test]

@@ -21,7 +21,7 @@ use crate::attachments::{invalid_file_name, is_bare_filename, ATTACHMENT_MAX_PER
 use crate::entry::normalise_name;
 
 use super::error::{Result, StoreError};
-use super::format::{normalise, now_rfc3339};
+use super::format::{normalise, now_rfc3339, single_line};
 use super::ids;
 use super::model::{Attachment, Note, Section, Space};
 use super::settings::InsertionPoint;
@@ -42,8 +42,17 @@ fn clean_body(body: &str) -> Result<String> {
 	Ok(trimmed.to_string())
 }
 
+/// Trimmed, and **single-line**.
+///
+/// A section name is one row in the list and one ATX heading in a Markdown
+/// export, so a newline inside it is not merely untidy: the text after the break
+/// lands at the start of a line, where a `#` or a fence means what it says and
+/// the export gains structure no note put there. The invariant is the model's —
+/// `normalise` holds a hand-edited document to the same rule — so no renderer has
+/// to defend against it.
 fn clean_name(name: &str) -> Result<String> {
-	let trimmed = name.trim();
+	let collapsed = single_line(name);
+	let trimmed = collapsed.trim();
 	if trimmed.is_empty() {
 		return Err(StoreError::Invalid("a section needs a name".into()));
 	}
@@ -1052,6 +1061,27 @@ mod tests {
 		let mut space = space();
 		rename_section(&mut space, "sec_bbbbbbbb", "Alpha").unwrap();
 		assert_eq!(space.sections[1].name, "Alpha");
+	}
+
+	/// Task-013 review finding 3, at the op boundary rather than the load one: a
+	/// name is one line, so the second line of a pasted rename cannot reach a
+	/// Markdown export at the start of a line and open a heading there.
+	#[test]
+	fn a_section_name_cannot_carry_a_newline() {
+		let mut space = space();
+
+		rename_section(&mut space, "sec_bbbbbbbb", "Safe\n# Injected").unwrap();
+		assert_eq!(space.sections[1].name, "Safe # Injected");
+
+		let id = add_section(&mut space, "  Made\r\nup  ").unwrap();
+		let index = space.section_index(&id).unwrap();
+		assert_eq!(space.sections[index].name, "Made up");
+
+		// A name that is only line breaks is empty, not a name.
+		assert_eq!(
+			rename_section(&mut space, "sec_aaaaaaaa", "\n\n").unwrap_err().kind(),
+			"invalid"
+		);
 	}
 
 	#[test]

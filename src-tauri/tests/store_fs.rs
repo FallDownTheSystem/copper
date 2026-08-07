@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use copper_lib::store::commands::{submit, SubmitOutcome, SubmitResult};
+use copper_lib::store::commands::{self, submit, SubmitOutcome, SubmitResult};
 use copper_lib::store::error::StoreError;
 use copper_lib::store::events::{ChangeReason, EventSink, RecordingSink, StoreEvent};
 use copper_lib::attachments;
@@ -1611,6 +1611,70 @@ fn update_settings_persists_and_returns_the_new_settings() {
 	assert_eq!(reloaded.settings.panel_position, updated.panel_position);
 	// Opening a space is still the only thing that touches recents.
 	assert_eq!(reloaded.settings.recents, harness.settings().recents);
+}
+
+// --- the insertion-point setting (task-013) ----------------------------------
+
+/// Three functions create a note and every one of them has to read the setting:
+/// `add_note` (the zero-focus paste), `submit` (the composer) and
+/// `append_capture` (the global hotkey). Driven through the functions their
+/// callers actually reach rather than through `ops::add_note`, which takes the
+/// placement as an argument and so cannot show whether anything read it.
+#[test]
+fn every_write_path_reads_the_insertion_point_setting() {
+	let harness = Harness::new();
+
+	fn ids(doc: &Space) -> Vec<String> {
+		doc.notes.iter().map(|note| note.id.clone()).collect()
+	}
+
+	// The shipped default appends, which is what every build before this feature
+	// did — and is the witness that the assertions below are reading a setting
+	// rather than a constant.
+	let pasted = commands::add(&harness.shared, "pasted", None).unwrap().note_id;
+	let composed = harness.submit("composed").unwrap().note_id.unwrap();
+	let captured = store::append_capture(&harness.shared, "captured").unwrap();
+	assert_eq!(
+		ids(&harness.doc()),
+		vec![pasted.clone(), composed.clone(), captured.clone()],
+		"the default is bottom"
+	);
+
+	store::lock(&harness.shared)
+		.update_settings(serde_json::from_str(r#"{"insertionPoint":"top"}"#).unwrap())
+		.unwrap();
+
+	let top_pasted = commands::add(&harness.shared, "pasted at the top", None).unwrap().note_id;
+	assert_eq!(position_of(&harness.doc(), &top_pasted), 0, "add_note ignored the setting");
+
+	let top_composed = harness.submit("composed at the top").unwrap().note_id.unwrap();
+	assert_eq!(position_of(&harness.doc(), &top_composed), 0, "submit ignored the setting");
+
+	let top_captured = store::append_capture(&harness.shared, "captured at the top").unwrap();
+	assert_eq!(
+		position_of(&harness.doc(), &top_captured),
+		0,
+		"append_capture ignored the setting"
+	);
+
+	// Newest first among the three, and the notes that were already there keep
+	// their order behind them.
+	assert_eq!(
+		ids(&harness.doc()),
+		vec![top_captured, top_composed, top_pasted, pasted, composed, captured]
+	);
+	// `order` is renumbered contiguously from zero by `normalise`, so `-1` never
+	// reaches disk.
+	for (index, note) in harness.doc().notes.iter().enumerate() {
+		assert_eq!(note.order, index as i64);
+	}
+}
+
+fn position_of(doc: &Space, id: &str) -> usize {
+	doc.notes
+		.iter()
+		.position(|note| note.id == id)
+		.expect("the note is in the document")
 }
 
 // --- read-path retry (task-005 review ruling, 2026-08-05) --------------------

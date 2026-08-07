@@ -145,6 +145,18 @@ const STATUS: StoreStatus = {
 	startupNotice: null,
 }
 
+/** `SPACE` after `merge_notes` over both of `sec_a`'s notes: one note, keeping
+ *  the first id, in the section they were already in. */
+const MERGED: Space = {
+	...SPACE,
+	notes: [
+		{
+			...SPACE.notes[0]!,
+			body: `${SPACE.notes[0]!.body}\n\n${SPACE.notes[1]!.body}`,
+		},
+	],
+}
+
 const SHORTCUTS = {
 	capture: 'Shift Shift',
 	summon: 'Ctrl+Shift+Space',
@@ -195,6 +207,10 @@ async function baseInvoke(command: string) {
 	// nothing" answer.
 	if (command === 'add_note') return { space: SPACE, noteId: 'nte_1' }
 	if (command === 'attach_paste') return []
+	// The two notes of `sec_a` become one, keeping the first id — which is what
+	// `merge_notes` does, and what makes the survivor's row disappear when that
+	// section happens to be collapsed.
+	if (command === 'merge_notes') return MERGED
 	if (command === 'hide_panel') return null
 	if (command === 'editor_handoffs') return []
 	if (command === 'set_notes_done') return SPACE
@@ -2797,9 +2813,18 @@ describe('the double-click action', () => {
  * The formatting itself is `noteMarkdown.test.ts`.
  */
 describe('copy as Markdown', () => {
-	const RESEARCH = ['# Research', '- [ ] first note', '- [x] ```js', '  const a = 1', '  ```'].join(
-		'\n',
-	)
+	// The second note opens a fence, which cannot follow a list marker on the same
+	// line without ceasing to be one — so it sits under a bare marker. See
+	// `noteMarkdown.test.ts`, which parses that form back to prove it survives.
+	const RESEARCH = [
+		'# Research',
+		'- [ ] first note',
+		'- [x]',
+		'',
+		'  ```js',
+		'  const a = 1',
+		'  ```',
+	].join('\n')
 
 	function copied() {
 		const written = mocks.invoke.mock.calls.filter((call) => call[0] === 'clipboard_write_text')
@@ -2900,5 +2925,206 @@ describe('copy as Markdown', () => {
 		await settle(2)
 
 		expect(copied()).toBeNull()
+	})
+})
+
+/**
+ * Merging inside a collapsed section, which is reachable in two gestures now that
+ * the section menu can select one: `Select all` on a folded section, then the
+ * merge chord.
+ */
+describe('merge and the roving target', () => {
+	it('holds the section header when the survivor has no row of its own', async () => {
+		const wrapper = await mountPanel()
+		await wrapper
+			.find('button[aria-label="Collapse Research"], button[aria-label="Expand Research"]')
+			.trigger('click')
+		await settle(3)
+
+		// What the section context menu's `Select all` does. Both notes are selected
+		// even though neither has a row — collapse folds rows away, it never narrows
+		// what an action targets.
+		selection.selectSection('sec_a')
+		await settle(2)
+		expect(selection.selectedIds.value).toEqual(['nte_1', 'nte_2'])
+
+		wrapper.element.dispatchEvent(
+			new KeyboardEvent('keydown', { key: 'M', ctrlKey: true, shiftKey: true, bubbles: true }),
+		)
+		await settle(4)
+
+		expect(selection.selectedIds.value).toEqual(['nte_1'])
+		// The survivor is still inside the folded section, so it has no row at all —
+		// pointing the roving target at one would leave the grid with `tabindex="0"`
+		// on nothing and unreachable by Tab.
+		expect(wrapper.find('[data-row-id="n:nte_1"]').exists()).toBe(false)
+		expect(selection.focusedId.value).toBe('s:sec_a')
+		expect(wrapper.findAll('[data-row-id][tabindex="0"]').length).toBe(1)
+	})
+
+	it('holds the survivor itself when its section is open', async () => {
+		const wrapper = await mountPanel()
+		selection.selectSection('sec_a')
+		await settle(2)
+
+		wrapper.element.dispatchEvent(
+			new KeyboardEvent('keydown', { key: 'M', ctrlKey: true, shiftKey: true, bubbles: true }),
+		)
+		await settle(4)
+
+		expect(selection.focusedId.value).toBe(noteRow('nte_1'))
+		expect(wrapper.findAll('[data-row-id][tabindex="0"]').length).toBe(1)
+	})
+})
+
+/**
+ * AC12 at the panel, not at the renderer: `noteMarkdown.test.ts` proves the same
+ * input formats identically, and this proves the three scopes actually resolve to
+ * the same input when they should.
+ */
+describe('the three copy scopes agree byte for byte', () => {
+	/** Every section holding notes, so the whole-document and select-all scopes
+	 *  cover exactly the same ground — with `sec_b` empty they legitimately differ
+	 *  by its heading, which is the documented empty-section rule and a different
+	 *  question. */
+	async function installFilledDocument() {
+		const filled: Space = {
+			...SPACE,
+			notes: [
+				...SPACE.notes,
+				{
+					id: 'nte_3',
+					section: 'sec_b',
+					order: 0,
+					done: true,
+					body: 'a note in the second section',
+					created: '2026-08-05T00:00:00Z',
+					updated: '2026-08-05T00:00:00Z',
+				},
+			],
+		}
+		mocks.invoke.mockImplementation(async (command: string) =>
+			command === 'get_active_space' ? filled : baseInvoke(command),
+		)
+		await space.refresh()
+	}
+
+	function copied() {
+		const written = mocks.invoke.mock.calls.filter((call) => call[0] === 'clipboard_write_text')
+		return (written.at(-1)?.[1] as { text: string } | undefined)?.text ?? null
+	}
+
+	it('produces identical text from the menu action and from select-all', async () => {
+		await mountPanel()
+		await installFilledDocument()
+
+		await actions.copyDocumentAsMarkdown()
+		await settle(2)
+		const fromMenu = copied()
+
+		selection.selectAll()
+		await actions.copySelectionAsMarkdown()
+		await settle(2)
+		const fromSelection = copied()
+
+		expect(fromSelection).toBe(fromMenu)
+		// Not vacuously equal: both carry both sections, both done states, and the
+		// fence-bearing note's block form.
+		expect(fromMenu).toContain('# Research')
+		expect(fromMenu).toContain('# Inbox')
+		expect(fromMenu).toContain('- [ ] first note')
+		expect(fromMenu).toContain('- [x] a note in the second section')
+		expect(fromMenu).toContain('  ```js')
+	})
+
+	it('produces the same text again as the two sections copied one at a time', async () => {
+		await mountPanel()
+		await installFilledDocument()
+
+		await actions.copyDocumentAsMarkdown()
+		await settle(2)
+		const whole = copied()
+
+		await actions.copySectionAsMarkdown('sec_a')
+		await settle(2)
+		const research = copied()
+
+		await actions.copySectionAsMarkdown('sec_b')
+		await settle(2)
+		const inbox = copied()
+
+		// The sections are joined by exactly one blank line, so the single-section
+		// scope is the document scope restricted — not a second formatting.
+		expect(`${research}\n\n${inbox}`).toBe(whole)
+	})
+})
+
+/**
+ * Task-013 feature 2 at the panel. Placement itself is Rust's — these assert the
+ * frontend does nothing of its own about it, which is design decision 11.
+ */
+describe('top insertion', () => {
+	/** `SPACE` with a freshly pasted note leading `sec_a`, which is what the store
+	 *  returns once `insertionPoint` is `top`. */
+	const TOP_FIRST: Space = {
+		...SPACE,
+		notes: [
+			{
+				id: 'nte_3',
+				section: 'sec_a',
+				order: 0,
+				done: false,
+				body: 'pasted at the top',
+				created: '2026-08-06T00:00:00Z',
+				updated: '2026-08-06T00:00:00Z',
+			},
+			{ ...SPACE.notes[0]!, order: 1 },
+			{ ...SPACE.notes[1]!, order: 2 },
+		],
+	}
+
+	async function mountWithTopInsertion() {
+		settingsPayload = { ...defaultSettings(), insertionPoint: 'top' }
+		mocks.invoke.mockImplementation(async (command: string) =>
+			command === 'add_note' ? { space: TOP_FIRST, noteId: 'nte_3' } : baseInvoke(command),
+		)
+		const wrapper = await mountPanel()
+		await settings.refresh()
+		return wrapper
+	}
+
+	function paste(text: string) {
+		const event = new Event('paste', { bubbles: true, cancelable: true })
+		Object.defineProperty(event, 'clipboardData', { value: { getData: () => text } })
+		return event
+	}
+
+	it('renders a pasted note as the first row of its section', async () => {
+		const wrapper = await mountWithTopInsertion()
+		takeRow(noteRow('nte_2'))
+		await settle(2)
+
+		document.body.dispatchEvent(paste('pasted at the top'))
+		await settle(4)
+
+		const rows = wrapper.findAll('[data-row-id^="n:"]').map((row) => row.attributes('data-row-id'))
+		expect(rows).toEqual([noteRow('nte_3'), noteRow('nte_1'), noteRow('nte_2')])
+	})
+
+	it('leaves focus and the scroll region alone, having no top pin to run', async () => {
+		const wrapper = await mountWithTopInsertion()
+		takeRow(noteRow('nte_2'))
+		await settle(2)
+
+		document.body.dispatchEvent(paste('pasted at the top'))
+		await settle(4)
+
+		// Decision 11: there is no `{ kind: 'top' }` anchor and no `pinToTop`, so a
+		// top insertion changes nothing about where the list sits or what holds the
+		// roving target. happy-dom has no layout, so the scroll assertion witnesses
+		// only that nothing *deliberately* scrolled — which is the whole of what the
+		// decision leaves in the frontend.
+		expect(selection.focusedId.value).toBe(noteRow('nte_2'))
+		expect(wrapper.get('[data-scroll-region]').element.scrollTop).toBe(0)
 	})
 })
