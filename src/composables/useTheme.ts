@@ -20,6 +20,7 @@
  * nothing else.
  */
 
+import { useReducedMotion } from './useReducedMotion'
 import { useSettings, type ThemePreference } from './useSettings'
 
 const COLOR_SCHEME_KEY = 'color-scheme'
@@ -94,6 +95,17 @@ function install() {
 		},
 		{ immediate: true },
 	)
+
+	// The `prefers-reduced-motion` block in main.css covers only the OS half of
+	// the preference. This mirrors `useReducedMotion`'s OR — OS *or* the app's own
+	// "Animate controls" setting — onto a root class, which is the only way CSS
+	// can see a value that lives in `settings.json`. It rides here rather than in
+	// a component because this is where the once-guard and documentElement
+	// already are.
+	const reduced = useReducedMotion()
+	watch(reduced, (off) => document.documentElement.classList.toggle('reduce-motion', off), {
+		immediate: true,
+	})
 }
 
 export function useTheme() {

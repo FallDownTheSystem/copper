@@ -50,12 +50,15 @@ const OPTIONS = [
 			:key="option.value"
 			:value="option.value"
 			:aria-label="option.label"
-			class="text-text-secondary hover:bg-surface-hover data-[state=checked]:bg-surface data-[state=checked]:text-text-primary grid size-8 place-items-center rounded-sm transition-colors duration-fast focus-visible:outline-2 focus-visible:outline-offset-2"
+			class="text-text-secondary hover:bg-surface-hover data-[state=checked]:bg-surface data-[state=checked]:text-text-primary outline-focus-ring grid size-8 place-items-center rounded-sm transition-colors duration-fast focus-visible:outline-2 focus-visible:outline-offset-2"
 		>
-			<!-- The focus ring above sets no colour on purpose. A colourless outline
-			     resolves to `currentColor` and, in Windows High Contrast, maps onto the
-			     system `Highlight` palette automatically; a hardcoded one overrides the
-			     ring colour the user configured in their OS and fights that palette. -->
+			<!-- The focus ring above names a colour, which is safe in High Contrast for
+			     a reason worth stating: under `forced-colors: active` the UA
+			     force-adjusts `outline-color` to the system palette whatever the author
+			     asked for, so the token cannot override the ring colour the user
+			     configured in their OS. Leaving it colourless would only have meant
+			     `currentColor` in the ordinary themes — a ring that changes hue with the
+			     segment's own state, and does not match the panel's other rings. -->
 			<IconLucideMonitor
 				v-if="option.value === 'system'"
 				class="size-4"

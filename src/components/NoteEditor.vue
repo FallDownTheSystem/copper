@@ -125,7 +125,7 @@ async function keepMine() {
 			:value="draft"
 			:aria-busy="pending"
 			aria-label="Edit note"
-			class="squircle border-separator bg-surface-hover text-text-primary outline-focus-ring w-full min-w-0 select-text resize-none rounded-md border px-2 py-1.5 text-body focus-visible:outline-2 focus-visible:-outline-offset-1"
+			class="panel-field w-full min-w-0 resize-none px-2 py-1.5"
 			:class="supportsFieldSizing ? 'field-sizing-content' : ''"
 			@input="onInput"
 			@keydown="onKeydown"
@@ -161,6 +161,13 @@ async function keepMine() {
 			</div>
 		</div>
 
-		<p v-if="editorError" class="text-destructive mt-1 text-meta">{{ editorError }}</p>
+		<p v-if="editorError" class="text-text-primary mt-1 flex items-start gap-1.5 text-meta">
+			<IconLucideAlertCircle
+				class="mt-0.5 size-3.5 shrink-0"
+				aria-hidden="true"
+				focusable="false"
+			/>
+			<span>{{ editorError }}</span>
+		</p>
 	</div>
 </template>

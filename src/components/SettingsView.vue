@@ -164,7 +164,7 @@ const updateActionLabel = computed(() => {
  *  one of them dimming while the other went grey would read as a bug rather than
  *  as a busy state. */
 const updateButtonClass =
-	'panel-button outline-focus-ring hit-44 relative focus-visible:outline-2 focus-visible:-outline-offset-1 disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent'
+	'panel-button hit-44 relative disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent'
 
 function onUpdateAction() {
 	void (canInstall.value ? installUpdate() : checkForUpdate())
@@ -204,7 +204,7 @@ const captureNote = computed(() => {
 				ref="back"
 				type="button"
 				aria-label="Back to notes"
-				class="squircle text-text-secondary hover:bg-surface-hover active:bg-surface-active outline-focus-ring hit-44 relative grid size-8 place-items-center rounded-md transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
+				class="icon-button hit-44 relative"
 				@click="showList"
 			>
 				<IconLucideChevronLeft class="size-4" aria-hidden="true" focusable="false" />
@@ -339,8 +339,17 @@ const captureNote = computed(() => {
 							{{ availableUpdate.notes }}
 						</p>
 
-						<p v-if="updateError" class="text-text-primary mt-1.5 text-meta" role="alert">
-							{{ updateError }}
+						<p
+							v-if="updateError"
+							class="text-text-primary mt-1.5 flex items-start gap-1.5 text-meta"
+							role="alert"
+						>
+							<IconLucideAlertCircle
+								class="mt-0.5 size-3.5 shrink-0"
+								aria-hidden="true"
+								focusable="false"
+							/>
+							<span>{{ updateError }}</span>
 						</p>
 
 						<!-- The way out of an update that will never install. The retained

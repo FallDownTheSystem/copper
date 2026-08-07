@@ -9,6 +9,7 @@
  */
 import { listen } from '@tauri-apps/api/event'
 import { AnimatePresence, motion } from 'motion-v'
+import { EASE_OUT_QUINT } from '@/lib/motion'
 
 const { view, direction, showSettings } = useView()
 const { initialize } = useSettings()
@@ -26,16 +27,14 @@ const sign = computed(() => (direction.value === 'forward' ? 1 : -1))
 /** Reduce, do not remove: the translate goes, the cross-fade stays. */
 const shift = computed(() => (reduced.value ? 0 : 1))
 
-const EASE = [0.23, 1, 0.32, 1]
-
 const initial = computed(() => ({ opacity: 0, x: 16 * sign.value * shift.value }))
-const animate = { opacity: 1, x: 0, transition: { duration: 0.2, ease: EASE } }
+const animate = { opacity: 1, x: 0, transition: { duration: 0.2, ease: EASE_OUT_QUINT } }
 /** Exits are faster and smaller than entrances — the thing leaving has already
  *  been read. */
 const exit = computed(() => ({
 	opacity: 0,
 	x: -8 * sign.value * shift.value,
-	transition: { duration: 0.15, ease: EASE },
+	transition: { duration: 0.15, ease: EASE_OUT_QUINT },
 }))
 
 onMounted(() => {

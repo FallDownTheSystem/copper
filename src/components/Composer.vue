@@ -245,7 +245,7 @@ function onKeydown(event: KeyboardEvent) {
 				:value="value"
 				:placeholder="placeholder"
 				:aria-busy="submitting"
-				class="squircle border-separator bg-surface-hover text-text-primary placeholder:text-text-disabled outline-focus-ring max-h-[5lh] min-h-8 w-full min-w-0 flex-1 resize-none select-text rounded-md border px-2 py-1.5 text-body focus-visible:outline-2 focus-visible:-outline-offset-1"
+				class="panel-field max-h-[5lh] min-h-8 w-full min-w-0 flex-1 resize-none px-2 py-1.5"
 				:class="supportsFieldSizing ? 'field-sizing-content' : ''"
 				@input="onInput"
 				@keydown="onKeydown"
@@ -256,13 +256,20 @@ function onKeydown(event: KeyboardEvent) {
 			<button
 				type="button"
 				aria-label="Attach files"
-				class="squircle text-text-secondary hover:text-text-primary hover:bg-surface-hover outline-focus-ring hit-44 relative mb-0.5 grid size-7 shrink-0 place-items-center rounded-md transition-colors duration-fast focus-visible:outline-2"
+				class="icon-button hover:text-text-primary hit-44 relative shrink-0"
 				@click="pick"
 			>
 				<IconLucidePaperclip class="size-4" aria-hidden="true" focusable="false" />
 			</button>
 		</div>
 
-		<p v-if="composerError" class="text-destructive mt-1 text-meta">{{ composerError }}</p>
+		<p v-if="composerError" class="text-text-primary mt-1 flex items-start gap-1.5 text-meta">
+			<IconLucideAlertCircle
+				class="mt-0.5 size-3.5 shrink-0"
+				aria-hidden="true"
+				focusable="false"
+			/>
+			<span>{{ composerError }}</span>
+		</p>
 	</form>
 </template>

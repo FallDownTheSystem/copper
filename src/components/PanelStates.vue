@@ -84,13 +84,7 @@ const erroredMessage = computed(() =>
 			<p class="text-text-primary text-body font-semibold">Couldn't open this space.</p>
 			<p class="text-text-secondary mt-1 text-meta">Check the file still exists, then try again.</p>
 			<p v-if="loadError" class="text-text-secondary mt-1 text-meta">{{ loadError }}</p>
-			<button
-				type="button"
-				class="border-separator hover:bg-surface-hover outline-focus-ring mt-2 rounded-md border px-2 py-1 text-meta transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
-				@click="retry"
-			>
-				Try again
-			</button>
+			<button type="button" class="panel-button mt-2" @click="retry">Try again</button>
 		</div>
 
 		<slot v-else />

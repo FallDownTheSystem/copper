@@ -90,11 +90,7 @@ watch(recording, (open) => {
 					     unhittable. Eight pixels is what puts their centres far enough
 					     apart for two 44px boxes to clear each other. -->
 					<div class="ml-auto flex shrink-0 items-center gap-2">
-						<button
-							type="button"
-							class="panel-button outline-focus-ring hit-44 relative focus-visible:outline-2 focus-visible:-outline-offset-1"
-							@click="start(target)"
-						>
+						<button type="button" class="panel-button hit-44 relative" @click="start(target)">
 							Edit
 						</button>
 						<!-- No confirmation: rebinding a key is not destructive. Shown only
@@ -104,7 +100,7 @@ watch(recording, (open) => {
 							type="button"
 							aria-label="Reset to default"
 							title="Reset to default"
-							class="text-text-secondary hover:bg-surface-hover outline-focus-ring hit-44 relative grid size-8 place-items-center rounded-md transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
+							class="icon-button hit-44 relative"
 							@click="resetShortcut(target)"
 						>
 							<IconLucideRotateCcw class="size-4" aria-hidden="true" focusable="false" />
@@ -130,12 +126,8 @@ watch(recording, (open) => {
 					</div>
 
 					<div class="flex shrink-0 items-center gap-2">
-						<span class="text-text-disabled text-meta">Esc to cancel</span>
-						<button
-							type="button"
-							class="panel-button outline-focus-ring hit-44 relative focus-visible:outline-2 focus-visible:-outline-offset-1"
-							@click="cancel"
-						>
+						<span class="text-text-secondary text-meta">Esc to cancel</span>
+						<button type="button" class="panel-button hit-44 relative" @click="cancel">
 							Cancel
 						</button>
 					</div>

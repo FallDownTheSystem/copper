@@ -28,7 +28,6 @@
 	   `@apply` — which is how this was found. */
 	--transition-duration-fast: 100ms;
 	--transition-duration-base: 150ms;
-	--ease-out-quint: cubic-bezier(0.23, 1, 0.32, 1);
 
 	/* Not a design value — it is DWM's own corner, and it has to stay equal to
 	   it. `DWMWCP_ROUND` (panel.rs) rounds the window at Windows 11's default
@@ -62,6 +61,10 @@
 	--surface: oklch(0.99 0.002 80 / 0.9);
 	--surface-hover: oklch(0.24 0.008 60 / 0.06);
 	--surface-active: oklch(0.24 0.008 60 / 0.1);
+	/* Declared once and never re-declared under `.dark`: both of its inputs are,
+	   and `.dark` lands on the same element `:root` matches, so the mix
+	   re-resolves against the dark values on its own. */
+	--surface-danger: color-mix(in oklab, var(--destructive) 12%, var(--surface));
 	--separator: oklch(0.24 0.008 60 / 0.14);
 	--link: oklch(0.5 0.14 250);
 	--focus-ring: oklch(0.5 0.16 250);
@@ -70,6 +73,10 @@
 	   component at 3:1 and a failure for text at 4.5:1. */
 	--accent-ring: oklch(0.62 0.11 55);
 	--accent-text: oklch(0.53 0.11 55);
+	/* What reads on top of `--accent-ring` when it is a filled surface. Not
+	   re-declared under `.dark`: the copper fill is light-on-copper in both
+	   themes, so the inherited value is the correct one. */
+	--accent-contrast: oklch(1 0 0);
 	--scrollbar-thumb: oklch(0.24 0.008 60 / 0.25);
 	/* The one surface role the list view has no equivalent for: a key cap and the
 	   recording box both need to stay legible over whatever desktop shows through
@@ -79,8 +86,13 @@
 	   are calculated is exactly what the semantic-token rule exists to prevent. */
 	--kbd-surface: oklch(1 0 0 / 0.62);
 	--kbd-ring: oklch(0.24 0.008 60 / 0.18);
+	--kbd-highlight: oklch(1 0 0 / 0.4);
 
-	/* --- shadcn-vue's generated set (reka-vega / neutral) ------------------- */
+	/* --- shadcn-vue's generated set (reka-vega / neutral) -------------------
+	   The `--popover` and `--accent` ramps carry a local edit: their chroma is
+	   warmed toward the copper surface hue so the menus do not read as a grey
+	   sheet floating over a warm panel. Everything a shadcn regeneration writes
+	   is neutral, so this is the block that would silently lose the warmth. */
 	--background: oklch(1 0 0);
 	--foreground: oklch(0.145 0 0);
 	--muted: oklch(0.97 0 0);
@@ -94,7 +106,7 @@
 	--primary-foreground: oklch(0.985 0 0);
 	--secondary: oklch(0.97 0 0);
 	--secondary-foreground: oklch(0.205 0 0);
-	--accent: oklch(0.97 0 0);
+	--accent: oklch(0.97 0.002 80);
 	--accent-foreground: oklch(0.205 0 0);
 	--destructive: oklch(0.577 0.245 27.325);
 	--input: oklch(0.922 0 0);
@@ -116,6 +128,7 @@
 	--scrollbar-thumb: oklch(1 0 0 / 0.22);
 	--kbd-surface: oklch(1 0 0 / 0.1);
 	--kbd-ring: oklch(1 0 0 / 0.18);
+	--kbd-highlight: oklch(1 0 0 / 0.12);
 
 	--background: oklch(0.145 0 0);
 	--foreground: oklch(0.985 0 0);
@@ -124,13 +137,13 @@
 	--border: oklch(1 0 0 / 10%);
 	--card: oklch(0.205 0 0);
 	--card-foreground: oklch(0.985 0 0);
-	--popover: oklch(0.205 0 0);
+	--popover: oklch(0.205 0.004 60);
 	--popover-foreground: oklch(0.985 0 0);
 	--primary: oklch(0.922 0 0);
 	--primary-foreground: oklch(0.205 0 0);
 	--secondary: oklch(0.269 0 0);
 	--secondary-foreground: oklch(0.985 0 0);
-	--accent: oklch(0.269 0 0);
+	--accent: oklch(0.269 0.004 60);
 	--accent-foreground: oklch(0.985 0 0);
 	--destructive: oklch(0.704 0.191 22.216);
 	--input: oklch(1 0 0 / 15%);
@@ -144,6 +157,7 @@
 	--color-surface: var(--surface);
 	--color-surface-hover: var(--surface-hover);
 	--color-surface-active: var(--surface-active);
+	--color-surface-danger: var(--surface-danger);
 	--color-separator: var(--separator);
 	--color-link: var(--link);
 	--color-focus-ring: var(--focus-ring);
@@ -153,6 +167,7 @@
 	   cannot share one custom property, and the generated set is the one a CLI
 	   rewrites. */
 	--color-accent-ring: var(--accent-ring);
+	--color-accent-contrast: var(--accent-contrast);
 	--color-accent-text: var(--accent-text);
 	--color-kbd-surface: var(--kbd-surface);
 	--color-kbd-ring: var(--kbd-ring);
@@ -249,10 +264,57 @@
 	}
 }
 
+/* The media block above covers only the OS preference. Copper's own "Animate
+   controls" setting is a second source that CSS cannot read, so `useTheme`
+   mirrors the composable's OR of the two onto this class — which is what lets
+   every pure-CSS animation in the panel stay ungated at its call site. The bare
+   `.reduce-motion` selector is not redundant with the descendant ones: the class
+   lands on the root element, and `.reduce-motion *` cannot match the element
+   carrying the class. Same 0.01ms-not-`none` rationale as above. */
+.reduce-motion,
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+	transition-duration: 0.01ms !important;
+	animation-duration: 0.01ms !important;
+	animation-iteration-count: 1 !important;
+}
+
 /* The secondary controls in the conflict and recovery surfaces: one appearance,
-   four buttons, and one place to change it. */
+   four buttons, and one place to change it. The focus ring lives here rather
+   than at the call sites: every one of them hand-copied the same three classes,
+   and the ones that did not were silently falling back to Chromium's default
+   ring. */
 @utility panel-button {
 	@apply squircle border-separator hover:bg-surface-hover rounded-md border px-2 py-1 text-meta transition-colors duration-fast;
+
+	&:focus-visible {
+		outline: 2px solid var(--focus-ring);
+		outline-offset: -1px;
+	}
+}
+
+/* The panel's text inputs and textareas: one appearance for the composer, the
+   search field, the section rename and the note editor. Call sites keep only
+   their own sizing. */
+@utility panel-field {
+	@apply squircle border-separator bg-surface-hover text-text-primary placeholder:text-text-disabled rounded-md border text-body select-text;
+
+	&:focus-visible {
+		outline: 2px solid var(--focus-ring);
+		outline-offset: -1px;
+	}
+}
+
+/* Square icon-only controls: the menu trigger, the settings back arrow, the
+   recorder's clear button and the composer's paperclip. One icon size rules. */
+@utility icon-button {
+	@apply squircle text-text-secondary hover:bg-surface-hover active:bg-surface-active grid size-8 place-items-center rounded-md transition-colors duration-fast;
+
+	&:focus-visible {
+		outline: 2px solid var(--focus-ring);
+		outline-offset: -1px;
+	}
 }
 
 /* Superellipse corners on the panel's small rounded rectangles. Carries no

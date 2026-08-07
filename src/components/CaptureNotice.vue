@@ -31,7 +31,7 @@ onMounted(() => {
 		<p
 			v-if="notice"
 			:data-cause="notice.cause"
-			class="border-separator bg-surface text-text-primary rounded-md border px-2 py-1.5 text-meta shadow-sm"
+			class="border-separator bg-surface text-text-primary rounded-md border px-2 py-1.5 text-meta"
 		>
 			{{ notice.message }}
 		</p>

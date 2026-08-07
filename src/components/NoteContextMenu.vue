@@ -40,14 +40,14 @@ const {
 		</ContextMenuItem>
 
 		<ContextMenuItem class="min-h-6" @select="copyAsList">
-			Copy as List
+			Copy as list
 			<ContextMenuShortcut>{{ CHORDS.copyAsList.display }}</ContextMenuShortcut>
 		</ContextMenuItem>
 
 		<!-- A control names the action it performs, not the state it is in — so
 		     this flips only once there is nothing left to mark. -->
 		<ContextMenuItem class="min-h-6" @select="toggleDone">
-			{{ everyTargetDone ? 'Mark as Not Done' : 'Mark as Done' }}
+			{{ everyTargetDone ? 'Mark as not done' : 'Mark as done' }}
 			<ContextMenuShortcut>{{ CHORDS.markDone.display }}</ContextMenuShortcut>
 		</ContextMenuItem>
 
@@ -63,7 +63,7 @@ const {
 		</ContextMenuItem>
 
 		<ContextMenuItem :disabled="!canMerge" class="min-h-6" @select="merge">
-			Merge Notes
+			Merge notes
 			<ContextMenuShortcut>{{ CHORDS.merge.display }}</ContextMenuShortcut>
 		</ContextMenuItem>
 
@@ -79,7 +79,7 @@ const {
 			<ContextMenuShortcut>{{ CHORDS.openInEditor.display }}</ContextMenuShortcut>
 		</ContextMenuItem>
 
-		<!-- Rendered even with nothing to open, like Expand and Merge Notes, so the
+		<!-- Rendered even with nothing to open, like Expand and Merge notes, so the
 		     menu does not change shape between openings. The label names what will
 		     happen — an image opens, everything else is revealed — rather than
 		     saying "Open" and then doing something else. -->

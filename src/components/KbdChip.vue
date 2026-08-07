@@ -19,7 +19,7 @@ const shown = computed(() => (props.label === 'Super' ? 'Win' : props.label))
 
 <template>
 	<kbd
-		class="bg-kbd-surface ring-kbd-ring text-text-primary inline-flex h-6 items-center rounded-md px-1.5 font-mono text-meta ring-1 shadow-[inset_0_1px_0_oklch(1_0_0/0.4)]"
+		class="bg-kbd-surface ring-kbd-ring text-text-primary inline-flex h-6 items-center rounded-md px-1.5 font-mono text-meta ring-1 shadow-[inset_0_1px_0_var(--kbd-highlight)]"
 	>
 		{{ shown }}
 	</kbd>

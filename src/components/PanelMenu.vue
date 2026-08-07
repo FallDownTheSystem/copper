@@ -155,10 +155,7 @@ function onSectionInput(event: Event) {
 
 <template>
 	<DropdownMenu :open="open" @update:open="onOpenChange">
-		<DropdownMenuTrigger
-			aria-label="More actions"
-			class="squircle text-text-secondary hover:bg-surface-hover active:bg-surface-active outline-focus-ring grid size-8 shrink-0 place-items-center rounded-md transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
-		>
+		<DropdownMenuTrigger aria-label="More actions" class="icon-button shrink-0">
 			<IconLucideEllipsis class="size-4" aria-hidden="true" focusable="false" />
 		</DropdownMenuTrigger>
 
@@ -170,7 +167,7 @@ function onSectionInput(event: Event) {
 			:collision-padding="8"
 			class="text-text-secondary w-72 max-h-(--reka-dropdown-menu-content-available-height) text-meta"
 		>
-			<DropdownMenuLabel class="text-text-disabled">Spaces</DropdownMenuLabel>
+			<DropdownMenuLabel class="text-text-secondary">Spaces</DropdownMenuLabel>
 
 			<!-- Capped and scrolled internally, so a full recents list cannot outgrow
 			     the fixed panel or make the body scroll. -->
@@ -252,12 +249,12 @@ function onSectionInput(event: Event) {
 
 			<DropdownMenuItem class="min-h-6" @select="pickAndOpenSpace()">
 				<IconLucideFolderOpen class="size-4" aria-hidden="true" focusable="false" />
-				Open Space…
+				Open space…
 			</DropdownMenuItem>
 
 			<DropdownMenuItem class="min-h-6" @select="createSpace()">
 				<IconLucideFilePlus class="size-4" aria-hidden="true" focusable="false" />
-				New Space…
+				New space…
 			</DropdownMenuItem>
 
 			<DropdownMenuSeparator />
@@ -297,7 +294,7 @@ function onSectionInput(event: Event) {
 			     inside it. -->
 			<DropdownMenuItem v-if="!creatingSection" class="min-h-6" @select.prevent="beginSection">
 				<IconLucidePlus class="size-4" aria-hidden="true" focusable="false" />
-				New Section
+				New section…
 			</DropdownMenuItem>
 
 			<div v-else class="px-2 py-1.5">
@@ -311,37 +308,30 @@ function onSectionInput(event: Event) {
 					placeholder="Section name"
 					:aria-invalid="sectionError ? 'true' : undefined"
 					aria-describedby="new-section-error"
-					class="squircle border-separator bg-surface-hover text-text-primary placeholder:text-text-disabled outline-focus-ring h-7 w-full min-w-0 select-text rounded-md border px-1.5 text-body focus-visible:outline-2 focus-visible:-outline-offset-1"
+					class="panel-field h-7 w-full min-w-0 px-1.5"
 					@input="onSectionInput"
 					@keydown.stop="onSectionKeydown"
 				/>
 				<p
 					v-if="sectionError"
 					id="new-section-error"
-					class="text-text-primary mt-1 text-meta"
+					class="text-text-primary mt-1 flex items-start gap-1.5 text-meta"
 					role="alert"
 				>
-					{{ sectionError }}
+					<IconLucideAlertCircle
+						class="mt-0.5 size-3.5 shrink-0"
+						aria-hidden="true"
+						focusable="false"
+					/>
+					<span>{{ sectionError }}</span>
 				</p>
 				<div class="mt-1.5 flex justify-end gap-1">
-					<!-- `panel-button` is the project's one secondary-control appearance.
-					     Only the tighter padding and the focus ring are local, because
-					     the utility carries neither — and `py-0.5` is emitted after it,
-					     so at equal specificity it wins. -->
-					<button
-						type="button"
-						class="panel-button outline-focus-ring py-0.5 focus-visible:outline-2 focus-visible:-outline-offset-1"
-						@click="cancelSection"
-					>
-						Cancel
-					</button>
-					<button
-						type="button"
-						class="panel-button outline-focus-ring py-0.5 focus-visible:outline-2 focus-visible:-outline-offset-1"
-						@click="submitSection"
-					>
-						Create
-					</button>
+					<!-- `panel-button` is the project's one secondary-control appearance,
+					     focus ring included. Only the tighter padding is local — and
+					     `py-0.5` is emitted after the utility, so at equal specificity it
+					     wins. -->
+					<button type="button" class="panel-button py-0.5" @click="cancelSection">Cancel</button>
+					<button type="button" class="panel-button py-0.5" @click="submitSection">Create</button>
 				</div>
 			</div>
 

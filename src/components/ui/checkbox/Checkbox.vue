@@ -13,6 +13,7 @@ import type { HTMLAttributes } from 'vue'
 import { reactiveOmit } from '@vueuse/core'
 import { motion } from 'motion-v'
 import { CheckboxIndicator, CheckboxRoot, useForwardPropsEmits } from 'reka-ui'
+import { EASE_OUT_QUINT } from '@/lib/motion'
 import { cn } from '@/lib/utils'
 import CheckboxIcon from './CheckboxIcon.vue'
 
@@ -45,7 +46,7 @@ const pressState = computed(() => (scalesOnPress.value ? { scale: 0.9 } : undefi
 // Only the boxes that actually dip earn a permanent compositor layer.
 const pressStyle = computed(() => (scalesOnPress.value ? { willChange: 'transform' } : undefined))
 
-const pressTransition = { duration: 0.15, ease: [0.22, 1, 0.36, 1] as const }
+const pressTransition = { duration: 0.15, ease: EASE_OUT_QUINT }
 
 /**
  * Resolved once per box rather than once per render: this control is mounted on
@@ -63,7 +64,7 @@ const pressTransition = { duration: 0.15, ease: [0.22, 1, 0.36, 1] as const }
  */
 const rootClass = computed(() =>
 	cn(
-		'squircle border-text-disabled outline-focus-ring data-[state=checked]:bg-accent-ring data-[state=checked]:border-accent-ring size-4 shrink-0 rounded-[6px] border text-white transition-colors duration-base focus-visible:outline-2 focus-visible:outline-offset-1 disabled:cursor-not-allowed disabled:opacity-50',
+		'squircle border-text-disabled outline-focus-ring data-[state=checked]:bg-accent-ring data-[state=checked]:border-accent-ring text-accent-contrast size-4 shrink-0 rounded-[6px] border transition-colors duration-base focus-visible:outline-2 focus-visible:outline-offset-1 disabled:cursor-not-allowed disabled:opacity-50',
 		props.class,
 	),
 )

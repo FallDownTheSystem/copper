@@ -2,6 +2,7 @@
 import autoAnimate, { type AnimationController } from '@formkit/auto-animate'
 import { useDragAndDrop } from '@formkit/drag-and-drop/vue'
 
+import { EASE_OUT_QUINT_CSS } from '@/lib/motion'
 import { noteRow, sectionRow } from '@/composables/useSelection'
 import type { Section } from '@/composables/useSpace'
 
@@ -101,22 +102,27 @@ const orderedNotes = computed(() =>
 
 let controller: AnimationController | null = null
 
+const reduced = useReducedMotion()
+
 function syncAnimation() {
 	if (!controller) return
 	// A drag already animates the rows it moves. Leaving auto-animate on would put
 	// two independent transforms on the same element for the whole gesture.
-	if (listAnimated.value && !dragging.value) controller.enable()
+	if (listAnimated.value && !dragging.value && !reduced.value) controller.enable()
 	else controller.disable()
 }
 
-watch([listAnimated, dragging], syncAnimation)
+watch([listAnimated, dragging, reduced], syncAnimation)
 
 onMounted(() => {
 	const element = rowgroup.value
 	if (!element) return
 	// The library default of 250ms ease-in-out is too slow for the app's hottest
-	// path. Reduced motion is respected by auto-animate itself.
-	controller = autoAnimate(element, { duration: 150, easing: 'ease-out' })
+	// path. auto-animate consults `prefers-reduced-motion` itself but knows
+	// nothing of Copper's own "Animate controls" setting, and it drives the Web
+	// Animations API — so main.css's root gate cannot reach it either. `reduced`
+	// above is the half neither of them covers.
+	controller = autoAnimate(element, { duration: 150, easing: EASE_OUT_QUINT_CSS })
 	syncAnimation()
 })
 </script>

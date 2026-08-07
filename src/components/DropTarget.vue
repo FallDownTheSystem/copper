@@ -72,10 +72,15 @@ onUnmounted(() => {
 	<!-- Above the portal host so it is not painted over by an open menu, and
 	     `pointer-events-none` throughout: the drag is the OS's, not the
 	     document's, so this element must never become a hit-test target that
-	     could swallow a click after the drag ends. -->
+	     could swallow a click after the drag ends.
+
+	     Fade in only, with no exit counterpart. Dismissal has to be instant for
+	     the reason the listener documents: the treatment comes down *before* the
+	     ingest round trip, so anything that delayed it would put the hang it
+	     exists to avoid back on screen. -->
 	<div
 		v-if="over"
-		class="border-accent-ring bg-surface/80 pointer-events-none absolute inset-0 z-40 m-2 grid place-items-center rounded-lg border-2 border-dashed"
+		class="border-accent-ring bg-surface/80 animate-in fade-in pointer-events-none absolute inset-0 z-40 m-2 grid place-items-center rounded-lg border-2 border-dashed duration-100"
 		aria-hidden="true"
 	>
 		<p class="text-text-primary flex items-center gap-2 text-body font-semibold">

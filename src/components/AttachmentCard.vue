@@ -29,6 +29,14 @@ watch(
 	{ immediate: true },
 )
 
+// Read once, right after the immediate watcher above has already asked: a
+// thumbnail that was cached is `ready` by now, and one that has to be decoded is
+// not. Only the second kind should fade — a card whose image is already there at
+// panel open would otherwise animate a picture the user is looking at, and every
+// visible card would do it at once. Deliberately not reactive: the question is
+// "was it there when this card mounted", which has exactly one answer.
+const arrivedBeforeMount = previewFor(props.attachment.file).state === 'ready'
+
 const preview = computed(() => previewFor(props.attachment.file))
 const unavailable = computed(() => preview.value.state === 'missing')
 const thumbUrl = computed(() => (preview.value.state === 'ready' ? preview.value.url : null))
@@ -97,6 +105,7 @@ async function open() {
 				:src="thumbUrl"
 				alt=""
 				class="size-full object-cover"
+				:class="arrivedBeforeMount ? '' : 'animate-in fade-in'"
 				draggable="false"
 			/>
 			<IconLucideTriangleAlert

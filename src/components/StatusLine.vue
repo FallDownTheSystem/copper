@@ -34,15 +34,21 @@ useEventListener(window, 'pointerdown', clear, { capture: true })
 	     and its text together does not announce, only a text change inside a
 	     region already in the accessibility tree does. `sr-only` while empty
 	     keeps it in that tree while taking it out of flow, so the band occupies
-	     no space until it has something to say. -->
+	     no space until it has something to say.
+
+	     The two `:class` entries are split by role and not by convenience: the
+	     first carries visibility and shape, the second carries colour, so exactly
+	     one background utility is ever emitted. With `bg-surface` in the first
+	     entry the error branch stacked its tint over an opaque surface and the
+	     two fought at equal specificity. -->
 	<p
 		role="status"
 		class="rounded-md px-2 py-1.5 text-meta"
 		:class="[
-			text ? 'bg-surface border shadow-sm' : 'sr-only',
+			text ? 'animate-in fade-in slide-in-from-bottom-1 border duration-100' : 'sr-only',
 			listError
-				? 'text-text-primary border-destructive/40 bg-destructive/10'
-				: 'text-text-primary border-separator',
+				? 'text-text-primary bg-surface-danger border-destructive/40'
+				: 'text-text-primary bg-surface border-separator',
 		]"
 	>
 		{{ text ?? '' }}

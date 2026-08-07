@@ -736,20 +736,20 @@ describe('the active-section chip', () => {
 	})
 })
 
-describe('the New Section field', () => {
+describe('the New section field', () => {
 	async function openField(wrapper: Awaited<ReturnType<typeof mountPanel>>) {
 		await wrapper.find('[aria-label="More actions"]').trigger('click')
 		await settle(3)
 
 		const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((row) =>
-			row.textContent?.includes('New Section'),
+			row.textContent?.includes('New section…'),
 		)
-		expect(item, 'the New Section item is missing').toBeTruthy()
+		expect(item, 'the New section item is missing').toBeTruthy()
 		item!.click()
 		await settle(3)
 
 		const field = document.querySelector<HTMLInputElement>('#new-section-name')
-		expect(field, 'the New Section field did not open').not.toBeNull()
+		expect(field, 'the New section field did not open').not.toBeNull()
 		return field!
 	}
 
@@ -1624,7 +1624,7 @@ describe('attachments', () => {
 		expect(mocks.invoke).toHaveBeenCalledWith('attachment_open', { file: PNG.file })
 	})
 
-	/** AC20. `Copy` and `Copy as List` are about bodies; a local file path means
+	/** AC20. `Copy` and `Copy as list` are about bodies; a local file path means
 	 *  nothing to whatever the text is pasted into. */
 	it('copies body text only, byte-identically to a note without attachments', async () => {
 		withAttachmentCommands()
