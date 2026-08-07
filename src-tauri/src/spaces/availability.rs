@@ -93,14 +93,14 @@ impl Availability {
 	/// failure display follows.
 	pub fn unavailable(reason: UnavailableReason) -> Self {
 		let message = match reason {
-			UnavailableReason::DriveUnavailable => "The drive this project is on isn't connected.",
+			UnavailableReason::DriveUnavailable => "The drive this space is on isn't connected.",
 			UnavailableReason::Missing => "This file has been moved, renamed, or deleted.",
-			UnavailableReason::NotAFile => "This path is a folder, not a project file.",
+			UnavailableReason::NotAFile => "This path is a folder, not a space file.",
 			// Deliberately does not name permissions: this is also the catch-all for
 			// every unmapped I/O error, so blaming permissions would be a confident
 			// guess that is usually wrong. `denied` below is the one case that knows.
 			UnavailableReason::Unreadable => "This file can't be read.",
-			UnavailableReason::Invalid => "This file isn't a valid Copper project.",
+			UnavailableReason::Invalid => "This file isn't a valid Copper space.",
 		};
 		Self::Unavailable {
 			reason,

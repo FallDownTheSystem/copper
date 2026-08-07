@@ -270,7 +270,7 @@ fn end_handoffs_before_switching(app: &AppHandle) -> Reply<()> {
 
 	let kept: Vec<String> = retained.iter().map(|path| path.display().to_string()).collect();
 	Err(StoreError::Io(format!(
-		"the project was not switched, because an open editor's text could not be saved back. Every \
+		"the space was not switched, because an open editor's text could not be saved back. Every \
 		 editor session has ended and any changes that did save were applied; the text that could \
 		 not be read back is still in {}",
 		kept.join(", ")
@@ -383,7 +383,7 @@ pub async fn pick_and_open_space(app: AppHandle) -> Reply<ActivateOutcome> {
 
 	let picked = blocking_dialog(move || {
 		app_dialog(&window)
-			.set_title("Open project")
+			.set_title("Open space")
 			.blocking_pick_file()
 	})
 	.await?;
@@ -404,9 +404,9 @@ pub async fn create_space_interactive(app: AppHandle) -> Reply<ActivateOutcome> 
 
 	let picked = blocking_dialog(move || {
 		app_dialog(&window)
-			.set_title("New project")
+			.set_title("New space")
 			.set_directory(&directory)
-			.set_file_name("project.copper")
+			.set_file_name("space.copper")
 			.blocking_save_file()
 	})
 	.await?;
@@ -477,7 +477,7 @@ pub async fn remove_recent(path: String, state: State<'_, SharedStore>, app: App
 
 	if is_active(&state, &path) {
 		return Err(StoreError::Invalid(
-			"this is the project you have open. Switch to another project first.".into(),
+			"this is the space you have open. Switch to another space first.".into(),
 		));
 	}
 
@@ -509,7 +509,7 @@ fn parented_dialog(window: &WebviewWindow) -> tauri_plugin_dialog::FileDialogBui
 }
 
 fn app_dialog(window: &WebviewWindow) -> tauri_plugin_dialog::FileDialogBuilder<tauri::Wry> {
-	parented_dialog(window).add_filter("Copper project", &["copper"])
+	parented_dialog(window).add_filter("Copper space", &["copper"])
 }
 
 /// Task-011's paperclip picker, sharing this layer's dialog plumbing rather

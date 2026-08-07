@@ -254,7 +254,7 @@ async function loadFullImage(file: string): Promise<{ url: string } | { reason: 
 	const issued = generation.value
 	try {
 		const bytes = await invoke<ArrayBuffer>('attachment_full', { file })
-		if (issued !== generation.value) return { reason: 'The project changed while loading.' }
+		if (issued !== generation.value) return { reason: 'The space changed while loading.' }
 
 		const type = imageMime(bytes)
 		if (!type) {

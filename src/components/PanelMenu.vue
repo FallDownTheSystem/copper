@@ -102,7 +102,7 @@ function validate(name: string): string | null {
 	const clash = sections.value.some(
 		(section) => normaliseSectionName(section.name).toLowerCase() === wanted,
 	)
-	if (clash) return 'This project already has a section with that name.'
+	if (clash) return 'This space already has a section with that name.'
 	return null
 }
 
@@ -168,7 +168,7 @@ function onSectionInput(event: Event) {
 			:collision-padding="8"
 			class="text-text-secondary w-72 max-h-(--reka-dropdown-menu-content-available-height) text-meta"
 		>
-			<DropdownMenuLabel class="text-text-secondary">Projects</DropdownMenuLabel>
+			<DropdownMenuLabel class="text-text-secondary">Spaces</DropdownMenuLabel>
 
 			<!-- Capped and scrolled internally, so a full recents list cannot outgrow
 			     the fixed panel or make the body scroll. -->
@@ -186,7 +186,7 @@ function onSectionInput(event: Event) {
 					>
 						<!-- `mt-1.5` on the dot: this row is two lines tall, so a dot centred on
 						     the whole row would sit beside the path rather than the name. -->
-						<ActiveMarker :active="entry.active" label="active project" class="mt-1.5">
+						<ActiveMarker :active="entry.active" label="active space" class="mt-1.5">
 							<span class="min-w-0 flex-1">
 								<span
 									class="block truncate"
@@ -226,16 +226,23 @@ function onSectionInput(event: Event) {
 					     `title` on it never surfaces — the browser needs a hover to show
 					     a tooltip and the element cannot receive one. The wrapper stays
 					     interactive, so the explanation is actually reachable by the
-					     people who need it. -->
+					     people who need it.
+
+					     Centred on the row, unlike the marker dot on the other side of it,
+					     and the two disagree because they point at different things: the
+					     dot marks the *name* and has to sit on that line, while this acts
+					     on the whole entry — name, path and availability line together —
+					     and a row two or three lines tall was leaving it stranded at the
+					     top. -->
 					<div
-						:title="entry.active ? 'Switch to another project first' : 'Remove from recents'"
-						class="flex shrink-0 items-start"
+						:title="entry.active ? 'Switch to another space first' : 'Remove from recents'"
+						class="flex shrink-0 items-center"
 					>
 						<DropdownMenuItem
 							:disabled="entry.active"
 							:aria-label="
 								entry.active
-									? `Switch to another project before removing ${entry.name}`
+									? `Switch to another space before removing ${entry.name}`
 									: `Remove ${entry.name} from recents`
 							"
 							@select="removeRecent(entry.path)"
@@ -250,12 +257,12 @@ function onSectionInput(event: Event) {
 
 			<DropdownMenuItem class="min-h-6" @select="pickAndOpenSpace()">
 				<IconLucideFolderOpen class="size-4" aria-hidden="true" focusable="false" />
-				Open project…
+				Open space…
 			</DropdownMenuItem>
 
 			<DropdownMenuItem class="min-h-6" @select="createSpace()">
 				<IconLucideFilePlus class="size-4" aria-hidden="true" focusable="false" />
-				New project…
+				New space…
 			</DropdownMenuItem>
 
 			<DropdownMenuSeparator />

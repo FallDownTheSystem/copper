@@ -34,7 +34,7 @@ async function copyDraft() {
 		class="border-separator mx-3 my-2 rounded-lg border border-dashed p-2"
 	>
 		<p class="text-text-primary text-meta font-semibold">
-			The note you were editing is gone from this project.
+			The note you were editing is gone from this space.
 		</p>
 		<p class="text-text-secondary mt-0.5 text-meta">Your unsaved text is kept here.</p>
 

@@ -328,14 +328,14 @@ describe('removing an entry', () => {
 		respond('remove_recent', () => {
 			throw {
 				kind: 'invalid',
-				message: 'this is the project you have open. Switch to another project first.',
+				message: 'this is the space you have open. Switch to another space first.',
 			}
 		})
 
 		expect(await spaces.removeRecent('C:\\work.copper')).toBe(false)
 		await flush()
 
-		expect(space.errorFor('list').value).toContain('Switch to another project first')
+		expect(space.errorFor('list').value).toContain('Switch to another space first')
 		expect(spaces.recents.value).toHaveLength(2)
 	})
 })

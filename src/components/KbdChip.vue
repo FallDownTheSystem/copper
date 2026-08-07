@@ -12,9 +12,13 @@
  * this control does not have. (Said here rather than above the element, because a
  * comment before a template's root makes the component a fragment.)
  *
- * `rounded-sm`, one step below the panel's default control corner, because the cap
- * is `h-6`: a 12px radius on a 24px box is a capsule exactly, and a key cap that
- * has lost its corners no longer looks like a key.
+ * **Pinned off the ramp at 8px**, which is what `--radius-sm` used to be and the
+ * one place raising `--radius` had to be refused. The comment here already named
+ * the failure before it happened: the cap is `h-6`, and a 12px radius on a 24px
+ * box is a capsule *exactly* — a key cap that has lost its corners no longer looks
+ * like a key. Written as a literal for the reason `Checkbox` writes its 6px as
+ * one: the value is a property of this box's height, not a step on a scale, so
+ * following the scale is precisely what would break it.
  */
 const props = defineProps<{ label: string }>()
 
@@ -23,7 +27,7 @@ const shown = computed(() => (props.label === 'Super' ? 'Win' : props.label))
 
 <template>
 	<kbd
-		class="bg-kbd-surface ring-kbd-ring text-text-primary inline-flex h-6 items-center rounded-sm px-1.5 font-mono text-meta ring-1 shadow-[inset_0_1px_0_var(--kbd-highlight)]"
+		class="bg-kbd-surface ring-kbd-ring text-text-primary inline-flex h-6 items-center rounded-[8px] px-1.5 font-mono text-meta ring-1 shadow-[inset_0_1px_0_var(--kbd-highlight)]"
 	>
 		{{ shown }}
 	</kbd>

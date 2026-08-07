@@ -43,6 +43,7 @@ declare global {
   const emptySnapshot: typeof import('./composables/useSelection').emptySnapshot
   const errorMessage: typeof import('./composables/useSpace').errorMessage
   const extendRef: typeof import('@vueuse/core').extendRef
+  const flushReveal: typeof import('./composables/useSelection').flushReveal
   const focusRowSoon: typeof import('./composables/useSelection').focusRowSoon
   const focusableIn: typeof import('./composables/useInteractionMode').focusableIn
   const formatBytes: typeof import('./composables/useAttachments').formatBytes
@@ -100,6 +101,7 @@ declare global {
   const refThrottled: typeof import('@vueuse/core').refThrottled
   const refWithControl: typeof import('@vueuse/core').refWithControl
   const resolveComponent: typeof import('vue').resolveComponent
+  const revealRow: typeof import('./composables/useSelection').revealRow
   const rowElement: typeof import('./composables/useSelection').rowElement
   const rowNoteId: typeof import('./composables/useSelection').rowNoteId
   const rowSectionId: typeof import('./composables/useSelection').rowSectionId
@@ -425,6 +427,7 @@ declare module 'vue' {
     readonly emptySnapshot: UnwrapRef<typeof import('./composables/useSelection')['emptySnapshot']>
     readonly errorMessage: UnwrapRef<typeof import('./composables/useSpace')['errorMessage']>
     readonly extendRef: UnwrapRef<typeof import('@vueuse/core')['extendRef']>
+    readonly flushReveal: UnwrapRef<typeof import('./composables/useSelection')['flushReveal']>
     readonly focusRowSoon: UnwrapRef<typeof import('./composables/useSelection')['focusRowSoon']>
     readonly focusableIn: UnwrapRef<typeof import('./composables/useInteractionMode')['focusableIn']>
     readonly formatBytes: UnwrapRef<typeof import('./composables/useAttachments')['formatBytes']>
@@ -482,6 +485,7 @@ declare module 'vue' {
     readonly refThrottled: UnwrapRef<typeof import('@vueuse/core')['refThrottled']>
     readonly refWithControl: UnwrapRef<typeof import('@vueuse/core')['refWithControl']>
     readonly resolveComponent: UnwrapRef<typeof import('vue')['resolveComponent']>
+    readonly revealRow: UnwrapRef<typeof import('./composables/useSelection')['revealRow']>
     readonly rowElement: UnwrapRef<typeof import('./composables/useSelection')['rowElement']>
     readonly rowNoteId: UnwrapRef<typeof import('./composables/useSelection')['rowNoteId']>
     readonly rowSectionId: UnwrapRef<typeof import('./composables/useSelection')['rowSectionId']>

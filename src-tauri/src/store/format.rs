@@ -55,7 +55,7 @@ pub fn to_git_json<T: Serialize>(value: &T) -> Result<String> {
 pub fn from_json(text: &str) -> Result<Space> {
 	let space: Space = serde_json::from_str(text).map_err(|err| {
 		StoreError::Parse(format!(
-			"not a valid project document (line {}, column {}): {err}",
+			"not a valid space document (line {}, column {}): {err}",
 			err.line(),
 			err.column()
 		))

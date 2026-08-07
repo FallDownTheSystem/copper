@@ -14,7 +14,7 @@ import { useNoteEditor } from '@/composables/useNoteEditor'
 import { useNoteList } from '@/composables/useNoteList'
 import { useNoteSearch } from '@/composables/useNoteSearch'
 import { useSections } from '@/composables/useSections'
-import { noteRow, takeRow, useSelection } from '@/composables/useSelection'
+import { flushReveal, noteRow, sectionRow, takeRow, useSelection } from '@/composables/useSelection'
 import { useImageViewer } from '@/composables/useImageViewer'
 import { useSettings } from '@/composables/useSettings'
 import { useSpace } from '@/composables/useSpace'
@@ -387,6 +387,30 @@ describe('the roving tabindex', () => {
 			expect(button.attributes('tabindex')).toBe('-1')
 		}
 	})
+
+	/**
+	 * One ring per row, and the pair this stops is the one a user hits by accident.
+	 *
+	 * The selection ring is inset and the focus ring used to be pushed out to
+	 * `-outline-offset-4` so both could be seen at once. `:focus-visible` does not
+	 * match a row focused by the click that selected it — but the next keypress
+	 * re-evaluates that, so pressing Shift alone drew a second outline inside the
+	 * first, around a row nothing had happened to.
+	 */
+	it('draws no focus ring on a row that is already showing the selection ring', async () => {
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		await settle(2)
+
+		const selected = wrapper.get(`[data-row-id="${noteRow('nte_1')}"]`)
+		expect(selected.classes()).toContain('ring-accent-ring')
+		expect(selected.classes('focus-visible:outline-2')).toBe(false)
+
+		// The unselected row keeps it: that is the case where focus and selection
+		// genuinely differ, and the only ring it can wear.
+		const other = wrapper.get(`[data-row-id="${noteRow('nte_2')}"]`)
+		expect(other.classes()).toContain('focus-visible:outline-2')
+	})
 })
 
 describe('the composer', () => {
@@ -536,28 +560,25 @@ describe('row controls', () => {
 	})
 })
 
-describe('the header mark', () => {
+describe('the header drag region', () => {
 	/**
-	 * Two properties that are invisible in a screenshot and easy to undo.
+	 * The property is invisible in a screenshot and easy to undo.
 	 *
 	 * Tauri reads `data-tauri-drag-region` off the element the mousedown actually
-	 * lands on, so wrapping the glyph in a span — the obvious thing to do when
-	 * someone next restyles it — would leave the mark looking identical and
-	 * dragging nothing. And it is branding rather than a control: a tab stop here
-	 * would put a dead target in front of the search field, which is the first
-	 * thing the panel's keyboard flow reaches.
+	 * lands on. The header used to delegate that to Copper's `c` mark, because the
+	 * field and the two buttons left it almost no bare area of its own; with the
+	 * mark gone the header's own padding is the whole grab handle, so the attribute
+	 * has to be on the header and nothing inside it may claim the same role and
+	 * quietly become the only draggable pixel again.
 	 */
-	it('is the drag handle itself and takes no focus', async () => {
+	it('is the header itself, with no control standing in for it', async () => {
 		const wrapper = await mountPanel()
-		// A descendant selector, so the header's own drag region is not what this
-		// finds.
-		const mark = wrapper.find('header [data-tauri-drag-region]')
+		const header = wrapper.get('header')
 
-		expect(mark.exists()).toBe(true)
-		expect(mark.element.children).toHaveLength(0)
-		expect(mark.text()).toBe('c')
-		expect(mark.attributes('tabindex')).toBeUndefined()
-		expect(mark.element.tagName).not.toBe('BUTTON')
+		expect(header.attributes('data-tauri-drag-region')).toBeDefined()
+		// A descendant selector, so this is anything *inside* the header claiming to
+		// be the drag handle.
+		expect(wrapper.find('header [data-tauri-drag-region]').exists()).toBe(false)
 	})
 })
 
@@ -1081,12 +1102,14 @@ describe('the active-section chip', () => {
 /**
  * Task-014's fourth feature is a rename rather than a new surface: the recents
  * list was already the first group of the `...` menu, ordered by recency, with
- * the active entry marked and the whole group capped and scrolled. What changed
- * is the word — the user calls a `.copper` file a *project*, and every visible
- * label had to follow while the format, the commands and the code kept saying
- * "space".
+ * the active entry marked and the whole group capped and scrolled. Only the word
+ * changed — and it has now changed back. Task-014 renamed every visible label to
+ * *project* while the format, the commands and the code kept saying "space";
+ * living with the two words proved the split was the cost rather than the
+ * feature, so the visible labels are "space" again and the whole product speaks
+ * one language.
  */
-describe('the projects list in the menu', () => {
+describe('the spaces list in the menu', () => {
 	const RECENTS = [
 		{
 			path: 'C:\\notes.copper',
@@ -1105,7 +1128,7 @@ describe('the projects list in the menu', () => {
 			availability: {
 				state: 'unavailable' as const,
 				reason: 'drive-unavailable' as const,
-				message: "The drive this project is on isn't connected.",
+				message: "The drive this space is on isn't connected.",
 			},
 		},
 	]
@@ -1123,12 +1146,12 @@ describe('the projects list in the menu', () => {
 		return document.querySelector<HTMLElement>('[data-slot="dropdown-menu-content"]')
 	}
 
-	it('lists every project by name, in recency order, without a submenu', async () => {
+	it('lists every space by name, in recency order, without a submenu', async () => {
 		const menu = await openMenu()
 
-		expect(menu?.textContent).toContain('Projects')
-		expect(menu?.textContent).toContain('Open project…')
-		expect(menu?.textContent).toContain('New project…')
+		expect(menu?.textContent).toContain('Spaces')
+		expect(menu?.textContent).toContain('Open space…')
+		expect(menu?.textContent).toContain('New space…')
 		// Reachable directly rather than behind a nested trigger, which is what AC1
 		// asks for.
 		const rows = [...(menu?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])].filter(
@@ -1139,24 +1162,24 @@ describe('the projects list in the menu', () => {
 		expect(rows[1]?.textContent).toContain('archive')
 	})
 
-	it('marks the open project and says so without relying on colour', async () => {
+	it('marks the open space and says so without relying on colour', async () => {
 		const menu = await openMenu()
 
 		const active = menu?.querySelector<HTMLElement>('[aria-current="true"]')
 		expect(active?.textContent).toContain('development')
-		expect(active?.textContent).toContain('active project')
+		expect(active?.textContent).toContain('active space')
 	})
 
 	/** A26 unchanged: an entry that is not on disk still says why, still shows its
 	 *  last-known path, and stays clickable — clicking it is the retry after the
 	 *  drive comes back, and Rust refuses it with the probe's own sentence. */
-	it('shows an unavailable project with its cause and its path, still selectable', async () => {
+	it('shows an unavailable space with its cause and its path, still selectable', async () => {
 		const menu = await openMenu()
 
 		const rows = [...(menu?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])]
 		const dead = rows.find((row) => row.textContent?.includes('archive'))
 		expect(dead?.textContent).toContain('D:\\archive.copper')
-		expect(dead?.textContent).toContain("The drive this project is on isn't connected.")
+		expect(dead?.textContent).toContain("The drive this space is on isn't connected.")
 		expect(dead?.getAttribute('data-disabled')).toBeNull()
 
 		dead?.click()
@@ -1202,9 +1225,47 @@ describe('the New section field', () => {
 		await settle(3)
 
 		expect(document.querySelector('#new-section-error')?.textContent).toContain(
-			'This project already has a section with that name.',
+			'This space already has a section with that name.',
 		)
 		expect(mocks.invoke).not.toHaveBeenCalledWith('add_section', expect.anything())
+	})
+})
+
+describe('scrolling to a section', () => {
+	/**
+	 * Choosing a section is choosing a place to be, so the list goes there rather
+	 * than leaving the reader to find it — and it lands *at* the heading, with the
+	 * section below it, which is what `start` buys over `nearest`.
+	 *
+	 * Every path funnels through `setActiveSection`: the switcher, the section
+	 * menu's `Make active section`, and a click on the heading itself. `clientHeight`
+	 * is installed by hand because happy-dom lays nothing out and the reveal
+	 * declines a region with no height.
+	 *
+	 * `sec_a` rather than `sec_b`, and the reason is a rule worth naming: `sec_b`
+	 * holds no notes here, so its heading is the *last* row — and the reveal hands
+	 * the last row back to `pinToBottom`, which re-asserts the bottom every frame
+	 * while the list settles instead of landing once and being left behind. The
+	 * outcome there is the same heading on screen by a better mechanism; this
+	 * asserts the path that scrolls.
+	 */
+	it('lands at the heading of the section that was switched to', async () => {
+		const wrapper = await mountPanel()
+		Object.defineProperty(wrapper.get('[data-scroll-region]').element, 'clientHeight', {
+			configurable: true,
+			get: () => 120,
+		})
+
+		const seen: (ScrollIntoViewOptions | undefined)[] = []
+		const heading = wrapper.get(`[data-row-id="${sectionRow('sec_a')}"]`).element
+		heading.scrollIntoView = (options?: boolean | ScrollIntoViewOptions) => {
+			seen.push(options as ScrollIntoViewOptions)
+		}
+
+		await space.setActiveSection('sec_a')
+		await settle(4)
+
+		expect(seen).toEqual([{ block: 'start' }])
 	})
 })
 
@@ -2251,7 +2312,7 @@ describe('attachments', () => {
 	 * component-scoped watcher cannot see.
 	 *
 	 * The tray's `open-settings` and the menu's Settings item both unmount
-	 * `PanelShell`, so a project opened from Explorer while the settings view was
+	 * `PanelShell`, so a space opened from Explorer while the settings view was
 	 * up revoked the blob with nothing listening. Coming back then remounted the
 	 * overlay over a URL that no longer resolves.
 	 */
@@ -2285,7 +2346,7 @@ describe('attachments', () => {
 		await installWithAttachments(documentWith([PNG]))
 		await openViewer()
 
-		// What a project switch does to the element focus was going to return to:
+		// What a space switch does to the element focus was going to return to:
 		// the list is replaced and the button the user pressed is detached.
 		await installWithAttachments({ ...SPACE, id: 'spc_2', notes: [] })
 		await settle(2)
@@ -3582,21 +3643,46 @@ describe('top insertion', () => {
 		expect(rows).toEqual([noteRow('nte_3'), noteRow('nte_1'), noteRow('nte_2')])
 	})
 
-	it('leaves focus and the scroll region alone, having no top pin to run', async () => {
+	/**
+	 * Decision 11 left the frontend with no `{ kind: 'top' }` anchor and no
+	 * `pinToTop`, so nothing carried the reader to a note inserted above them — the
+	 * scroll restore held them exactly where they were, looking at a list whose new
+	 * first row was off screen.
+	 *
+	 * That is now what the reveal is for, and a top insertion is the case that
+	 * needs it most: the bottom pin cannot help, since the note is at the other end.
+	 * `clientHeight` is installed by hand because happy-dom lays nothing out and the
+	 * reveal refuses to scroll a region with no height — a real hidden panel is the
+	 * reason that refusal exists.
+	 */
+	it('scrolls a note inserted above the reader into view once there is a list to scroll', async () => {
 		const wrapper = await mountWithTopInsertion()
 		takeRow(noteRow('nte_2'))
 		await settle(2)
 
+		// Pasted into a list with no layout, which is what a hidden panel is: the
+		// reveal cannot land yet and keeps the request rather than spending it.
 		document.body.dispatchEvent(paste('pasted at the top'))
 		await settle(4)
 
-		// Decision 11: there is no `{ kind: 'top' }` anchor and no `pinToTop`, so a
-		// top insertion changes nothing about where the list sits or what holds the
-		// roving target. happy-dom has no layout, so the scroll assertion witnesses
-		// only that nothing *deliberately* scrolled — which is the whole of what the
-		// decision leaves in the frontend.
+		const seen: (ScrollIntoViewOptions | undefined)[] = []
+		const landed = wrapper.get(`[data-row-id="${noteRow('nte_3')}"]`).element
+		landed.scrollIntoView = (options?: boolean | ScrollIntoViewOptions) => {
+			seen.push(options as ScrollIntoViewOptions)
+		}
+		Object.defineProperty(wrapper.get('[data-scroll-region]').element, 'clientHeight', {
+			configurable: true,
+			get: () => 120,
+		})
+
+		// What the panel becoming visible does.
+		flushReveal()
+
+		expect(seen).toEqual([{ block: 'nearest' }])
+		// Focus is still deliberately left alone — a paste is a capture, not a
+		// composition, and scrolling to a note is not the same as taking the keyboard
+		// to it.
 		expect(selection.focusedId.value).toBe(noteRow('nte_2'))
-		expect(wrapper.get('[data-scroll-region]').element.scrollTop).toBe(0)
 	})
 })
 

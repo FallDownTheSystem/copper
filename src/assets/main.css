@@ -53,7 +53,7 @@
 	   so at the 6–8px this started at the superellipse and the circle sat a pixel
 	   apart and the panel read as a sharp-cornered rectangle. Raised to the radius
 	   the largest surfaces want; the small controls step down from it. */
-	--radius: 0.875rem;
+	--radius: 1.125rem;
 
 	/* --- Copper's own semantic set ------------------------------------------
 	   Contrast is verified against the panel's *composited* surface, not
@@ -76,13 +76,16 @@
 	   be the one blue thing in the panel that was not a link.
 
 	   Its distance from `--accent-ring` is the constraint that sets the value, not
-	   its distance from the surface. A focused row that is *also* selected wears
-	   both, as two 2px bands a couple of pixels apart, and at the 0.56 this started
-	   at they were 1.30:1 apart and read as one 4px smear. Deepened to 0.46 the two
-	   are 1.98:1, which is a visible step, and it clears 7.26:1 on `--surface`,
-	   6.26:1 on `--surface-hover` and 7.47:1 on the menus' `--popover`. The rings
-	   are also no longer drawn on top of each other — see `.note-row` in
-	   NoteCard.vue for the geometry half of the same fix. */
+	   its distance from the surface: at the 0.56 this started at the two were
+	   1.30:1 apart, and deepened to 0.46 they are 1.98:1 — a visible step — while
+	   clearing 7.26:1 on `--surface`, 6.26:1 on `--surface-hover` and 7.47:1 on the
+	   menus' `--popover`.
+
+	   The two no longer meet on one row: a selected row wears the accent ring and
+	   withholds the focus ring entirely (see `.note-row` in NoteCard.vue). They
+	   still have to be told apart at a glance, because adjacent rows in one list
+	   wear one each — which is the same constraint over a slightly larger
+	   distance. */
 	--focus-ring: oklch(0.46 0.15 55);
 	/* Copper carries exactly one meaning: selection and active state. Split in
 	   two because oklch(0.62 0.11 55) is 3.77:1 on white — a pass for a UI
@@ -592,8 +595,10 @@
 	margin-block: 0.5em;
 	padding: 0.6em 0.75em;
 	/* A block, so it takes the block corner — `--radius-md`'s value, written out
-	   because this rule styles `v-html` output the utility scanner never sees. */
-	border-radius: 10px;
+	   because this rule styles `v-html` output the utility scanner never sees.
+	   Kept in step by hand when the ramp moves; there is no token to interpolate
+	   here that the scanner would honour. */
+	border-radius: 14px;
 	background: var(--surface-hover);
 	font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
 	font-size: 0.8125rem;

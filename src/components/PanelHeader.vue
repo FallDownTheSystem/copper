@@ -65,34 +65,30 @@ defineExpose({ focusSearch, query })
 </script>
 
 <template>
-	<!-- The drag region is the header's empty area and the mark, never the field
-	     or the button: a drag region swallows the pointer events of anything under
-	     it. -->
+	<!-- The drag region is the header's own padding, never the field or the
+	     button: a drag region swallows the pointer events of anything under it, and
+	     every control here is something you click rather than grab.
+
+	     **The padding is the grab handle, which is why it is generous.** Copper's
+	     `c` mark used to be the dependable one — the field and the two buttons left
+	     the header almost no bare area, so the region on the header itself was a
+	     strip a few pixels wide. Removing the mark would have left nothing to aim
+	     at, so the space it occupied went back into the frame instead: a full-width
+	     band above and below the two rows, which is a wider target than a 32px
+	     glyph in one corner and is there whichever row the pointer is nearest.
+
+	     **The vertical padding grew and the horizontal padding did not.** `px-3` is
+	     the list's own left edge — the note rows, the section headers and the
+	     composer all start there — so widening it would push the search field out
+	     of line with everything under it to buy a 2px strip nobody could aim at
+	     anyway. -->
 	<header
 		data-tauri-drag-region
-		class="border-separator flex min-h-12 flex-col gap-1.5 border-b px-3 py-2"
+		class="border-separator flex min-h-12 flex-col gap-1.5 border-b px-3 py-3"
 	>
 		<!-- The search row keeps its own line, so the heading below it can be added
 		     and removed without the field ever moving. -->
 		<div class="flex items-center gap-2">
-			<!-- Copper's mark, and the header's dependable grab handle: the field and
-			     the menu button leave the header almost no bare area, so the drag
-			     region on the header itself is a strip a few pixels wide in practice.
-
-			     The glyph is this element's own text rather than a child span, because
-			     a child element receives the mousedown and `data-tauri-drag-region` is
-			     read off the element that does. Branding rather than a control — no
-			     hover state, no tab stop, nothing to activate — so it is a `div` and
-			     `aria-hidden`: a lone decorative `c` announced to a screen reader is
-			     noise. -->
-			<div
-				data-tauri-drag-region
-				aria-hidden="true"
-				class="text-accent-text grid size-8 shrink-0 cursor-grab place-items-center text-body font-semibold select-none active:cursor-grabbing"
-			>
-				c
-			</div>
-
 			<label for="panel-search" class="sr-only">Search notes</label>
 			<div class="relative min-w-0 flex-1">
 				<IconLucideSearch

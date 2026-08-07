@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { CHORDS } from '@/lib/chords'
 import { focusableIn } from '@/composables/useInteractionMode'
-import { rowElement, rowSectionId } from '@/composables/useSelection'
+import { flushReveal, rowElement, rowSectionId } from '@/composables/useSelection'
 
 const { space, sections, activeSection, noteById, setActiveSection, setNotesDone } = useSpace()
 const {
@@ -23,7 +23,33 @@ const { hasQuery, resultCount } = useNoteSearch()
 const { setCollapsed, collapseEnabled } = useSections()
 const { doneOnly } = useNoteList()
 const { toggleDone } = useNoteActions()
-const { dropTarget } = useNoteDrag()
+const { dropTarget, isDragging } = useNoteDrag()
+
+/**
+ * The three moments a reveal that could not land becomes possible again.
+ *
+ * `useSelection.revealRow` holds the request rather than performing it, because
+ * the panel is usually hidden when a capture arrives and the list may not be in
+ * the DOM at all — the settings view replaces it. Each of these is a transition
+ * from "there was nothing to scroll" to "there is":
+ *
+ * - **Mount.** The list coming back from the settings view, or being rendered for
+ *   the first time after a capture reached a panel that had never been opened.
+ * - **Becoming visible.** The window is shown; a hidden panel's region can have no
+ *   layout to scroll, and now it does. This is the case the whole feature is for.
+ * - **A drag ending.** The reveal stands aside while a row is being carried, since
+ *   the drag's own auto-scroll owns the region until the drop.
+ *
+ * Flushing when there is nothing pending is free — the first line of `flushReveal`
+ * returns.
+ */
+onMounted(() => flushReveal())
+useEventListener(document, 'visibilitychange', () => {
+	if (document.visibilityState === 'visible') flushReveal()
+})
+watch(isDragging, (dragging) => {
+	if (!dragging) void nextTick(() => flushReveal())
+})
 
 /**
  * The rendered list, paired with its section objects in one place. Derived from

@@ -788,6 +788,80 @@ function restoreScroll(anchor: ScrollAnchor) {
 	region.scrollTop += delta - anchor.offset
 }
 
+/**
+ * A row the list owes the reader a look at — a note they just captured, a section
+ * they just switched to — held until it can actually be shown.
+ *
+ * **Held rather than performed, because the panel is usually not on screen when
+ * the note arrives.** A global capture lands in a hidden window, and a hidden
+ * window's list may have no layout to scroll: the settings view swaps the list
+ * out of the DOM entirely, and a panel that has not been revealed since launch has
+ * a region of zero height. Both make a scroll a silent no-op, which is the one
+ * outcome the request cannot have — "the user should always come back to the last
+ * note they added" is a promise about the *next* time they look, not about now.
+ * So every attempt that cannot land keeps the request, and the list flushes it
+ * again on mount, on becoming visible, and when a drag ends.
+ *
+ * One slot, not a queue: two captures in a row mean the reader should be looking
+ * at the second one, and a queue would walk them through history to get there.
+ */
+let pendingReveal: { key: string; block: ScrollLogicalPosition } | null = null
+
+export function revealRow(key: string, block: ScrollLogicalPosition = 'nearest') {
+	pendingReveal = { key, block }
+	flushReveal()
+}
+
+/**
+ * **Instant, never smooth, and that is not a reduced-motion compromise.**
+ *
+ * A smooth scroll runs over frames, and both of the things it would have to run
+ * against are hostile. The list is still growing when this fires — auto-animate
+ * scales an inserted row over ~150ms and `pinToBottom` exists because that growth
+ * moves the target — so an animated scroll would be chasing a position that is
+ * still moving. And in a hidden window frames are throttled or stopped
+ * altogether, so the one case this feature is *for* is the case where a smooth
+ * scroll would be left half-finished. An instant scroll satisfies
+ * `prefers-reduced-motion` by having nothing to reduce.
+ */
+export function flushReveal() {
+	const wanted = pendingReveal
+	if (!wanted || typeof document === 'undefined') return
+
+	// A carried row is a gesture the reader is performing right now, and the drag's
+	// own auto-scroll owns the region until they let go. Kept pending: the drop
+	// puts the list back in a state where this means something again.
+	if (document.querySelector('[data-dragging]')) return
+
+	const region = scrollRegion()
+	// No region, or one with no height — the settings view is up, or the panel has
+	// never been laid out. Scrolling it would report success and do nothing.
+	if (!region || region.clientHeight === 0) return
+
+	const element = rowElement(wanted.key)
+	if (!element) return
+
+	// **The bottom pin is better at this than a scroll is, so it keeps the case it
+	// already owns.** A reader parked at the end who captures a note wants the end,
+	// and `pinToBottom` re-asserts it every frame until the list stops growing —
+	// where a single `scrollIntoView` lands once and is then left behind by the row
+	// growing under it. Only the *last* row, and only while the pin is actually
+	// running: a note inserted at the top has to be scrolled to whatever the reader
+	// was doing.
+	const rows = rowIds.value
+	if (pinning && rows[rows.length - 1] === wanted.key) {
+		pendingReveal = null
+		return
+	}
+
+	pendingReveal = null
+	// Anything else the pin is doing is now wrong: it would drag the list back to
+	// the bottom over the next frames and undo this. Clearing the flag stops its
+	// settle loop at the next frame rather than racing it.
+	pinning = false
+	element.scrollIntoView({ block: wanted.block })
+}
+
 /** Space identity changed: ids mean something else now, so nothing carries. */
 function resetForNewSpace() {
 	setSelection([])
@@ -797,6 +871,9 @@ function resetForNewSpace() {
 	// pin still settling belongs to the document that just went away.
 	stuckToBottom = true
 	pinning = false
+	// So does an unflushed reveal: its row key names a note or a section in a
+	// document nobody is looking at any more, and the id could even be reused.
+	pendingReveal = null
 }
 
 /**

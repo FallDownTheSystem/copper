@@ -34,11 +34,12 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import type { DeepReadonly } from 'vue'
 
+import { parseCreated } from '@/lib/noteTime'
 import { errorMessage } from '@/lib/rustError'
 import { createStartup } from '@/lib/startup'
 
 import { useAttachments, type Attachment } from './useAttachments'
-import { emptySnapshot, noteRow, useSelection } from './useSelection'
+import { emptySnapshot, noteRow, revealRow, sectionRow, useSelection } from './useSelection'
 import { useMarkdown } from './useMarkdown'
 import { useNoteDisclosure } from './useNoteDisclosure'
 import { useNoteEditor } from './useNoteEditor'
@@ -240,6 +241,52 @@ export { errorMessage }
  * Returns false when the response was superseded, in which case the caller must
  * discard it — not apply it late, and not reorder it.
  */
+/**
+ * Armed by the three paths that mean *the user just put a note here* — a composer
+ * submit, a zero-focus paste, and a global capture — and consumed by the next
+ * document that lands.
+ *
+ * A flag rather than a `reveal` option threaded through `applyDocument`'s callers,
+ * because the capture path cannot pass one: it arrives as an event, and the
+ * document is fetched by the shared `refresh()`, which knows nothing about why it
+ * was called and coalesces several reasons into one pull.
+ *
+ * **Deliberately not armed by an external change or a reload.** Someone editing
+ * the `.copper` file in another program adds notes the reader did not ask for, and
+ * the anchoring in `useSelection` exists precisely so a document arriving under
+ * them does not move the list. Undo is left out for the same reason: a restored
+ * note is the reader taking something back, and the row they are looking at is
+ * already the one that matters.
+ */
+let revealAddedNote = false
+
+/**
+ * The note in `next` that `previous` did not have, newest first when there are
+ * several.
+ *
+ * Several is reachable: captures queue while the store is busy, and one refresh
+ * can carry two of them. The newest is the one to show — "the last note they
+ * added" — and reading it off `created` rather than off document order is what
+ * makes that true under either insertion point, since a top insertion puts the
+ * newest note first and a bottom insertion puts it last.
+ */
+function addedNoteId(previous: Space | null, next: Space): string | null {
+	if (!previous) return null
+	const before = new Set(previous.notes.map((note) => note.id))
+
+	let landed: Space['notes'][number] | null = null
+	for (const note of next.notes) {
+		if (before.has(note.id)) continue
+		// A note whose `created` cannot be parsed sorts as the oldest possible rather
+		// than winning by accident — the same "unknown is not a claim" rule
+		// `sortByCreated` follows.
+		if (!landed || (parseCreated(note.created) ?? 0) > (parseCreated(landed.created) ?? 0)) {
+			landed = note
+		}
+	}
+	return landed?.id ?? null
+}
+
 function applyDocument(
 	next: Space,
 	issued: { generation: number; epoch: number },
@@ -252,6 +299,14 @@ function applyDocument(
 	// nearest-survivor rule cannot be evaluated at all.
 	const taken = selection.snapshot()
 	const identityChanged = space.value !== null && space.value.id !== next.id
+
+	// Read before the assignment, like the snapshot above and for the same reason:
+	// afterwards there is no previous document to diff against. Cleared whether or
+	// not it produced a row — an arming that found nothing was a submit that made a
+	// section, or a capture whose note a later refresh had already carried in, and
+	// leaving it set would fire on whatever landed next.
+	const landedNote = revealAddedNote && !identityChanged ? addedNoteId(space.value, next) : null
+	revealAddedNote = false
 
 	if (identityChanged) {
 		epoch.value++
@@ -322,6 +377,12 @@ function applyDocument(
 
 	void nextTick().then(() => {
 		selection.restoreDom(snapshot)
+		// After the scroll restore, and that order is the point: the restore puts the
+		// list back where the reader left it, which for a capture that landed off
+		// screen is exactly the position they need moving away from. Requested rather
+		// than performed — a capture usually arrives at a hidden panel, and the
+		// request survives until there is a list to scroll.
+		if (landedNote) revealRow(noteRow(landedNote))
 		listAnimated.value = true
 	})
 
@@ -418,7 +479,13 @@ async function onSpaceChanged(payload: SpaceChangedPayload) {
 	// `capture://succeeded` event, because a capture is silent on success by
 	// design. `append_capture` is the sole producer of this reason and emits only
 	// after the write, so this cannot fire for a capture that failed.
-	if (payload.reason === 'capture') useSounds().captureSucceeded()
+	if (payload.reason === 'capture') {
+		useSounds().captureSucceeded()
+		// The panel is almost never on screen for this one — that is what a global
+		// capture is — so the reveal it arms is a request the list flushes whenever
+		// it next has somewhere to scroll.
+		revealAddedNote = true
+	}
 	await Promise.all([refresh(), pullStatus()])
 }
 
@@ -601,6 +668,10 @@ async function mutate<T>(
  * stale.
  */
 async function submitEntry(body: string, attachments: Attachment[] = []) {
+	// A submit that turns out to be a section directive arms nothing in practice:
+	// no note is added, so the diff finds none and the flag is cleared unused.
+	revealAddedNote = true
+
 	// No `section` argument: the store already defaults to `activeSection`, and
 	// sending our own view of it would race an external change to it.
 	//
@@ -643,8 +714,11 @@ async function submitEntry(body: string, attachments: Attachment[] = []) {
  * Focus is deliberately not moved. The note lands silently in the active
  * section, wherever the user was looking — that is what makes this different
  * from a composer submit, which puts the roving target on what it just created.
+ * It is still scrolled to: not moving focus is about not stealing the keyboard,
+ * and a note the reader cannot see is not a capture they can trust.
  */
 async function addNote(body: string) {
+	revealAddedNote = true
 	return mutate(
 		() => invoke<AddNoteResult>('add_note', { body, section: null }),
 		(value) => value.space,
@@ -689,6 +763,20 @@ async function setNotesDone(ids: string[], done: boolean) {
 	return result
 }
 
+/**
+ * Queued behind `applyDocument`'s own `nextTick`, which is what makes this win:
+ * that callback restores the scroll the document arrived with, and this is a
+ * deliberate move away from it.
+ *
+ * `start` rather than `nearest`, unlike a captured note. Choosing a section is
+ * choosing a place to be, so the list lands *at* its heading with the section
+ * below it — where `nearest` would scroll a heading just off the bottom edge into
+ * the bottom edge and leave the section itself still out of sight.
+ */
+function revealSectionSoon(id: string) {
+	void nextTick(() => revealRow(sectionRow(id), 'start'))
+}
+
 async function setActiveSection(id: string) {
 	const result = await mutate(
 		() => invoke<Space>('set_active_section', { id }),
@@ -697,8 +785,12 @@ async function setActiveSection(id: string) {
 	)
 	// Only a deliberate switch. `activeSection` is computed off the document, so a
 	// watcher on it would also fire for an external edit, a reload, an undo and
-	// every refresh — none of which is a user action.
-	if (result) useSounds().sectionSwitched()
+	// every refresh — none of which is a user action. The scroll goes with the
+	// sound for exactly that reason: both mark a choice somebody made.
+	if (result) {
+		useSounds().sectionSwitched()
+		revealSectionSoon(id)
+	}
 	return result
 }
 
@@ -727,8 +819,20 @@ async function reorderNote(id: string, section: string, index: number) {
 
 /** Appended last and **made active immediately** by the store, which is what
  *  makes the section the `...` menu just created the one a capture lands in. */
+/**
+ * The section is scrolled to by *id*, read out of the returned document rather
+ * than matched by the name that was asked for: the store normalises whitespace and
+ * allows duplicates, so a name is not an identity there.
+ *
+ * Captured before the command, because by the time it resolves `sections` is
+ * already the new document's.
+ */
 async function addSection(name: string) {
-	return listCommand('add_section', { name })
+	const before = new Set(sections.value.map((section) => section.id))
+	const result = await listCommand('add_section', { name })
+	const created = result?.value.sections.find((section) => !before.has(section.id))
+	if (created) revealSectionSoon(created.id)
+	return result
 }
 
 async function renameSection(id: string, name: string) {

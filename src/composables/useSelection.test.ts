@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test'
 
 import { useSections } from './useSections'
-import { noteRow, sectionRow, useSelection } from './useSelection'
+import { flushReveal, noteRow, revealRow, sectionRow, useSelection } from './useSelection'
 import type { Note, Space } from './useSpace'
 
 function note(id: string, section: string, order: number): Note {
@@ -543,5 +543,117 @@ describe('the scroll anchor', () => {
 		// It kept the list pinned for the whole settle, which is the behaviour the
 		// cap is bounding rather than replacing.
 		expect(metrics.scrollTop).toBe(500)
+	})
+})
+
+describe('revealing a row', () => {
+	/**
+	 * The same hand-installed metrics the anchor tests use — happy-dom lays nothing
+	 * out — plus the rows themselves, since a reveal has to find an element to
+	 * scroll to. `scrollIntoView` is stubbed per element rather than on the
+	 * prototype: what these tests are about is *which* row was asked for.
+	 */
+	function mountList(clientHeight: number) {
+		const region = document.createElement('div')
+		region.setAttribute('data-scroll-region', '')
+		Object.defineProperty(region, 'clientHeight', { configurable: true, get: () => clientHeight })
+		region.innerHTML = [
+			'<div data-row-id="s:sec_a"></div>',
+			'<div data-row-id="n:n1"></div>',
+			'<div data-row-id="n:n2"></div>',
+		].join('')
+		document.body.append(region)
+
+		const calls: (ScrollIntoViewOptions | undefined)[] = []
+		for (const row of region.querySelectorAll<HTMLElement>('[data-row-id]')) {
+			row.scrollIntoView = (options?: boolean | ScrollIntoViewOptions) => {
+				calls.push(options as ScrollIntoViewOptions | undefined)
+			}
+		}
+		return { region, calls, row: (key: string) => region.querySelector(`[data-row-id="${key}"]`) }
+	}
+
+	afterEach(() => {
+		// Any request the test left behind would fire inside the next one.
+		selection.resetForNewSpace()
+		document.body.innerHTML = ''
+	})
+
+	it('scrolls the asked-for row into view', () => {
+		const list = mountList(120)
+		const target = list.row(noteRow('n2'))
+		const seen: ScrollIntoViewOptions[] = []
+		target!.scrollIntoView = (options?: boolean | ScrollIntoViewOptions) => {
+			seen.push(options as ScrollIntoViewOptions)
+		}
+
+		revealRow(noteRow('n2'))
+
+		expect(seen).toEqual([{ block: 'nearest' }])
+	})
+
+	/** A section is a place to be rather than a row to glance at, so it lands at
+	 *  the top of the region rather than just inside its edge. */
+	it('takes the alignment it is given', () => {
+		const list = mountList(120)
+		revealRow(sectionRow('sec_a'), 'start')
+
+		expect(list.calls).toEqual([{ block: 'start' }])
+	})
+
+	/**
+	 * The case the whole mechanism exists for: a global capture lands while the
+	 * panel is hidden, and a hidden panel's region can have no layout to scroll.
+	 * Scrolling it then would report success and do nothing, so the request is kept
+	 * and the list flushes it when it next has somewhere to put the row.
+	 */
+	it('holds the request until the list has a height, then flushes it', () => {
+		const hidden = mountList(0)
+		revealRow(noteRow('n1'))
+		expect(hidden.calls).toEqual([])
+
+		document.body.innerHTML = ''
+		const shown = mountList(120)
+		flushReveal()
+
+		expect(shown.calls).toEqual([{ block: 'nearest' }])
+	})
+
+	/** The drag's own auto-scroll owns the region until the drop, and a row being
+	 *  carried is a gesture nothing else may interrupt. */
+	it('stands aside while a row is being dragged', () => {
+		const list = mountList(120)
+		list.row(noteRow('n1'))!.setAttribute('data-dragging', '')
+
+		revealRow(noteRow('n2'))
+		expect(list.calls).toEqual([])
+
+		list.row(noteRow('n1'))!.removeAttribute('data-dragging')
+		flushReveal()
+		expect(list.calls).toEqual([{ block: 'nearest' }])
+	})
+
+	/** Flushed once and then gone: a second flush must not re-scroll a list the
+	 *  reader has since moved. */
+	it('answers a request once', () => {
+		const list = mountList(120)
+		revealRow(noteRow('n1'))
+		flushReveal()
+
+		expect(list.calls).toHaveLength(1)
+	})
+
+	/** The row key names a note in a document nobody is looking at any more, and
+	 *  the id can even be reused by the space that replaced it. */
+	it('drops an unflushed request when the space is replaced', () => {
+		mountList(0)
+		revealRow(noteRow('n1'))
+
+		selection.resetForNewSpace()
+
+		document.body.innerHTML = ''
+		const next = mountList(120)
+		flushReveal()
+		expect(next.calls).toEqual([])
 	})
 })

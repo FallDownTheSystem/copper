@@ -133,12 +133,20 @@ function onKeydown(event: KeyboardEvent) {
 						     The name shrinks rather than holding its width — with the
 						     chevron at the end of the row, an unshrinkable one would push it
 						     out. The inner `truncate` is what makes that safe. -->
+						<!-- **`pl-3` is an alignment, not a spacing choice.** A note row is
+						     `px-3` plus a 16px completion box plus `gap-2`, so its text starts
+						     36px in; this row is `px-3` plus the marker's 6px dot plus
+						     `gap-1.5`, which landed the section name 6px to the left of every
+						     note under it. The extra 12px of button padding closes exactly
+						     that gap, so the heading and the notes it heads share one left
+						     edge. Anything that changes the note row's leading columns has to
+						     come back here. -->
 						<h2 :id="headingId" class="min-w-0">
 							<button
 								type="button"
 								tabindex="-1"
 								:aria-current="active ? 'true' : undefined"
-								class="hover:bg-surface-hover active:bg-surface-active flex min-w-0 items-center gap-1.5 rounded-sm px-1.5 py-1 transition-colors duration-fast"
+								class="hover:bg-surface-hover active:bg-surface-active flex min-w-0 items-center gap-1.5 rounded-sm py-1 pr-1.5 pl-3 transition-colors duration-fast"
 								:class="active ? 'text-accent-text' : 'text-text-secondary'"
 								@click="emit('activate')"
 							>

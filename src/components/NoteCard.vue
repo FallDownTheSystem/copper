@@ -113,24 +113,37 @@ function onDoubleClick(event: MouseEvent) {
 	     note menu. -->
 	<ContextMenu>
 		<ContextMenuTrigger as-child>
-			<!-- `-outline-offset-4`, not `-2`, and that is the geometry half of making
-			     a focused *selected* row read as two rings rather than one. The
-			     selection ring below is `ring-inset`, so it paints the band from 0 to
-			     2px inside the edge — and a 2px outline offset by -2 paints exactly the
-			     same band. An outline paints above a box-shadow, so the focus ring
-			     simply replaced the selection ring and a selected focused row looked
-			     identical to an unselected focused one. At -4 the focus ring takes the
-			     band from 2 to 4px and the two sit side by side. The colour half of the
-			     same fix is `--focus-ring` in main.css. -->
+			<!-- **One ring at a time: the focus ring is withheld from a selected row.**
+			     The two used to stack — the selection ring is `ring-inset` and painted
+			     the band from 0 to 2px inside the edge, and the focus ring was pushed
+			     out to `-outline-offset-4` so it took the band from 2 to 4px and sat
+			     beside it rather than over it. Two concentric rings 2px apart is what
+			     a selected row looked like the moment it was focused, which on a
+			     `rounded-lg` row reads as a doubled border rather than as two states.
+
+			     It also arrived without warning: `:focus-visible` does not match a row
+			     focused by the click that selected it, and then the *next* key — Shift
+			     on its own is enough, since the browser re-evaluates the heuristic on
+			     any keypress — made a second outline appear around a row nothing had
+			     happened to.
+
+			     What is lost is knowing *which* selected row holds focus, and it is
+			     affordable here: plain arrows move focus and selection together, and
+			     the case where they separate — Ctrl+Arrow — leaves the row unselected,
+			     which is exactly when the focus ring is drawn. Back at
+			     `-outline-offset-2` now that it has the edge to itself, matching the
+			     section header row above it. -->
 			<div
 				role="row"
 				:data-row-id="rowId"
 				data-note-row
 				:aria-selected="selected"
 				:tabindex="focused ? 0 : -1"
-				class="note-row group/row outline-focus-ring rounded-lg focus-visible:outline-2 focus-visible:-outline-offset-4"
+				class="note-row group/row outline-focus-ring rounded-lg"
 				:class="[
-					selected ? 'row-selected ring-accent-ring ring-2 ring-inset' : '',
+					selected
+						? 'row-selected ring-accent-ring ring-2 ring-inset'
+						: 'focus-visible:outline-2 focus-visible:-outline-offset-2',
 					'hover:bg-surface-hover transition-colors duration-fast',
 				]"
 				@click="emit('pointerSelect', $event)"

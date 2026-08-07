@@ -55,7 +55,7 @@ const isOpen = computed(() => attachment.value !== null)
  * **Resolved inside the tick, not before it.** The overlay is still up when
  * `close` runs and the list re-renders between the two, so an element that was
  * connected at close time can be detached by the time focus would move to it —
- * which is exactly what a project switch does, and it is not a race the check can
+ * which is exactly what a space switch does, and it is not a race the check can
  * be moved earlier to avoid. The whole ladder is therefore evaluated late.
  *
  * The last rung is the panel root rather than nothing at all. `document.body` is
@@ -165,7 +165,7 @@ function reportBrokenImage() {
  * `clearPreviews` revokes the blob the overlay is rendering, so the viewer has to
  * go with it. Watching from `ImageViewer.vue` covered every case but one: the
  * tray's `open-settings` and the menu's Settings item both unmount `PanelShell`
- * and this component with it, so a project opened from Explorer while the
+ * and this component with it, so a space opened from Explorer while the
  * settings view was up revoked the URL with nothing listening — and coming back
  * remounted the overlay over a blob that no longer resolves. At module scope the
  * reaction outlives the component, which is the only place it can be correct.

@@ -183,7 +183,7 @@ impl RawSettings {
 				.map_or(0, |index| if index < 0 { 0 } else { index as usize }),
 			_ => {
 				notices.push(
-					"\"activeSpace\" was not a number; the first project has been made active."
+					"\"activeSpace\" was not a number; the first space has been made active."
 						.into(),
 				);
 				0
