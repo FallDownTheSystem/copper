@@ -20,6 +20,9 @@
 //! 3. **Return timing carries no information.** `notepad.exe` blocks until its
 //!    window closes, `code.exe` returns immediately, `code --wait` returns on tab
 //!    close. Nothing here awaits the child; the file watch is the only trigger.
+//!    The same asymmetry is why a handoff cannot end when its editor does —
+//!    there is no such signal to end it on — so it ends when the file goes quiet
+//!    instead. See [`has_gone_idle`].
 //! 4. **The store mutex and the registry mutex are never held at the same time**,
 //!    in either order. Every function below collects what it needs under one
 //!    lock, releases it, and only then takes the other.
@@ -34,14 +37,16 @@
 //! `Command` runs `.cmd` targets via the shell. The difference is who builds the
 //! command line — std's escaping keeps the arguments separated there, which a
 //! hand-built string would not, and which a `cmd /c start` wrapper of our own
-//! would have put back in our hands.
+//! would have put back in our hands. It does mean the console `cmd.exe` would
+//! otherwise be given is Copper's to suppress; [`console_flags`] is where that
+//! happens.
 
 use std::collections::HashMap;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
@@ -78,10 +83,27 @@ type FileWatcher = Debouncer<RecommendedWatcher, RecommendedCache>;
 /// detached.
 const CONSOLE_EDITORS: [&str; 8] = ["vi", "vim", "nvim", "nano", "micro", "helix", "hx", "emacs"];
 
-/// `CREATE_NEW_CONSOLE`. Declared here rather than pulled from the `windows`
-/// crate: it is one ABI-fixed integer from `winbase.h`, and the alternative is
-/// widening the feature set of a crate this module otherwise does not touch.
+/// `CREATE_NEW_CONSOLE` and `CREATE_NO_WINDOW`, the two mutually exclusive
+/// answers to "what console does this child get?". Declared here rather than
+/// pulled from the `windows` crate: they are ABI-fixed integers from
+/// `winbase.h`, and the alternative is widening the feature set of a crate this
+/// module otherwise does not touch.
 const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// How long a handoff's temp file must sit unchanged **after a save has been
+/// applied** before the handoff ends itself.
+///
+/// Long enough that a pause between two saves in the same editing session does
+/// not end it, short enough that a user who saved and closed their editor is not
+/// left staring at a card that says it is still checked out. See
+/// [`has_gone_idle`] for why the rule needs a save to have landed first.
+const IDLE_AFTER_SAVE: Duration = Duration::from_secs(120);
+
+/// How often the idle sweep looks. Deliberately coarse: the deadline it enforces
+/// is measured in minutes, so a tick arriving a few seconds late costs nothing
+/// and a tighter one would only wake the process more often for the same answer.
+const IDLE_TICK: Duration = Duration::from_secs(15);
 
 /// A body larger than this is not read back. A temp file that has grown to tens
 /// of megabytes is a runaway process or a mistaken paste, not a note, and the
@@ -105,6 +127,23 @@ struct Handoff {
 	/// move underneath it?" A different question, and a different answer.
 	body_baseline: String,
 	conflicted: bool,
+	/// When a save from the editor was last applied to the note, and `None` until
+	/// the first one lands. The clock [`has_gone_idle`] measures against; it is set
+	/// nowhere but [`accept_save`], so Copper's own writes to the temp file — the
+	/// opening write and every [`rewrite_temp_file`] refresh — cannot extend a
+	/// session the editor has stopped touching.
+	saved_at: Option<Instant>,
+}
+
+impl Handoff {
+	/// Whether this handoff has gone quiet long enough to end itself.
+	fn is_idle(&self) -> bool {
+		has_gone_idle(
+			self.conflicted,
+			self.saved_at.map(|at| at.elapsed()),
+			IDLE_AFTER_SAVE,
+		)
+	}
 }
 
 #[derive(Default)]
@@ -280,6 +319,29 @@ pub fn resolve_editor() -> Vec<EditorTarget> {
 	targets
 }
 
+/// Which console the editor's child process gets, as a `CreateProcessW` flag.
+///
+/// A console editor needs a terminal to draw in, and gets one from
+/// `CREATE_NEW_CONSOLE` rather than from a shell wrapper. **Everything else must
+/// be told explicitly not to have one**, and the reason is one step removed from
+/// the editor itself: with no flag at all, a windowless GUI process spawning a
+/// console program makes Windows allocate a fresh console for it. `code.exe` is
+/// not a console program — but `EDITOR=code` resolves to `code.cmd`, which std
+/// runs through `cmd.exe`, which is. So the ordinary case of opening a note in VS
+/// Code flashed a command prompt on screen, and `CREATE_NO_WINDOW` is what stops
+/// it. The flag is inert for a GUI target, so `notepad.exe` is unaffected by
+/// being given it.
+///
+/// The two flags are mutually exclusive, which is why this is one choice
+/// returning one value rather than two independent conditions.
+fn console_flags(program: &Path) -> u32 {
+	if is_console_editor(program) {
+		CREATE_NEW_CONSOLE
+	} else {
+		CREATE_NO_WINDOW
+	}
+}
+
 fn is_console_editor(path: &Path) -> bool {
 	let stem = path
 		.file_stem()
@@ -389,13 +451,7 @@ fn launch(target: &EditorTarget, app: &AppHandle, file: &Path) -> Result<(), Str
 			// next candidate never happened.
 			let resolved = resolve_from_environment(path);
 			let mut command = Command::new(&resolved);
-			command.args(args).arg(file);
-
-			// A console editor needs a window to draw in, which it gets from the
-			// creation flag rather than from a shell.
-			if is_console_editor(&resolved) {
-				command.creation_flags(CREATE_NEW_CONSOLE);
-			}
+			command.args(args).arg(file).creation_flags(console_flags(&resolved));
 
 			// Never awaited: `notepad.exe` blocks until its window closes and
 			// `code.exe` returns at once, so an exit status would mean two different
@@ -562,6 +618,42 @@ fn should_rewrite_temp_file(conflicted: bool, baseline: &str, body: &str) -> boo
 	!conflicted && baseline != body
 }
 
+/// Whether a handoff whose last applied save was `since_save` ago should end
+/// itself.
+///
+/// **This is the whole of the session-end mechanism, and it exists because there
+/// is no better signal to be had.** A handoff used to end only when the user
+/// pressed Stop, when the note was deleted, or when the space closed — so the
+/// ordinary case, editing in VS Code and closing the window, left the card
+/// reading "Editing externally" forever. Nothing here can detect that: the
+/// process is not tracked and could not usefully be, because `code` is a
+/// launcher that hands the file to an already-running instance and exits at once,
+/// so its exit says nothing about whether the editor is still open. Nor does a
+/// file handle: VS Code, like `notepad.exe`, reads the file and closes it, so
+/// probing for an exclusive open would say "nobody has it" while the tab is still
+/// on screen and would end every session within one tick of opening it.
+///
+/// Two conditions, and each is load-bearing:
+///
+/// - **A save must have landed.** Until one has, the note's text exists only in
+///   the editor's buffer, and ending the handoff would delete the temp file
+///   underneath a user who has been composing in it. A handoff that is opened and
+///   never saved to therefore stays until it is stopped by hand — which costs
+///   nothing, because nothing was written.
+/// - **Never while conflicted.** A conflicted handoff's temp file is the only
+///   copy of a save Copper refused to apply, and it is waiting on a decision the
+///   user has to make. Ending it on a timer is precisely the silent discard the
+///   refusal existed to prevent.
+///
+/// What the rule concedes: an editor left open past the window loses its watch,
+/// and a later save does not reach the note. It cannot lose work — the temp
+/// directory is gone, so the save fails visibly in the editor rather than
+/// silently vanishing — and the note already holds everything saved up to that
+/// point.
+fn has_gone_idle(conflicted: bool, since_save: Option<Duration>, idle: Duration) -> bool {
+	!conflicted && since_save.is_some_and(|elapsed| elapsed >= idle)
+}
+
 enum Removed {
 	Absent,
 	Deleted,
@@ -647,6 +739,9 @@ fn accept_save(
 	with_handoff(app, note_id, handoff_id, |handoff| {
 		handoff.file_seen = bytes;
 		handoff.body_baseline = body;
+		// The one place the idle clock is armed, and it re-arms on every save, so a
+		// session stays alive for exactly as long as the editor keeps writing.
+		handoff.saved_at = Some(Instant::now());
 		std::mem::replace(&mut handoff.conflicted, false)
 	})
 	.unwrap_or(false)
@@ -872,6 +967,7 @@ pub async fn editor_open_note(id: String, app: AppHandle) -> Result<OpenOutcome,
 			file_seen: contents.into_bytes(),
 			body_baseline: body,
 			conflicted: false,
+			saved_at: None,
 		},
 	);
 
@@ -987,6 +1083,67 @@ fn rewrite_temp_file(app: &AppHandle, note_id: &str, body: &str) {
 
 	handoff.file_seen = contents.into_bytes();
 	handoff.body_baseline = body.to_string();
+}
+
+// --- the idle sweep ----------------------------------------------------------
+
+/// Ends every handoff that [`has_gone_idle`] says is finished, and emits once for
+/// the batch.
+///
+/// Nothing here holds two locks at a time, per the module's fourth rule: the scan
+/// collects ids under the registry lock and drops it, and everything after that
+/// takes one lock at a time.
+fn sweep_idle_handoffs(app: &AppHandle) {
+	let ids: Vec<String> = entries(app)
+		.iter()
+		.filter(|(_, handoff)| handoff.is_idle())
+		.map(|(note_id, _)| note_id.clone())
+		.collect();
+	if ids.is_empty() {
+		return;
+	}
+
+	let mut changed = false;
+	for id in ids {
+		// The same courtesy every other ending pays: a handoff is never ended without
+		// first applying — or refusing and reporting — whatever is on disk. Here it is
+		// nearly always a no-op, since going idle means the bytes are already ours.
+		changed |= apply_saved_file(app, &id, None);
+		// Asked again rather than trusted from the scan. `apply_saved_file` takes the
+		// store lock with the registry lock released, so a save can land in the gap
+		// and re-arm the clock, or be refused and make the handoff conflicted — and
+		// either answer means this one is no longer idle after all.
+		if entries(app).get(&id).is_some_and(Handoff::is_idle) {
+			changed |= remove(app, &id).existed();
+		}
+	}
+
+	if changed {
+		emit_state(app);
+	}
+}
+
+/// Starts the one thread that ends idle handoffs, and returns at once.
+///
+/// A thread rather than anything hung off the watcher, because idleness is the
+/// *absence* of file events — the debouncer never fires for it by construction.
+/// One thread for the whole registry rather than one per handoff, so the cost is
+/// a single sleeping thread whatever the user has open.
+///
+/// It exits on shutdown rather than racing it: teardown is already applying and
+/// ending every handoff, and a sweep joining in would take the same locks to do
+/// work that is being done.
+pub fn start_idle_sweeper(app: &AppHandle) {
+	let app = app.clone();
+	std::thread::spawn(move || {
+		while !crate::shutting_down() {
+			std::thread::sleep(IDLE_TICK);
+			if crate::shutting_down() {
+				return;
+			}
+			sweep_idle_handoffs(&app);
+		}
+	});
 }
 
 /// The one way to end every live handoff at once — Phase 6 calls it on a space
@@ -1231,6 +1388,45 @@ mod tests {
 			Some(EditorTarget::Executable { path, args })
 				if path == Path::new("notepad.exe") && args.is_empty()
 		));
+	}
+
+	#[test]
+	fn only_a_console_editor_is_given_a_console() {
+		assert_eq!(console_flags(Path::new(r"C:\tools\vim.exe")), CREATE_NEW_CONSOLE);
+		assert_eq!(console_flags(Path::new("nano")), CREATE_NEW_CONSOLE);
+		// The case the visible command prompt came from: `EDITOR=code` resolves to
+		// `code.cmd`, std runs it through `cmd.exe`, and a windowless GUI parent
+		// spawning a console program is given a fresh console unless it says
+		// otherwise.
+		assert_eq!(console_flags(Path::new(r"C:\bin\code.cmd")), CREATE_NO_WINDOW);
+		assert_eq!(console_flags(Path::new(r"C:\Windows\notepad.exe")), CREATE_NO_WINDOW);
+		// Mutually exclusive flags, so the choice must never produce both.
+		assert_ne!(CREATE_NEW_CONSOLE & CREATE_NO_WINDOW, CREATE_NO_WINDOW);
+	}
+
+	#[test]
+	fn a_handoff_goes_idle_only_after_a_save_and_never_while_conflicted() {
+		let idle = Duration::from_secs(120);
+
+		// The repro: a save landed, the editor was closed, and nothing has touched
+		// the file since. This is the case that used to leave the card reading
+		// "Editing externally" until it was stopped by hand.
+		assert!(has_gone_idle(false, Some(idle), idle));
+		assert!(has_gone_idle(false, Some(idle + Duration::from_secs(1)), idle));
+
+		// Still being saved to: the clock re-arms on every save, so a pause between
+		// two saves in one session must not end it.
+		assert!(!has_gone_idle(false, Some(idle - Duration::from_secs(1)), idle));
+
+		// Opened and never saved to. The note's text is only in the editor's buffer,
+		// and deleting the temp file underneath it would take the work with it.
+		assert!(!has_gone_idle(false, None, idle));
+
+		// Conflicted: the temp file is the only copy of a save Copper refused, and it
+		// is waiting on the user. Ending it on a timer is the silent discard the
+		// refusal exists to prevent.
+		assert!(!has_gone_idle(true, Some(idle * 100), idle));
+		assert!(!has_gone_idle(true, None, idle));
 	}
 
 	#[test]

@@ -45,6 +45,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
 		attachments::commands::attachment_thumb,
 		attachments::commands::attachment_full,
 		attachments::commands::attachment_open,
+		attachments::commands::attachment_reveal,
 		editor::editor_handoffs,
 		editor::editor_open_note,
 		editor::editor_stop_handoff,

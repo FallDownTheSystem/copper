@@ -297,6 +297,12 @@ pub fn run() {
 			// scavenge still runs against an empty registry.
 			editor::scavenge();
 			app.manage(editor::HandoffRegistry::default());
+			// After the registry it sweeps, and it is the only thing that ever ends a
+			// handoff without being asked to: an editor's exit is not a signal Copper
+			// can observe — `code` hands the file to a running instance and returns
+			// immediately — so a session that is finished has to be recognised by the
+			// file going quiet instead. See `editor::has_gone_idle`.
+			editor::start_idle_sweeper(app.handle());
 
 			// A `.copper` path on the command line — as Explorer passes on a
 			// double-click — is opened **here**, synchronously, before capture starts.

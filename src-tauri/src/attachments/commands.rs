@@ -1,4 +1,4 @@
-//! The six commands the panel reaches attachments through.
+//! The seven commands the panel reaches attachments through.
 //!
 //! They follow the store's two conventions unchanged: **every parameter name is
 //! a single word**, so Tauri's snake↔camel conversion stays a no-op and the
@@ -7,8 +7,9 @@
 //! added, the file dialog is driven from Rust, and thumbnails travel as bytes
 //! rather than through the asset protocol.
 //!
-//! `file` rather than an attachment id is what [`attachment_thumb`] and
-//! [`attachment_open`] take, and the choice is deliberate. The content-addressed
+//! `file` rather than an attachment id is what [`attachment_thumb`],
+//! [`attachment_open`] and [`attachment_reveal`] take, and the choice is
+//! deliberate. The content-addressed
 //! name is the one identifier a *pending* attachment and a committed one share —
 //! the tray's items are not in the document yet — so an id-keyed command would
 //! need a second path for the tray. It is also exactly the value
@@ -347,6 +348,49 @@ pub async fn attachment_open(
 	})
 	.await
 	.map_err(|err| StoreError::Io(format!("the file could not be opened: {err}")))?
+}
+
+/// **Open attachment location** — the stored blob, selected in Explorer.
+///
+/// Always reveals and never launches, which is the whole of what separates it
+/// from [`attachment_open`]. That one opens an image in the OS viewer, so an
+/// image is the one kind of attachment with no way to reach its own file; this
+/// is the affordance that answers "where did my copy actually go?" for every
+/// type. Because reveal is the arm with no execution surface, it needs none of
+/// the sniffing the open path does — there is nothing here for a hand-edited
+/// `mime` to steer.
+///
+/// **The path is reconstructed from `file`, never accepted from the caller.**
+/// [`super::resolve_existing`] is the one door into the assets directory: it
+/// refuses anything that is not a bare filename, and refuses a directory or a
+/// symlink wearing one — so a `.copper` that arrived from a git remote cannot
+/// make this select a path outside the space's own sidecar.
+///
+/// `reveal_item_in_dir` rather than a spawn of `explorer /select,`: the opener
+/// plugin is already a dependency and reaches `SHOpenFolderAndSelectItems`
+/// through COM, so there is no child process at all and therefore no console
+/// window to suppress.
+///
+/// In `spawn_blocking`, like every other command here: a `stat` plus a shell
+/// call.
+#[tauri::command]
+pub async fn attachment_reveal(
+	file: String,
+	app: AppHandle,
+	state: State<'_, SharedStore>,
+) -> Reply<()> {
+	let space = space_path(&state)?;
+
+	tauri::async_runtime::spawn_blocking(move || {
+		use tauri_plugin_opener::OpenerExt;
+
+		let path = resolve_existing(&space, &file)?;
+		app.opener()
+			.reveal_item_in_dir(&path)
+			.map_err(|err| StoreError::Io(format!("could not show {}: {err}", path.display())))
+	})
+	.await
+	.map_err(|err| StoreError::Io(format!("the file could not be shown: {err}")))?
 }
 
 /// **The startup half of the sweep policy, and its only caller is startup.** A

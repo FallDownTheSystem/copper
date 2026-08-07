@@ -52,7 +52,7 @@ const COMMANDS: [&str; 21] = [
 ];
 
 /// The commands later phases added beside the store's twenty.
-const EXTRA_COMMANDS: [&str; 31] = [
+const EXTRA_COMMANDS: [&str; 32] = [
 	"clipboard_write_text",
 	"editor_handoffs",
 	"editor_open_note",
@@ -90,6 +90,10 @@ const EXTRA_COMMANDS: [&str; 31] = [
 	"attach_paths",
 	"attachment_thumb",
 	"attachment_open",
+	// "Open attachment location". Distinct from `attachment_open`, which launches
+	// an image in the OS viewer and so leaves an image with no way to reach its own
+	// stored copy.
+	"attachment_reveal",
 	// Task-014. The one command that hands the WebView a full-size image, kept
 	// separate from `attachment_thumb` precisely so that command keeps its own
 	// "never full-size" property rather than growing a flag that retires it.

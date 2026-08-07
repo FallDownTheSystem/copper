@@ -633,6 +633,29 @@ mod tests {
 		assert!(resolved.starts_with(assets_dir(space)));
 	}
 
+	/// The gate every command that hands a path to the shell stands behind —
+	/// `attachment_open` and `attachment_reveal` both resolve through it and
+	/// nothing else. `resolve` alone is not enough for them: it is the write path
+	/// too, where the file legitimately does not exist yet.
+	#[test]
+	fn resolve_existing_accepts_only_a_regular_file_already_in_the_directory() {
+		let dir = tempfile::tempdir().unwrap();
+		let space = dir.path().join("notes.copper");
+		let assets = assets_dir(&space);
+		std::fs::create_dir_all(assets.join("subdir")).unwrap();
+		std::fs::write(assets.join("blob.png"), b"x").unwrap();
+
+		assert_eq!(
+			resolve_existing(&space, "blob.png").unwrap(),
+			assets.join("blob.png")
+		);
+		// A directory wearing a bare filename is not something to reveal or launch.
+		assert!(resolve_existing(&space, "subdir").is_err());
+		assert!(resolve_existing(&space, "absent.png").is_err());
+		// Refused before the filesystem is ever consulted.
+		assert!(resolve_existing(&space, r"..\..\Windows\System32\config\SAM").is_err());
+	}
+
 	#[test]
 	fn the_stored_name_is_the_hash_and_the_sniffed_extension() {
 		let dir = tempfile::tempdir().unwrap();
