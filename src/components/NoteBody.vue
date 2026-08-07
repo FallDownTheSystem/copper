@@ -64,6 +64,17 @@ function onClick(event: MouseEvent) {
 	const href = anchor.getAttribute('href')
 	if (href) void openUrl(href)
 }
+
+/**
+ * Middle-click fires `auxclick`, never `click`, so the handler above does not
+ * see it and the press falls through to the WebView's own new-window handling.
+ * The middle button only: the right button also arrives here, and preventing it
+ * would take away the context menu.
+ */
+function onAuxClick(event: MouseEvent) {
+	if (event.button !== 1) return
+	onClick(event)
+}
 </script>
 
 <template>
@@ -77,7 +88,13 @@ function onClick(event: MouseEvent) {
 			<!-- eslint-disable-next-line vue/no-v-html -- markdown-it runs with
 			     html:false and every link scheme is filtered at render time; see
 			     useMarkdown for why that boundary is at render time and not here. -->
-			<div ref="content" class="note-prose select-text" v-html="html" @click="onClick" />
+			<div
+				ref="content"
+				class="note-prose select-text"
+				v-html="html"
+				@click="onClick"
+				@auxclick="onAuxClick"
+			/>
 		</div>
 
 		<button

@@ -499,6 +499,25 @@
 	margin-block: 0.5em;
 }
 
+/* The same reset as the one above, for the two containers that supply their own
+   spacing. A loose list — one with a blank line between its items — wraps each
+   item's content in a paragraph, so without this the identical authored list
+   jumps from `li`'s 0.15em to 0.5em the moment that blank line appears; and a
+   blockquote's first line otherwise sits 0.5em below the top of its own border,
+   which is looser than the border implies. Only the edge paragraphs, so a
+   multi-paragraph item or quote still reads as separate paragraphs. Matched by
+   type and sitting below `p` in source order, so the doubled class the
+   top-level reset needs is not needed here. */
+.note-prose li > p:first-child,
+.note-prose blockquote > p:first-child {
+	margin-top: 0;
+}
+
+.note-prose li > p:last-child,
+.note-prose blockquote > p:last-child {
+	margin-bottom: 0;
+}
+
 .note-prose ul,
 .note-prose ol {
 	margin-block: 0.5em;

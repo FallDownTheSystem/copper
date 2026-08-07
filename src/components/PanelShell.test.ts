@@ -227,6 +227,9 @@ async function installDocument(next: Space) {
 beforeEach(() => {
 	vi.resetModules()
 	mocks.invoke.mockReset()
+	// `restoreMocks` reaches spies, not the call history of a bare `vi.fn()` — so
+	// without this a link-click assertion counts the previous test's clicks too.
+	mocks.openUrl.mockClear()
 	settingsPayload = defaultSettings()
 	mocks.invoke.mockImplementation(baseInvoke)
 })
@@ -419,6 +422,61 @@ describe('code fences', () => {
 		for (const pre of wrapper.find('[role="grid"]').findAll('pre')) {
 			expect(pre.attributes('tabindex')).toBe('-1')
 		}
+	})
+})
+
+describe('note links', () => {
+	const HREF = 'https://example.com/docs'
+
+	/** Mounted first and handed the document after, as the other cases here do. */
+	async function linkInPanel() {
+		const wrapper = await mountPanel()
+		await installDocument({
+			...SPACE,
+			notes: [{ ...SPACE.notes[0]!, body: `see [the docs](${HREF})` }],
+		})
+		await settle(3)
+
+		const link = wrapper.find('.note-prose a[href]')
+		expect(link.attributes('href')).toBe(HREF)
+		return link
+	}
+
+	/**
+	 * `preventDefault` is half the guarantee, not a detail: `openUrl` on its own
+	 * would open the page in the browser *and* navigate the panel to it, which
+	 * replaces the app with a web page and has no way back.
+	 */
+	it('opens a clicked link in the OS browser instead of navigating the WebView', async () => {
+		const link = await linkInPanel()
+
+		const event = new MouseEvent('click', { bubbles: true, cancelable: true })
+		link.element.dispatchEvent(event)
+
+		expect(mocks.openUrl).toHaveBeenCalledWith(HREF)
+		expect(event.defaultPrevented).toBe(true)
+	})
+
+	// Middle-click fires `auxclick` and reaches no `click` handler at all, so this
+	// path was uncovered while the plain and Ctrl-clicks were handled.
+	it('routes a middle-click the same way', async () => {
+		const link = await linkInPanel()
+
+		const event = new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true })
+		link.element.dispatchEvent(event)
+
+		expect(mocks.openUrl).toHaveBeenCalledWith(HREF)
+		expect(event.defaultPrevented).toBe(true)
+	})
+
+	it('leaves the right button to the context menu', async () => {
+		const link = await linkInPanel()
+
+		const event = new MouseEvent('auxclick', { button: 2, bubbles: true, cancelable: true })
+		link.element.dispatchEvent(event)
+
+		expect(mocks.openUrl).not.toHaveBeenCalled()
+		expect(event.defaultPrevented).toBe(false)
 	})
 })
 
