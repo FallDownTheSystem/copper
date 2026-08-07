@@ -50,7 +50,7 @@ const OPTIONS = [
 			:key="option.value"
 			:value="option.value"
 			:aria-label="option.label"
-			class="text-text-secondary hover:bg-surface-hover data-[state=checked]:bg-surface data-[state=checked]:text-text-primary outline-focus-ring grid size-8 place-items-center rounded-sm transition-colors duration-fast focus-visible:outline-2 focus-visible:outline-offset-2"
+			class="text-text-secondary hover:bg-surface-hover data-[state=checked]:bg-surface data-[state=checked]:text-text-primary focus-ring grid size-8 place-items-center rounded-sm transition-colors duration-fast"
 		>
 			<!-- The focus ring above names a colour, which is safe in High Contrast for
 			     a reason worth stating: under `forced-colors: active` the UA

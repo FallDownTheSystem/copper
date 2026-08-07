@@ -98,12 +98,16 @@ function onKeydown(event: KeyboardEvent) {
 	     only and this one carries its own content. -->
 	<ContextMenu>
 		<ContextMenuTrigger as-child>
+			<!-- The radius is here for the focus ring alone: this row paints no
+			     background and no border, so nothing else in it can show a corner. A
+			     square ring around a row sitting among `rounded-lg` note rows is the
+			     one shape it should not be. -->
 			<div
 				role="row"
 				:data-row-id="rowId"
 				data-section-row
 				:tabindex="focused ? 0 : -1"
-				class="min-w-0 outline-focus-ring focus-visible:outline-2 focus-visible:-outline-offset-2"
+				class="focus-ring min-w-0 rounded-md"
 			>
 				<div role="gridcell" class="flex min-h-6 min-w-0 items-center gap-2 px-3">
 					<template v-if="editing">
@@ -182,7 +186,7 @@ function onKeydown(event: KeyboardEvent) {
 							tabindex="-1"
 							:aria-expanded="!collapsed"
 							:aria-label="`${collapsed ? 'Expand' : 'Collapse'} ${section.name}`"
-							class="text-text-disabled hover:bg-surface-hover hover:text-text-secondary outline-focus-ring grid size-5 shrink-0 place-items-center rounded-sm transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
+							class="text-text-disabled hover:bg-surface-hover hover:text-text-secondary focus-ring grid size-5 shrink-0 place-items-center rounded-sm transition-colors duration-fast"
 							@click="toggle"
 						>
 							<IconLucideChevronRight

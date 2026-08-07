@@ -139,11 +139,9 @@ function onDoubleClick(event: MouseEvent) {
 				data-note-row
 				:aria-selected="selected"
 				:tabindex="focused ? 0 : -1"
-				class="note-row group/row outline-focus-ring rounded-lg"
+				class="note-row group/row rounded-lg"
 				:class="[
-					selected
-						? 'row-selected ring-accent-ring ring-2 ring-inset'
-						: 'focus-visible:outline-2 focus-visible:-outline-offset-2',
+					selected ? 'row-selected ring-accent-ring ring-2 ring-inset' : 'focus-ring',
 					'hover:bg-surface-hover transition-colors duration-fast',
 				]"
 				@click="emit('pointerSelect', $event)"

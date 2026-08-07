@@ -39,7 +39,7 @@ const emit = defineEmits<{ 'update:modelValue': [value: T] }>()
 			v-for="option in options"
 			:key="option.value"
 			:value="option.value"
-			class="text-text-secondary hover:bg-surface-hover data-[state=checked]:bg-surface data-[state=checked]:text-text-primary outline-focus-ring grid min-h-11 min-w-14 place-items-center rounded-sm px-3 text-meta transition-colors duration-fast focus-visible:outline-2 focus-visible:outline-offset-2"
+			class="text-text-secondary hover:bg-surface-hover data-[state=checked]:bg-surface data-[state=checked]:text-text-primary focus-ring grid min-h-11 min-w-14 place-items-center rounded-sm px-3 text-meta transition-colors duration-fast"
 		>
 			{{ option.label }}
 		</RadioGroupItem>

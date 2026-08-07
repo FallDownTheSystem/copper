@@ -19,7 +19,7 @@ defineEmits<{ 'update:modelValue': [value: boolean] }>()
 	<SwitchRoot
 		:id="id"
 		:model-value="modelValue"
-		class="bg-surface-hover data-[state=checked]:bg-accent-ring outline-focus-ring inset-ring inset-ring-separator hit-44 relative inline-flex h-6 w-10 shrink-0 items-center rounded-full p-0.5 transition-colors duration-fast focus-visible:outline-2 focus-visible:outline-offset-2"
+		class="bg-surface-hover data-[state=checked]:bg-accent-ring focus-ring inset-ring inset-ring-separator hit-44 relative inline-flex h-6 w-10 shrink-0 items-center rounded-full p-0.5 transition-colors duration-fast"
 		@update:model-value="(value) => $emit('update:modelValue', value)"
 	>
 		<SwitchThumb

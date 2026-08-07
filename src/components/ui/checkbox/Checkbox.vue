@@ -64,7 +64,7 @@ const pressTransition = { duration: 0.15, ease: EASE_OUT_QUINT }
  */
 const rootClass = computed(() =>
 	cn(
-		'squircle border-text-disabled outline-focus-ring data-[state=checked]:bg-accent-ring data-[state=checked]:border-accent-ring text-accent-contrast size-4 shrink-0 rounded-[6px] border transition-colors duration-base focus-visible:outline-2 focus-visible:outline-offset-1 disabled:cursor-not-allowed disabled:opacity-50',
+		'squircle border-text-disabled focus-ring data-[state=checked]:bg-accent-ring data-[state=checked]:border-accent-ring text-accent-contrast size-4 shrink-0 rounded-[6px] border transition-colors duration-base disabled:cursor-not-allowed disabled:opacity-50',
 		props.class,
 	),
 )

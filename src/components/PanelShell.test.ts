@@ -404,12 +404,12 @@ describe('the roving tabindex', () => {
 
 		const selected = wrapper.get(`[data-row-id="${noteRow('nte_1')}"]`)
 		expect(selected.classes()).toContain('ring-accent-ring')
-		expect(selected.classes('focus-visible:outline-2')).toBe(false)
+		expect(selected.classes('focus-ring')).toBe(false)
 
 		// The unselected row keeps it: that is the case where focus and selection
 		// genuinely differ, and the only ring it can wear.
 		const other = wrapper.get(`[data-row-id="${noteRow('nte_2')}"]`)
-		expect(other.classes()).toContain('focus-visible:outline-2')
+		expect(other.classes()).toContain('focus-ring')
 	})
 })
 

@@ -87,6 +87,16 @@
 	   wear one each — which is the same constraint over a slightly larger
 	   distance. */
 	--focus-ring: oklch(0.46 0.15 55);
+	/* The halo outside the 1px edge — see the `focus-ring` utility. Declared once
+	   and never re-declared under `.dark`, exactly as `--surface-danger` is: its
+	   input is, and `.dark` lands on the same element `:root` matches, so the mix
+	   re-resolves against the dark copper on its own.
+
+	   50% is the shadcn ratio and it survives both themes here because the two
+	   copper values are chosen to sit apart from their surfaces: composited it
+	   reads around L 0.72 on the light panel and L 0.55 on the dark one, in both
+	   cases a clear step from the surface behind it. */
+	--focus-ring-soft: color-mix(in oklab, var(--focus-ring) 50%, transparent);
 	/* Copper carries exactly one meaning: selection and active state. Split in
 	   two because oklch(0.62 0.11 55) is 3.77:1 on white — a pass for a UI
 	   component at 3:1 and a failure for text at 4.5:1. */
@@ -313,41 +323,69 @@
 	animation-iteration-count: 1 !important;
 }
 
+/* **The focus treatment, and the only copy of it.** A 1px copper edge hugging
+   the control with a 3px translucent copper halo outside it — shadcn's
+   `border-ring` + `ring-[3px] ring-ring/50`, which is what the panel is being
+   matched to. Everything focusable either carries this class or is a utility
+   below that applies it.
+
+   Three layers, and each is load-bearing:
+
+   **`outline` for the 1px edge, not a border.** An outline takes no layout space
+   at all, so this works unchanged on the controls that have a border and on the
+   note rows, the icon buttons and the toggles that do not — and none of them
+   moves by a pixel when it takes focus. Chromium has followed `border-radius`
+   with outlines since 94, so it hugs a rounded control the same way the halo
+   does. **It is also the half that survives forced colors**, where box-shadows
+   are not painted at all: Windows' high-contrast mode repaints the outline in
+   the system highlight colour and the indicator stays visible with no rule of
+   its own.
+
+   **`border-color` for the controls that do have a border**, which is what makes
+   this read as shadcn's treatment rather than as a ring bolted onto a grey edge.
+   It is inert on the borderless ones — a colour with no width to paint — so one
+   definition covers both. The cost is that a bordered control shows 2px of solid
+   copper to a borderless one's 1px; they are never adjacent, and the alternative
+   was two definitions to keep in step.
+
+   **`box-shadow` for the halo**, because spread follows the element's own
+   `border-radius` for free where a second outline would need its own geometry.
+   The 4px spread minus the 1px the outline covers is the 3px that shows.
+
+   The one cost of using `box-shadow` is that it replaces any the element already
+   had. `SettingsSwitch`'s `inset-ring` is the only focusable one that has one, and
+   its 1px inner edge is masked for exactly as long as the switch holds focus —
+   under an indicator drawn to be the loudest thing on the surface, which is not a
+   trade worth composing shadow variables by hand to avoid. */
+@utility focus-ring {
+	&:focus-visible {
+		outline: 1px solid var(--focus-ring);
+		outline-offset: 0;
+		border-color: var(--focus-ring);
+		box-shadow: 0 0 0 4px var(--focus-ring-soft);
+	}
+}
+
 /* The secondary controls in the conflict and recovery surfaces: one appearance,
    four buttons, and one place to change it. The focus ring lives here rather
    than at the call sites: every one of them hand-copied the same three classes,
    and the ones that did not were silently falling back to Chromium's default
    ring. */
 @utility panel-button {
-	@apply squircle border-separator hover:bg-surface-hover rounded-md border px-2 py-1 text-meta transition-colors duration-fast;
-
-	&:focus-visible {
-		outline: 2px solid var(--focus-ring);
-		outline-offset: -1px;
-	}
+	@apply squircle border-separator hover:bg-surface-hover focus-ring rounded-md border px-2 py-1 text-meta transition-colors duration-fast;
 }
 
 /* The panel's text inputs and textareas: one appearance for the composer, the
    search field, the section rename and the note editor. Call sites keep only
    their own sizing. */
 @utility panel-field {
-	@apply squircle border-separator bg-surface-hover text-text-primary placeholder:text-text-disabled rounded-md border text-body select-text;
-
-	&:focus-visible {
-		outline: 2px solid var(--focus-ring);
-		outline-offset: -1px;
-	}
+	@apply squircle border-separator bg-surface-hover text-text-primary placeholder:text-text-disabled focus-ring rounded-md border text-body select-text;
 }
 
 /* Square icon-only controls: the menu trigger, the settings back arrow, the
    recorder's clear button and the composer's paperclip. One icon size rules. */
 @utility icon-button {
-	@apply squircle text-text-secondary hover:bg-surface-hover active:bg-surface-active grid size-8 place-items-center rounded-md transition-colors duration-fast;
-
-	&:focus-visible {
-		outline: 2px solid var(--focus-ring);
-		outline-offset: -1px;
-	}
+	@apply squircle text-text-secondary hover:bg-surface-hover active:bg-surface-active focus-ring grid size-8 place-items-center rounded-md transition-colors duration-fast;
 }
 
 /* Superellipse corners on the panel's small rounded rectangles. Carries no

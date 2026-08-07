@@ -82,7 +82,7 @@ function onOpenChange(next: boolean) {
 			type="button"
 			:aria-label="`Active section: ${name}, ${spokenCount}. Switch section`"
 			:title="name"
-			class="text-accent-text hover:bg-surface-hover active:bg-surface-active outline-focus-ring squircle border-separator -mx-1 flex min-w-0 max-w-full items-center gap-1.5 rounded-sm border px-1.5 py-0.5 transition-colors duration-fast focus-visible:outline-2 focus-visible:-outline-offset-1"
+			class="text-accent-text hover:bg-surface-hover active:bg-surface-active focus-ring squircle border-separator -mx-1 flex min-w-0 max-w-full items-center gap-1.5 rounded-sm border px-1.5 py-0.5 transition-colors duration-fast"
 		>
 			<IconLucideListTree class="size-3.5 shrink-0" aria-hidden="true" focusable="false" />
 			<span class="truncate text-label font-semibold uppercase">{{ name }}</span>
