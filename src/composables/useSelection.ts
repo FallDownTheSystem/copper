@@ -190,13 +190,15 @@ const rowIds = computed(() => orders.value.rows)
 const visibleNoteIds = computed(() => orders.value.notes)
 
 /**
- * What an *action* may target: document order, filtered by the search query and
- * by nothing else.
+ * What an *action* may target: document order, narrowed by the search query and
+ * by the done filter, and by nothing else.
  *
  * Distinct from `visibleNoteIds`, and the distinction is the point. A search
- * narrows what an action targets — that is what a query means. **Collapsing does
- * not**: it folds rows away, and a note the user selected before folding its
- * section is still a note they selected. Targeting `visibleNoteIds` made
+ * narrows what an action targets — that is what a query means — and the done
+ * filter narrows it for the same reason, being a scope the user chose in order to
+ * act on it. **Collapsing does not**: it folds rows away, and a note the user
+ * selected before folding its section is still a note they selected. Targeting
+ * `visibleNoteIds` made
  * copy, delete, mark-done, merge, `Move to ▸` and the `$EDITOR` handoff into
  * silent no-ops the moment a section was collapsed, which is the opposite of
  * what the comment above `orders` promises.

@@ -3711,7 +3711,9 @@ describe('the done filter', () => {
 		await settle(2)
 
 		expect(calls).toEqual([])
-		expect(button.text()).toContain('Delete 2?')
+		// The label names the scope as well as the count — see the section-naming
+		// case below for why the two cannot be left to be inferred from each other.
+		expect(button.text()).toContain('Delete 2 in Research?')
 
 		await button.trigger('click')
 		await settle(3)
@@ -3765,6 +3767,126 @@ describe('the done filter', () => {
 
 		expect(wrapper.text()).toContain('Nothing is done yet.')
 	})
+
+	/**
+	 * The confirming label names the **section**, because the count and the view
+	 * can legitimately disagree: the filter shows done notes document-wide, the
+	 * delete takes the active section's alone (AC9). A bare "Delete 2?" over a list
+	 * of three done notes reads as a bug, or is believed.
+	 */
+	it('names the section it would delete from, not just the count', async () => {
+		const { wrapper } = await mountWithDoneInBoth()
+		await wrapper.get('[data-done-filter]').trigger('click')
+		await settle(2)
+
+		// Three done notes are on screen; only the two in `Research` are in scope.
+		expect(wrapper.findAll('[data-note-row]')).toHaveLength(3)
+
+		await wrapper.get('[data-delete-done]').trigger('click')
+		await settle(2)
+
+		expect(wrapper.get('[data-delete-done]').text()).toContain('Delete 2 in Research?')
+	})
+
+	/**
+	 * The confirmation re-arms on **which** notes it would delete, not how many.
+	 *
+	 * A count is not an identity, and the gap is reachable: marking one note done
+	 * while another is unmarked leaves the total unchanged over a different set. A
+	 * confirmation armed before that landed would delete notes it never offered.
+	 */
+	it('disarms when an equal-count set swaps underneath it', async () => {
+		const { wrapper, calls } = await mountWithDoneInBoth()
+		await wrapper.get('[data-done-filter]').trigger('click')
+		await settle(2)
+
+		await wrapper.get('[data-delete-done]').trigger('click')
+		await settle(2)
+		expect(wrapper.get('[data-delete-done]').text()).toContain('Delete 2 in Research?')
+
+		// Still two done notes in `sec_a`, but a different two: `nte_1` is no longer
+		// done and `nte_3` now is.
+		mocks.invoke.mockImplementation(async (command: string, args?: { ids?: string[] }) => {
+			if (command === 'get_active_space') {
+				return {
+					...DONE_IN_BOTH,
+					notes: DONE_IN_BOTH.notes.map((entry) => {
+						if (entry.id === 'nte_1') return { ...entry, done: false }
+						if (entry.id === 'nte_3') return { ...entry, done: true }
+						return entry
+					}),
+				}
+			}
+			if (command === 'delete_notes') {
+				calls.push(args?.ids ?? [])
+				return DONE_IN_BOTH
+			}
+			return baseInvoke(command)
+		})
+		await space.refresh()
+		await settle(3)
+
+		// The offer went away rather than silently re-aiming, so the next press arms
+		// against the new set instead of deleting the old one.
+		expect(wrapper.get('[data-delete-done]').text()).toContain('Delete done')
+		await wrapper.get('[data-delete-done]').trigger('click')
+		await settle(2)
+		expect(calls).toEqual([])
+	})
+
+	/**
+	 * A held Enter must not arm and confirm inside one hold. The browser
+	 * synthesises a click from every repeat of the keydown, so without refusing the
+	 * repeat the second one confirms a deletion the user never pressed twice.
+	 */
+	it('refuses the repeat of a held activation key', async () => {
+		const { wrapper, calls } = await mountWithDoneInBoth()
+		await wrapper.get('[data-done-filter]').trigger('click')
+		await settle(2)
+
+		const button = wrapper.get('[data-delete-done]')
+		// The first press arms, as an ordinary one does.
+		await button.trigger('click')
+		await settle(2)
+		expect(button.text()).toContain('Delete 2 in Research?')
+
+		// The key is still down. The repeat is declined at the source, so no click is
+		// generated from it and nothing is confirmed.
+		const repeat = new KeyboardEvent('keydown', {
+			key: 'Enter',
+			repeat: true,
+			bubbles: true,
+			cancelable: true,
+		})
+		button.element.dispatchEvent(repeat)
+		await settle(2)
+
+		expect(repeat.defaultPrevented).toBe(true)
+		expect(calls).toEqual([])
+		expect(button.text()).toContain('Delete 2 in Research?')
+	})
+
+	/** The second click of a double-click is the same gesture as the first, aimed
+	 *  at a label that changed halfway through it. */
+	it('does not let a double-click arm and confirm in one gesture', async () => {
+		const { wrapper, calls } = await mountWithDoneInBoth()
+		await wrapper.get('[data-done-filter]').trigger('click')
+		await settle(2)
+
+		const button = wrapper.get('[data-delete-done]')
+		await button.trigger('click', { detail: 1 })
+		await settle(2)
+		await button.trigger('click', { detail: 2 })
+		await settle(3)
+
+		expect(calls).toEqual([])
+		expect(button.text()).toContain('Delete 2 in Research?')
+
+		// A deliberate separate press still works.
+		await button.trigger('click', { detail: 1 })
+		await settle(3)
+		expect(calls).toHaveLength(1)
+	})
 })
 
 describe('per-section sort', () => {
@@ -3812,6 +3934,67 @@ describe('per-section sort', () => {
 
 		expect(wrapper.text()).toContain('Sorted newest first')
 		expect(wrapper.text()).toContain('Reordering by hand is unavailable')
+	})
+
+	/**
+	 * The done filter is the third reason reordering is refused, and it was missed
+	 * when the filter was added.
+	 *
+	 * The reason is the search branch's, verbatim: a done-only list omits every
+	 * unfinished note between two done ones, so an index read off the rendered rows
+	 * is not the index `reorder_note` takes. Both paths have to refuse — the grip
+	 * for the pointer, `reorderBlocked` for the keyboard and for anything that
+	 * slips past the grip.
+	 */
+	it('refuses both reorder paths while the done filter is on', async () => {
+		const wrapper = await mountPanel()
+		list.setDoneFilter('done')
+		await settle(3)
+
+		// The pointer path: no handle, so there is nothing to start a drag from.
+		expect(wrapper.find('[data-drag-handle]').exists()).toBe(false)
+
+		// The keyboard path.
+		takeRow(noteRow('nte_2'))
+		await settle(2)
+		await wrapper.get('[role="grid"]').trigger('keydown', { key: 'ArrowDown', altKey: true })
+		await settle(3)
+		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_note', expect.anything())
+		expect(wrapper.text()).toContain('Show all notes to reorder them.')
+
+		// And the commit itself, in case a drag is ever started some other way.
+		await actions.finishDrag('nte_2', 'sec_a', 0)
+		await settle(3)
+		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_note', expect.anything())
+	})
+
+	/**
+	 * `positionOf` answers in **document** coordinates, which is what its contract
+	 * always said and what `finishDrag`'s no-op check needs — `useNoteDrag` counts
+	 * the destination index over the whole section, so a position taken from the
+	 * rendered rows compares two different coordinate systems.
+	 *
+	 * Collapse is the condition this is observable under. Every *other* way the
+	 * rendered rows can disagree with the document — a query, the done filter, a
+	 * non-manual sort — is refused outright by `reorderBlocked` before the no-op
+	 * check runs, so the defect was unreachable rather than absent. A collapsed
+	 * section is not refused, and it publishes an empty note list: reading the
+	 * position off `visibleGroups` there returned -1, which never equals the index,
+	 * so a drag that changed nothing went to the store and pushed an undo entry the
+	 * user then had to press Ctrl+Z to get rid of.
+	 */
+	it('treats a no-op drag inside a collapsed section as a no-op', async () => {
+		const wrapper = await mountPanel()
+		sections.setCollapsed('sec_a', true)
+		await settle(2)
+		expect(wrapper.findAll('[data-note-row]')).toHaveLength(0)
+
+		// `nte_2` is already at index 1 of `sec_a` in the document, so this asks for
+		// the position it already holds.
+		await actions.finishDrag('nte_2', 'sec_a', 1)
+		await settle(3)
+
+		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_note', expect.anything())
 	})
 })
 

@@ -434,9 +434,19 @@ function doneInActiveSection(): string[] {
 		.map((note) => note.id)
 }
 
-/** What the confirmation offers to delete, so the control can name a count and
- *  withdraw when there is nothing to do. */
-const doneCount = computed(() => doneInActiveSection().length)
+/**
+ * Exactly what a confirmed press would delete, as a reactive value.
+ *
+ * The *ids* rather than only their count, because the count is not an identity: a
+ * note marked done while another is unmarked leaves the total unchanged over a
+ * different set, and a confirmation armed against the old set would then delete
+ * notes the user never saw it offer. The control re-arms on this.
+ */
+const doneTargets = computed(() => doneInActiveSection())
+
+/** What the confirmation names, so the control can show a count and withdraw when
+ *  there is nothing to do. */
+const doneCount = computed(() => doneTargets.value.length)
 
 /**
  * One `delete_notes` call whatever the count, which is what makes AC7 true: the
@@ -467,30 +477,44 @@ function deleteDoneInActiveSection() {
 // --- reorder -----------------------------------------------------------------
 
 /**
- * Reordering is refused for two reasons, and both are arithmetic rather than
- * taste.
+ * Reordering is refused for three reasons, and all of them are arithmetic rather
+ * than taste.
  *
  * **A search** leaves the rendered list a *subset* of its section, so an index
  * read off it means something different from the `index` `reorder_note` takes,
  * which counts positions in the whole section. Dropping a note between two
  * matches would silently move it somewhere else entirely.
  *
- * **A non-manual sort** is the stronger form of the same problem: the rendered
- * order is a *permutation* of the section, so a drop index means nothing at all —
- * and the position it would write is one the sort immediately overrules on the
- * next render, which reads as a drag that silently sprang back.
+ * **The done filter** is the same defect with a different filter in front of it.
+ * The subset reasoning above transfers verbatim: a done-only list omits every
+ * unfinished note between two done ones, so dropping a note "between" them lands
+ * it wherever those omitted notes happen to leave the count. That this was missed
+ * when the filter was added is the point of stating the reason as arithmetic —
+ * *any* narrowing of the rendered rows breaks the index, so a new one has to join
+ * this guard rather than be judged on its own.
+ *
+ * **A non-manual sort** is the stronger form again: the rendered order is a
+ * *permutation* of the section, so a drop index means nothing at all — and the
+ * position it would write is one the sort immediately overrules on the next
+ * render, which reads as a drag that silently sprang back.
  *
  * The sections are passed rather than read off the focused row because a move can
  * *cross* sections: an Alt+Arrow out of a manual section into a sorted one is
  * still a reorder whose destination index is meaningless. Nulls are accepted so
- * callers can hand over an unresolved neighbour without checking first.
+ * callers can hand over an unresolved neighbour without checking first. The filter
+ * and the query take no section argument because neither is per-section: both
+ * narrow every group at once.
  *
- * The drag grip is hidden under both conditions, so this guards the keyboard path
- * and anything that slips past that.
+ * The drag grip is hidden under all three conditions, so this guards the keyboard
+ * path and anything that slips past that.
  */
 function reorderBlocked(...sectionIds: (string | null | undefined)[]): boolean {
 	if (search.hasQuery.value) {
 		status.setMessage('Clear the search to reorder notes.')
+		return true
+	}
+	if (list.doneOnly.value) {
+		status.setMessage('Show all notes to reorder them.')
 		return true
 	}
 	if (sectionIds.some((id) => id != null && list.isSorted(id))) {
@@ -535,14 +559,24 @@ function finishDrag(noteId: string, sectionId: string, index: number) {
 	})
 }
 
-/** The note's index within its own section in the *document*, which is what a
- *  no-op drag has to be compared against. */
+/**
+ * The note's index within its own section in the *document*, which is what a
+ * no-op drag has to be compared against.
+ *
+ * Read off the document rather than off `visibleGroups`, which is what the
+ * docstring always claimed and the body did not do. `useNoteDrag` counts the
+ * destination index over the whole section, so comparing it against a position
+ * taken from the *rendered* rows compares two different coordinate systems. It
+ * happened to agree whenever nothing narrowed or reordered the list, and every
+ * condition that breaks that agreement is refused by `reorderBlocked` — so the
+ * bug was unreachable rather than absent. Making the body match the contract is
+ * what keeps it unreachable when the next filter arrives, instead of resting on a
+ * guard somebody has to remember to extend.
+ */
 function positionOf(noteId: string): number {
-	for (const group of selection.visibleGroups.value) {
-		const at = group.noteIds.indexOf(noteId)
-		if (at !== -1) return at
-	}
-	return -1
+	const note = space.noteById(noteId)
+	if (!note) return -1
+	return space.notesInSection(note.section).findIndex((entry) => entry.id === noteId)
 }
 
 /**
@@ -779,6 +813,7 @@ export function useNoteActions() {
 		merge,
 		deleteNotes,
 		doneCount,
+		doneTargets,
 		deleteDoneInActiveSection,
 		finishDrag,
 		moveFocusedBy,

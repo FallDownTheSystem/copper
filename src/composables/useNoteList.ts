@@ -118,6 +118,15 @@ function rebuild(space: SpaceView | null) {
 	if (!space) {
 		doneIds.value = new Set()
 		createdAt.value = new Map()
+		// Pruned here too, and the reason is the contract rather than a bug anyone
+		// can reach today: `rebuild` promises to bring the sort map into line with
+		// the document it is given, and a null document has no sections at all — so
+		// every mode in it names something that does not exist. Leaving them behind
+		// on this one branch would make an exported function mean two different
+		// things depending on its argument, which is the kind of asymmetry the next
+		// caller inherits without reading for it. `reset` is still the epoch path;
+		// this is only consistency.
+		sortModes.value = new Map()
 		return
 	}
 

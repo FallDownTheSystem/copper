@@ -235,6 +235,15 @@ describe('per-section sort', () => {
 	 * remove — and if the id comes back, which an undone section delete does
 	 * exactly, the section would return mysteriously sorted.
 	 */
+	/** `rebuild` brings the sort map into line with the document it is handed, and
+	 *  a null document has no sections — so every mode in it names something that
+	 *  does not exist. Contract consistency, not a reachable bug. */
+	it('drops every mode when the document goes away', () => {
+		list.setSort('sec_a', 'oldest')
+		list.rebuild(null)
+		expect(list.sortOf('sec_a')).toBe('manual')
+	})
+
 	it('prunes a mode whose section is gone', () => {
 		list.setSort('sec_b', 'newest')
 
