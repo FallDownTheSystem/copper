@@ -545,6 +545,7 @@ dependencies = [
  "uuid",
  "window-vibrancy 0.8.0",
  "windows",
+ "windows-core 0.61.2",
 ]
 
 [[package]]

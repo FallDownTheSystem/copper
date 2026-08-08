@@ -43,6 +43,15 @@ serde = { version = "1.0", features = ["derive"] }
 tauri = { version = "=2.11.5", features = ["tray-icon"] }
 window-vibrancy = "0.8"
 windows = { version = "=0.61.3", features = [
+	# These three are the OLE drag-drop surface (drop-target re-registration;
+	# the `#[implement]` macro itself ships in windows-core unconditionally).
+	# wry's own drop targets are registered before a hidden window's WebView2
+	# children exist (wry#1639, fix unreleased), so the panel — born hidden —
+	# re-registers its own after every reveal. The set mirrors what wry's
+	# webview2/drag_drop.rs compiles against.
+	"Win32_System_Ole",
+	"Win32_System_SystemServices",
+	"Win32_UI_Shell",
 	"Win32_Foundation",
 	"Win32_Graphics_Dwm",
 	"Win32_System_Diagnostics_Debug",
@@ -84,6 +93,13 @@ windows = { version = "=0.61.3", features = [
 	"Foundation",
 	"UI_Notifications",
 ] }
+# Named only because `#[implement(IDropTarget)]` (win32/drop_target.rs) expands
+# to code that addresses `windows_core::` as a crate in its own right — the
+# re-export through `windows::core` does not satisfy the macro. `=0.61.2` is the
+# copy `windows =0.61.3` already resolves beneath itself, so this adds a name,
+# not a compilation unit; a caret range could drift onto the second, semver-
+# incompatible 0.62 copy that webview2-com pulls in.
+windows-core = "=0.61.2"
 tauri-plugin-single-instance = "2.4.3"
 tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-autostart = "2.5.1"

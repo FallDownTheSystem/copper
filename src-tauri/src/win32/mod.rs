@@ -1,4 +1,6 @@
-//! Everything that talks to Win32 on the capture path.
+//! Everything that talks to Win32 on the capture path — plus [`drop_target`],
+//! which is not capture but belongs to the same discipline: raw Win32 behind a
+//! narrow Rust surface.
 //!
 //! This directory and `capture/` are the only places in the app besides
 //! `panel.rs` that may name an `HWND` (task-005 R1), which is checked by grep
@@ -6,6 +8,7 @@
 //! only under those three.
 
 pub mod clipboard;
+pub mod drop_target;
 pub mod foreground;
 pub mod integrity;
 

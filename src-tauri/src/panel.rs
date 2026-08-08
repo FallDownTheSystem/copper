@@ -1,7 +1,8 @@
 //! The panel window as a unit: its label, its native backdrop and corner
 //! rounding, and the reveal/hide pair every future call site must go through.
 //!
-//! This is the only module in the app that handles an `HWND`.
+//! One of the three places allowed to handle an `HWND` — this file, `win32/`
+//! and `capture/` — per the grep-checked rule in `win32/mod.rs`.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -158,7 +159,85 @@ pub fn reveal(window: &WebviewWindow) -> tauri::Result<()> {
 	window.show()?;
 	window.unminimize()?;
 	window.set_focus()?;
+	install_drop_targets(window);
 	Ok(())
+}
+
+/// Puts the panel's own OLE drop targets on the WebView2 window tree, replacing
+/// wry's — see `win32::drop_target` for why wry's are dead on arrival for a
+/// window born hidden. Called from **every** reveal path — the first reveal is
+/// the moment the child windows this must land on come to exist, and WebView2
+/// may recreate them later — and from the `Focused(true)` window event, which
+/// is the belt to the reveal's braces: focus arrives through the event loop
+/// strictly after the show that preceded it, so it catches a child window that
+/// was still being built while the reveal's synchronous pass enumerated.
+///
+/// The listener re-emits each drag as the `tauri://drag-*` event tauri's own
+/// pipeline would have produced, with the same payload shape — so the
+/// frontend's `onDragDropEvent` subscription cannot tell whose target fired,
+/// and keeps working unchanged the day a fixed wry takes the registration back.
+pub fn install_drop_targets(window: &WebviewWindow) {
+	use crate::win32::drop_target::{self, DropEvent};
+
+	let Ok(hwnd) = window.hwnd() else {
+		diagnostics::log_error("[copper] panel: no HWND to register drop targets on");
+		return;
+	};
+
+	let app = window.app_handle().clone();
+	drop_target::reinstall(
+		hwnd,
+		std::rc::Rc::new(move |event| {
+			use tauri::Emitter;
+
+			// The shapes tauri's own emission uses (manager/window.rs
+			// DragDropPayload): `paths` present for enter and drop, null for over,
+			// and a null payload for leave. The JS API synthesises its
+			// `{ type: ... }` wrapper from the event name alone.
+			#[derive(serde::Serialize, Clone)]
+			struct Payload {
+				paths: Option<Vec<std::path::PathBuf>>,
+				position: Position,
+			}
+			#[derive(serde::Serialize, Clone, Copy)]
+			struct Position {
+				x: i32,
+				y: i32,
+			}
+
+			let target = tauri::EventTarget::labeled(PANEL_LABEL);
+			let sent = match event {
+				DropEvent::Enter { paths, position } => app.emit_to(
+					target,
+					"tauri://drag-enter",
+					Payload {
+						paths: Some(paths),
+						position: Position { x: position.0, y: position.1 },
+					},
+				),
+				DropEvent::Over { position } => app.emit_to(
+					target,
+					"tauri://drag-over",
+					Payload {
+						paths: None,
+						position: Position { x: position.0, y: position.1 },
+					},
+				),
+				DropEvent::Drop { paths, position } => app.emit_to(
+					target,
+					"tauri://drag-drop",
+					Payload {
+						paths: Some(paths),
+						position: Position { x: position.0, y: position.1 },
+					},
+				),
+				DropEvent::Leave => app.emit_to(target, "tauri://drag-leave", ()),
+			};
+			if let Err(err) = sent {
+				diagnostics::log_error(&format!("[copper] panel: could not emit a drag event: {err}"));
+			}
+		}),
+	);
 }
 
 /// Reveals the panel **without** giving it focus, for the capture failure
@@ -209,6 +288,8 @@ pub fn reveal_without_activating(
 			SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
 		)?;
 	}
+	// A reveal is a reveal for the drop targets too, however it activates.
+	install_drop_targets(window);
 	Ok(())
 }
 

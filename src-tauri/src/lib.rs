@@ -203,6 +203,16 @@ pub fn run() {
 						theme::on_system_theme_changed(&panel);
 					}
 				}
+				// The belt to the reveal paths' braces — see `install_drop_targets`:
+				// focus arrives through the event loop after the show it followed, so a
+				// WebView2 child window still being built during the reveal's own pass
+				// gets its drop target here. Never fires mid-drag (a drag does not
+				// focus the panel), and re-registering is a handful of Win32 calls.
+				WindowEvent::Focused(true) => {
+					if let Some(panel) = window.get_webview_window(panel::PANEL_LABEL) {
+						panel::install_drop_targets(&panel);
+					}
+				}
 				// The panel is never destroyed in normal use — `CloseRequested` above
 				// sees to that — but if it ever is, a recording session must not take
 				// the summon chord with it. Off the main thread, per the note in
