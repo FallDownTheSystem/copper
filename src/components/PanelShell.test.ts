@@ -1675,6 +1675,33 @@ describe('the section switcher', () => {
 		expect(filter.placeholder).toBe('Filter or create a section…')
 	})
 
+	/** The field and the rows are the popover's only two stops, and reka
+	 *  connects them one way: arrows walk focus into its collection, and the
+	 *  field — not being a menu item — is never walked back to, which left Tab
+	 *  dead and the rows a one-way door. Tab cycles between the two stops, and
+	 *  ArrowUp on the first row returns to the field instead of wrapping. */
+	it('cycles focus between the filter field and the rows', async () => {
+		const wrapper = await mountPanel()
+		await showSwitcher(wrapper)
+
+		const filter = content()!.querySelector<HTMLInputElement>('#section-filter')!
+		const first = content()!.querySelector<HTMLElement>('[role="menuitem"]')!
+		filter.focus()
+
+		const press = (target: HTMLElement, key: string) =>
+			target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+
+		press(filter, 'Tab')
+		expect(document.activeElement).toBe(first)
+
+		press(first, 'Tab')
+		expect(document.activeElement).toBe(filter)
+
+		press(filter, 'Tab')
+		press(first, 'ArrowUp')
+		expect(document.activeElement).toBe(filter)
+	})
+
 	/**
 	 * `Ctrl+K` was this surface's for three tasks and is the command palette's
 	 * now. The switcher kept both of its pointer routes, because the palette

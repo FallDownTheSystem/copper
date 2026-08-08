@@ -165,8 +165,46 @@ function onKeydown(event: KeyboardEvent) {
 		return
 	}
 
-	if (['ArrowDown', 'ArrowUp', 'Home', 'End', 'Escape', 'Tab'].includes(event.key)) return
+	if (event.key === 'Tab') {
+		// Reka swallows Tab inside a menu, which left the field a dead end. There
+		// are exactly two stops here — the field and the list — so Tab walks into
+		// the rows and Shift+Tab, with nothing before the field, stays put.
+		event.preventDefault()
+		event.stopPropagation()
+		if (!event.shiftKey) firstRow()?.focus()
+		return
+	}
+
+	if (['ArrowDown', 'ArrowUp', 'Home', 'End', 'Escape'].includes(event.key)) return
 	event.stopPropagation()
+}
+
+const list = useTemplateRef<HTMLDivElement>('list')
+
+function firstRow(): HTMLElement | null {
+	return list.value?.querySelector<HTMLElement>('[role="menuitem"]') ?? null
+}
+
+/**
+ * The way back out of the rows, which reka does not provide: its collection is
+ * the menu items and the field is not one, so arrows and Tab can walk focus in
+ * but nothing walks it back. Capture phase, because reka's own handlers live on
+ * the items themselves and the press must not reach them once it means "return
+ * to the field" — ArrowUp on the first row would otherwise wrap to the last.
+ */
+function onListKeydown(event: KeyboardEvent) {
+	if (event.key === 'Tab') {
+		event.preventDefault()
+		event.stopPropagation()
+		input.value?.focus()
+		return
+	}
+
+	if (event.key === 'ArrowUp' && document.activeElement === firstRow()) {
+		event.preventDefault()
+		event.stopPropagation()
+		input.value?.focus()
+	}
 }
 </script>
 
@@ -214,7 +252,9 @@ function onKeydown(event: KeyboardEvent) {
 	     when a list past `max-h-52` grows a real scrollbar, against a right edge
 	     that never lines up. -->
 	<div
+		ref="list"
 		class="thin-scrollbar max-h-52 overflow-y-auto overflow-x-hidden px-1 pb-1 [scrollbar-gutter:auto]"
+		@keydown.capture="onListKeydown"
 	>
 		<!-- `@select.prevent` on both rows: reka closes on select by default, and a
 		     refused activation has to leave the switcher standing with the failure
