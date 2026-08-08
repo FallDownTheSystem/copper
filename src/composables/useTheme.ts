@@ -1,5 +1,7 @@
 /**
- * Owns the `.dark` class and `documentElement.style.colorScheme`.
+ * Owns every appearance signal that lives on the root element: the `.dark` class,
+ * `documentElement.style.colorScheme`, the `.reduce-motion` and `.translucent`
+ * classes, and the four palette custom properties.
  *
  * `colorScheme` is not cosmetic here: the scrollbar, the caret and both text
  * fields are native controls, and without it they render light-on-light inside
@@ -19,6 +21,15 @@
  * truth; clearing it costs one frame of the wrong theme on the next launch and
  * nothing else.
  */
+
+import {
+	ACCENT_COLORS,
+	DEFAULT_ACCENT,
+	DEFAULT_NEUTRAL,
+	NEUTRAL_TONES,
+	type AccentColor,
+	type NeutralTone,
+} from '@/lib/palette'
 
 import { useReducedMotion } from './useReducedMotion'
 import { useSettings, type ThemePreference } from './useSettings'
@@ -58,6 +69,36 @@ function apply(preference: ThemePreference) {
 	mode.value = preference === 'system' ? 'auto' : preference
 }
 
+/**
+ * Writes one palette dial, or takes it away.
+ *
+ * **The shipped palette is an absence, not a value.** `main.css` declares all
+ * four dials on `:root` at the values the panel was designed with, so removing
+ * the inline property is what restores them — and it is the only form in which
+ * "warm and copper" and "this file has never been touched" render identically.
+ * Writing `--neutral-h: 60` instead would work today and quietly pin the default
+ * the first time someone retuned the stylesheet.
+ */
+function dial(name: string, value: number, shipped: boolean) {
+	const root = document.documentElement
+	if (shipped) root.style.removeProperty(name)
+	else root.style.setProperty(name, String(value))
+}
+
+/** Both families at once, because they are one visual event and `guardOneFrame`
+ *  is per-frame rather than per-property. */
+function applyPalette(neutral: NeutralTone, accent: AccentColor) {
+	const tone = NEUTRAL_TONES[neutral]
+	const color = ACCENT_COLORS[accent]
+	const shippedTone = neutral === DEFAULT_NEUTRAL
+	const shippedColor = accent === DEFAULT_ACCENT
+
+	dial('--neutral-h', tone.hue, shippedTone)
+	dial('--neutral-c', tone.chroma, shippedTone)
+	dial('--accent-h', color.hue, shippedColor)
+	dial('--accent-c', color.chroma, shippedColor)
+}
+
 let installed = false
 
 function install() {
@@ -87,7 +128,7 @@ function install() {
 	// for the length of one IPC round trip — so a launch interrupted in that
 	// window would flash the wrong theme on the next one, which is precisely the
 	// defect this write exists to repair.
-	const { settings, theme } = useSettings()
+	const { settings, theme, translucent, neutralTone, accentColor } = useSettings()
 	watch(
 		[settings, theme],
 		([loaded, preference]) => {
@@ -95,6 +136,34 @@ function install() {
 		},
 		{ immediate: true },
 	)
+
+	// Ungated on `settings`, unlike the theme above, because the failure the gate
+	// prevents there does not exist here. `theme` writes through to a localStorage
+	// cache the *next launch* reads, so applying its pre-pull value can outlive the
+	// session; these four write nothing but the current document, and the pull that
+	// corrects them is the same one that would have released the gate. What a gate
+	// would cost is a frame of the shipped palette on a panel the user has
+	// repainted.
+	//
+	// The same one-frame guard the theme switch uses, and needed for the same
+	// reason: every token in the file resolves against these, so a change without
+	// it puts several hundred elements into a colour transition at once.
+	watch(
+		[neutralTone, accentColor],
+		([neutral, accent]) => {
+			guardOneFrame()
+			applyPalette(neutral, accent)
+		},
+		{ immediate: true, flush: 'pre' },
+	)
+
+	// A class rather than a property, because CSS has to be able to reach it from
+	// two selectors of different specificity — the dark panel wants a thinner
+	// surface than the light one, and `prefers-contrast: more` has to be able to
+	// outrank both. The material behind it is Rust's half of the same setting.
+	watch(translucent, (on) => document.documentElement.classList.toggle('translucent', on), {
+		immediate: true,
+	})
 
 	// The `prefers-reduced-motion` block in main.css covers only the OS half of
 	// the preference. This mirrors `useReducedMotion`'s OR — OS *or* the app's own

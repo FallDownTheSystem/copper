@@ -60,6 +60,7 @@ const SHORTCUTS = {
 	captureRegistered: true,
 	captureError: null,
 	captureFallback: null,
+	summonFallback: null,
 }
 
 /** The handlers `listen` was given, so a Rust-originated event can be delivered. */

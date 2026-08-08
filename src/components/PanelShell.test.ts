@@ -176,6 +176,7 @@ const SHORTCUTS = {
 	captureRegistered: true,
 	captureError: null,
 	captureFallback: null,
+	summonFallback: null,
 }
 
 /**

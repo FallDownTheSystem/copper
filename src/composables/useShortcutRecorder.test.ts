@@ -48,9 +48,11 @@ beforeEach(() => {
 })
 
 describe('recording a summon chord', () => {
-	it('normalises the DOM spelling of every modifier to the parser token', async () => {
+	it('collapses the side out of every modifier in a chord', async () => {
 		// `event.code` matches the Rust parser for main keys and for nothing else:
-		// the DOM reports sides, and the parser wants SHIFT / CONTROL / ALT / SUPER.
+		// the DOM reports sides, and a chord cannot carry one. Not a simplification
+		// — `RegisterHotKey` has no way to say *which* Ctrl — so `ControlLeft` and
+		// `ControlRight` must both arrive as plain `Ctrl`.
 		const recorder = await freshRecorder()
 		await recorder.start('summon')
 
@@ -60,6 +62,32 @@ describe('recording a summon chord', () => {
 		await Promise.resolve()
 
 		expect(committed()).toBe('Ctrl+Shift+K')
+	})
+
+	it('keeps the side on a double-tap, which is the one shape that can carry it', async () => {
+		// The other half of the split above. A double-tap is recognised by Copper's
+		// own keyboard hook, which sees the two Ctrl keys as the different keys they
+		// are — so the binding records the key the user actually tapped.
+		for (const [code, expected] of [
+			['ControlLeft', 'LCtrl LCtrl'],
+			['ControlRight', 'RCtrl RCtrl'],
+			['ShiftLeft', 'LShift LShift'],
+			['ShiftRight', 'RShift RShift'],
+			['AltLeft', 'LAlt LAlt'],
+			['AltRight', 'RAlt RAlt'],
+		] as const) {
+			// `committed()` reads the first commit of the run, so each key starts from
+			// a clean call log as well as a clean module.
+			mocks.invoke.mockClear()
+			const recorder = await freshRecorder()
+			await recorder.start('capture')
+
+			press(recorder, code)
+			release(recorder, code)
+			await Promise.resolve()
+
+			expect(committed()).toBe(expected)
+		}
 	})
 
 	it('emits modifiers before the main key, in a fixed order', async () => {
@@ -172,9 +200,11 @@ describe('recording a summon chord', () => {
 		expect(recorder.isRecording.value).toBe(true)
 	})
 
-	it('never treats a bare modifier as a binding', async () => {
-		// A summon chord needs a main key; releasing Shift on its own must not
-		// commit `Shift Shift`, which is a *capture* shape.
+	it('takes a bare modifier as a double-tap, which summon can now be bound to', async () => {
+		// This used to be refused: `Shift Shift` was a *capture* shape and releasing
+		// a lone modifier while recording summon committed nothing. The keyboard hook
+		// runs a recogniser per role from task-020, so the gesture means the same
+		// thing whichever row it is recorded in.
 		const recorder = await freshRecorder()
 		await recorder.start('summon')
 
@@ -182,26 +212,32 @@ describe('recording a summon chord', () => {
 		release(recorder, 'ShiftLeft')
 		await Promise.resolve()
 
-		expect(committed()).toBeNull()
-		expect(recorder.isRecording.value).toBe(true)
+		expect(committed()).toBe('LShift LShift')
+		expect(recorder.isRecording.value).toBe(false)
 	})
 })
 
-describe('recording a capture trigger', () => {
+/**
+ * Every case here runs against **both** rows. The double-tap shape stopped being
+ * capture's alone in task-020, and a rule that held for one row and not the other
+ * would be exactly the kind of divergence a shared recorder is supposed to make
+ * impossible.
+ */
+describe.each(['capture', 'summon'] as const)('recording a %s trigger', (which) => {
 	it('commits a double-tap on the release of a lone modifier', async () => {
 		const recorder = await freshRecorder()
-		await recorder.start('capture')
+		await recorder.start(which)
 
 		press(recorder, 'ControlRight')
 		release(recorder, 'ControlRight')
 		await Promise.resolve()
 
-		expect(committed()).toBe('Ctrl Ctrl')
+		expect(committed()).toBe('RCtrl RCtrl')
 	})
 
 	it('still takes a conventional chord, since R-Q52 allows either shape', async () => {
 		const recorder = await freshRecorder()
-		await recorder.start('capture')
+		await recorder.start(which)
 
 		press(recorder, 'ControlLeft')
 		press(recorder, 'AltLeft')
@@ -212,10 +248,10 @@ describe('recording a capture trigger', () => {
 	})
 
 	it('does not turn the tail of a chord into a double-tap', async () => {
-		// The releases after `Ctrl+Alt+C` must not commit a second time. Recording is
+		// The releases after `Ctrl+C` must not commit a second time. Recording is
 		// already over by then, which is what makes this safe rather than lucky.
 		const recorder = await freshRecorder()
-		await recorder.start('capture')
+		await recorder.start(which)
 
 		press(recorder, 'ControlLeft')
 		press(recorder, 'KeyC')
@@ -227,10 +263,26 @@ describe('recording a capture trigger', () => {
 		expect(committed()).toBe('Ctrl+C')
 	})
 
-	it('refuses a double-tap of a modifier the hook cannot watch', async () => {
-		// Win fights the Start menu, which opens on the release of a bare press.
+	it('does not commit a double-tap for a modifier let go of mid-chord', async () => {
+		// Ctrl comes up while Shift is still down, so this release is part of
+		// building a chord rather than a gesture of its own.
 		const recorder = await freshRecorder()
-		await recorder.start('capture')
+		await recorder.start(which)
+
+		press(recorder, 'ControlLeft')
+		press(recorder, 'ShiftLeft')
+		release(recorder, 'ControlLeft')
+		await Promise.resolve()
+
+		expect(committed()).toBeNull()
+		expect(recorder.isRecording.value).toBe(true)
+	})
+
+	it('refuses a double-tap of a modifier the hook cannot watch', async () => {
+		// Win fights the Start menu, which opens on the release of a bare press —
+		// and it has no sided spelling either, for the same reason.
+		const recorder = await freshRecorder()
+		await recorder.start(which)
 
 		press(recorder, 'MetaLeft')
 		release(recorder, 'MetaLeft')

@@ -53,6 +53,13 @@ const DEFAULT_INSET: f64 = 24.0;
 /// that function rather than a second vibrancy path; there is still exactly one
 /// place in the app that calls the crate.
 ///
+/// **Which material is applied is the translucency setting's whole native side**,
+/// which is why it is read here rather than applied from a second call. Every
+/// path that re-tints the backdrop — startup, a theme change, a system appearance
+/// change — runs through this function, so a material chosen anywhere else would
+/// be silently replaced by the next theme change. Reading the mirror here makes
+/// the material survive all three by construction.
+///
 /// The return type is deliberately `Box<dyn Error>` rather than `tauri::Result`:
 /// this calls into `window_vibrancy` and `windows`, and neither
 /// `window_vibrancy::Error` nor `windows::core::Error` has a `From` impl into
@@ -62,22 +69,41 @@ pub fn apply_effects(
 	window: &WebviewWindow,
 	dark: Option<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-	// Mica first (Windows 11, follows the system theme), Acrylic as the fallback.
+	// The material this call is *not* applying is cleared first, and the failure is
+	// discarded because "it was never applied" is the ordinary case.
 	//
-	// Which one takes is part of the deliverable, not a debug aid: the two
-	// materials cannot be verified the same way. Acrylic samples what is behind
-	// the window, so moving a colourful window behind the panel changes it. Mica
-	// is derived from the wallpaper and system theme and ignores other windows
-	// entirely, so that same test "fails" on a perfectly working Mica panel.
-	// Without this log there is no way to tell those two cases apart.
-	match window_vibrancy::apply_mica(window, dark) {
-		Ok(()) => diagnostics::log("[copper] backdrop: Mica applied"),
-		Err(mica_err) => {
-			diagnostics::log(&format!(
-				"[copper] backdrop: Mica failed ({mica_err}), falling back to Acrylic"
-			));
-			window_vibrancy::apply_acrylic(window, acrylic_tint(dark))?;
-			diagnostics::log("[copper] backdrop: Acrylic applied");
+	// On Windows 11 22523 and newer both materials are one DWM attribute, so
+	// setting either replaces the other and this clear is a no-op that costs one
+	// call. Below that build they are two different mechanisms — Mica is
+	// `DWMWA_MICA_EFFECT`, Acrylic is `SetWindowCompositionAttribute` — and
+	// neither switches the other off, so without this a 21H2 machine toggling
+	// translucency would end up wearing both at once.
+	if translucent() {
+		let _ = window_vibrancy::clear_mica(window);
+		// Acrylic, because Acrylic is the one that blurs. Mica is derived from the
+		// wallpaper and ignores what is actually behind the window, so it cannot
+		// produce what this setting is for.
+		window_vibrancy::apply_acrylic(window, acrylic_tint(dark))?;
+		diagnostics::log("[copper] backdrop: Acrylic applied (translucent)");
+	} else {
+		let _ = window_vibrancy::clear_acrylic(window);
+		// Mica first (Windows 11, follows the system theme), Acrylic as the fallback.
+		//
+		// Which one takes is part of the deliverable, not a debug aid: the two
+		// materials cannot be verified the same way. Acrylic samples what is behind
+		// the window, so moving a colourful window behind the panel changes it. Mica
+		// is derived from the wallpaper and system theme and ignores other windows
+		// entirely, so that same test "fails" on a perfectly working Mica panel.
+		// Without this log there is no way to tell those two cases apart.
+		match window_vibrancy::apply_mica(window, dark) {
+			Ok(()) => diagnostics::log("[copper] backdrop: Mica applied"),
+			Err(mica_err) => {
+				diagnostics::log(&format!(
+					"[copper] backdrop: Mica failed ({mica_err}), falling back to Acrylic"
+				));
+				window_vibrancy::apply_acrylic(window, acrylic_tint(dark))?;
+				diagnostics::log("[copper] backdrop: Acrylic applied");
+			}
 		}
 	}
 
@@ -280,6 +306,106 @@ pub async fn set_always_on_top(enabled: bool, app: AppHandle) -> Result<Settings
 			let _ = apply_always_on_top(&window, previous);
 			Err(ShellError::Persist(format!(
 				"Copper couldn't save the always-on-top setting: {}",
+				err.message()
+			)))
+		}
+	}
+}
+
+// --- translucency ------------------------------------------------------------
+
+/// The live material choice, mirroring `settings.json`'s `translucent`.
+///
+/// An atomic for the same reasons [`PINNED`] is one, plus a third: its reader is
+/// [`apply_effects`], which the theme module calls from inside a window-event
+/// callback on the main thread. It starts `false` because the window is born
+/// wearing Mica — [`apply_effects`] runs once in `setup()` before the store is
+/// even readable — so until [`install_translucency`] has run the mirror and the
+/// window agree.
+static TRANSLUCENT: AtomicBool = AtomicBool::new(false);
+
+fn translucent() -> bool {
+	TRANSLUCENT.load(Ordering::Relaxed)
+}
+
+/// Startup. **Records the choice; it does not apply it.**
+///
+/// The application is `theme::install`'s, which runs immediately after this and
+/// calls [`apply_effects`] with the stored theme. Applying here as well would
+/// paint the backdrop twice on every launch and — worse — the first of the two
+/// would be painted with a theme this module has no business deciding. Recording
+/// a byte cannot fail, so unlike [`install_always_on_top`] there is nothing here
+/// to log.
+pub fn install_translucency(app: &AppHandle) {
+	TRANSLUCENT.store(store::commands::settings(app).translucent, Ordering::Relaxed);
+}
+
+/// Serialises the apply-persist-undo sequence below, exactly as [`PIN_WRITE`]
+/// does for the band and for the same reason: the three steps are one
+/// transaction, and two requests a double-click apart would otherwise both read
+/// `previous` before either had applied anything.
+static EFFECT_WRITE: Mutex<()> = Mutex::new(());
+
+/// Sets the mirror and re-applies the backdrop, so the material actually changes.
+///
+/// The theme is read back out of `theme` rather than passed in: this call changes
+/// the material only, and inventing a tint for it would drop an explicit light or
+/// dark preference every time the user toggled translucency.
+///
+/// The error is flattened to a `String` here rather than propagated. [`apply_effects`]
+/// returns `Box<dyn Error>`, which is not `Send`, and the caller is an async
+/// command whose future has to be.
+fn apply_translucency(window: &WebviewWindow, enabled: bool) -> Result<(), String> {
+	TRANSLUCENT.store(enabled, Ordering::Relaxed);
+	apply_effects(window, crate::theme::backdrop_dark()).map_err(|err| err.to_string())
+}
+
+/// Applies first, persists second, and undoes the application if the write fails
+/// — [`set_always_on_top`]'s shape, for the same reason it has it.
+///
+/// The failure that is *not* a bug is the first step: Acrylic needs Windows 10
+/// v1809 or newer, and a machine that cannot paint it must be told so rather than
+/// left with a setting whose file says on and whose window says off. Nothing is
+/// persisted in that case, so the row shows the reason and the panel keeps the
+/// backdrop it had.
+#[tauri::command]
+pub async fn set_translucency(enabled: bool, app: AppHandle) -> Result<Settings, ShellError> {
+	let Some(window) = app.get_webview_window(PANEL_LABEL) else {
+		return Err(ShellError::Invalid(
+			"The panel window is not available.".to_owned(),
+		));
+	};
+
+	// Held across the whole sequence, with no `.await` inside it — see the note on
+	// `PIN_WRITE`, including why poisoning is recovered from rather than
+	// propagated.
+	let _serialised = EFFECT_WRITE
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner);
+
+	// Read inside the lock, or this is the value the *other* request is in the
+	// middle of replacing.
+	let previous = translucent();
+	if let Err(err) = apply_translucency(&window, enabled) {
+		// The mirror was already moved, so put it back before reporting — and put
+		// the window back with it, since a half-applied material is exactly what the
+		// undo step exists to prevent.
+		let _ = apply_translucency(&window, previous);
+		return Err(ShellError::Invalid(format!(
+			"Copper couldn't change the panel's background: {err}"
+		)));
+	}
+
+	let patch = SettingsPatch {
+		translucent: Some(enabled),
+		..SettingsPatch::default()
+	};
+	match store::commands::patch_settings(&app, patch) {
+		Ok(settings) => Ok(settings),
+		Err(err) => {
+			let _ = apply_translucency(&window, previous);
+			Err(ShellError::Persist(format!(
+				"Copper couldn't save the background setting: {}",
 				err.message()
 			)))
 		}
@@ -981,6 +1107,30 @@ mod tests {
 		assert!(pinned());
 
 		PINNED.store(held, Ordering::Relaxed);
+	}
+
+	/// The same round trip for the material mirror, and the same reason the
+	/// initial value is asserted separately below rather than here: `TRANSLUCENT`
+	/// is a process static and the test binary is threaded.
+	#[test]
+	fn the_material_mirror_round_trips() {
+		let held = translucent();
+
+		TRANSLUCENT.store(true, Ordering::Relaxed);
+		assert!(translucent());
+
+		TRANSLUCENT.store(false, Ordering::Relaxed);
+		assert!(!translucent());
+
+		TRANSLUCENT.store(held, Ordering::Relaxed);
+	}
+
+	/// The static's initial value and the store's default have to agree, or
+	/// `apply_effects` runs once in `setup()` — before the store is readable —
+	/// against a material the file does not name.
+	#[test]
+	fn the_shipped_default_is_opaque() {
+		assert!(!crate::store::settings::Settings::default().translucent);
 	}
 
 	#[test]

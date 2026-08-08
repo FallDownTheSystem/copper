@@ -4,6 +4,10 @@
 //! normalisation and the store append. It initialises **no** COM: it creates
 //! message-only windows for clipboard writes, and a UI Automation client thread
 //! must own no windows. That is the whole reason the UIA thread is separate.
+//!
+//! It also receives the summon binding's triggers, which is the one thing here
+//! that is not a capture: they share the hook and the channel, and this is where
+//! the two part company.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
@@ -16,12 +20,13 @@ use tauri::{AppHandle, Manager};
 // success by design, and its real failures speak through the notice.
 #[cfg(debug_assertions)]
 use crate::diagnostics;
+use crate::panel;
 use crate::store::{self, SharedStore};
 use crate::win32::foreground::{our_pid, Target};
 use crate::win32::integrity::{target_integrity, uiaccess_active};
 
 use super::clipboard_fallback::try_clipboard;
-use super::hook::Trigger;
+use super::hook::{Trigger, TriggerRole};
 use super::notice::NoticeController;
 use super::uia::UiaService;
 use super::{
@@ -55,6 +60,22 @@ pub fn spawn(
 			uia.warm_up();
 
 			while let Ok(trigger) = triggers.recv() {
+				// The summon binding rides the same hook and the same channel, but
+				// nothing else on this thread: no in-flight gate, because revealing a
+				// window is not a capture and the two must not be able to swallow each
+				// other; no cascade, no store, no notice.
+				//
+				// Served on this thread rather than handed to one of its own, which is
+				// the trade this makes explicit: a summon arriving while a capture is
+				// genuinely mid-flight waits for it, up to the UIA read's budget plus
+				// the modifier wait. A thread per summon would remove that wait and add
+				// a second sender to the shutdown protocol the worker's join depends
+				// on — a real hang risk traded for a rare and bounded delay.
+				if trigger.role == TriggerRole::Summon {
+					panel::summon_or_log(&app);
+					continue;
+				}
+
 				let _gate = InFlightGate(&in_flight);
 				let before = Target::current();
 				let outcome = capture_once(&app, &mut uia);

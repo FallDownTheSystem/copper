@@ -1,5 +1,10 @@
-//! The `WH_KEYBOARD_LL` hook, its dedicated thread, and the double-tap
-//! recogniser.
+//! The `WH_KEYBOARD_LL` hook, its dedicated thread, and the two double-tap
+//! recognisers.
+//!
+//! Two, not one: capture and summon may each be bound to a modifier double-tap,
+//! and they are independent bindings that must be recognised independently. They
+//! share the callback, the classification and the channel; they share no state,
+//! because a tap of one family must not be able to advance the other's sequence.
 //!
 //! The callback is the hottest and most dangerous code in the app. Windows
 //! silently removes a low-level hook whose callback exceeds
@@ -11,11 +16,13 @@
 //! non-blocking channel send.
 //!
 //! What it costs, stated honestly rather than as a slogan, because a claim of
-//! "nothing at all" invites the next reader to add something: two relaxed atomic
-//! loads on every event; one `MapVirtualKeyW` on the generic two-sided modifier
-//! codes only, which remappers produce and ordinary keyboards do not; and on the
-//! key-up that completes a double-tap, an `Instant::now` and a send into an
-//! unbounded channel, which takes an uncontended lock and may allocate one node.
+//! "nothing at all" invites the next reader to add something: three relaxed
+//! atomic loads on every event — one mute flag and one selector per recogniser;
+//! one `MapVirtualKeyW` on the generic two-sided modifier codes only, which
+//! remappers produce and ordinary keyboards do not, and which the two recognisers
+//! resolve **once between them** rather than once each; and on the key-up that
+//! completes a double-tap, an `Instant::now` and a send into an unbounded
+//! channel, which takes an uncontended lock and may allocate one node.
 //! The probe branch adds a second `usize` compare and, when it matches, an
 //! `Instant::elapsed` and a relaxed store. There is no logging on any path, and
 //! no blocking call on any path — the last is the invariant that actually
@@ -78,7 +85,7 @@ pub enum KeySide {
 }
 
 impl KeySide {
-	fn matches(self, other: KeySide) -> bool {
+	pub fn matches(self, other: KeySide) -> bool {
 		self == other || self == KeySide::Either || other == KeySide::Either
 	}
 
@@ -89,6 +96,26 @@ impl KeySide {
 			other
 		} else {
 			self
+		}
+	}
+
+	/// The two halves of the packed selector — see [`WatchedTrigger`].
+	fn code(self) -> u8 {
+		match self {
+			Self::Either => 0,
+			Self::Left => 1,
+			Self::Right => 2,
+		}
+	}
+
+	/// An out-of-range code can only come from a bug, and `Either` is the safe
+	/// reading: a binding that matches both sides is the behaviour every install
+	/// before sided bindings existed already had.
+	fn from_code(code: u8) -> Self {
+		match code {
+			1 => Self::Left,
+			2 => Self::Right,
+			_ => Self::Either,
 		}
 	}
 }
@@ -270,6 +297,10 @@ impl DoubleTap {
 /// procedure reads it on every key event, and task-005's R2 rules out anything
 /// that can block on that path — a `Mutex` would put a lock acquisition on the
 /// hot path of a callback Windows silently uninstalls when it runs slowly.
+///
+/// The discriminants are load-bearing beyond that: they are the low two bits of
+/// [`WatchedTrigger`]'s packed byte, so all four must stay inside `0..=3`. A
+/// fifth family would need the layout widened rather than a variant added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ModifierFamily {
@@ -301,23 +332,110 @@ impl ModifierFamily {
 	}
 }
 
-static WATCHED: AtomicU8 = AtomicU8::new(ModifierFamily::Shift as u8);
+/// Which of the two recognisers a selector, a machine or a trigger belongs to.
+///
+/// The two are never interchangeable: one reads the foreground selection, the
+/// other reveals a window. They are separate here for the same reason
+/// `shortcuts::Role` keeps them separate over the plugin's chords.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerRole {
+	Capture,
+	Summon,
+}
 
-/// Points the recogniser at a different modifier without tearing the hook down.
+/// A double-tap binding as the hook recognises it: which modifier family, and
+/// which physical side of it.
+///
+/// `side: Either` is the unsided spelling — `Shift Shift` — and keeps the rule
+/// the hook has always had, that both taps be the same physical key whichever one
+/// that is. A concrete side is the sided spelling — `LShift LShift` — and matches
+/// that side alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WatchedTrigger {
+	pub family: ModifierFamily,
+	pub side: KeySide,
+}
+
+impl WatchedTrigger {
+	/// Nothing to recognise: the role is bound to a conventional chord, which
+	/// `tauri-plugin-global-shortcut` services instead.
+	pub const OFF: Self = Self {
+		family: ModifierFamily::Off,
+		side: KeySide::Either,
+	};
+
+	pub fn unsided(family: ModifierFamily) -> Self {
+		Self {
+			family,
+			side: KeySide::Either,
+		}
+	}
+
+	/// **The bit layout, which is the contract the atomics rest on.** Bits 0–1
+	/// carry [`ModifierFamily`]'s `#[repr(u8)]` discriminant (0–3), bits 2–3 carry
+	/// the side (0 `Either`, 1 `Left`, 2 `Right`). Bits 4–7 are unused and always
+	/// zero. Two independent fields in one atomic rather than two atomics, so that
+	/// a rebind can never be observed half-applied — a family from the new binding
+	/// paired with a side from the old one would be a trigger nobody chose.
+	fn pack(self) -> u8 {
+		(self.family as u8) | (self.side.code() << 2)
+	}
+
+	fn unpack(bits: u8) -> Self {
+		Self {
+			family: ModifierFamily::from_code(bits & 0b11),
+			side: KeySide::from_code((bits >> 2) & 0b11),
+		}
+	}
+}
+
+/// The live selector for each recogniser.
+///
+/// Capture ships bound to `Shift Shift`, summon to a conventional chord — so the
+/// summon recogniser starts with nothing to watch and the capture one starts on
+/// the shipped default. These are what the hook recognises between install and
+/// the persisted bindings being loaded, which is why they are the shipped values
+/// rather than `Off` for both.
+static WATCHED_CAPTURE: AtomicU8 = AtomicU8::new(ModifierFamily::Shift as u8);
+static WATCHED_SUMMON: AtomicU8 = AtomicU8::new(ModifierFamily::Off as u8);
+
+/// Whether a shortcut recording session has both recognisers stood down.
+///
+/// `shortcuts::begin_recording` unregisters the plugin's chords so the webview
+/// can see the keys the user presses. A double-tap binding is not the plugin's to
+/// unregister, so without this it stays live *while the user is recording over
+/// it* — and for summon that is not merely untidy: the double-tap toggles the
+/// panel, hiding it cancels the recording session, and the session the user just
+/// opened ends itself.
+static MUTED: AtomicBool = AtomicBool::new(false);
+
+fn selector(role: TriggerRole) -> &'static AtomicU8 {
+	match role {
+		TriggerRole::Capture => &WATCHED_CAPTURE,
+		TriggerRole::Summon => &WATCHED_SUMMON,
+	}
+}
+
+/// Points a recogniser at a different binding without tearing the hook down.
 ///
 /// Reinstalling `WH_KEYBOARD_LL` to change one selector would be the wrong shape
 /// entirely — the hook is installed on its own thread with a published thread id
 /// and a message pump, and swapping it means a window with no hook at all.
-pub fn watch(family: ModifierFamily) {
-	WATCHED.store(family as u8, Ordering::Relaxed);
+pub fn watch(role: TriggerRole, trigger: WatchedTrigger) {
+	selector(role).store(trigger.pack(), Ordering::Relaxed);
 }
 
-/// `Relaxed` is correct rather than merely cheap: the value is a single
+/// `Relaxed` is correct rather than merely cheap: each value is a single
 /// independent selector that publishes no other memory, so there is nothing for
 /// a stronger ordering to synchronise. The worst case is one gesture judged
-/// against the previous modifier.
-pub fn watched() -> ModifierFamily {
-	ModifierFamily::from_code(WATCHED.load(Ordering::Relaxed))
+/// against the previous binding.
+pub fn watched(role: TriggerRole) -> WatchedTrigger {
+	WatchedTrigger::unpack(selector(role).load(Ordering::Relaxed))
+}
+
+/// Stands both recognisers down, or lets them back up. See [`MUTED`].
+pub fn mute(muted: bool) {
+	MUTED.store(muted, Ordering::Relaxed);
 }
 
 /// The trigger key expressed as the low-level hook actually reports it.
@@ -394,6 +512,55 @@ impl TriggerKey {
 				side: KeySide::Either,
 			},
 		}
+	}
+}
+
+/// Turns a raw `vkCode` into what the state machine should make of it, given the
+/// side the binding asked for.
+///
+/// This is where the two spellings diverge, and the whole of the difference:
+///
+/// - **Unsided** (`want` is `Either`) passes the observed side straight through,
+///   so the machine applies the rule it always has — both taps must be the same
+///   physical key, whichever one that is.
+/// - **Sided** (`want` is `Left` or `Right`) admits only that side. Everything
+///   else, including the *other* side of the same family, becomes `Other` and
+///   breaks the sequence, because a `LCtrl LCtrl` binding is not a Ctrl binding.
+///
+/// The consequence worth stating plainly: `classify` answers `Either` for a
+/// generic `VK_SHIFT` whose side would not resolve from its scan code, which is
+/// what remappers deliver — and `Either` satisfies no sided binding. A user whose
+/// keyboard reports generic modifier codes therefore has to use the unsided
+/// spelling. Admitting an unresolved code into a sided binding would be worse:
+/// `LCtrl LCtrl` would fire on the right-hand key, which is the one thing the
+/// user picked that spelling to avoid.
+/// Resolves a generic two-sided modifier's side from its scan code, at most once
+/// per key event however many recognisers ask.
+///
+/// The memo is the point. Both recognisers want the same answer for the same
+/// event, and `MapVirtualKeyW` is the one OS call on the callback's hot path —
+/// paying for it twice would double the only cost this module actually measures.
+fn resolve_side(scan: u32, memo: &mut Option<Option<u32>>) -> Option<u32> {
+	*memo.get_or_insert_with(|| {
+		// SAFETY: no preconditions. An unmapped scan code yields 0, which is read
+		// as "the side did not resolve" rather than as a virtual-key code.
+		match unsafe { MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX) } {
+			0 => None,
+			resolved => Some(resolved),
+		}
+	})
+}
+
+fn observe(
+	trigger: TriggerKey,
+	want: KeySide,
+	vk: u32,
+	resolve_generic: impl FnOnce() -> Option<u32>,
+) -> Observed {
+	match trigger.classify(vk, resolve_generic) {
+		Classified::Trigger { side } if want == KeySide::Either => Observed::Trigger(side),
+		Classified::Trigger { side } if side == want => Observed::Trigger(want),
+		_ => Observed::Other,
 	}
 }
 
@@ -504,21 +671,77 @@ pub struct Trigger {
 	/// "the hook never fired".
 	#[cfg_attr(not(debug_assertions), allow(dead_code))]
 	pub at: Instant,
+	/// Which binding fired. One channel carries both rather than two channels
+	/// carrying one each, so the worker's receive loop — and the sender-drop
+	/// protocol that ends it, which shutdown's join depends on — stays exactly as
+	/// it was.
+	pub role: TriggerRole,
+}
+
+/// One recogniser: a machine and the binding its partial sequence was recorded
+/// under.
+struct Recogniser {
+	machine: DoubleTap,
+	/// Compared against [`watched`] on every event, so a rebind that lands
+	/// mid-gesture resets rather than pairing a tap of the old binding with a tap
+	/// of the new one. The *whole* selector, side included: `Shift Shift` and
+	/// `LShift LShift` are different bindings, and a sequence begun under one must
+	/// not finish under the other.
+	watched: WatchedTrigger,
+}
+
+impl Recogniser {
+	fn new(watched: WatchedTrigger) -> Self {
+		Self {
+			machine: DoubleTap::new(DoubleTapConfig::default()),
+			watched,
+		}
+	}
+
+	/// Feeds one key event. Returns `true` on the key-up that completes this
+	/// recogniser's double-tap.
+	///
+	/// `resolve_generic` is passed in rather than called here so the whole of this
+	/// stays free of Win32 and testable — and so the callback can share one
+	/// resolution between both recognisers instead of paying for two.
+	fn feed(
+		&mut self,
+		watched: WatchedTrigger,
+		vk: u32,
+		is_up: bool,
+		time_ms: u32,
+		resolve_generic: impl FnOnce() -> Option<u32>,
+	) -> bool {
+		if watched != self.watched {
+			self.machine.reset();
+			self.watched = watched;
+		}
+		let Some(trigger) = watched.family.trigger() else {
+			return false;
+		};
+		let observed = observe(trigger, watched.side, vk, resolve_generic);
+		self.machine.on_key(observed, is_up, time_ms)
+	}
 }
 
 struct HookState {
-	machine: DoubleTap,
-	/// The family the machine's current partial sequence was recorded under.
-	/// Compared against [`watched`] on every event, so a rebind that lands
-	/// mid-gesture resets rather than pairing a tap of the old modifier with a tap
-	/// of the new one.
-	family: ModifierFamily,
+	capture: Recogniser,
+	summon: Recogniser,
 	tx: Sender<Trigger>,
 	/// One capture in flight at a time. A bounded channel does not express this:
 	/// once the worker receives, the slot is free again and a second trigger
 	/// arriving mid-capture would produce a second note.
+	///
+	/// Deliberately **not** taken by a summon trigger: revealing a window is not a
+	/// capture, and making the two share a gate would mean a capture in progress
+	/// silently swallowed the user's summon.
 	in_flight: Arc<AtomicBool>,
-	/// Triggers are dropped until every startup gate has cleared.
+	/// Capture triggers are dropped until every startup gate has cleared.
+	///
+	/// Summon does not wait on it, and for the reason the gate exists: it is there
+	/// so a capture cannot land in the default space before the space the user
+	/// double-clicked is open. A summon writes nothing, so it has nothing to land
+	/// in the wrong place.
 	armed: Arc<AtomicBool>,
 }
 
@@ -587,47 +810,83 @@ unsafe extern "system" fn keyboard_proc(ncode: i32, wparam: WPARAM, lparam: LPAR
 					return;
 				};
 
-				// One relaxed load per event. The compare is what generalises
-				// task-005's Shift-specific machine: a family change resets the
-				// machine, and `Off` — capture bound to a conventional chord instead
-				// — leaves it idle rather than recognising anything.
-				let family = watched();
-				if family != state.family {
-					state.machine.reset();
-					state.family = family;
-				}
-				let Some(trigger) = family.trigger() else {
+				// A recording session is open, so neither binding may fire. Both
+				// machines are reset rather than merely ignored: a half-finished
+				// sequence recorded before the lease must not pair with a tap after
+				// it and produce a trigger from two gestures the user never made in
+				// one. The probe branch is above this, so muting never blinds the
+				// watchdog.
+				if MUTED.load(Ordering::Relaxed) {
+					state.capture.machine.reset();
+					state.summon.machine.reset();
 					return;
-				};
+				}
 
-				let classified =
-					trigger.classify(vk, || match MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX) {
-						0 => None,
-						resolved => Some(resolved),
+				// One resolution shared by both recognisers — see `resolve_side`. The
+				// two closures below borrow it in turn rather than at once, which is
+				// why it is a memo passed by reference and not a single `FnMut` handed
+				// to both.
+				let mut resolution: Option<Option<u32>> = None;
+
+				// Two relaxed loads per event. The compares inside `feed` are what
+				// generalise task-005's Shift-specific machine: a binding change
+				// resets that machine, and `Off` — the role bound to a conventional
+				// chord instead — leaves it idle rather than recognising anything.
+				let fired_capture = state.capture.feed(
+					watched(TriggerRole::Capture),
+					vk,
+					is_up,
+					event.time,
+					|| resolve_side(scan, &mut resolution),
+				);
+				let fired_summon = state.summon.feed(
+					watched(TriggerRole::Summon),
+					vk,
+					is_up,
+					event.time,
+					|| resolve_side(scan, &mut resolution),
+				);
+
+				// An unbounded channel, so neither send waits on a receiver the way a
+				// bounded one would — parking the callback is what gets the hook
+				// silently removed. It is not a hard real-time guarantee: a send takes
+				// an uncontended lock and may allocate a node. Task-001 measured the
+				// whole callback at 7.8 microseconds worst case against a budget of up
+				// to 1000 ms, which is the evidence this rests on rather than the
+				// absence of allocation.
+				//
+				// Both can only fire on one event if both bindings are the same family
+				// on overlapping sides, which `shortcuts` refuses to store. Handling
+				// them independently anyway costs one branch and means a registry that
+				// somehow held such a pair produces two honest triggers rather than
+				// one arbitrary winner.
+				if fired_summon {
+					// Neither gate: see the fields on `HookState` for why each is the
+					// capture path's and not this one's.
+					let _ = state.tx.send(Trigger {
+						at: Instant::now(),
+						role: TriggerRole::Summon,
 					});
-				let observed = match classified {
-					Classified::Trigger { side } => Observed::Trigger(side),
-					Classified::Other => Observed::Other,
-				};
+				}
 
-				if state.machine.on_key(observed, is_up, event.time)
+				// The send is the last condition rather than the body, so the gate is
+				// taken and the trigger queued in one expression and only the failure
+				// needs a statement.
+				if fired_capture
 					&& state.armed.load(Ordering::SeqCst)
 					&& state
 						.in_flight
 						.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-						.is_ok()
+						.is_ok() && state
+					.tx
+					.send(Trigger {
+						at: Instant::now(),
+						role: TriggerRole::Capture,
+					})
+					.is_err()
 				{
-					// An unbounded channel, so the send does not wait on a receiver
-					// the way a bounded one would — parking the callback is what gets
-					// the hook silently removed. It is not a hard real-time
-					// guarantee: the send takes an uncontended lock and may allocate a
-					// node. Task-001 measured the whole callback at 7.8 microseconds
-					// worst case against a budget of up to 1000 ms, which is the
-					// evidence this rests on rather than the absence of allocation.
-					if state.tx.send(Trigger { at: Instant::now() }).is_err() {
-						// The worker is gone; do not leave the gate latched shut.
-						state.in_flight.store(false, Ordering::SeqCst);
-					}
+					// The worker is gone; do not leave the gate latched shut.
+					state.in_flight.store(false, Ordering::SeqCst);
 				}
 			});
 		}
@@ -745,10 +1004,10 @@ impl Drop for HookHandle {
 /// lost, and shutdown blocks forever. The state goes in before the hook because
 /// the callback can fire the instant the hook is installed.
 ///
-/// The watched modifier is **not** a parameter: it is the module-level atomic
-/// [`watch`] sets, because task-008 rebinds it while the hook is running and
-/// tearing the hook down to change one selector would leave a window with no
-/// hook at all.
+/// The watched bindings are **not** parameters: they are the module-level
+/// atomics [`watch`] sets, because task-008 rebinds them while the hook is
+/// running and tearing the hook down to change one selector would leave a window
+/// with no hook at all.
 pub fn install(
 	tx: Sender<Trigger>,
 	in_flight: Arc<AtomicBool>,
@@ -803,8 +1062,8 @@ pub fn install(
 
 			HOOK_STATE.with(|cell| {
 				*cell.borrow_mut() = Some(HookState {
-					machine: DoubleTap::new(DoubleTapConfig::default()),
-					family: watched(),
+					capture: Recogniser::new(watched(TriggerRole::Capture)),
+					summon: Recogniser::new(watched(TriggerRole::Summon)),
 					tx,
 					in_flight,
 					armed,
@@ -1146,6 +1405,143 @@ mod tests {
 		}
 	}
 
+	// --- the sided selector ----------------------------------------------------
+	// The table above is about timing and is written against `Observed`. This one
+	// is about *which key counts*, so it is written against raw virtual-key codes
+	// and runs the real selector: `observe` filtering, then the same machine.
+
+	/// Feeds raw `vkCode`s through a recogniser watching `binding`.
+	fn run_sided(
+		binding: WatchedTrigger,
+		script: &[(u32, bool, u32)],
+		resolve: fn() -> Option<u32>,
+	) -> usize {
+		let mut recogniser = Recogniser::new(binding);
+		script
+			.iter()
+			.filter(|(vk, is_up, time)| recogniser.feed(binding, *vk, *is_up, *time, resolve))
+			.count()
+	}
+
+	/// A clean double-tap of `first` then `second`, well inside both bounds.
+	fn two_taps(first: u32, second: u32) -> [(u32, bool, u32); 4] {
+		[
+			(first, DOWN, 0),
+			(first, UP, 40),
+			(second, DOWN, 120),
+			(second, UP, 160),
+		]
+	}
+
+	const NO_RESOLUTION: fn() -> Option<u32> = || None;
+
+	#[test]
+	fn a_sided_binding_answers_to_its_own_side_and_to_nothing_else() {
+		let left = WatchedTrigger {
+			family: ModifierFamily::Control,
+			side: KeySide::Left,
+		};
+		let right = WatchedTrigger {
+			family: ModifierFamily::Control,
+			side: KeySide::Right,
+		};
+		let either = WatchedTrigger::unsided(ModifierFamily::Control);
+
+		/// A name, the binding being watched, a script of raw key events, and how
+		/// many times that binding must fire.
+		type SidedRow = (&'static str, WatchedTrigger, [(u32, bool, u32); 4], usize);
+
+		let cases: &[SidedRow] = &[
+			("LCtrl LCtrl fires on the left key", left, two_taps(VK_LCONTROL, VK_LCONTROL), 1),
+			("LCtrl LCtrl ignores the right key", left, two_taps(VK_RCONTROL, VK_RCONTROL), 0),
+			(
+				"LCtrl LCtrl is not satisfied by one tap of each",
+				left,
+				two_taps(VK_LCONTROL, VK_RCONTROL),
+				0,
+			),
+			("RCtrl RCtrl fires on the right key", right, two_taps(VK_RCONTROL, VK_RCONTROL), 1),
+			("RCtrl RCtrl ignores the left key", right, two_taps(VK_LCONTROL, VK_LCONTROL), 0),
+			// The unsided spelling is unchanged: either side, both taps the same key.
+			("Ctrl Ctrl still fires on the left key", either, two_taps(VK_LCONTROL, VK_LCONTROL), 1),
+			(
+				"Ctrl Ctrl still fires on the right key",
+				either,
+				two_taps(VK_RCONTROL, VK_RCONTROL),
+				1,
+			),
+			(
+				"Ctrl Ctrl still requires both taps to be the same physical key",
+				either,
+				two_taps(VK_LCONTROL, VK_RCONTROL),
+				0,
+			),
+			// A sided binding is still a binding to one family.
+			("a sided Ctrl binding ignores Shift", left, two_taps(VK_LSHIFT, VK_LSHIFT), 0),
+		];
+
+		for (name, binding, script, expected) in cases {
+			assert_eq!(run_sided(*binding, script, NO_RESOLUTION), *expected, "{name}");
+		}
+	}
+
+	#[test]
+	fn a_generic_modifier_code_satisfies_the_unsided_spelling_and_no_sided_one() {
+		// The remapper case, and the one place the two spellings are not simply
+		// narrower and wider: a `VK_CONTROL` whose scan code will not resolve names
+		// no side, and admitting it into `LCtrl LCtrl` would fire that binding on
+		// the right-hand key — the one thing the spelling was chosen to avoid.
+		let either = WatchedTrigger::unsided(ModifierFamily::Control);
+		let left = WatchedTrigger {
+			family: ModifierFamily::Control,
+			side: KeySide::Left,
+		};
+		let generic = two_taps(VK_CONTROL, VK_CONTROL);
+
+		assert_eq!(run_sided(either, &generic, NO_RESOLUTION), 1);
+		assert_eq!(run_sided(left, &generic, NO_RESOLUTION), 0);
+
+		// Resolvable is the ordinary case, and there the sided binding does answer.
+		let resolves_left: fn() -> Option<u32> = || Some(VK_LCONTROL);
+		assert_eq!(run_sided(left, &generic, resolves_left), 1);
+		let resolves_right: fn() -> Option<u32> = || Some(VK_RCONTROL);
+		assert_eq!(run_sided(left, &generic, resolves_right), 0);
+	}
+
+	#[test]
+	fn a_recogniser_with_nothing_to_watch_never_fires() {
+		// The conventional-chord case: the plugin services that binding, and this
+		// recogniser must stay idle rather than recognising the family it last held.
+		assert_eq!(
+			run_sided(WatchedTrigger::OFF, &two_taps(VK_LSHIFT, VK_LSHIFT), NO_RESOLUTION),
+			0
+		);
+	}
+
+	#[test]
+	fn changing_the_side_mid_sequence_resets_the_machine() {
+		// `Shift Shift` and `LShift LShift` are different bindings, so a rebind
+		// between the two taps must not let a tap recorded under one complete the
+		// other.
+		let unsided = WatchedTrigger::unsided(ModifierFamily::Shift);
+		let sided = WatchedTrigger {
+			family: ModifierFamily::Shift,
+			side: KeySide::Left,
+		};
+		let mut recogniser = Recogniser::new(unsided);
+
+		assert!(!recogniser.feed(unsided, VK_LSHIFT, DOWN, 0, NO_RESOLUTION));
+		assert!(!recogniser.feed(unsided, VK_LSHIFT, UP, 40, NO_RESOLUTION));
+		// The rebind lands between the taps. Without the reset this second tap would
+		// complete the pair and fire under a binding half of it was never judged by.
+		assert!(!recogniser.feed(sided, VK_LSHIFT, DOWN, 120, NO_RESOLUTION));
+		assert!(!recogniser.feed(sided, VK_LSHIFT, UP, 160, NO_RESOLUTION));
+		// That tap is the *first* of the new binding's pair rather than nothing at
+		// all, so the next one fires: the rebind cost one gesture, not the binding.
+		assert!(!recogniser.feed(sided, VK_LSHIFT, DOWN, 220, NO_RESOLUTION));
+		assert!(recogniser.feed(sided, VK_LSHIFT, UP, 260, NO_RESOLUTION));
+	}
+
 	#[test]
 	fn the_families_do_not_classify_each_other() {
 		// Shift must not see a Ctrl key as its own, or the reset rule would never
@@ -1167,6 +1563,52 @@ mod tests {
 		// default rather than whatever a test left behind.
 		assert_eq!(ModifierFamily::from_code(ModifierFamily::Shift as u8), ModifierFamily::Shift);
 		assert_eq!(ModifierFamily::Shift.trigger(), Some(TriggerKey::SHIFT));
+		// The two selectors ship as the two bindings do: capture on `Shift Shift`,
+		// summon on a conventional chord the plugin services.
+		assert_eq!(
+			WatchedTrigger::unpack(WATCHED_CAPTURE.load(Ordering::Relaxed)),
+			WatchedTrigger::unsided(ModifierFamily::Shift)
+		);
+		assert_eq!(
+			WatchedTrigger::unpack(WATCHED_SUMMON.load(Ordering::Relaxed)),
+			WatchedTrigger::OFF
+		);
+	}
+
+	/// The packing is a contract two atomics rest on, and its failure mode is a
+	/// binding silently becoming a different binding — so every reachable value
+	/// round-trips rather than a sample of them.
+	#[test]
+	fn every_selector_survives_the_round_trip_through_one_byte() {
+		let families = [
+			ModifierFamily::Off,
+			ModifierFamily::Shift,
+			ModifierFamily::Control,
+			ModifierFamily::Alt,
+		];
+		let sides = [KeySide::Either, KeySide::Left, KeySide::Right];
+		let mut seen: std::collections::HashSet<u8> = std::collections::HashSet::new();
+
+		for family in families {
+			for side in sides {
+				let trigger = WatchedTrigger { family, side };
+				let bits = trigger.pack();
+				assert_eq!(WatchedTrigger::unpack(bits), trigger);
+				// Distinct bytes, or one binding could be read as another.
+				assert!(seen.insert(bits), "{trigger:?} collides with another selector");
+				// The layout the doc comment promises: two bits each, nothing above.
+				assert_eq!(bits & !0b1111, 0, "{trigger:?} used a bit outside the layout");
+			}
+		}
+
+		// The unsided spelling packs to the bare family discriminant, which is what
+		// lets the shipped defaults be written as `ModifierFamily::X as u8` in a
+		// const initialiser.
+		assert_eq!(
+			WatchedTrigger::unsided(ModifierFamily::Shift).pack(),
+			ModifierFamily::Shift as u8
+		);
+		assert_eq!(WatchedTrigger::OFF.pack(), ModifierFamily::Off as u8);
 	}
 
 	#[test]
@@ -1193,9 +1635,12 @@ mod tests {
 	fn install_test_state() -> mpsc::Receiver<Trigger> {
 		let (tx, rx) = mpsc::channel();
 		HOOK_STATE.with(|cell| {
+			// The shipped selectors, which is what the globals still hold: nothing
+			// below calls `watch`, because those atomics are process-wide and these
+			// tests share a process with everything else.
 			*cell.borrow_mut() = Some(HookState {
-				machine: DoubleTap::new(DoubleTapConfig::default()),
-				family: ModifierFamily::Shift,
+				capture: Recogniser::new(watched(TriggerRole::Capture)),
+				summon: Recogniser::new(watched(TriggerRole::Summon)),
 				tx,
 				in_flight: Arc::new(AtomicBool::new(false)),
 				armed: Arc::new(AtomicBool::new(true)),
@@ -1224,9 +1669,10 @@ mod tests {
 
 	fn machine_is_idle() -> bool {
 		HOOK_STATE.with(|cell| {
-			cell.borrow()
-				.as_ref()
-				.is_some_and(|state| state.machine.state == State::Idle)
+			cell.borrow().as_ref().is_some_and(|state| {
+				state.capture.machine.state == State::Idle
+					&& state.summon.machine.state == State::Idle
+			})
 		})
 	}
 
@@ -1266,6 +1712,27 @@ mod tests {
 		let real = feed(0, VK_LSHIFT, WM_KEYDOWN);
 		assert_eq!(real.0, 0);
 		assert!(!machine_is_idle(), "a real key-down must open a sequence");
+
+		// A recording session stands both recognisers down. The sequence opened just
+		// above is dropped rather than parked: a tap from before the lease pairing
+		// with one from after it would be a trigger made of two separate gestures.
+		mute(true);
+		assert_eq!(
+			feed(0, VK_LSHIFT, WM_KEYDOWN).0,
+			0,
+			"a muted hook must still pass the user's keys on"
+		);
+		assert!(machine_is_idle(), "a muted recogniser holds no sequence");
+
+		// And the probe still gets through, so recording cannot blind the watchdog
+		// into reinstalling a hook that was never gone.
+		PROBE_SEEN_MS.store(NEVER, Ordering::Relaxed);
+		assert_ne!(feed(PROBE_SIGNATURE, VK_F24, WM_KEYDOWN).0, 0);
+		assert_ne!(probe_stamp(), NEVER, "muting must not swallow the liveness probe");
+
+		mute(false);
+		assert_eq!(feed(0, VK_LSHIFT, WM_KEYDOWN).0, 0);
+		assert!(!machine_is_idle(), "unmuting must let a sequence open again");
 
 		assert!(
 			triggers.try_recv().is_err(),

@@ -13,6 +13,12 @@
  * than the list it transitions from.
  */
 import type { DoubleClickAction, InsertionPoint } from '@/composables/useSettings'
+import {
+	ACCENT_COLORS,
+	NEUTRAL_TONES,
+	type AccentColor,
+	type NeutralTone,
+} from '@/lib/palette'
 
 const {
 	shortcuts,
@@ -26,6 +32,9 @@ const {
 	showCreated,
 	captureNotifications,
 	linkPreviews,
+	translucent,
+	neutralTone,
+	accentColor,
 	errorFor,
 	refresh,
 	setTheme,
@@ -38,6 +47,9 @@ const {
 	setCaptureNotifications,
 	setLinkPreviews,
 	setAlwaysOnTop,
+	setTranslucency,
+	setNeutralTone,
+	setAccentColor,
 } = useSettings()
 const { isRecording, cancel } = useShortcutRecorder()
 const { showList } = useView()
@@ -66,6 +78,9 @@ const alwaysOnTopError = errorFor('alwaysOnTop')
 const showCreatedError = errorFor('showCreated')
 const captureNotificationsError = errorFor('captureNotifications')
 const linkPreviewsError = errorFor('linkPreviews')
+const translucentError = errorFor('translucent')
+const neutralError = errorFor('neutral')
+const accentError = errorFor('accent')
 const summonError = errorFor('summon')
 const captureError = errorFor('capture')
 
@@ -150,6 +165,22 @@ const DOUBLE_CLICK_OPTIONS = [
 	{ value: 'edit', label: 'Edit' },
 ] as const satisfies readonly { value: DoubleClickAction; label: string }[]
 
+/** Both pickers read their maps rather than repeating them: a family added to
+ *  `lib/palette` reaches the settings view with no second edit here to forget.
+ *  Declaration order is swatch order, which for the accents is the spectrum
+ *  Tailwind already lays its families out in. */
+const NEUTRAL_OPTIONS = Object.entries(NEUTRAL_TONES).map(([value, family]) => ({
+	value: value as NeutralTone,
+	label: family.label,
+	swatch: family.swatch,
+}))
+
+const ACCENT_OPTIONS = Object.entries(ACCENT_COLORS).map(([value, family]) => ({
+	value: value as AccentColor,
+	label: family.label,
+	swatch: family.swatch,
+}))
+
 /** The summon binding's error is either a live failure from a rebind the user
  *  just attempted or the startup registration failure, which has no action behind
  *  it at all. Both belong on the same row. */
@@ -214,6 +245,15 @@ const captureNote = computed(() => {
 	if (!fallback) return null
 	return `Copper couldn't install its keyboard hook, so the double-tap isn't available. Use ${fallback} to capture until the next restart.`
 })
+
+/** The same standing condition for the other role, now that summon can be a
+ *  double-tap too: without it a summon whose hook died would say nothing at all,
+ *  on the one binding whose silence locks the user out of the panel. */
+const summonNote = computed(() => {
+	const fallback = shortcuts.value?.summonFallback
+	if (!fallback) return null
+	return `Copper couldn't install its keyboard hook, so the double-tap isn't available. Use ${fallback} to summon Copper until the next restart.`
+})
 </script>
 
 <template>
@@ -253,7 +293,11 @@ const captureNote = computed(() => {
 		</header>
 
 		<div class="thin-scrollbar min-h-0 min-w-0 flex-1 space-y-6 overflow-y-auto px-4 py-4">
-			<SettingsSection title="Theme">
+			<!-- "Appearance" rather than "Theme": the section holds three rows now and
+			     the theme is only the first of them. Light-or-dark, the grey and the
+			     accent are one decision made in three parts, and in that order — both
+			     palettes are read against whichever appearance the row above chose. -->
+			<SettingsSection title="Appearance">
 				<!-- `v-slot="{ errorId }"` on every row that can fail: the row owns the
 				     message and its live region, and hands the id down so the control
 				     can point at it. -->
@@ -264,6 +308,40 @@ const captureNote = computed(() => {
 					:error="themeError"
 				>
 					<ThemeToggle :model-value="theme" :error-id="errorId" @update:model-value="setTheme" />
+				</SettingsRow>
+
+				<!-- The label carries the current choice, because colour is the only thing
+				     telling these swatches apart on screen: a user who cannot see the
+				     difference would otherwise have nothing at all to read, and one who
+				     can still has eighteen unlabelled circles to hover. -->
+				<SettingsRow
+					v-slot="{ errorId }"
+					:label="`Grey tone: ${NEUTRAL_TONES[neutralTone].label}`"
+					description="The cast of the panel's greys, from warm through to blue."
+					:error="neutralError"
+				>
+					<SettingsPalette
+						:model-value="neutralTone"
+						:options="NEUTRAL_OPTIONS"
+						label="Grey tone"
+						:error-id="errorId"
+						@update:model-value="setNeutralTone"
+					/>
+				</SettingsRow>
+
+				<SettingsRow
+					v-slot="{ errorId }"
+					:label="`Accent color: ${ACCENT_COLORS[accentColor].label}`"
+					description="What selection, focus and the active section are coloured with."
+					:error="accentError"
+				>
+					<SettingsPalette
+						:model-value="accentColor"
+						:options="ACCENT_OPTIONS"
+						label="Accent color"
+						:error-id="errorId"
+						@update:model-value="setAccentColor"
+					/>
 				</SettingsRow>
 			</SettingsSection>
 
@@ -286,6 +364,32 @@ const captureNote = computed(() => {
 						:model-value="alwaysOnTop"
 						:error-id="errorId"
 						@update:model-value="setAlwaysOnTop"
+					/>
+				</SettingsRow>
+
+				<!-- In "Panel" rather than "Appearance", even though it is the most
+				     visible appearance change in the view: this one is a property of the
+				     window — Windows paints the blur, not the stylesheet — and it is the
+				     row most likely to fail outright on a machine that cannot draw
+				     Acrylic. It belongs beside the other setting that asks Windows for
+				     something.
+
+				     The description says what it costs rather than only what it does. A
+				     translucent panel over busy wallpaper is harder to read than an opaque
+				     one, and that is the half a user discovers after switching rather than
+				     before. -->
+				<SettingsRow
+					v-slot="{ errorId }"
+					label="Translucent background"
+					description="Blur the desktop through the panel instead of covering it. Text is easier to read over a solid panel."
+					label-for="translucent"
+					:error="translucentError"
+				>
+					<SettingsSwitch
+						id="translucent"
+						:model-value="translucent"
+						:error-id="errorId"
+						@update:model-value="setTranslucency"
 					/>
 				</SettingsRow>
 			</SettingsSection>
@@ -313,6 +417,7 @@ const captureNote = computed(() => {
 						:value="shortcuts.summon"
 						:default-value="shortcuts.defaults.summon"
 						:error="summonRowError"
+						:note="summonNote"
 					/>
 				</template>
 			</SettingsSection>

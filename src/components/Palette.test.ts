@@ -116,6 +116,7 @@ const SHORTCUTS = {
 	captureRegistered: true,
 	captureError: null,
 	captureFallback: null,
+	summonFallback: null,
 }
 
 let settingsPayload: Record<string, unknown> = {}

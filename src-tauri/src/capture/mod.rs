@@ -1,5 +1,12 @@
 //! Capture: the narrow interface between the app and everything Win32 does to
-//! turn a double-tap of Shift into a note.
+//! turn a double-tap into a note.
+//!
+//! It also owns the *other* double-tap. The keyboard hook is the only place in
+//! the app that can recognise one, so when task-020 let summon be bound to a
+//! double-tap too, the second recogniser had to live here — even though what it
+//! produces is a window, not a note. Summon triggers cross this module without
+//! touching the cascade: they arrive on the trigger channel with a role on them
+//! and the worker hands them straight to `panel`.
 //!
 //! The rest of the app sees [`start_capture`], [`CaptureHandle`], and two plain
 //! enums. Nothing window-handle shaped crosses this boundary — that is checked
@@ -19,11 +26,13 @@
 //!   hook thread            worker thread              UIA thread        main thread
 //!   (message pump)         (owns clipboard windows)   (COM MTA,         (Tauri loop)
 //!    hook proc:              recv()                    owns no window)   run_on_main_thread:
-//!     ignore own tag         CAPTURE_CASCADE ─────▶    GetFocusedElement   ShowWindow(NOACTIVATE)
-//!     double-tap timing       ├ uia  ◀── recv_timeout ─ TextPattern        SetWindowPos(NOACTIVATE)
-//!     IN_FLIGHT gate          └ clipboard fallback      GetSelection       panel::hide()
-//!     send()  ──────────▶    normalise + revalidate    (abandoned on
-//!     CallNextHookEx         store::append_capture      timeout, never
+//!     ignore own tag          summon ─────────────────────────────────────▶ reveal / hide
+//!     two recognisers,        capture:
+//!      one per role            CAPTURE_CASCADE ────▶    GetFocusedElement   ShowWindow(NOACTIVATE)
+//!     IN_FLIGHT gate           ├ uia ◀── recv_timeout ─ TextPattern        SetWindowPos(NOACTIVATE)
+//!      (capture only)          └ clipboard fallback     GetSelection       panel::hide()
+//!     send()  ──────────▶     normalise + revalidate   (abandoned on
+//!     CallNextHookEx          store::append_capture     timeout, never
 //!                              ok  → nothing            joined)
 //!                              err → notice ───────────────────────────▶ emit + reveal
 //!                                                                            │
@@ -75,14 +84,16 @@ use crate::win32::integrity::TargetIntegrity;
 pub const CAPTURE_CASCADE: [CaptureStrategy; 2] =
 	[CaptureStrategy::UiAutomation, CaptureStrategy::ClipboardFallback];
 
-/// The trigger, as Phase 7 made it: a runtime selector rather than the constant
-/// task-005 shipped.
+/// The triggers, as Phase 7 made them: runtime selectors rather than the
+/// constant task-005 shipped, and one per role rather than one in total.
 ///
 /// Re-exported from `hook` so the rest of the app never names the hook module.
-/// [`watch`] points the recogniser at a different modifier — or at nothing, when
-/// task-008's capture binding is a conventional chord serviced by
-/// `tauri-plugin-global-shortcut` and delivered through [`request_capture`].
-pub use hook::{watch, ModifierFamily};
+/// [`watch`] points one recogniser at a different binding — or at nothing, when
+/// that role is bound to a conventional chord serviced by
+/// `tauri-plugin-global-shortcut` and delivered through [`request_capture`] or
+/// the summon handler. [`mute`] stands both down for the length of a shortcut
+/// recording session.
+pub use hook::{mute, watch, KeySide, ModifierFamily, TriggerRole, WatchedTrigger};
 
 /// How long the clipboard fallback waits for the sequence number to reach its
 /// expected next value after the injected `Ctrl+C`.
@@ -678,10 +689,13 @@ pub fn request_capture(app: &AppHandle) {
 	{
 		return;
 	}
-	let sent = handle
-		.trigger_tx
-		.as_ref()
-		.is_some_and(|tx| tx.send(hook::Trigger { at: Instant::now() }).is_ok());
+	let sent = handle.trigger_tx.as_ref().is_some_and(|tx| {
+		tx.send(hook::Trigger {
+			at: Instant::now(),
+			role: hook::TriggerRole::Capture,
+		})
+		.is_ok()
+	});
 	if !sent {
 		// The worker is gone; do not leave the gate latched shut.
 		handle.in_flight.store(false, Ordering::SeqCst);

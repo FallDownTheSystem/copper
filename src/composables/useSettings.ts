@@ -18,6 +18,12 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 
+import {
+	accentColor as narrowAccent,
+	neutralTone as narrowNeutral,
+	type AccentColor,
+	type NeutralTone,
+} from '@/lib/palette'
 import { errorMessage } from '@/lib/rustError'
 import { createStartup } from '@/lib/startup'
 
@@ -61,8 +67,10 @@ export type ShortcutState = {
 	captureRegistered: boolean
 	captureError: string | null
 	/** Present only while the keyboard hook is down and a conventional chord is
-	 *  standing in for the double-tap. */
+	 *  standing in for the double-tap. One per role, because either binding can be
+	 *  a double-tap now and the two insurance chords are distinct. */
 	captureFallback: string | null
+	summonFallback: string | null
 }
 
 /** Which shortcut a recording or a rebind is aimed at. Matches the `target`
@@ -87,6 +95,9 @@ export type PreferenceScope =
 	| 'showCreated'
 	| 'captureNotifications'
 	| 'linkPreviews'
+	| 'translucent'
+	| 'neutral'
+	| 'accent'
 
 // --- module-scope state ------------------------------------------------------
 
@@ -144,6 +155,19 @@ const captureNotifications = computed(() => settings.value?.captureNotifications
  *  must read as "no". Rust applies the same rule store-side — this computed only
  *  decides whether a card is rendered, never whether a fetch is allowed. */
 const linkPreviews = computed(() => settings.value?.linkPreviews === true)
+
+/** Off unless the file says otherwise, like `sounds` and for the plainest form of
+ *  the same reason: the panel every existing install has seen is the near-opaque
+ *  one, and an unreadable `settings.json` must not be the moment it turns to
+ *  glass. */
+const translucent = computed(() => settings.value?.translucent === true)
+
+/** Narrowed by name, the same split `theme` and `motion` use — the store repairs a
+ *  wrong *type*, and a name nothing recognises collapses to the shipped palette
+ *  here. The narrowing itself lives in `lib/palette` beside the map it is checked
+ *  against, so the picker and this cannot disagree about which names exist. */
+const neutralTone = computed<NeutralTone>(() => narrowNeutral(settings.value?.neutral))
+const accentColor = computed<AccentColor>(() => narrowAccent(settings.value?.accent))
 
 function fail(scope: SettingsScope, error: unknown) {
 	errors.value = { ...errors.value, [scope]: errorMessage(error) }
@@ -312,6 +336,9 @@ const rowWrites: Record<SettingsScope, Generation> = {
 	showCreated: generations(),
 	captureNotifications: generations(),
 	linkPreviews: generations(),
+	translucent: generations(),
+	neutral: generations(),
+	accent: generations(),
 	summon: generations(),
 	capture: generations(),
 }
@@ -418,6 +445,19 @@ function setLinkPreviews(enabled: boolean): Promise<boolean> {
 	return patchSettings('linkPreviews', { linkPreviews: enabled })
 }
 
+/** Both palettes go through the patch, like `sounds` and unlike `translucent`
+ *  below: a hue and a chroma multiplier are applied by `useTheme` writing custom
+ *  properties onto the root element, so there is no native state for Rust to
+ *  change and a command of its own would be a pass-through to the writer that
+ *  already exists. */
+function setNeutralTone(tone: NeutralTone): Promise<boolean> {
+	return patchSettings('neutral', { neutral: tone })
+}
+
+function setAccentColor(color: AccentColor): Promise<boolean> {
+	return patchSettings('accent', { accent: color })
+}
+
 /**
  * Its own command rather than the patch above, for the reason stated there in
  * reverse: this preference *does* have a native side. Rust applies the window
@@ -434,6 +474,27 @@ function setAlwaysOnTop(enabled: boolean): Promise<boolean> {
 		settingsWrites,
 		'alwaysOnTop',
 		() => invoke<Settings>('set_always_on_top', { enabled }),
+		(value) => {
+			settings.value = value
+		},
+	)
+}
+
+/**
+ * Its own command rather than the patch, for the same reason `alwaysOnTop` has
+ * one: this preference has a native side. Rust swaps the window's backdrop
+ * material first, persists second, and undoes the swap if the write fails.
+ *
+ * It is also the one setting here whose *application* can fail on its own —
+ * Acrylic needs Windows 10 v1809 or newer — so the command can refuse before it
+ * has written anything, and the row has to be able to say so. Nothing changes on
+ * screen in that case except the message.
+ */
+function setTranslucency(enabled: boolean): Promise<boolean> {
+	return attempt(
+		settingsWrites,
+		'translucent',
+		() => invoke<Settings>('set_translucency', { enabled }),
 		(value) => {
 			settings.value = value
 		},
@@ -531,6 +592,9 @@ export function useSettings() {
 		showCreated,
 		captureNotifications,
 		linkPreviews,
+		translucent,
+		neutralTone,
+		accentColor,
 		errorFor,
 		initialize,
 		dispose,
@@ -544,6 +608,9 @@ export function useSettings() {
 		setCaptureNotifications,
 		setLinkPreviews,
 		setAlwaysOnTop,
+		setTranslucency,
+		setNeutralTone,
+		setAccentColor,
 		setAutostart,
 		beginRecording,
 		commitRecording,

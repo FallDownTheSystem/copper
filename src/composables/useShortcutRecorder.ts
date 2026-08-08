@@ -15,7 +15,12 @@
 import { useSettings, type ShortcutTarget } from './useSettings'
 
 /**
- * The DOM reports sides; the Rust parser does not.
+ * The DOM reports sides; a chord cannot carry one.
+ *
+ * Not a simplification — `tauri-plugin-global-shortcut`'s `Modifiers`, and the
+ * `RegisterHotKey` beneath it, have no way to say *which* Ctrl. A chord that
+ * named a side would either fail to parse or be silently widened, so it is
+ * collapsed here where the reason is visible rather than there where it is not.
  *
  * Main keys need no table at all — `KeyK`, `Digit1`, `Space`, `ArrowUp` and `F12`
  * come off `event.code` already matching the parser token for token. Every
@@ -30,6 +35,29 @@ const MODIFIERS: Record<string, string> = {
 	AltRight: 'Alt',
 	MetaLeft: 'Super',
 	MetaRight: 'Super',
+}
+
+/**
+ * The same modifiers with the side kept, for the double-tap commit and nothing
+ * else.
+ *
+ * A double-tap is recognised by Copper's own keyboard hook rather than by the
+ * plugin, and the hook sees `VK_LCONTROL` and `VK_RCONTROL` as the different keys
+ * they are — so this is the one binding shape where the side the user actually
+ * pressed can be honoured. Tapping the left Ctrl records `LCtrl LCtrl`, which
+ * fires on that key alone; the unsided `Ctrl Ctrl` is still what an older
+ * `settings.json` holds and still means either side.
+ *
+ * `Meta` is absent because it is absent from `DOUBLE_TAPPABLE` too: double-tapping
+ * the Windows key fights the Start menu, on either side of the keyboard.
+ */
+const MODIFIER_SIDED: Record<string, string> = {
+	ShiftLeft: 'LShift',
+	ShiftRight: 'RShift',
+	ControlLeft: 'LCtrl',
+	ControlRight: 'RCtrl',
+	AltLeft: 'LAlt',
+	AltRight: 'RAlt',
 }
 
 /** Windows' order, matching how Rust renders a chord back. */
@@ -207,10 +235,18 @@ function onKeydown(event: KeyboardEvent) {
 /**
  * The bare-modifier case, which has no main key to settle on.
  *
- * Only capture can be a double-tap, and only for the three families the hook
+ * Either binding can be a double-tap, and only for the three families the hook
  * recognises. Committing on the release of a lone modifier is the same gesture
  * the binding itself describes, which is why it reads as obvious rather than as a
  * second rule.
+ *
+ * The side is taken from the key that was actually released, so the binding
+ * records the gesture the user made rather than a widening of it. Someone who
+ * wants either side taps one, sees `Left Ctrl`, and picks the unsided spelling
+ * from — nothing, currently: there is no way back to `Ctrl Ctrl` from the
+ * recorder, only from Reset or by hand. That is a deliberate simplification of
+ * the control rather than an oversight; the sided binding is the one a person
+ * demonstrating a gesture means.
  */
 function onKeyup(event: KeyboardEvent) {
 	if (!isRecording.value) return
@@ -222,14 +258,9 @@ function onKeyup(event: KeyboardEvent) {
 
 	// The double-tap decision comes first, because it is about the modifier being
 	// released and has to see `held` as it was before the removal below.
-	if (
-		target.value === 'capture' &&
-		!sawMainKey &&
-		held.length === 1 &&
-		held[0] === modifier &&
-		DOUBLE_TAPPABLE.has(modifier)
-	) {
-		void commit(`${modifier} ${modifier}`)
+	if (!sawMainKey && held.length === 1 && held[0] === modifier && DOUBLE_TAPPABLE.has(modifier)) {
+		const token = MODIFIER_SIDED[event.code] ?? modifier
+		void commit(`${token} ${token}`)
 		return
 	}
 

@@ -281,6 +281,12 @@ pub fn run() {
 			// otherwise put the panel where it cannot be reached.
 			app.manage(panel::PositionState::default());
 			panel::restore_position(&window, store::lock(&shared).settings().panel_position);
+			// Before `theme::install` and not beside the pin below, because it changes
+			// what that call paints rather than being a second thing to paint: it
+			// records the material, and `theme::install` is the one call that applies
+			// the backdrop. The other order would show Mica for a frame on a panel the
+			// user asked to be translucent.
+			panel::install_translucency(app.handle());
 			theme::install(app.handle(), &window);
 			// Beside the theme rather than in the window config: `tauri.conf.json`
 			// declares the band the window is *born* in, and this is the stored

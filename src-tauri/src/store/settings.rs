@@ -47,6 +47,9 @@ pub struct Settings {
 	pub show_created: bool,
 	pub capture_notifications: bool,
 	pub link_previews: bool,
+	pub translucent: bool,
+	pub neutral: String,
+	pub accent: String,
 }
 
 /// Where a fresh note goes inside its section.
@@ -118,6 +121,19 @@ impl Default for Settings {
 			// URLs the user pasted from somewhere private is not a default anyone can
 			// consent to in advance.
 			link_previews: false,
+			// Off, so an upgrade shows exactly the panel every existing install
+			// already shows. The window has always carried a Mica backdrop, but
+			// `--surface` sits at 90% over it, so what the user has seen is a nearly
+			// solid panel; turning this on swaps Mica for Acrylic and thins that
+			// surface until the desktop blurs through. That is a different-looking
+			// app, and nobody should meet it because they updated.
+			translucent: false,
+			// The panel's own warm grey and its own copper, named rather than left
+			// blank so that "the shipped look" is a value the picker can select
+			// rather than the absence of one. Both are narrowed on the frontend, so
+			// a name nothing recognises renders as these two anyway.
+			neutral: "warm".to_string(),
+			accent: "copper".to_string(),
 		}
 	}
 }
@@ -159,6 +175,9 @@ struct RawSettings {
 	show_created: Value,
 	capture_notifications: Value,
 	link_previews: Value,
+	translucent: Value,
+	neutral: Value,
+	accent: Value,
 }
 
 impl RawSettings {
@@ -258,6 +277,13 @@ impl RawSettings {
 			&mut notices,
 		);
 
+		let translucent = repair_flag(
+			self.translucent,
+			"translucent",
+			defaults.translucent,
+			&mut notices,
+		);
+
 		let motion = repair_named(self.motion, "motion", defaults.motion, &mut notices);
 		let insertion_point = repair_named(
 			self.insertion_point,
@@ -271,6 +297,8 @@ impl RawSettings {
 			defaults.double_click,
 			&mut notices,
 		);
+		let neutral = repair_named(self.neutral, "neutral", defaults.neutral, &mut notices);
+		let accent = repair_named(self.accent, "accent", defaults.accent, &mut notices);
 
 		let mut settings = Settings {
 			recents,
@@ -286,6 +314,9 @@ impl RawSettings {
 			show_created,
 			capture_notifications,
 			link_previews,
+			translucent,
+			neutral,
+			accent,
 		};
 		settings.clamp();
 		(settings, notices)
@@ -293,7 +324,7 @@ impl RawSettings {
 }
 
 /// A preference stored as a bare name and narrowed on the frontend — `theme`,
-/// `motion`, `insertionPoint`, `doubleClick`.
+/// `motion`, `insertionPoint`, `doubleClick`, `neutral`, `accent`.
 ///
 /// Only the *type* is repaired here. A `Value::Null` is the ordinary case for a
 /// key written before its feature existed and must stay silent, or an older file
@@ -312,7 +343,8 @@ fn repair_named(raw: Value, key: &str, default: String, notices: &mut Vec<String
 	}
 }
 
-/// A preference stored as a plain boolean — `sounds`, `alwaysOnTop`.
+/// A preference stored as a plain boolean — `sounds`, `alwaysOnTop`,
+/// `translucent`.
 ///
 /// The `Value::Null` arm carries the same weight it does in [`repair_named`]: it
 /// is the ordinary case for a key written before its feature existed, and a
@@ -456,6 +488,15 @@ impl Settings {
 		if let Some(link_previews) = patch.link_previews {
 			self.link_previews = link_previews;
 		}
+		if let Some(translucent) = patch.translucent {
+			self.translucent = translucent;
+		}
+		if let Some(neutral) = patch.neutral {
+			self.neutral = neutral;
+		}
+		if let Some(accent) = patch.accent {
+			self.accent = accent;
+		}
 	}
 }
 
@@ -486,6 +527,16 @@ pub struct SettingsPatch {
 	pub capture_notifications: Option<bool>,
 	#[serde(default)]
 	pub link_previews: Option<bool>,
+	/// Reachable through the patch as well as through `set_translucency`, which is
+	/// the arrangement `always_on_top` already has: the dedicated command owns the
+	/// window half, and the key still has to exist here or `apply_patch` could not
+	/// restore it when that command's own write fails.
+	#[serde(default)]
+	pub translucent: Option<bool>,
+	#[serde(default)]
+	pub neutral: Option<String>,
+	#[serde(default)]
+	pub accent: Option<String>,
 }
 
 /// Distinguishes "key absent" from "key present and null".
@@ -697,8 +748,83 @@ mod tests {
 			 \"Ctrl+Shift+Space\"\n  },\n  \"theme\": \"system\",\n  \"sounds\": false,\n  \
 			 \"motion\": \"auto\",\n  \"insertionPoint\": \"bottom\",\n  \"doubleClick\": \
 			 \"copy\",\n  \"alwaysOnTop\": true,\n  \"showCreated\": false,\n  \
-			 \"captureNotifications\": true,\n  \"linkPreviews\": false\n}\n"
+			 \"captureNotifications\": true,\n  \"linkPreviews\": false,\n  \"translucent\": \
+			 false,\n  \"neutral\": \"warm\",\n  \"accent\": \"copper\"\n}\n"
 		);
+	}
+
+	/// The appearance keys join the guarantee every key added since task-012
+	/// holds: a `settings.json` written by an earlier build has none of them, and
+	/// reading one must be indistinguishable from reading a current file. The
+	/// stakes are the recents list — the recovery path discards the whole file —
+	/// and the visible cost of getting `translucent` backwards would be every
+	/// existing install waking up with a see-through panel.
+	#[test]
+	fn a_file_without_the_appearance_keys_reads_as_the_shipped_look() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"theme":"dark","linkPreviews":true}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(loaded.notice.is_none(), "absence was reported as damage: {:?}", loaded.notice);
+		assert_eq!(siblings(dir.path()), [FILE_NAME], "the file was set aside");
+		assert!(!loaded.settings.translucent, "an absent key must not thin the panel");
+		assert_eq!(loaded.settings.neutral, "warm");
+		assert_eq!(loaded.settings.accent, "copper");
+		// The rest of the file survived rather than being defaulted alongside them.
+		assert_eq!(loaded.settings.theme, "dark");
+		assert!(loaded.settings.link_previews);
+	}
+
+	#[test]
+	fn wrong_typed_appearance_values_are_repaired_and_reported() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"translucent":"a bit","neutral":7,"accent":false}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(!loaded.settings.translucent);
+		assert_eq!(loaded.settings.neutral, "warm");
+		assert_eq!(loaded.settings.accent, "copper");
+		let notice = loaded.notice.expect("repairs must be reported");
+		for expected in ["translucent", "neutral", "accent"] {
+			assert!(notice.contains(expected), "{expected} unreported in: {notice}");
+		}
+	}
+
+	/// A palette name nothing recognises is not damage — the frontend collapses it
+	/// to the shipped value on read, exactly as it does for `theme` — so it must
+	/// survive the load rather than being repaired here.
+	#[test]
+	fn an_unrecognised_palette_name_survives_a_load_unreported() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"neutral":"chartreuse","accent":"gold"}"#);
+
+		let loaded = load(&path);
+
+		assert!(loaded.notice.is_none(), "a name is not a type error: {:?}", loaded.notice);
+		assert_eq!(loaded.settings.neutral, "chartreuse");
+		assert_eq!(loaded.settings.accent, "gold");
+	}
+
+	#[test]
+	fn a_patch_sets_the_appearance_keys_independently() {
+		let mut settings = Settings::default();
+
+		settings.apply_patch(patch(r#"{"accent":"teal"}"#));
+		assert_eq!(settings.accent, "teal");
+		assert_eq!(settings.neutral, "warm", "an absent key must leave the stored value alone");
+		assert!(!settings.translucent);
+
+		settings.apply_patch(patch(r#"{"translucent":true}"#));
+		assert_eq!(settings.accent, "teal", "a translucency patch must not reset the accent");
+		assert!(settings.translucent);
+
+		settings.apply_patch(patch(r#"{"neutral":"slate"}"#));
+		assert!(settings.translucent, "a tone patch must not make the panel solid again");
+		assert_eq!(settings.neutral, "slate");
 	}
 
 	/// Task-020's key takes the `showCreated` shape — an absent key reads as

@@ -53,6 +53,9 @@ function makeSettings(sounds: boolean): Settings {
 		showCreated: false,
 		captureNotifications: true,
 		linkPreviews: false,
+		translucent: false,
+		neutral: 'warm',
+		accent: 'copper',
 	}
 }
 
@@ -143,6 +146,7 @@ beforeEach(() => {
 		captureRegistered: true,
 		captureError: null,
 		captureFallback: null,
+		summonFallback: null,
 	}))
 	respond('get_autostart_enabled', () => false)
 })

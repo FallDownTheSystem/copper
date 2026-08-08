@@ -52,7 +52,7 @@ const COMMANDS: [&str; 21] = [
 ];
 
 /// The commands later phases added beside the store's twenty.
-const EXTRA_COMMANDS: [&str; 34] = [
+const EXTRA_COMMANDS: [&str; 35] = [
 	"clipboard_write_text",
 	"editor_handoffs",
 	"editor_open_note",
@@ -102,6 +102,10 @@ const EXTRA_COMMANDS: [&str; 34] = [
 	// because `removeUnusedCommands` prunes an ungranted window command out of the
 	// binary and because window operations are centralised in `panel.rs`.
 	"set_always_on_top",
+	// The appearance round's material toggle, in `panel.rs` with the pin for the
+	// same centralisation reason — and a command of its own because the backdrop
+	// is native state the patch path cannot apply or undo.
+	"set_translucency",
 	// Task-020. Note what is *not* here: nothing for `tauri-plugin-http`. Its
 	// capability entry would need a static URL scope, and a preview is fetched for
 	// whatever host a note happens to name — so the scope would have to be
@@ -400,10 +404,13 @@ fn settings_cross_the_boundary_in_camel_case() {
 		"showCreated",
 		"captureNotifications",
 		"linkPreviews",
+		"translucent",
+		"neutral",
+		"accent",
 	] {
 		assert!(payload.get(key).is_some(), "get_settings is missing {key}: {payload}");
 	}
-	assert_eq!(payload.as_object().unwrap().len(), 13, "get_settings grew a field");
+	assert_eq!(payload.as_object().unwrap().len(), 16, "get_settings grew a field");
 	assert_eq!(payload["shortcuts"]["capture"], "Shift Shift");
 	assert_eq!(payload["shortcuts"]["summon"], "Ctrl+Shift+Space");
 	// The shipped defaults, which are the whole of "this task changes no
@@ -433,6 +440,11 @@ fn settings_cross_the_boundary_in_camel_case() {
 	// send anything to a third party, and shipping it on would mean an upgrade
 	// silently began disclosing which pages a user's notes mention.
 	assert_eq!(payload["linkPreviews"], false);
+	// The appearance round's three keys all default to the shipped look, so an
+	// upgraded install renders exactly what it rendered before they existed.
+	assert_eq!(payload["translucent"], false);
+	assert_eq!(payload["neutral"], "warm");
+	assert_eq!(payload["accent"], "copper");
 }
 
 /// Task-020's two shapes. `link_preview` answers `null` far more often than it

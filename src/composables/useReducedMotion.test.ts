@@ -37,6 +37,9 @@ function makeSettings(motion: string): Settings {
 		showCreated: false,
 		captureNotifications: true,
 		linkPreviews: false,
+		translucent: false,
+		neutral: 'warm',
+		accent: 'copper',
 	}
 }
 

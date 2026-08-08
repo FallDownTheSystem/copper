@@ -53,6 +53,9 @@ function makeSettings(linkPreviews: boolean): Settings {
 		showCreated: false,
 		captureNotifications: true,
 		linkPreviews,
+		translucent: false,
+		neutral: 'warm',
+		accent: 'copper',
 	}
 }
 
@@ -91,6 +94,7 @@ async function withPreviews(enabled: boolean) {
 					captureRegistered: true,
 					captureError: null,
 					captureFallback: null,
+					summonFallback: null,
 				}
 			case 'get_autostart_enabled':
 				return false

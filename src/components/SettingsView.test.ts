@@ -37,6 +37,9 @@ function makeSettings(over: Partial<Settings> = {}): Settings {
 		showCreated: false,
 		captureNotifications: true,
 		linkPreviews: false,
+		translucent: false,
+		neutral: 'warm',
+		accent: 'copper',
 		...over,
 	}
 }
@@ -50,6 +53,7 @@ const SHORTCUTS = {
 	captureRegistered: true,
 	captureError: null,
 	captureFallback: null,
+	summonFallback: null,
 }
 
 async function flush(times = 4) {
@@ -484,5 +488,78 @@ describe('the link-previews switch', () => {
 	it('lives in a section of its own called Privacy', async () => {
 		const wrapper = await openSettings()
 		expect(wrapper.text()).toContain('Privacy')
+	})
+})
+
+describe('the appearance rows', () => {
+	// The responder answers `set_translucency` the way it answers
+	// `set_always_on_top`, and for the same reason: a native side means the
+	// command returns the whole settings object itself.
+	async function openWithTranslucency(stored: Partial<Settings> = {}) {
+		const wrapper = await openSettings(stored)
+		const base = mocks.invoke.getMockImplementation()!
+		mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+			if (command === 'set_translucency') {
+				return makeSettings({ ...stored, translucent: args?.enabled as boolean })
+			}
+			return base(command, args)
+		})
+		return wrapper
+	}
+
+	it('ships the translucency switch off and writes through its own command', async () => {
+		const wrapper = await openWithTranslucency()
+		const control = wrapper.get('#translucent')
+		expect(control.attributes('role')).toBe('switch')
+		expect(control.attributes('aria-checked')).toBe('false')
+
+		await control.trigger('click')
+		await flush()
+
+		// Not `update_settings`: the material is native state the patch path could
+		// neither apply nor undo.
+		expect(mocks.invoke).toHaveBeenCalledWith('set_translucency', { enabled: true })
+		expect(patchesSent()).toEqual([])
+	})
+
+	it('renders the two pickers as radiogroups sized to their palettes', async () => {
+		const wrapper = await openSettings()
+
+		const tones = wrapper.get('[aria-label="Grey tone"]')
+		const accents = wrapper.get('[aria-label="Accent color"]')
+		expect(tones.attributes('role')).toBe('radiogroup')
+		expect(accents.attributes('role')).toBe('radiogroup')
+		expect(tones.findAll('[role="radio"]')).toHaveLength(6)
+		expect(accents.findAll('[role="radio"]')).toHaveLength(18)
+	})
+
+	it('marks the shipped palette, and names the choice in the row label', async () => {
+		const wrapper = await openSettings()
+
+		expect(wrapper.get('[aria-label="Warm"]').attributes('aria-checked')).toBe('true')
+		expect(wrapper.get('[aria-label="Copper"]').attributes('aria-checked')).toBe('true')
+		expect(wrapper.text()).toContain('Grey tone: Warm')
+		expect(wrapper.text()).toContain('Accent color: Copper')
+	})
+
+	it('writes one key per picker, so neither can clear the other', async () => {
+		const wrapper = await openSettings()
+
+		await wrapper.get('[aria-label="Slate"]').trigger('click')
+		await flush()
+		await wrapper.get('[aria-label="Blue"]').trigger('click')
+		await flush()
+
+		expect(patchesSent()).toEqual([{ neutral: 'slate' }, { accent: 'blue' }])
+	})
+
+	/** The same rule `theme` and the notes rows follow: the store repairs a wrong
+	 *  *type*, and a stored name nothing recognises collapses to the shipped
+	 *  palette on read rather than rendering a picker with nothing selected. */
+	it('falls back to the shipped palette for a name it does not recognise', async () => {
+		const wrapper = await openSettings({ neutral: 'chartreuse', accent: 'gold' })
+
+		expect(wrapper.get('[aria-label="Warm"]').attributes('aria-checked')).toBe('true')
+		expect(wrapper.get('[aria-label="Copper"]').attributes('aria-checked')).toBe('true')
 	})
 })

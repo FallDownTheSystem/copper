@@ -44,6 +44,7 @@ const SHORTCUTS = {
 	captureRegistered: true,
 	captureError: null,
 	captureFallback: null,
+	summonFallback: null,
 }
 
 /** One module graph per case: the generations, the settings copy and the error

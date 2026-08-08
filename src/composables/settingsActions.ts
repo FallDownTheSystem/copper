@@ -24,6 +24,8 @@
  * only be vaguer.
  */
 
+import { ACCENT_COLORS, NEUTRAL_TONES } from '@/lib/palette'
+
 import type { PreferenceScope } from './useSettings'
 
 export type PaletteAction = {
@@ -58,6 +60,9 @@ export function settingsActions(): PaletteAction[] {
 		showCreated,
 		captureNotifications,
 		linkPreviews,
+		translucent,
+		neutralTone,
+		accentColor,
 		errorFor,
 		setTheme,
 		setSounds,
@@ -68,6 +73,7 @@ export function settingsActions(): PaletteAction[] {
 		setCaptureNotifications,
 		setLinkPreviews,
 		setAlwaysOnTop,
+		setTranslucency,
 		setAutostart,
 		autostartEnabled,
 	} = useSettings()
@@ -150,6 +156,33 @@ export function settingsActions(): PaletteAction[] {
 			label: 'Link previews',
 			value: onOff(linkPreviews.value),
 			run: () => write('linkPreviews', () => setLinkPreviews(!linkPreviews.value)),
+		},
+		translucent: {
+			id: 'translucent',
+			label: 'Translucent background',
+			value: onOff(translucent.value),
+			run: () => write('translucent', () => setTranslucency(!translucent.value)),
+		},
+		// **These two open Settings rather than changing anything**, and they are the
+		// first rows here that do. A palette has six and eighteen members, so the
+		// cycle every other row uses would need eighteen presses to cross and would
+		// repaint the whole panel at each one; and unlike `Dark` or `Top`, a colour is
+		// not something a person can name from a list they cannot see. So the palette
+		// does what it can do well — say which one is currently on, and be the way to
+		// the place where the choice is visible. `Open Settings` below covers the same
+		// ground for the two recorder rows, for a different reason and in the same
+		// shape.
+		neutral: {
+			id: 'neutral-tone',
+			label: 'Grey tone',
+			value: NEUTRAL_TONES[neutralTone.value].label,
+			run: showSettings,
+		},
+		accent: {
+			id: 'accent-color',
+			label: 'Accent color',
+			value: ACCENT_COLORS[accentColor.value].label,
+			run: showSettings,
 		},
 		autostart: {
 			id: 'autostart',

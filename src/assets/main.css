@@ -81,22 +81,66 @@
 	   the largest surfaces want; the small controls step down from it. */
 	--radius: 1.25rem;
 
+	/* --- The palette dials ---------------------------------------------------
+	   **A palette may turn hue and scale chroma. Lightness never moves.**
+
+	   Every `L` in this file is a measured value, and the comments below are the
+	   measurements: `--accent-ring` and `--accent-text` are two tokens rather than
+	   one because 3:1 and 4.5:1 fall either side of a single lightness, the dark
+	   `--text-secondary` sits at 0.80 rather than 0.73 because APCA rated the
+	   mirror-image value fourteen points worse, and so on down the block. Remapping
+	   these tokens onto a Tailwind ramp would discard all of it and owe a
+	   re-measurement of eighteen accents across two themes and the increased-
+	   contrast overrides.
+
+	   So a palette changes exactly two things: the hue angle, and a multiplier on
+	   the chroma that is already there. Every warm-grey token below reads
+	   `var(--neutral-h)` and `calc(C * var(--neutral-c))`; every copper token reads
+	   the accent pair. A token whose hue deliberately sits off its family's base
+	   keeps that offset as a `calc()`, so the shipped palette renders exactly what
+	   it rendered before any of this was adjustable.
+
+	   `useTheme` writes these four as inline properties on the root element for a
+	   chosen palette and removes them for the shipped one. Three kinds of token are
+	   deliberately *not* threaded: the achromatic ones (`oklch(L 0 0)` and the
+	   white/black alphas) have no hue to turn, `--destructive` and its text twin
+	   mean red in every palette, and `--link` is its own semantic — a link that
+	   changed colour with the accent would stop being the one thing on the panel
+	   that always looks like a link. `::highlight()`'s amber is left out for the
+	   same reason as the red. */
+	--neutral-h: 60;
+	--neutral-c: 1;
+	--accent-h: 55;
+	--accent-c: 1;
+
+	/* How much of the backdrop the panel lets through, as a token rather than an
+	   alpha written into `--surface` twice. Three rules move it and they have to be
+	   able to outrank each other: the shipped 90%, the translucency setting's
+	   thinner value, and `prefers-contrast: more` taking that back. */
+	--surface-alpha: 0.9;
+
 	/* --- Copper's own semantic set ------------------------------------------
 	   Contrast is verified against the panel's *composited* surface, not
 	   against the token colour: at 90% opacity a light tint over a pure-black
 	   desktop lands near #E6E6E6, and that is what secondary text has to clear
 	   4.5:1 on. (At the 70% this started at, it was 2.2–2.5:1.) */
-	--text-primary: oklch(0.24 0.008 60);
-	--text-secondary: oklch(0.46 0.012 60);
-	--text-disabled: oklch(0.63 0.008 60);
+	--text-primary: oklch(0.24 calc(0.008 * var(--neutral-c)) var(--neutral-h));
+	--text-secondary: oklch(0.46 calc(0.012 * var(--neutral-c)) var(--neutral-h));
+	--text-disabled: oklch(0.63 calc(0.008 * var(--neutral-c)) var(--neutral-h));
 	/* The 1px edge of a control whose edge is the whole control — an unchecked
 	   checkbox paints nothing inside its box, so its border alone has to clear
 	   the 3:1 floor for UI components. `--text-disabled` used to be borrowed
 	   here and composited at 2.7:1 on the panel; a *text* role is allowed to be
 	   that quiet, a lone boundary is not. Measured 3.77:1 light / 3.98:1 dark
 	   against the composited worst-case surfaces. */
-	--control-border: oklch(0.55 0.008 60);
-	--surface: oklch(0.99 0.002 80 / 0.9);
+	--control-border: oklch(0.55 calc(0.008 * var(--neutral-c)) var(--neutral-h));
+	/* The `+ 20` is the warm grey's own decision, kept as an offset rather than
+	   frozen at 80: the panel's surface sits 20° further toward yellow than its
+	   text, and every palette should inherit that relationship
+	   rather than the number it happens to produce for this one. At chroma 0.002 it
+	   is a relationship nobody can see directly — which is exactly why it must be
+	   carried rather than re-derived by eye. */
+	--surface: oklch(0.99 calc(0.002 * var(--neutral-c)) calc(var(--neutral-h) + 20) / var(--surface-alpha));
 	/* The same colour with the alpha taken off, for the two surfaces that have to
 	   erase what is behind them rather than tint it: the pinned section heading,
 	   which paints *over* the rows it scrolls past, and the panel itself under
@@ -106,14 +150,14 @@
 	   that the band shows no Mica while the panel around it does; the band is 32px
 	   deep — heading plus its breathing room — and the alternative is a heading
 	   you can read the list through. */
-	--surface-solid: oklch(0.99 0.002 80);
-	--surface-hover: oklch(0.24 0.008 60 / 0.06);
-	--surface-active: oklch(0.24 0.008 60 / 0.1);
+	--surface-solid: oklch(0.99 calc(0.002 * var(--neutral-c)) calc(var(--neutral-h) + 20));
+	--surface-hover: oklch(0.24 calc(0.008 * var(--neutral-c)) var(--neutral-h) / 0.06);
+	--surface-active: oklch(0.24 calc(0.008 * var(--neutral-c)) var(--neutral-h) / 0.1);
 	/* Declared once and never re-declared under `.dark`: both of its inputs are,
 	   and `.dark` lands on the same element `:root` matches, so the mix
 	   re-resolves against the dark values on its own. */
 	--surface-danger: color-mix(in oklab, var(--destructive) 12%, var(--surface));
-	--separator: oklch(0.24 0.008 60 / 0.14);
+	--separator: oklch(0.24 calc(0.008 * var(--neutral-c)) var(--neutral-h) / 0.14);
 	/* The toast pill, which is the one surface that floats *over* the list rather
 	   than sitting in it — so it has to separate from the panel behind it, and the
 	   two themes reach that in opposite ways. On the light panel the surface is
@@ -123,7 +167,9 @@
 	   the text underneath is note bodies, and a translucent pill over them is the
 	   one place in the panel where the Mica material would cost legibility. */
 	--toast-surface: oklch(1 0 0 / 0.97);
-	--toast-shadow: 0 6px 16px oklch(0.24 0.008 60 / 0.18), 0 2px 4px oklch(0.24 0.008 60 / 0.1);
+	--toast-shadow:
+		0 6px 16px oklch(0.24 calc(0.008 * var(--neutral-c)) var(--neutral-h) / 0.18),
+		0 2px 4px oklch(0.24 calc(0.008 * var(--neutral-c)) var(--neutral-h) / 0.1);
 	/* A code fence's own fill and edge, in the panel's warm grey rather than in a
 	   syntax theme's neutral one — Shiki ships a near-black `#121212` surface that
 	   reads blue beside a warm panel, and the block is Copper's furniture rather
@@ -135,8 +181,8 @@
 	   so being the stronger of the two tints is what makes it an edge — a step
 	   darker than the fill on the light panel, a step lighter on the dark one, each
 	   continuing in the direction the fill already went. */
-	--code-surface: oklch(0.24 0.008 60 / 0.05);
-	--code-border: oklch(0.24 0.008 60 / 0.09);
+	--code-surface: oklch(0.24 calc(0.008 * var(--neutral-c)) var(--neutral-h) / 0.05);
+	--code-border: oklch(0.24 calc(0.008 * var(--neutral-c)) var(--neutral-h) / 0.09);
 	--link: oklch(0.5 0.14 250);
 	/* **The halo, and it is now the only token the focus treatment has of its own.**
 	   The 1px edge used to carry a second copper here, deepened until it sat a
@@ -153,12 +199,12 @@
 	   colour. (The dark value below keeps 50% by ruling — 2026-08-08, chroma at
 	   the accent's own lightness so the glow reads copper, not white — and that
 	   ruling outranks the floor there.) */
-	--focus-halo: oklch(0.46 0.15 55 / 0.7);
+	--focus-halo: oklch(0.46 calc(0.15 * var(--accent-c)) var(--accent-h) / 0.7);
 	/* Copper carries exactly one meaning: selection and active state. Split in
 	   two because oklch(0.62 0.11 55) is 3.77:1 on white — a pass for a UI
 	   component at 3:1 and a failure for text at 4.5:1. */
-	--accent-ring: oklch(0.62 0.11 55);
-	--accent-text: oklch(0.53 0.11 55);
+	--accent-ring: oklch(0.62 calc(0.11 * var(--accent-c)) var(--accent-h));
+	--accent-text: oklch(0.53 calc(0.11 * var(--accent-c)) var(--accent-h));
 	/* Destructive as *text*, split from `--destructive` for the same reason
 	   `--accent-text` split from `--accent-ring`: the fill red measures 3.69:1
 	   as 12px text on the composited light panel — a pass for a filled surface,
@@ -172,7 +218,7 @@
 	   glyph this token draws. The parity the first version of this comment
 	   claimed was never measured. */
 	--accent-contrast: oklch(1 0 0);
-	--scrollbar-thumb: oklch(0.24 0.008 60 / 0.25);
+	--scrollbar-thumb: oklch(0.24 calc(0.008 * var(--neutral-c)) var(--neutral-h) / 0.25);
 	/* The one surface role the list view has no equivalent for: a key cap and the
 	   recording box both need to stay legible over whatever desktop shows through
 	   a translucent window. Alpha rather than an opaque hex for the same reason
@@ -180,7 +226,7 @@
 	   sits behind it, and a fourth hardcoded alpha in a surface whose other three
 	   are calculated is exactly what the semantic-token rule exists to prevent. */
 	--kbd-surface: oklch(1 0 0 / 0.62);
-	--kbd-ring: oklch(0.24 0.008 60 / 0.18);
+	--kbd-ring: oklch(0.24 calc(0.008 * var(--neutral-c)) var(--neutral-h) / 0.18);
 	--kbd-highlight: oklch(1 0 0 / 0.4);
 
 	/* --- shadcn-vue's generated set (reka-vega / neutral) -------------------
@@ -201,7 +247,7 @@
 	--primary-foreground: oklch(0.985 0 0);
 	--secondary: oklch(0.97 0 0);
 	--secondary-foreground: oklch(0.205 0 0);
-	--accent: oklch(0.97 0.002 80);
+	--accent: oklch(0.97 calc(0.002 * var(--neutral-c)) calc(var(--neutral-h) + 20));
 	--accent-foreground: oklch(0.205 0 0);
 	--destructive: oklch(0.577 0.245 27.325);
 	--input: oklch(0.922 0 0);
@@ -209,25 +255,28 @@
 }
 
 .dark {
-	--text-primary: oklch(0.96 0.004 60);
+	--text-primary: oklch(0.96 calc(0.004 * var(--neutral-c)) var(--neutral-h));
 	/* L 0.80 rather than the 0.73 that mirrored light's step: WCAG rated the
 	   0.73 *higher* than light's value while APCA — the perceptual measure —
 	   rated it fourteen points worse (Lc 51 against light's 68). This token
 	   carries dates, sizes, settings descriptions and blockquotes, so it gets
 	   the value that restores parity where it is read, Lc 63. */
-	--text-secondary: oklch(0.80 0.012 60);
+	--text-secondary: oklch(0.8 calc(0.012 * var(--neutral-c)) var(--neutral-h));
 	/* L 0.63, up from 0.55: at 0.55 the placeholder role composited to Lc 24,
 	   under even APCA's Lc 30 floor for disabled and placeholder text. */
-	--text-disabled: oklch(0.63 0.008 60);
-	--control-border: oklch(0.62 0.008 60);
-	--surface: oklch(0.18 0.004 60 / 0.9);
-	--surface-solid: oklch(0.18 0.004 60);
+	--text-disabled: oklch(0.63 calc(0.008 * var(--neutral-c)) var(--neutral-h));
+	--control-border: oklch(0.62 calc(0.008 * var(--neutral-c)) var(--neutral-h));
+	/* No `+ 20` here, unlike the light surface: the dark panel sits on the family's
+	   own hue and always has. Carrying an offset it never had would be inventing a
+	   relationship rather than preserving one. */
+	--surface: oklch(0.18 calc(0.004 * var(--neutral-c)) var(--neutral-h) / var(--surface-alpha));
+	--surface-solid: oklch(0.18 calc(0.004 * var(--neutral-c)) var(--neutral-h));
 	--surface-hover: oklch(1 0 0 / 0.07);
 	--surface-active: oklch(1 0 0 / 0.11);
 	--separator: oklch(1 0 0 / 0.14);
 	/* Three steps above `--surface`'s 0.18, which is a visible edge without
 	   becoming a second panel. */
-	--toast-surface: oklch(0.26 0.006 60 / 0.97);
+	--toast-surface: oklch(0.26 calc(0.006 * var(--neutral-c)) var(--neutral-h) / 0.97);
 	--toast-shadow: 0 6px 16px oklch(0 0 0 / 0.45);
 	--code-surface: oklch(1 0 0 / 0.06);
 	--code-border: oklch(1 0 0 / 0.1);
@@ -239,16 +288,19 @@
 	   allowed to glow, not to outline, and what makes it read as copper instead
 	   of white is chroma at the accent's own lightness: the glow and the 1px
 	   accent edge become one hue, dimmer only by its alpha. */
-	--focus-halo: oklch(0.7 0.12 55 / 0.5);
-	--accent-ring: oklch(0.7 0.12 55);
-	--accent-text: oklch(0.78 0.1 60);
+	--focus-halo: oklch(0.7 calc(0.12 * var(--accent-c)) var(--accent-h) / 0.5);
+	--accent-ring: oklch(0.7 calc(0.12 * var(--accent-c)) var(--accent-h));
+	/* The `+ 5` is this token's own lift toward yellow, which is what keeps a
+	   lighter copper reading as copper rather than as pink on the dark panel. Every
+	   accent family inherits the same small turn in the same direction. */
+	--accent-text: oklch(0.78 calc(0.1 * var(--accent-c)) calc(var(--accent-h) + 5));
 	/* The dark fill red already passes as text (5.02:1), so the text role and
 	   the fill role share one value here; only light needs the split. */
 	--destructive-text: oklch(0.704 0.191 22.216);
 	/* A dark tick on the lighter copper: white measured 2.77:1 on this theme's
 	   L 0.7 fill; this measures 5.96:1. Same value as light's `--text-primary`,
 	   which is what a "dark glyph on a warm surface" already is elsewhere. */
-	--accent-contrast: oklch(0.24 0.008 60);
+	--accent-contrast: oklch(0.24 calc(0.008 * var(--neutral-c)) var(--neutral-h));
 	--scrollbar-thumb: oklch(1 0 0 / 0.22);
 	--kbd-surface: oklch(1 0 0 / 0.1);
 	--kbd-ring: oklch(1 0 0 / 0.18);
@@ -261,17 +313,49 @@
 	--border: oklch(1 0 0 / 10%);
 	--card: oklch(0.205 0 0);
 	--card-foreground: oklch(0.985 0 0);
-	--popover: oklch(0.205 0.004 60);
+	--popover: oklch(0.205 calc(0.004 * var(--neutral-c)) var(--neutral-h));
 	--popover-foreground: oklch(0.985 0 0);
 	--primary: oklch(0.922 0 0);
 	--primary-foreground: oklch(0.205 0 0);
 	--secondary: oklch(0.269 0 0);
 	--secondary-foreground: oklch(0.985 0 0);
-	--accent: oklch(0.269 0.004 60);
+	--accent: oklch(0.269 calc(0.004 * var(--neutral-c)) var(--neutral-h));
 	--accent-foreground: oklch(0.985 0 0);
 	--destructive: oklch(0.704 0.191 22.216);
 	--input: oklch(1 0 0 / 15%);
 	--ring: oklch(0.556 0 0);
+}
+
+/* --- Translucency -----------------------------------------------------------
+   The panel has always worn a native backdrop, and at 90% almost none of it has
+   ever been visible. Turning this on does two things at once: Rust swaps Mica for
+   Acrylic, which is the material that actually blurs what is behind the window,
+   and these two rules thin the surface until that blur reaches the eye. Neither
+   half is any use without the other — a thinner surface over Mica shows the
+   wallpaper rather than the desktop, and Acrylic under a 90% surface shows
+   nothing at all.
+
+   0.65 light and 0.6 dark are a first tuning, chosen and not measured: the dark
+   surface starts at L 0.18 against the light one's 0.99, so an equal alpha lets
+   visibly more through on dark, and the extra five points buy back roughly the
+   same amount of surface. They are the values to revisit first if the panel reads
+   as murky or as a sheet of glass. What they must not do is drift far enough to
+   put the composited text contrast in doubt — the notes on `--surface` above are
+   written against a *composited* surface, and this is the number they composite
+   against.
+
+   `--surface-solid` is deliberately untouched: the pinned section heading has to
+   erase the rows it scrolls over whatever the panel is doing behind it, and a
+   translucent heading band is a heading you can read the list through.
+
+   The `.section-band` gradient in `SectionHeader` paints `var(--surface)` and so
+   follows this on its own. */
+.translucent {
+	--surface-alpha: 0.65;
+}
+
+.translucent.dark {
+	--surface-alpha: 0.6;
 }
 
 @theme inline {
@@ -642,18 +726,35 @@
 @media (prefers-contrast: more) {
 	:root {
 		--text-primary: oklch(0.12 0 0);
-		--text-secondary: oklch(0.3 0.008 60);
-		--text-disabled: oklch(0.48 0.006 60);
-		--separator: oklch(0.24 0.008 60 / 0.4);
-		--accent-text: oklch(0.44 0.12 55);
+		--text-secondary: oklch(0.3 calc(0.008 * var(--neutral-c)) var(--neutral-h));
+		--text-disabled: oklch(0.48 calc(0.006 * var(--neutral-c)) var(--neutral-h));
+		--separator: oklch(0.24 calc(0.008 * var(--neutral-c)) var(--neutral-h) / 0.4);
+		--accent-text: oklch(0.44 calc(0.12 * var(--accent-c)) var(--accent-h));
 	}
 
 	.dark {
 		--text-primary: oklch(1 0 0);
-		--text-secondary: oklch(0.85 0.01 60);
-		--text-disabled: oklch(0.66 0.008 60);
+		--text-secondary: oklch(0.85 calc(0.01 * var(--neutral-c)) var(--neutral-h));
+		--text-disabled: oklch(0.66 calc(0.008 * var(--neutral-c)) var(--neutral-h));
 		--separator: oklch(1 0 0 / 0.4);
-		--accent-text: oklch(0.86 0.09 60);
+		--accent-text: oklch(0.86 calc(0.09 * var(--accent-c)) calc(var(--accent-h) + 5));
+	}
+
+	/* **Contrast wins, and this is where it wins.** A stated preference for more
+	   contrast and a preference for a see-through panel are a direct
+	   contradiction, and only one of them is an accessibility signal — so
+	   translucency gives the alpha back here rather than the two averaging into a
+	   panel that is neither. Both selectors are needed: `.translucent.dark` below
+	   carries two classes, so a single-class rule here would lose to it on
+	   specificity and leave the dark panel thin.
+
+	   This is the second half of a pair. `prefers-reduced-transparency` is the
+	   other, and it is handled where it already was — `.panel-surface` reads
+	   `--surface-solid` there, a token translucency never touches, so that half
+	   needs nothing new. */
+	.translucent,
+	.translucent.dark {
+		--surface-alpha: 0.9;
 	}
 }
 

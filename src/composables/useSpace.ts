@@ -118,6 +118,13 @@ export type Settings = {
 	 *  and the only consent surface for it — Rust reads this key store-side before
 	 *  every fetch rather than trusting the caller. */
 	linkPreviews: boolean
+	/** Whether the panel wears Acrylic and thins `--surface` so it blurs through.
+	 *  The material half lives in Rust; the class half in `useTheme`. */
+	translucent: boolean
+	/** Palette family names — narrowed in `lib/palette` for the same reason
+	 *  `theme` and `motion` are narrowed in `useSettings`. */
+	neutral: string
+	accent: string
 }
 
 /**

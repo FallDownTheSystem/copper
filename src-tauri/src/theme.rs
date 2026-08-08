@@ -70,6 +70,18 @@ fn current() -> Preference {
 	Preference::from_code(PREFERENCE.load(Ordering::Relaxed))
 }
 
+/// The tint the backdrop is currently meant to have, in `window-vibrancy`'s own
+/// vocabulary — `None` for "follow the OS".
+///
+/// Exported for `panel::set_translucency`, which changes the *material* and must
+/// therefore re-apply the backdrop without changing its appearance. Reading the
+/// preference back out of this module is what stops that call from having to
+/// guess: passing `None` there would silently drop an explicit light or dark
+/// choice every time the user toggled translucency.
+pub fn backdrop_dark() -> Option<bool> {
+	current().dark()
+}
+
 /// Applies a preference to the window, backdrop included.
 fn apply(window: &WebviewWindow, preference: Preference) {
 	PREFERENCE.store(preference as u8, Ordering::Relaxed);

@@ -25,6 +25,7 @@
  * to type in.
  */
 
+import { capLabel } from '@/lib/chordDisplay'
 import { CHORDS } from '@/lib/chords'
 
 const { activeSectionObject } = useSpace()
@@ -66,7 +67,10 @@ type Row = {
 function caps(binding: string): Pick<Row, 'keys' | 'doubleTap'> {
 	const taps = binding.split(' ')
 	const doubleTap = taps.length === 2 && taps[0] === taps[1] ? taps[0]! : null
-	return { keys: doubleTap ? [doubleTap] : binding.split('+'), doubleTap }
+	// `capLabel` so a sided binding reads `Left Ctrl` here exactly as it does on
+	// the recorder's own chips.
+	const keys = (doubleTap ? [doubleTap] : binding.split('+')).map(capLabel)
+	return { keys, doubleTap }
 }
 
 /**

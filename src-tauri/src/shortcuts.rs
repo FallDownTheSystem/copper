@@ -17,6 +17,20 @@
 //! also waiting on this lock — a tray click cancelling a lease, say — neither
 //! would move again. Every main-thread trigger hands off to a short-lived thread
 //! instead, and [`shutdown`] uses `try_lock` rather than blocking exit.
+//!
+//! # One shape, two roles
+//!
+//! Each binding is a double-tap or a conventional chord, and the two are served
+//! by different machinery: a double-tap by `capture`'s keyboard hook, a chord by
+//! `tauri-plugin-global-shortcut`. Summon could once only be the latter; from
+//! task-020 it can be either, which is why almost everything below is written
+//! once against a [`Role`] rather than twice against two names.
+//!
+//! **A chord is never sided.** `LCtrl LCtrl` is a binding this module accepts and
+//! `LCtrl+K` is not, and that asymmetry is the plugin's rather than a choice: its
+//! `Modifiers` and the `RegisterHotKey` beneath it cannot express which physical
+//! key a modifier came from. Only the hook sees sides, so only the bindings the
+//! hook services can carry one.
 
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -29,7 +43,7 @@ use tauri_plugin_global_shortcut::{
 	Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutEvent, ShortcutState as KeyState,
 };
 
-use crate::capture::{self, ModifierFamily};
+use crate::capture::{self, KeySide, ModifierFamily, WatchedTrigger};
 use crate::store::settings::{SettingsPatch, Shortcuts};
 use crate::{diagnostics, panel, store, tray, ShellError};
 
@@ -39,20 +53,63 @@ use crate::{diagnostics, panel, store, tray, ShellError};
 pub const DEFAULT_SUMMON_SHORTCUT: &str = "Ctrl+Shift+Space";
 pub const DEFAULT_CAPTURE_TRIGGER: &str = "Shift Shift";
 
-/// Registered only while the `WH_KEYBOARD_LL` hook is *not* installed.
+/// Registered only while the `WH_KEYBOARD_LL` hook is *not* installed, and only
+/// for a role whose binding is a double-tap the hook can no longer recognise.
 ///
-/// The insurance the spec asks for: a hook that failed to attach takes the
-/// double-tap trigger with it, and without this the user has no way to capture at
-/// all until they open the settings view and rebind. Deliberately obscure, since
-/// it exists to be available rather than to be convenient.
+/// The insurance the spec asks for: a hook that failed to attach takes every
+/// double-tap with it, and without these the user has no way to reach that action
+/// at all until they open the settings view and rebind — which for summon means
+/// opening a panel whose shortcut is the thing that stopped working. Deliberately
+/// obscure, since they exist to be available rather than to be convenient.
 const FALLBACK_CAPTURE_CHORD: &str = "Ctrl+Alt+Shift+C";
+const FALLBACK_SUMMON_CHORD: &str = "Ctrl+Alt+Shift+Space";
 
 /// How long a recording lease may stay open before Rust takes it back.
 ///
-/// The lease unregisters the live chords, so an abandoned one costs the user
-/// their summon shortcut until the app restarts. Generous enough that a person
-/// deciding what to bind is never interrupted.
+/// The lease unregisters the live chords and mutes the hook, so an abandoned one
+/// costs the user both shortcuts until the app restarts. Generous enough that a
+/// person deciding what to bind is never interrupted.
 const LEASE_WATCHDOG: Duration = Duration::from_secs(120);
+
+// --- the two roles -----------------------------------------------------------
+
+/// Which binding is being talked about. The two are never interchangeable — one
+/// reveals a window, the other reads the foreground selection — and every
+/// registration carries the role whose handler it fires.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Role {
+	Summon,
+	Capture,
+}
+
+/// Summon first, because that is the order [`install`] must register in: the
+/// startup-failure comment on the cross-role guard depends on it.
+const ROLES: [Role; 2] = [Role::Summon, Role::Capture];
+
+impl Role {
+	fn other(self) -> Self {
+		match self {
+			Self::Summon => Self::Capture,
+			Self::Capture => Self::Summon,
+		}
+	}
+
+	/// The word the user reads in an error. Lower case because it is always used
+	/// mid-sentence.
+	fn noun(self) -> &'static str {
+		match self {
+			Self::Summon => "summon",
+			Self::Capture => "capture",
+		}
+	}
+
+	fn hook_role(self) -> capture::TriggerRole {
+		match self {
+			Self::Summon => capture::TriggerRole::Summon,
+			Self::Capture => capture::TriggerRole::Capture,
+		}
+	}
+}
 
 // --- the canonical bindings, readable without a lock -------------------------
 
@@ -67,8 +124,18 @@ const NO_CHORD: u32 = u32::MAX;
 /// lock could deadlock against a command holding it while waiting on the main
 /// thread. The value is one independent selector publishing no other memory, so
 /// `Relaxed` is sufficient.
+///
+/// One per role and not one per *binding*: a role's chord and its insurance chord
+/// are mutually exclusive, so a single id per role can never need to hold two.
 static CANONICAL_SUMMON: AtomicU32 = AtomicU32::new(NO_CHORD);
 static CANONICAL_CAPTURE: AtomicU32 = AtomicU32::new(NO_CHORD);
+
+fn canonical(role: Role) -> &'static AtomicU32 {
+	match role {
+		Role::Summon => &CANONICAL_SUMMON,
+		Role::Capture => &CANONICAL_CAPTURE,
+	}
+}
 
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 
@@ -93,28 +160,44 @@ struct Binding {
 	error: Option<String>,
 }
 
-/// What the capture trigger is bound to.
+/// What one role is bound to.
 ///
 /// R-Q52 made these alternatives rather than a single shape: a double-tap is
 /// recognised by task-005's keyboard hook, a conventional chord by the
 /// global-shortcut plugin, and exactly one of the two is live at a time.
 #[derive(Clone, Debug)]
-enum CaptureBinding {
-	/// The family itself is not held here: `capture::watch` owns the live value,
-	/// and a second copy would be a second thing to keep in step. The text is what
-	/// is persisted and shown, and it round-trips back to a family through
-	/// [`validate_capture_trigger`].
-	DoubleTap { text: String },
+enum TriggerBinding {
+	DoubleTap {
+		text: String,
+		/// A second copy of what `capture::watch` already holds, and it earns its
+		/// keep: the anti-lockout guard has to ask whether *these two bindings*
+		/// overlap, and only one of them is ever in the hook's atomic. Re-parsing
+		/// the text to answer would put a fallible parse on a guard that must not
+		/// be able to fail. Written in exactly one place — [`binding_of`], which is
+		/// also where the text is written — so the two cannot drift.
+		trigger: WatchedTrigger,
+	},
 	Chord(Binding),
 }
 
-impl CaptureBinding {
+impl TriggerBinding {
 	fn text(&self) -> &str {
 		match self {
-			Self::DoubleTap { text } => text,
+			Self::DoubleTap { text, .. } => text,
 			Self::Chord(binding) => &binding.text,
 		}
 	}
+}
+
+/// The insurance chord for one role, and why it is not available when it is not.
+///
+/// The error is surfaced as that role's own error, because from the user's side
+/// that is exactly what it is: a hook that will not install *and* no chord
+/// standing in for it means the action cannot be reached at all.
+#[derive(Clone, Debug, Default)]
+struct Fallback {
+	chord: Option<Shortcut>,
+	error: Option<String>,
 }
 
 /// What [`begin_recording`] suspended, so the same set can be put back.
@@ -122,22 +205,48 @@ struct Lease {
 	token: u64,
 	summon: bool,
 	capture: bool,
-	fallback: bool,
+	summon_fallback: bool,
+	capture_fallback: bool,
+}
+
+impl Lease {
+	fn chord(&self, role: Role) -> bool {
+		match role {
+			Role::Summon => self.summon,
+			Role::Capture => self.capture,
+		}
+	}
+
+	fn chord_mut(&mut self, role: Role) -> &mut bool {
+		match role {
+			Role::Summon => &mut self.summon,
+			Role::Capture => &mut self.capture,
+		}
+	}
+
+	fn fallback(&self, role: Role) -> bool {
+		match role {
+			Role::Summon => self.summon_fallback,
+			Role::Capture => self.capture_fallback,
+		}
+	}
+
+	fn fallback_mut(&mut self, role: Role) -> &mut bool {
+		match role {
+			Role::Summon => &mut self.summon_fallback,
+			Role::Capture => &mut self.capture_fallback,
+		}
+	}
 }
 
 struct Registry {
-	summon: Binding,
-	capture: CaptureBinding,
-	/// Live only while the keyboard hook is down.
-	fallback: Option<Shortcut>,
-	/// Why the insurance chord is not available, when it was needed and could not
-	/// be had. Surfaced as the capture row's error, because from the user's side
-	/// that is exactly what it is: a hook that will not install *and* no chord
-	/// standing in for it means capture does not work at all.
-	fallback_error: Option<String>,
+	summon: TriggerBinding,
+	capture: TriggerBinding,
+	summon_fallback: Fallback,
+	capture_fallback: Fallback,
 	/// Registrations `unregister` refused to retire.
 	///
-	/// Not merely loggable: a chord that would not retire still summons the panel,
+	/// Not merely loggable: a chord that would not retire still fires its handler,
 	/// which contradicts the acceptance criterion that the old binding stops
 	/// working. Retried on the next rebind and at shutdown; the handlers' canonical
 	/// check keeps a lingering one inert meanwhile.
@@ -154,31 +263,78 @@ impl Registry {
 	/// between the two spellings surfaces.
 	fn shipped() -> Self {
 		Self {
-			summon: Binding {
-				text: DEFAULT_SUMMON_SHORTCUT.to_owned(),
-				chord: Shortcut::new(
-					Some(Modifiers::CONTROL | Modifiers::SHIFT),
-					Code::Space,
-				),
-				registered: false,
-				error: None,
-			},
-			capture: CaptureBinding::DoubleTap {
-				text: DEFAULT_CAPTURE_TRIGGER.to_owned(),
-			},
-			fallback: None,
-			fallback_error: None,
+			summon: binding_of(shipped_trigger(Role::Summon)),
+			capture: binding_of(shipped_trigger(Role::Capture)),
+			summon_fallback: Fallback::default(),
+			capture_fallback: Fallback::default(),
 			stale: Vec::new(),
 			lease: None,
 		}
 	}
+
+	fn binding(&self, role: Role) -> &TriggerBinding {
+		match role {
+			Role::Summon => &self.summon,
+			Role::Capture => &self.capture,
+		}
+	}
+
+	fn binding_mut(&mut self, role: Role) -> &mut TriggerBinding {
+		match role {
+			Role::Summon => &mut self.summon,
+			Role::Capture => &mut self.capture,
+		}
+	}
+
+	fn fallback(&self, role: Role) -> &Fallback {
+		match role {
+			Role::Summon => &self.summon_fallback,
+			Role::Capture => &self.capture_fallback,
+		}
+	}
+
+	fn fallback_mut(&mut self, role: Role) -> &mut Fallback {
+		match role {
+			Role::Summon => &mut self.summon_fallback,
+			Role::Capture => &mut self.capture_fallback,
+		}
+	}
 }
 
-/// What the capture row says when the hook is down and the insurance chord could
-/// not be registered either.
-const FALLBACK_UNAVAILABLE: &str =
-	"Copper couldn't install its keyboard hook, and the shortcut that stands in for it was \
-	 refused too. Bind capture to a key combination instead.";
+/// The shipped binding for a role, as a validated value rather than as text.
+fn shipped_trigger(role: Role) -> BoundTrigger {
+	match role {
+		Role::Summon => BoundTrigger::Chord(Shortcut::new(
+			Some(Modifiers::CONTROL | Modifiers::SHIFT),
+			Code::Space,
+		)),
+		Role::Capture => BoundTrigger::DoubleTap(WatchedTrigger::unsided(ModifierFamily::Shift)),
+	}
+}
+
+fn shipped_text(role: Role) -> &'static str {
+	match role {
+		Role::Summon => DEFAULT_SUMMON_SHORTCUT,
+		Role::Capture => DEFAULT_CAPTURE_TRIGGER,
+	}
+}
+
+fn fallback_chord_text(role: Role) -> &'static str {
+	match role {
+		Role::Summon => FALLBACK_SUMMON_CHORD,
+		Role::Capture => FALLBACK_CAPTURE_CHORD,
+	}
+}
+
+/// What a role's row says when the hook is down and its insurance chord could not
+/// be registered either.
+fn fallback_unavailable(role: Role) -> String {
+	format!(
+		"Copper couldn't install its keyboard hook, and the shortcut that stands in for it was \
+		 refused too. Bind {} to a key combination instead.",
+		role.noun()
+	)
+}
 
 /// The one serialising lock over every shortcut mutation.
 ///
@@ -212,16 +368,21 @@ fn try_registry() -> Option<MutexGuard<'static, Registry>> {
 
 // --- validation --------------------------------------------------------------
 
-/// A validated capture trigger.
+/// A validated binding, either role.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CaptureTrigger {
-	DoubleTap(ModifierFamily),
+pub enum BoundTrigger {
+	DoubleTap(WatchedTrigger),
 	Chord(Shortcut),
 }
 
 /// The parser's own modifier tokens, so "is this modifiers only?" is decided by
 /// the same vocabulary the parser uses rather than by a second list that can
 /// drift from it.
+///
+/// The sided spellings are here too even though no chord may carry one: a bare
+/// `LShift` is the same mistake as a bare `Shift` and deserves the same answer,
+/// which is "hold it and press one more key" rather than "Copper couldn't read
+/// that".
 fn is_modifier_token(token: &str) -> bool {
 	const MODIFIERS: [&str; 12] = [
 		"Alt",
@@ -239,6 +400,7 @@ fn is_modifier_token(token: &str) -> bool {
 	];
 	let token = token.trim();
 	MODIFIERS.iter().any(|name| token.eq_ignore_ascii_case(name))
+		|| double_tap_binding(token).is_some()
 }
 
 /// Windows will never deliver these, so binding one produces a shortcut that
@@ -271,7 +433,7 @@ fn reserved_reason(chord: &Shortcut, text: &str) -> Option<String> {
 /// Rejects before touching the OS, and with a worded reason per cause — the
 /// parser's own "invalid hotkey format" covers modifier-only input and genuine
 /// nonsense with one message, and those are different mistakes to make.
-pub fn validate_summon_chord(text: &str) -> Result<Shortcut, ShellError> {
+pub fn validate_chord(text: &str) -> Result<Shortcut, ShellError> {
 	let text = text.trim();
 	if text.is_empty() {
 		return Err(ShellError::InvalidChord(
@@ -341,7 +503,7 @@ fn bindable_bare(key: Code) -> bool {
 /// `Win Win` is deliberately absent: double-tapping it fights the Start menu,
 /// which opens on the *release* of a bare Windows key.
 fn double_tap_family(token: &str) -> Option<ModifierFamily> {
-	match token.to_ascii_uppercase().as_str() {
+	match token {
 		"SHIFT" => Some(ModifierFamily::Shift),
 		"CTRL" | "CONTROL" => Some(ModifierFamily::Control),
 		"ALT" => Some(ModifierFamily::Alt),
@@ -349,28 +511,70 @@ fn double_tap_family(token: &str) -> Option<ModifierFamily> {
 	}
 }
 
-/// Accepts both shapes R-Q52 allows: a bare-modifier double-tap written as
-/// `"<Modifier> <Modifier>"`, or any conventional chord.
-pub fn validate_capture_trigger(text: &str) -> Result<CaptureTrigger, ShellError> {
+/// One token of a double-tap spelling, sided or not.
+///
+/// `LCtrl` and `RShift` are the sided spellings; `Ctrl` and `Shift` are the
+/// unsided ones and mean either side, which is what every install predating sided
+/// bindings already has written in its `settings.json`. Both must keep parsing:
+/// the repair path falls back to the shipped default on anything it cannot read,
+/// so a spelling that stopped parsing would silently reset the user's binding.
+///
+/// The prefix is stripped before the family is looked up rather than the table
+/// being written out nine times. That is only safe because no unsided family
+/// token begins with `L` or `R` — which is true of Shift, Ctrl, Control and Alt,
+/// and is the thing to check before adding a family.
+fn double_tap_binding(token: &str) -> Option<WatchedTrigger> {
+	let token = token.trim().to_ascii_uppercase();
+	let (side, family) = if let Some(rest) = token.strip_prefix('L') {
+		(KeySide::Left, rest)
+	} else if let Some(rest) = token.strip_prefix('R') {
+		(KeySide::Right, rest)
+	} else {
+		(KeySide::Either, token.as_str())
+	};
+	Some(WatchedTrigger {
+		family: double_tap_family(family)?,
+		side,
+	})
+}
+
+/// Whether a token names the Windows key, on either side or neither.
+fn is_windows_key_token(token: &str) -> bool {
+	let token = token.trim().to_ascii_uppercase();
+	let bare = token
+		.strip_prefix('L')
+		.or_else(|| token.strip_prefix('R'))
+		.unwrap_or(token.as_str());
+	matches!(bare, "WIN" | "SUPER" | "COMMAND" | "CMD")
+}
+
+/// Accepts both shapes R-Q52 allows, for either role: a bare-modifier double-tap
+/// written as `"<Modifier> <Modifier>"`, or any conventional chord.
+///
+/// One function for both roles rather than two, because the rules turned out to
+/// be identical — the hook recognises the same three families whichever action
+/// they are pointed at, and the plugin accepts the same chords.
+pub fn validate_trigger(text: &str) -> Result<BoundTrigger, ShellError> {
 	let text = text.trim();
 	let tokens: Vec<&str> = text.split_whitespace().collect();
 
 	if tokens.len() == 2 && tokens[0].eq_ignore_ascii_case(tokens[1]) {
-		if let Some(family) = double_tap_family(tokens[0]) {
-			return Ok(CaptureTrigger::DoubleTap(family));
+		if let Some(trigger) = double_tap_binding(tokens[0]) {
+			return Ok(BoundTrigger::DoubleTap(trigger));
 		}
-		if matches!(tokens[0].to_ascii_uppercase().as_str(), "WIN" | "SUPER" | "COMMAND" | "CMD") {
+		if is_windows_key_token(tokens[0]) {
 			return Err(ShellError::Reserved(
 				"Double-tapping the Windows key opens the Start menu, so Copper can't use it."
 					.to_owned(),
 			));
 		}
 		return Err(ShellError::InvalidChord(format!(
-			"{text} isn't a double-tap Copper recognises. Use Shift, Ctrl or Alt."
+			"{text} isn't a double-tap Copper recognises. Use Shift, Ctrl or Alt — or one side of \
+			 them, like LCtrl."
 		)));
 	}
 
-	validate_summon_chord(text).map(CaptureTrigger::Chord)
+	validate_chord(text).map(BoundTrigger::Chord)
 }
 
 // --- canonical spelling ------------------------------------------------------
@@ -423,9 +627,42 @@ fn family_label(family: ModifierFamily) -> &'static str {
 	}
 }
 
-fn double_tap_text(family: ModifierFamily) -> String {
-	let label = family_label(family);
+/// The stored spelling of a double-tap: `Shift Shift`, `LCtrl LCtrl`, `RAlt
+/// RAlt`. This is the canonical writer, and it is what makes the round trip
+/// through `settings.json` hold.
+fn double_tap_text(trigger: WatchedTrigger) -> String {
+	let side = match trigger.side {
+		KeySide::Left => "L",
+		KeySide::Right => "R",
+		KeySide::Either => "",
+	};
+	let label = format!("{side}{}", family_label(trigger.family));
 	format!("{label} {label}")
+}
+
+/// A validated binding as the user reads it, whichever shape it is.
+fn trigger_text(trigger: &BoundTrigger) -> String {
+	match trigger {
+		BoundTrigger::DoubleTap(watched) => double_tap_text(*watched),
+		BoundTrigger::Chord(chord) => display_chord(chord),
+	}
+}
+
+/// Turns a validated binding into the registry's record of it, with no side
+/// effect on the hook. [`apply_locally`] is what pairs this with the `watch`.
+fn binding_of(trigger: BoundTrigger) -> TriggerBinding {
+	match trigger {
+		BoundTrigger::DoubleTap(watched) => TriggerBinding::DoubleTap {
+			text: double_tap_text(watched),
+			trigger: watched,
+		},
+		BoundTrigger::Chord(chord) => TriggerBinding::Chord(Binding {
+			text: display_chord(&chord),
+			chord,
+			registered: false,
+			error: None,
+		}),
+	}
 }
 
 // --- the handlers ------------------------------------------------------------
@@ -459,14 +696,6 @@ fn capture_handler(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
 		return;
 	}
 	capture::request_capture(app);
-}
-
-/// Which handler a registration carries. The two are never interchangeable — one
-/// reveals a window, the other reads the foreground selection.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Role {
-	Summon,
-	Capture,
 }
 
 fn register(app: &AppHandle, chord: Shortcut, role: Role) -> Result<(), String> {
@@ -536,48 +765,64 @@ pub struct ShortcutState {
 	capture: String,
 	summon: String,
 	defaults: Shortcuts,
+	/// A double-tap is live whenever the keyboard hook is; a conventional chord is
+	/// live when the OS accepted it. That is now true of summon as well as
+	/// capture — before task-020 this field meant only "the OS took the hotkey".
 	summon_registered: bool,
 	summon_error: Option<String>,
-	/// A double-tap is live whenever the keyboard hook is; a conventional chord is
-	/// live when the OS accepted it.
 	capture_registered: bool,
 	capture_error: Option<String>,
 	/// Present only while the keyboard hook is down and the insurance chord is
-	/// standing in for the double-tap.
+	/// standing in for that role's double-tap.
 	capture_fallback: Option<String>,
+	summon_fallback: Option<String>,
+}
+
+/// Whether a role's binding can actually be triggered, and what to say if not.
+fn live_and_error(registry: &Registry, role: Role) -> (bool, Option<String>) {
+	match registry.binding(role) {
+		// Nothing to register: the hook either recognises the double-tap or it is
+		// not installed, and the fallback chord is what covers the latter. A
+		// fallback that could not be had is therefore a failure of *this role*,
+		// since between the two of them nothing on the machine can reach it.
+		TriggerBinding::DoubleTap { .. } => (
+			capture::hook_alive() || registry.fallback(role).chord.is_some(),
+			registry.fallback(role).error.clone(),
+		),
+		TriggerBinding::Chord(binding) => (binding.registered, binding.error.clone()),
+	}
+}
+
+/// What the tray tooltip is told. Its own function because three call sites need
+/// the same answer and a fourth that disagreed would be a tooltip that contradicts
+/// the settings view.
+fn summon_live(registry: &Registry) -> bool {
+	live_and_error(registry, Role::Summon).0
 }
 
 fn snapshot(registry: &Registry) -> ShortcutState {
-	let (capture_registered, capture_error) = match &registry.capture {
-		// Nothing to register: the hook either recognises the double-tap or it is
-		// not installed, and the fallback chord is what covers the latter. A
-		// fallback that could not be had is therefore a *capture* failure, since
-		// between the two of them nothing on the machine can trigger one.
-		CaptureBinding::DoubleTap { .. } => (
-			capture::hook_alive() || registry.fallback.is_some(),
-			registry.fallback_error.clone(),
-		),
-		CaptureBinding::Chord(binding) => (binding.registered, binding.error.clone()),
-	};
+	let (summon_registered, summon_error) = live_and_error(registry, Role::Summon);
+	let (capture_registered, capture_error) = live_and_error(registry, Role::Capture);
 
 	ShortcutState {
 		capture: registry.capture.text().to_owned(),
-		summon: registry.summon.text.clone(),
+		summon: registry.summon.text().to_owned(),
 		defaults: Shortcuts {
 			capture: DEFAULT_CAPTURE_TRIGGER.to_owned(),
 			summon: DEFAULT_SUMMON_SHORTCUT.to_owned(),
 		},
-		summon_registered: registry.summon.registered,
-		summon_error: registry.summon.error.clone(),
+		summon_registered,
+		summon_error,
 		capture_registered,
 		capture_error,
-		capture_fallback: registry.fallback.as_ref().map(display_chord),
+		capture_fallback: registry.capture_fallback.chord.as_ref().map(display_chord),
+		summon_fallback: registry.summon_fallback.chord.as_ref().map(display_chord),
 	}
 }
 
 // --- persistence -------------------------------------------------------------
 
-/// Writes both chords, since they share one `Shortcuts` struct.
+/// Writes both bindings, since they share one `Shortcuts` struct.
 fn persist(app: &AppHandle, capture: &str, summon: &str) -> Result<(), ShellError> {
 	let patch = SettingsPatch {
 		shortcuts: Some(Shortcuts {
@@ -596,55 +841,65 @@ fn persist(app: &AppHandle, capture: &str, summon: &str) -> Result<(), ShellErro
 		})
 }
 
+/// Writes `text` into `role`'s field, taking the other role's from the registry.
+fn persist_role(
+	app: &AppHandle,
+	registry: &Registry,
+	role: Role,
+	text: &str,
+) -> Result<(), ShellError> {
+	match role {
+		Role::Capture => persist(app, text, registry.summon.text()),
+		Role::Summon => persist(app, registry.capture.text(), text),
+	}
+}
+
 // --- startup -----------------------------------------------------------------
 
-/// Points the keyboard hook at the persisted trigger, before capture starts.
+/// Points the keyboard hook at the persisted bindings, before capture starts.
 ///
 /// Separate from [`install`] and called earlier for one reason: the first
 /// double-tap after launch must be judged against the user's binding rather than
 /// the compiled-in default, and `capture::start_capture` installs the hook.
+///
+/// Still named for capture because `lib.rs` calls it by that name, but it now
+/// prepares both roles — summon can be a double-tap too, and its recogniser needs
+/// pointing at the right family for exactly the same reason.
 pub fn prepare_capture(app: &AppHandle) {
 	let stored = store::commands::settings(app).shortcuts;
 	let mut registry = registry();
 
-	let trigger = match validate_capture_trigger(&stored.capture) {
-		Ok(trigger) => trigger,
-		Err(err) => {
+	for (role, text) in [
+		(Role::Summon, stored.summon.as_str()),
+		(Role::Capture, stored.capture.as_str()),
+	] {
+		let trigger = validate_trigger(text).unwrap_or_else(|err| {
 			diagnostics::log_error(&format!(
-				"[copper] shortcuts: the stored capture trigger {:?} is not usable ({}); falling \
-				 back to {DEFAULT_CAPTURE_TRIGGER}",
-				stored.capture,
-				err.message()
+				"[copper] shortcuts: the stored {} binding {text:?} is not usable ({}); falling \
+				 back to {}",
+				role.noun(),
+				err.message(),
+				shipped_text(role)
 			));
-			CaptureTrigger::DoubleTap(ModifierFamily::Shift)
-		}
-	};
-
-	apply_capture_locally(&mut registry, trigger);
+			shipped_trigger(role)
+		});
+		apply_locally(&mut registry, role, trigger);
+	}
 }
 
-/// Puts a validated trigger into the registry and the hook's atomic. Cannot fail
-/// — which is why `set_capture_trigger` may persist before calling it.
-fn apply_capture_locally(registry: &mut Registry, trigger: CaptureTrigger) {
-	match trigger {
-		CaptureTrigger::DoubleTap(family) => {
-			capture::watch(family);
-			registry.capture = CaptureBinding::DoubleTap {
-				text: double_tap_text(family),
-			};
-		}
-		CaptureTrigger::Chord(chord) => {
+/// Puts a validated binding into the registry and the hook's atomic. Cannot fail
+/// — which is why the double-tap path may persist before calling it.
+fn apply_locally(registry: &mut Registry, role: Role, trigger: BoundTrigger) {
+	capture::watch(
+		role.hook_role(),
+		match trigger {
+			BoundTrigger::DoubleTap(watched) => watched,
 			// The two are mutually exclusive at runtime: a conventional chord means
-			// the hook has no double-tap to recognise.
-			capture::watch(ModifierFamily::Off);
-			registry.capture = CaptureBinding::Chord(Binding {
-				text: display_chord(&chord),
-				chord,
-				registered: false,
-				error: None,
-			});
-		}
-	}
+			// this recogniser has no double-tap to recognise.
+			BoundTrigger::Chord(_) => WatchedTrigger::OFF,
+		},
+	);
+	*registry.binding_mut(role) = binding_of(trigger);
 }
 
 /// Registers everything the OS has to know about, after capture has started.
@@ -653,110 +908,94 @@ fn apply_capture_locally(registry: &mut Registry, trigger: CaptureTrigger) {
 /// leave the app running with a working tray: for an app that starts hidden,
 /// returning `Err` from `setup()` is as fatal as panicking, and the tray is the
 /// recovery path this failure is reported through.
+///
+/// It reads the bindings [`prepare_capture`] already validated rather than
+/// re-reading the store: two parses of one string is two chances to disagree, and
+/// the hook is by this point already watching whatever the first one decided.
 pub fn install(app: &AppHandle) {
-	let stored = store::commands::settings(app).shortcuts;
 	let mut registry = registry();
 
-	let chord = validate_summon_chord(&stored.summon).unwrap_or_else(|err| {
-		diagnostics::log_error(&format!(
-			"[copper] shortcuts: the stored summon chord {:?} is not usable ({}); falling back to \
-			 {DEFAULT_SUMMON_SHORTCUT}",
-			stored.summon,
-			err.message()
-		));
-		Registry::shipped().summon.chord
-	});
-
-	registry.summon = Binding {
-		text: display_chord(&chord),
-		chord,
-		registered: false,
-		error: None,
-	};
-	match register(app, chord, Role::Summon) {
-		Ok(()) => {
-			registry.summon.registered = true;
-			CANONICAL_SUMMON.store(chord.id(), Ordering::Relaxed);
-		}
-		Err(err) => {
-			diagnostics::log_error(&format!(
-				"[copper] shortcuts: the summon chord {} could not be registered: {err}",
-				registry.summon.text
-			));
-			registry.summon.error = Some(registration_failed_message(&registry.summon.text));
-		}
-	}
-
-	if let CaptureBinding::Chord(binding) = &mut registry.capture {
-		let chord = binding.chord;
-		match register(app, chord, Role::Capture) {
-			Ok(()) => {
-				CANONICAL_CAPTURE.store(chord.id(), Ordering::Relaxed);
-				binding.registered = true;
-			}
-			Err(err) => {
-				diagnostics::log_error(&format!(
-					"[copper] shortcuts: the capture chord {} could not be registered: {err}",
-					binding.text
-				));
-				binding.error = Some(registration_failed_message(&binding.text));
+	for role in ROLES {
+		if let TriggerBinding::Chord(binding) = registry.binding_mut(role) {
+			let chord = binding.chord;
+			match register(app, chord, role) {
+				Ok(()) => {
+					binding.registered = true;
+					canonical(role).store(chord.id(), Ordering::Relaxed);
+				}
+				Err(err) => {
+					diagnostics::log_error(&format!(
+						"[copper] shortcuts: the {} chord {} could not be registered: {err}",
+						role.noun(),
+						binding.text
+					));
+					binding.error = Some(registration_failed_message(&binding.text));
+				}
 			}
 		}
+		ensure_fallback(app, &mut registry, role);
 	}
 
-	ensure_fallback(app, &mut registry);
-	tray::report_summon(app, registry.summon.registered);
+	tray::report_summon(app, summon_live(&registry));
 }
 
-/// Registers the insurance chord when — and only when — the keyboard hook is down
-/// and the capture binding is a double-tap the hook can no longer recognise.
-fn ensure_fallback(app: &AppHandle, registry: &mut Registry) {
-	let wanted = matches!(registry.capture, CaptureBinding::DoubleTap { .. })
+/// Registers a role's insurance chord when — and only when — the keyboard hook is
+/// down and that role is bound to a double-tap the hook can no longer recognise.
+fn ensure_fallback(app: &AppHandle, registry: &mut Registry, role: Role) {
+	let wanted = matches!(registry.binding(role), TriggerBinding::DoubleTap { .. })
 		&& !capture::hook_alive();
+	// Copied out before the match rather than read inside it: the arms take the
+	// registry mutably, and a borrow held by the scrutinee would outlive them.
+	let held = registry.fallback(role).chord;
 
-	match (wanted, registry.fallback) {
-		(true, None) => match Shortcut::from_str(FALLBACK_CAPTURE_CHORD) {
-			Ok(chord) => match register(app, chord, Role::Capture) {
+	match (wanted, held) {
+		(true, None) => match Shortcut::from_str(fallback_chord_text(role)) {
+			Ok(chord) => match register(app, chord, role) {
 				Ok(()) => {
-					CANONICAL_CAPTURE.store(chord.id(), Ordering::Relaxed);
-					registry.fallback = Some(chord);
-					registry.fallback_error = None;
+					canonical(role).store(chord.id(), Ordering::Relaxed);
+					let fallback = registry.fallback_mut(role);
+					fallback.chord = Some(chord);
+					fallback.error = None;
 					diagnostics::log(&format!(
-						"[copper] shortcuts: the keyboard hook is unavailable; capture is reachable \
-						 through {FALLBACK_CAPTURE_CHORD}"
+						"[copper] shortcuts: the keyboard hook is unavailable; {} is reachable \
+						 through {}",
+						role.noun(),
+						fallback_chord_text(role)
 					));
 				}
 				Err(err) => {
 					// Recorded, not merely logged. Logging alone left the settings view
-					// saying capture was fine while nothing on the machine could trigger
-					// one.
-					registry.fallback_error = Some(FALLBACK_UNAVAILABLE.to_owned());
+					// saying the binding was fine while nothing on the machine could
+					// reach it.
+					registry.fallback_mut(role).error = Some(fallback_unavailable(role));
 					diagnostics::log_error(&format!(
-						"[copper] shortcuts: the fallback capture chord could not be registered: \
-						 {err}"
+						"[copper] shortcuts: the fallback {} chord could not be registered: {err}",
+						role.noun()
 					));
 				}
 			},
 			Err(err) => {
-				registry.fallback_error = Some(FALLBACK_UNAVAILABLE.to_owned());
+				registry.fallback_mut(role).error = Some(fallback_unavailable(role));
 				diagnostics::log_error(&format!(
-					"[copper] shortcuts: the fallback capture chord is not parseable: {err}"
+					"[copper] shortcuts: the fallback {} chord is not parseable: {err}",
+					role.noun()
 				));
 			}
 		},
 		(false, Some(chord)) => {
-			registry.fallback = None;
-			registry.fallback_error = None;
+			let fallback = registry.fallback_mut(role);
+			fallback.chord = None;
+			fallback.error = None;
 			retire(app, registry, chord);
 		}
 		// Nothing wanted and nothing held: any complaint left over from a previous
 		// pass no longer describes anything.
-		(false, None) => registry.fallback_error = None,
+		(false, None) => registry.fallback_mut(role).error = None,
 		(true, Some(_)) => {}
 	}
 }
 
-/// Re-decides the insurance chord after the keyboard hook changed hands.
+/// Re-decides both insurance chords after the keyboard hook changed hands.
 ///
 /// Called by the capture watchdog, from a thread of its own — never from the
 /// main thread, per the module note: this takes the registry lock and
@@ -773,12 +1012,24 @@ fn ensure_fallback(app: &AppHandle, registry: &mut Registry) {
 /// holds it across a main-thread round trip — and exit may well have begun in the
 /// meantime, at which point registering a chord is at best pointless and at worst
 /// holds the lock across [`shutdown`]'s `try_lock` and costs it every retirement.
+///
+/// The tray is told **after** the guard is dropped. A hook that came back or went
+/// away changes whether a double-tap summon works, so the tooltip has to be
+/// revisited too — but `set_tooltip` reaches the main thread, and doing it under
+/// the lock would put a main-thread round trip inside the one critical section
+/// this module's header rule is about.
 pub fn revisit_fallback(app: &AppHandle) {
-	let mut registry = registry();
-	if crate::shutting_down() {
-		return;
-	}
-	ensure_fallback(app, &mut registry);
+	let live = {
+		let mut registry = registry();
+		if crate::shutting_down() {
+			return;
+		}
+		for role in ROLES {
+			ensure_fallback(app, &mut registry, role);
+		}
+		summon_live(&registry)
+	};
+	tray::report_summon(app, live);
 }
 
 /// Best-effort tidy-up at exit.
@@ -791,38 +1042,38 @@ pub fn shutdown(app: &AppHandle) {
 		return;
 	};
 	retry_stale(app, &mut registry);
-	if registry.summon.registered {
-		let _ = app.global_shortcut().unregister(registry.summon.chord);
-	}
-	if let CaptureBinding::Chord(binding) = &registry.capture {
-		if binding.registered {
-			let _ = app.global_shortcut().unregister(binding.chord);
+
+	for role in ROLES {
+		if let TriggerBinding::Chord(binding) = registry.binding(role) {
+			if binding.registered {
+				let _ = app.global_shortcut().unregister(binding.chord);
+			}
 		}
-	}
-	// Cleared, not merely unregistered. `ensure_fallback` decides what to do from
-	// this field, so a `Some` left behind over a registration that is gone reads as
-	// "the chord is already up" and does nothing — which since the watchdog began
-	// calling it in the background is a reachable state rather than a theoretical
-	// one, and its symptom is capture with no trigger at all.
-	if let Some(chord) = registry.fallback.take() {
-		let _ = app.global_shortcut().unregister(chord);
-		CANONICAL_CAPTURE.store(NO_CHORD, Ordering::Relaxed);
+		// Cleared, not merely unregistered. `ensure_fallback` decides what to do from
+		// this field, so a `Some` left behind over a registration that is gone reads
+		// as "the chord is already up" and does nothing — which since the watchdog
+		// began calling it in the background is a reachable state rather than a
+		// theoretical one, and its symptom is a binding with no trigger at all.
+		if let Some(chord) = registry.fallback_mut(role).chord.take() {
+			let _ = app.global_shortcut().unregister(chord);
+			canonical(role).store(NO_CHORD, Ordering::Relaxed);
+		}
 	}
 }
 
 // --- the rebind protocol -----------------------------------------------------
 
-/// Rebinds the summon chord, in the order the anti-lockout guarantee needs.
-///
-/// Register the new chord before retiring the old one, because the plugin offers
-/// no atomic replace and the two orderings fail asymmetrically: this one can
-/// briefly leave two chords bound, which is recoverable; the other can leave none,
-/// which is the lockout the whole protocol exists to prevent. Persistence happens
-/// in the *middle*, while the old chord is still live — done afterwards, a write
-/// failure would leave the runtime on the new chord and the file on the old one.
+/// Rebinds the summon binding.
 pub fn set_summon(app: &AppHandle, text: &str) -> Result<ShortcutState, ShellError> {
 	let mut registry = registry();
-	set_summon_locked(app, &mut registry, text)?;
+	set_trigger_locked(app, &mut registry, Role::Summon, text)?;
+	Ok(snapshot(&registry))
+}
+
+/// Rebinds the capture binding.
+pub fn set_capture(app: &AppHandle, text: &str) -> Result<ShortcutState, ShellError> {
+	let mut registry = registry();
+	set_trigger_locked(app, &mut registry, Role::Capture, text)?;
 	Ok(snapshot(&registry))
 }
 
@@ -832,170 +1083,163 @@ pub fn set_summon(app: &AppHandle, text: &str) -> Result<ShortcutState, ShellErr
 /// happen under **one** acquisition. Releasing the lock between them made the
 /// token a check-then-act: a superseding `begin` landing in that window left the
 /// stale commit free to write and to close the newer session.
-fn set_summon_locked(
+fn set_trigger_locked(
 	app: &AppHandle,
 	registry: &mut Registry,
+	role: Role,
 	text: &str,
 ) -> Result<(), ShellError> {
-	let chord = validate_summon_chord(text)?;
+	let wanted = validate_trigger(text)?;
 	retry_stale(app, registry);
+
+	// Cross-role exclusivity compares the **configured** bindings and deliberately
+	// does not consult `registered`. Every rebind arrives inside a recording lease,
+	// which is exactly when everything is unregistered — so a guard that asked
+	// whether the other binding was live could never fire, the OS would accept the
+	// duplicate, and `persist` would write the same binding into both fields. The
+	// next launch then registers summon first and capture fails for good.
+	let other = role.other();
+	if claims(registry, other, &wanted) {
+		return Err(ShellError::Reserved(format!(
+			"{} is already Copper's {} shortcut. Choose a different one.",
+			trigger_text(&wanted),
+			other.noun()
+		)));
+	}
+
+	match wanted {
+		// A double-tap swap **persists first**: pointing a hook selector at another
+		// binding cannot fail, so writing first means the file and the runtime can
+		// never disagree.
+		BoundTrigger::DoubleTap(trigger) => set_double_tap(app, registry, role, trigger)?,
+		// A conventional chord has a registration that can fail, so it registers the
+		// new one before retiring the old: the plugin offers no atomic replace and
+		// the two orderings fail asymmetrically. This one can briefly leave two
+		// chords bound, which is recoverable; the other can leave none, which is the
+		// lockout the whole protocol exists to prevent. Persistence happens in the
+		// *middle*, while the old chord is still live — done afterwards, a write
+		// failure would leave the runtime on the new chord and the file on the old.
+		BoundTrigger::Chord(chord) => set_chord(app, registry, role, chord)?,
+	}
+
+	if role == Role::Summon {
+		tray::report_summon(app, summon_live(registry));
+	}
+	Ok(())
+}
+
+fn set_double_tap(
+	app: &AppHandle,
+	registry: &mut Registry,
+	role: Role,
+	trigger: WatchedTrigger,
+) -> Result<(), ShellError> {
+	let text = double_tap_text(trigger);
+
+	// Not an early return. A re-submit or a Reset that lands on the binding
+	// already stored still has work to do below: the insurance chord may be
+	// stored-but-dead, and returning here is what made it unretryable.
+	if registry.binding(role).text() != text {
+		persist_role(app, registry, role, &text)?;
+		let previous = registry.binding(role).clone();
+		apply_locally(registry, role, BoundTrigger::DoubleTap(trigger));
+		if let TriggerBinding::Chord(binding) = previous {
+			canonical(role).store(NO_CHORD, Ordering::Relaxed);
+			if binding.registered {
+				retire(app, registry, binding.chord);
+			}
+		}
+	}
+
+	// The hook may be down, in which case the double-tap needs the insurance chord
+	// that a conventional binding did not.
+	ensure_fallback(app, registry, role);
+	Ok(())
+}
+
+fn set_chord(
+	app: &AppHandle,
+	registry: &mut Registry,
+	role: Role,
+	chord: Shortcut,
+) -> Result<(), ShellError> {
+	let text = display_chord(&chord);
 
 	// Same-role idempotency compares against what is *actually registered*.
 	// Re-submitting the live binding is an idempotent success; re-submitting one
 	// that is stored but not registered — the startup-failure case — is a retry and
 	// has to fall through.
-	if registry.summon.chord == chord && registry.summon.registered {
-		return Ok(());
+	if let TriggerBinding::Chord(binding) = registry.binding(role) {
+		if binding.chord == chord && binding.registered {
+			return Ok(());
+		}
 	}
 
-	// Cross-role exclusivity compares the **configured** chord and deliberately
-	// does not consult `registered`. Every rebind arrives inside a recording lease,
-	// which is exactly when everything is unregistered — so a guard that asked
-	// whether the other binding was live could never fire, the OS would accept the
-	// duplicate, and `persist` would write the same chord into both fields. The
-	// next launch then registers summon first and capture fails for good.
-	if capture_claims(registry, chord) {
-		return Err(ShellError::Reserved(format!(
-			"{} is already Copper's capture shortcut. Choose a different one.",
-			display_chord(&chord)
-		)));
-	}
-
-	let previous = registry.summon.clone();
-	let text = display_chord(&chord);
-
-	register(app, chord, Role::Summon).map_err(|err| {
+	register(app, chord, role).map_err(|err| {
 		diagnostics::log_error(&format!("[copper] shortcuts: {text} was refused: {err}"));
 		registration_failed(&text)
 	})?;
 
-	if let Err(err) = persist(app, registry.capture.text(), &text) {
-		// Nothing durable happened, so nothing may stay changed. The old chord was
-		// never retired and is still the one that summons the panel. Rolled back
-		// through `retire` rather than a bare `unregister`, so a chord the OS refuses
-		// to give up is recorded and retried instead of left claimed by nobody.
+	if let Err(err) = persist_role(app, registry, role, &text) {
+		// Nothing durable happened, so nothing may stay changed. The old binding was
+		// never retired and is still the live one. Rolled back through `retire`
+		// rather than a bare `unregister`, so a chord the OS refuses to give up is
+		// recorded and retried instead of left claimed by nobody.
 		retire(app, registry, chord);
 		return Err(err);
 	}
 
-	registry.summon = Binding {
-		text,
-		chord,
-		registered: true,
-		error: None,
-	};
-	CANONICAL_SUMMON.store(chord.id(), Ordering::Relaxed);
+	let previous = registry.binding(role).clone();
+	apply_locally(registry, role, BoundTrigger::Chord(chord));
+	if let TriggerBinding::Chord(binding) = registry.binding_mut(role) {
+		binding.registered = true;
+	}
+	canonical(role).store(chord.id(), Ordering::Relaxed);
 
 	// Only now, and only if it is a different chord: after a startup-failure retry
 	// the "previous" chord *is* this one, and retiring it would unregister what was
 	// just registered.
-	if previous.registered && previous.chord != chord {
-		retire(app, registry, previous.chord);
+	if let TriggerBinding::Chord(binding) = previous {
+		if binding.registered && binding.chord != chord {
+			retire(app, registry, binding.chord);
+		}
 	}
 
-	tray::report_summon(app, true);
+	// The insurance chord exists to keep a *double-tap* reachable; a chord binding
+	// does not need it and having both would claim a hotkey for nothing.
+	ensure_fallback(app, registry, role);
 	Ok(())
 }
 
-/// Whether the capture binding is configured to this chord, live or not.
-fn capture_claims(registry: &Registry, chord: Shortcut) -> bool {
-	match &registry.capture {
-		CaptureBinding::Chord(binding) => binding.chord == chord,
-		CaptureBinding::DoubleTap { .. } => registry.fallback == Some(chord),
-	}
-}
-
-/// The mirror of [`capture_claims`], and `registered` is absent for the same
-/// reason.
-fn summon_claims(registry: &Registry, chord: Shortcut) -> bool {
-	registry.summon.chord == chord
-}
-
-/// Rebinds the capture trigger.
+/// Whether two double-taps would answer to the same gesture.
 ///
-/// A double-tap swap **persists first**: pointing the hook's atomic at another
-/// family cannot fail, so writing first means the file and the runtime can never
-/// disagree. A conventional chord has a registration that can fail, so it follows
-/// the summon ordering instead.
-pub fn set_capture(app: &AppHandle, text: &str) -> Result<ShortcutState, ShellError> {
-	let mut registry = registry();
-	set_capture_locked(app, &mut registry, text)?;
-	Ok(snapshot(&registry))
+/// Same family, and sides that overlap — which is not the same as sides that are
+/// equal. `Ctrl Ctrl` is the unsided spelling and means *either* side, so it
+/// collides with `LCtrl LCtrl` and with `RCtrl RCtrl` alike, while those two do
+/// not collide with each other. Treating this as equality would let the user bind
+/// summon to `Ctrl Ctrl` and capture to `LCtrl LCtrl` and then wonder which of
+/// the two their left Ctrl does.
+fn double_taps_collide(one: WatchedTrigger, other: WatchedTrigger) -> bool {
+	one.family == other.family && one.side.matches(other.side)
 }
 
-/// The body, taking a guard the caller already holds — see [`set_summon_locked`].
-fn set_capture_locked(
-	app: &AppHandle,
-	registry: &mut Registry,
-	text: &str,
-) -> Result<(), ShellError> {
-	let trigger = validate_capture_trigger(text)?;
-	retry_stale(app, registry);
-
-	match trigger {
-		CaptureTrigger::DoubleTap(family) => {
-			let text = double_tap_text(family);
-			// Not an early return. A re-submit or a Reset that lands on the binding
-			// already stored still has work to do below: the insurance chord may be
-			// stored-but-dead, and returning here is what made it unretryable.
-			if registry.capture.text() != text {
-				persist(app, &text, &registry.summon.text)?;
-				let previous = registry.capture.clone();
-				apply_capture_locally(registry, trigger);
-				if let CaptureBinding::Chord(binding) = previous {
-					CANONICAL_CAPTURE.store(NO_CHORD, Ordering::Relaxed);
-					if binding.registered {
-						retire(app, registry, binding.chord);
-					}
-				}
-			}
-			// The hook may be down, in which case the double-tap needs the insurance
-			// chord that a conventional binding did not.
-			ensure_fallback(app, registry);
+/// Whether the binding for `role` already claims `wanted`, live or not.
+fn claims(registry: &Registry, role: Role, wanted: &BoundTrigger) -> bool {
+	match (registry.binding(role), wanted) {
+		(TriggerBinding::Chord(binding), BoundTrigger::Chord(chord)) => binding.chord == *chord,
+		// The insurance chord is as much a claim as a binding: it is registered, it
+		// fires this role's handler, and letting the other role take it would mean
+		// one keystroke doing two things — or, once the hook came back and the
+		// insurance was retired, silently doing neither.
+		(TriggerBinding::DoubleTap { .. }, BoundTrigger::Chord(chord)) => {
+			registry.fallback(role).chord == Some(*chord)
 		}
-		CaptureTrigger::Chord(chord) => {
-			let text = display_chord(&chord);
-			if let CaptureBinding::Chord(binding) = &registry.capture {
-				if binding.chord == chord && binding.registered {
-					return Ok(());
-				}
-			}
-			// The configured chord, not the live one — see `capture_claims`.
-			if summon_claims(registry, chord) {
-				return Err(ShellError::Reserved(format!(
-					"{text} is already Copper's summon shortcut. Choose a different one."
-				)));
-			}
-
-			register(app, chord, Role::Capture).map_err(|err| {
-				diagnostics::log_error(&format!("[copper] shortcuts: {text} was refused: {err}"));
-				registration_failed(&text)
-			})?;
-
-			if let Err(err) = persist(app, &text, &registry.summon.text) {
-				retire(app, registry, chord);
-				return Err(err);
-			}
-
-			let previous = registry.capture.clone();
-			apply_capture_locally(registry, trigger);
-			if let CaptureBinding::Chord(binding) = &mut registry.capture {
-				binding.registered = true;
-			}
-			CANONICAL_CAPTURE.store(chord.id(), Ordering::Relaxed);
-
-			if let CaptureBinding::Chord(binding) = previous {
-				if binding.registered && binding.chord != chord {
-					retire(app, registry, binding.chord);
-				}
-			}
-			// The fallback exists to keep a *double-tap* reachable; a chord binding
-			// does not need it and having both would claim a hotkey for nothing.
-			ensure_fallback(app, registry);
+		(TriggerBinding::DoubleTap { trigger, .. }, BoundTrigger::DoubleTap(wanted)) => {
+			double_taps_collide(*trigger, *wanted)
 		}
+		// A chord and a double-tap are different gestures on different machinery.
+		(TriggerBinding::Chord(_), BoundTrigger::DoubleTap(_)) => false,
 	}
-
-	Ok(())
 }
 
 // --- the recording lease -----------------------------------------------------
@@ -1010,6 +1254,13 @@ fn set_capture_locked(
 /// failed IPC call — and because the Rust process stays alive throughout, the
 /// user is then left with no summon shortcut until they restart the app. That is
 /// the same lockout this task exists to prevent, arrived at from the other side.
+///
+/// **The hook is muted as well as the chords unregistered.** A double-tap is not
+/// the plugin's to unregister, so before task-020 a live capture double-tap fired
+/// while the user was recording over it. For summon that is not merely untidy: a
+/// double-tap summon toggles the panel, hiding the panel calls
+/// [`cancel_recording_off_thread`], and the session the user just opened ends
+/// itself with no explanation.
 pub fn begin_recording(app: &AppHandle) -> Result<u64, ShellError> {
 	let mut registry = registry();
 	let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
@@ -1023,6 +1274,11 @@ pub fn begin_recording(app: &AppHandle) -> Result<u64, ShellError> {
 		return Ok(token);
 	}
 
+	// First, and unconditionally: it cannot fail, and it costs nothing to undo.
+	// The chords below can fail to come down, and the `blocked` path relies on the
+	// restore putting this back with them.
+	capture::mute(true);
+
 	// Each outcome is recorded rather than assumed. A chord the OS refuses to give
 	// up is still intercepting `WM_HOTKEY`, so the keystroke never reaches the
 	// webview — and a session opened over it is a recording box that silently
@@ -1031,44 +1287,35 @@ pub fn begin_recording(app: &AppHandle) -> Result<u64, ShellError> {
 		token,
 		summon: false,
 		capture: false,
-		fallback: false,
+		summon_fallback: false,
+		capture_fallback: false,
 	};
 	let mut blocked = false;
 
-	// `registered` means "live right now", so it goes false only where the chord
-	// actually came down. Any other reading breaks the setters: re-submitting the
-	// chord that is currently bound would look unchanged, return early, and leave
-	// it unregistered when the lease is released.
-	if registry.summon.registered {
-		if app
-			.global_shortcut()
-			.unregister(registry.summon.chord)
-			.is_ok()
-		{
-			suspended.summon = true;
-			registry.summon.registered = false;
-			CANONICAL_SUMMON.store(NO_CHORD, Ordering::Relaxed);
-		} else {
-			blocked = true;
+	for role in ROLES {
+		// `registered` means "live right now", so it goes false only where the chord
+		// actually came down. Any other reading breaks the setters: re-submitting the
+		// chord that is currently bound would look unchanged, return early, and leave
+		// it unregistered when the lease is released.
+		if let TriggerBinding::Chord(binding) = registry.binding_mut(role) {
+			if binding.registered {
+				if app.global_shortcut().unregister(binding.chord).is_ok() {
+					binding.registered = false;
+					*suspended.chord_mut(role) = true;
+					canonical(role).store(NO_CHORD, Ordering::Relaxed);
+				} else {
+					blocked = true;
+				}
+			}
 		}
-	}
-	if let CaptureBinding::Chord(binding) = &mut registry.capture {
-		if binding.registered {
-			if app.global_shortcut().unregister(binding.chord).is_ok() {
-				suspended.capture = true;
-				binding.registered = false;
-				CANONICAL_CAPTURE.store(NO_CHORD, Ordering::Relaxed);
+		let insurance = registry.fallback(role).chord;
+		if let Some(chord) = insurance {
+			if app.global_shortcut().unregister(chord).is_ok() {
+				*suspended.fallback_mut(role) = true;
+				canonical(role).store(NO_CHORD, Ordering::Relaxed);
 			} else {
 				blocked = true;
 			}
-		}
-	}
-	if let Some(chord) = registry.fallback {
-		if app.global_shortcut().unregister(chord).is_ok() {
-			suspended.fallback = true;
-			CANONICAL_CAPTURE.store(NO_CHORD, Ordering::Relaxed);
-		} else {
-			blocked = true;
 		}
 	}
 
@@ -1116,58 +1363,61 @@ fn restore_lease(app: &AppHandle, registry: &mut Registry, replaced: Option<Role
 		return;
 	};
 	LEASE_OPEN.store(false, Ordering::Relaxed);
+	// Unconditionally, and regardless of `replaced`: the mute is not per-role, and
+	// a role whose binding was just replaced needs its recogniser back as much as
+	// the other one does.
+	capture::mute(false);
 
-	if lease.summon && replaced != Some(Role::Summon) {
-		let chord = registry.summon.chord;
-		match register(app, chord, Role::Summon) {
-			Ok(()) => {
-				registry.summon.registered = true;
-				CANONICAL_SUMMON.store(chord.id(), Ordering::Relaxed);
+	let mut summon_failed = false;
+
+	for role in ROLES {
+		if replaced == Some(role) {
+			continue;
+		}
+
+		if lease.chord(role) {
+			if let TriggerBinding::Chord(binding) = registry.binding_mut(role) {
+				let chord = binding.chord;
+				match register(app, chord, role) {
+					Ok(()) => {
+						binding.registered = true;
+						canonical(role).store(chord.id(), Ordering::Relaxed);
+					}
+					Err(err) => {
+						// The one failure a user cannot recover from without being told,
+						// so it reaches both surfaces the startup failure reaches.
+						binding.error = Some(registration_failed_message(&binding.text));
+						diagnostics::log_error(&format!(
+							"[copper] shortcuts: the {} chord could not be restored after \
+							 recording: {err}",
+							role.noun()
+						));
+						summon_failed |= role == Role::Summon;
+					}
+				}
 			}
-			Err(err) => {
-				// The one failure a user cannot recover from without being told, so it
-				// reaches both surfaces the startup failure reaches.
-				registry.summon.error = Some(registration_failed_message(&registry.summon.text));
-				diagnostics::log_error(&format!(
-					"[copper] shortcuts: the summon chord could not be restored after recording: \
-					 {err}"
-				));
-				tray::report_summon(app, false);
+		}
+
+		if lease.fallback(role) {
+			let insurance = registry.fallback(role).chord;
+			if let Some(chord) = insurance {
+				if register(app, chord, role).is_ok() {
+					canonical(role).store(chord.id(), Ordering::Relaxed);
+				} else {
+					// Forgotten rather than kept, so `ensure_fallback` treats it as absent
+					// and registers it again on the next pass. Held here, it would look
+					// live forever while claiming nothing.
+					let fallback = registry.fallback_mut(role);
+					fallback.chord = None;
+					fallback.error = Some(fallback_unavailable(role));
+					summon_failed |= role == Role::Summon;
+				}
 			}
 		}
 	}
 
-	if lease.capture && replaced != Some(Role::Capture) {
-		if let CaptureBinding::Chord(binding) = &mut registry.capture {
-			let chord = binding.chord;
-			match register(app, chord, Role::Capture) {
-				Ok(()) => {
-					binding.registered = true;
-					CANONICAL_CAPTURE.store(chord.id(), Ordering::Relaxed);
-				}
-				Err(err) => {
-					binding.error = Some(registration_failed_message(&binding.text));
-					diagnostics::log_error(&format!(
-						"[copper] shortcuts: the capture chord could not be restored after \
-						 recording: {err}"
-					));
-				}
-			}
-		}
-	}
-
-	if lease.fallback && replaced != Some(Role::Capture) {
-		if let Some(chord) = registry.fallback {
-			if register(app, chord, Role::Capture).is_ok() {
-				CANONICAL_CAPTURE.store(chord.id(), Ordering::Relaxed);
-			} else {
-				// Forgotten rather than kept, so `ensure_fallback` treats it as absent
-				// and registers it again on the next pass. Held here, it would look
-				// live forever while claiming nothing.
-				registry.fallback = None;
-				registry.fallback_error = Some(FALLBACK_UNAVAILABLE.to_owned());
-			}
-		}
+	if summon_failed {
+		tray::report_summon(app, false);
 	}
 }
 
@@ -1180,11 +1430,11 @@ pub fn cancel_recording(app: &AppHandle) -> ShortcutState {
 	snapshot(&registry)
 }
 
-/// Applies a recorded chord to one of the two bindings.
+/// Applies a recorded binding to one of the two roles.
 ///
-/// Rejects a stale token — unlike cancel, this one *writes*, and applying a chord
-/// recorded in a session the user has already left is a change they did not ask
-/// for.
+/// Rejects a stale token — unlike cancel, this one *writes*, and applying a
+/// binding recorded in a session the user has already left is a change they did
+/// not ask for.
 pub fn commit_recording(
 	app: &AppHandle,
 	token: u64,
@@ -1207,7 +1457,7 @@ pub fn commit_recording(
 	}
 
 	// Validated inside the session rather than before it. Returning early on an
-	// unrecognised target would leave every chord suspended until the watchdog or
+	// unrecognised target would leave every binding suspended until the watchdog or
 	// a panel hide noticed — a nonsense argument must not cost the user their
 	// shortcuts.
 	let role = match target {
@@ -1220,15 +1470,12 @@ pub fn commit_recording(
 		}
 	};
 
-	let outcome = match role {
-		Role::Summon => set_summon_locked(app, &mut registry, chord),
-		Role::Capture => set_capture_locked(app, &mut registry, chord),
-	};
+	let outcome = set_trigger_locked(app, &mut registry, role, chord);
 
 	// Whatever happened, the session is over: on success the other bindings come
 	// back and the replaced one is already live; on failure everything comes back
-	// exactly as it was, which is what makes a refused chord a no-op rather than a
-	// lockout.
+	// exactly as it was, which is what makes a refused binding a no-op rather than
+	// a lockout.
 	restore_lease(app, &mut registry, outcome.is_ok().then_some(role));
 	outcome.map(|()| snapshot(&registry))
 }
@@ -1294,6 +1541,11 @@ mod tests {
 	use super::*;
 	use crate::store::settings::Settings;
 
+	/// The four sided spellings a test reaches for most.
+	fn double_tap(family: ModifierFamily, side: KeySide) -> BoundTrigger {
+		BoundTrigger::DoubleTap(WatchedTrigger { family, side })
+	}
+
 	#[test]
 	fn the_defaults_match_the_ones_the_store_ships() {
 		// Two hardcoded copies of one default is the drift this catches.
@@ -1303,46 +1555,52 @@ mod tests {
 	}
 
 	#[test]
-	fn the_built_default_chord_equals_the_parsed_one() {
-		// `Registry::shipped` builds the chord rather than parsing it, so that no
-		// release-build path can abort on an `expect`. This is where the two
-		// spellings are held together.
+	fn the_built_defaults_equal_the_parsed_ones() {
+		// `shipped_trigger` builds rather than parses, so that no release-build path
+		// can abort on an `expect`. This is where the two spellings are held
+		// together — for both roles, since either may now be either shape.
 		assert_eq!(
-			Registry::shipped().summon.chord,
-			Shortcut::from_str(DEFAULT_SUMMON_SHORTCUT).unwrap()
+			shipped_trigger(Role::Summon),
+			BoundTrigger::Chord(Shortcut::from_str(DEFAULT_SUMMON_SHORTCUT).unwrap())
 		);
+		assert_eq!(
+			shipped_trigger(Role::Capture),
+			validate_trigger(DEFAULT_CAPTURE_TRIGGER).unwrap()
+		);
+		// And the text the registry starts with is the text the store ships.
+		let registry = Registry::shipped();
+		assert_eq!(registry.summon.text(), DEFAULT_SUMMON_SHORTCUT);
+		assert_eq!(registry.capture.text(), DEFAULT_CAPTURE_TRIGGER);
 	}
 
 	#[test]
-	fn valid_summon_chords_parse() {
-		assert!(validate_summon_chord("Ctrl+Shift+Space").is_ok());
+	fn valid_chords_parse() {
+		assert!(validate_chord("Ctrl+Shift+Space").is_ok());
 		// Maps to Control on Windows.
-		let mapped = validate_summon_chord("CommandOrControl+K").unwrap();
+		let mapped = validate_chord("CommandOrControl+K").unwrap();
 		assert!(mapped.mods.contains(Modifiers::CONTROL));
 		assert_eq!(mapped.key, Code::KeyK);
-		assert!(validate_summon_chord("Ctrl+Alt+C").is_ok());
+		assert!(validate_chord("Ctrl+Alt+C").is_ok());
 	}
 
 	#[test]
 	fn modifier_only_input_is_named_as_such() {
 		// The parser calls this "invalid hotkey format", which is the same message
 		// it gives for genuine nonsense — two different mistakes to make.
-		assert_eq!(
-			validate_summon_chord("Shift+Ctrl").unwrap_err().kind(),
-			"modifier-only"
-		);
-		assert_eq!(validate_summon_chord("Shift").unwrap_err().kind(), "modifier-only");
+		assert_eq!(validate_chord("Shift+Ctrl").unwrap_err().kind(), "modifier-only");
+		assert_eq!(validate_chord("Shift").unwrap_err().kind(), "modifier-only");
+		// A sided modifier on its own is the same mistake, and gets the same answer
+		// rather than "Copper couldn't read that".
+		assert_eq!(validate_chord("LShift").unwrap_err().kind(), "modifier-only");
+		assert_eq!(validate_trigger("RCtrl").unwrap_err().kind(), "modifier-only");
 	}
 
 	#[test]
 	fn malformed_input_is_rejected_before_the_os_sees_it() {
 		// Modifiers must precede the main key.
-		assert_eq!(
-			validate_summon_chord("Ctrl+KeyQ+Shift").unwrap_err().kind(),
-			"invalid-chord"
-		);
-		assert_eq!(validate_summon_chord("Nonsense").unwrap_err().kind(), "invalid-chord");
-		assert_eq!(validate_summon_chord("").unwrap_err().kind(), "invalid-chord");
+		assert_eq!(validate_chord("Ctrl+KeyQ+Shift").unwrap_err().kind(), "invalid-chord");
+		assert_eq!(validate_chord("Nonsense").unwrap_err().kind(), "invalid-chord");
+		assert_eq!(validate_chord("").unwrap_err().kind(), "invalid-chord");
 	}
 
 	#[test]
@@ -1351,7 +1609,7 @@ mod tests {
 		// machine, so the recorder refuses it too — this is the half that cannot be
 		// bypassed.
 		for chord in ["K", "Space", "F5", "F12", "ArrowUp", "Digit1"] {
-			let err = validate_summon_chord(chord).unwrap_err();
+			let err = validate_chord(chord).unwrap_err();
 			assert_eq!(err.kind(), "invalid-chord", "{chord} was accepted bare");
 		}
 	}
@@ -1361,10 +1619,10 @@ mod tests {
 		// F13–F23 exist for exactly this: no keyboard emits them by accident and
 		// nothing else is listening for them.
 		for chord in ["F13", "F19", "F23"] {
-			assert!(validate_summon_chord(chord).is_ok(), "{chord} was refused");
+			assert!(validate_chord(chord).is_ok(), "{chord} was refused");
 		}
 		// And they are still fine with modifiers, which is the ordinary case.
-		assert!(validate_summon_chord("Ctrl+F13").is_ok());
+		assert!(validate_chord("Ctrl+F13").is_ok());
 	}
 
 	#[test]
@@ -1373,10 +1631,10 @@ mod tests {
 		// alive. The hook swallows it — but only while the hook is alive, which is
 		// precisely the state the probe exists to doubt, so a bare F24 binding would
 		// fire on Copper's own diagnostics in the window this is all about.
-		assert_eq!(validate_summon_chord("F24").unwrap_err().kind(), "invalid-chord");
+		assert_eq!(validate_chord("F24").unwrap_err().kind(), "invalid-chord");
 		// A modifier puts it out of the probe's reach, so those stay bindable.
-		assert!(validate_summon_chord("Ctrl+F24").is_ok());
-		assert!(validate_summon_chord("Ctrl+Alt+Shift+F24").is_ok());
+		assert!(validate_chord("Ctrl+F24").is_ok());
+		assert!(validate_chord("Ctrl+Alt+Shift+F24").is_ok());
 	}
 
 	/// The guard that was inert. Both rebinds arrive inside a recording lease,
@@ -1386,8 +1644,8 @@ mod tests {
 	#[test]
 	fn cross_role_exclusivity_ignores_whether_the_other_binding_is_live() {
 		let mut registry = Registry::shipped();
-		let chord = validate_summon_chord("Ctrl+Alt+C").unwrap();
-		registry.capture = CaptureBinding::Chord(Binding {
+		let chord = validate_chord("Ctrl+Alt+C").unwrap();
+		registry.capture = TriggerBinding::Chord(Binding {
 			text: display_chord(&chord),
 			chord,
 			// Suspended, exactly as `begin_recording` leaves it.
@@ -1396,75 +1654,200 @@ mod tests {
 		});
 
 		assert!(
-			capture_claims(&registry, chord),
+			claims(&registry, Role::Capture, &BoundTrigger::Chord(chord)),
 			"a suspended capture chord still claims its binding"
 		);
-		assert!(!capture_claims(&registry, registry.summon.chord));
+		let summon_chord = match &registry.summon {
+			TriggerBinding::Chord(binding) => binding.chord,
+			TriggerBinding::DoubleTap { .. } => unreachable!("summon ships as a chord"),
+		};
+		assert!(!claims(&registry, Role::Capture, &BoundTrigger::Chord(summon_chord)));
 
 		// And the mirror, for a summon binding that is stored but not registered.
-		registry.summon.registered = false;
-		assert!(summon_claims(&registry, registry.summon.chord));
+		if let TriggerBinding::Chord(binding) = &mut registry.summon {
+			binding.registered = false;
+		}
+		assert!(claims(&registry, Role::Summon, &BoundTrigger::Chord(summon_chord)));
 	}
 
 	#[test]
-	fn a_double_tap_binding_claims_only_its_insurance_chord() {
+	fn a_double_tap_binding_claims_only_its_own_insurance_chord() {
 		let mut registry = Registry::shipped();
-		let fallback = Shortcut::from_str(FALLBACK_CAPTURE_CHORD).unwrap();
-		assert!(!capture_claims(&registry, fallback));
+		let capture_insurance = Shortcut::from_str(FALLBACK_CAPTURE_CHORD).unwrap();
+		let summon_insurance = Shortcut::from_str(FALLBACK_SUMMON_CHORD).unwrap();
 
-		registry.fallback = Some(fallback);
-		assert!(capture_claims(&registry, fallback));
-		assert!(!capture_claims(&registry, registry.summon.chord));
+		assert!(!claims(&registry, Role::Capture, &BoundTrigger::Chord(capture_insurance)));
+
+		registry.capture_fallback.chord = Some(capture_insurance);
+		assert!(claims(&registry, Role::Capture, &BoundTrigger::Chord(capture_insurance)));
+		// Not the other role's, and not any other chord.
+		assert!(!claims(&registry, Role::Capture, &BoundTrigger::Chord(summon_insurance)));
+
+		// Summon ships as a chord, so it claims its chord and never an insurance one.
+		registry.summon_fallback.chord = Some(summon_insurance);
+		assert!(!claims(&registry, Role::Summon, &BoundTrigger::Chord(summon_insurance)));
+		// Made a double-tap, it does.
+		apply_locally(
+			&mut registry,
+			Role::Summon,
+			double_tap(ModifierFamily::Control, KeySide::Left),
+		);
+		assert!(claims(&registry, Role::Summon, &BoundTrigger::Chord(summon_insurance)));
+	}
+
+	#[test]
+	fn two_double_taps_collide_when_their_sides_overlap() {
+		// The rule that is not equality: the unsided spelling means *either* side,
+		// so it overlaps both sided ones while those two do not overlap each other.
+		let unsided = WatchedTrigger::unsided(ModifierFamily::Control);
+		let left = WatchedTrigger {
+			family: ModifierFamily::Control,
+			side: KeySide::Left,
+		};
+		let right = WatchedTrigger {
+			family: ModifierFamily::Control,
+			side: KeySide::Right,
+		};
+		let left_shift = WatchedTrigger {
+			family: ModifierFamily::Shift,
+			side: KeySide::Left,
+		};
+
+		assert!(double_taps_collide(unsided, unsided));
+		assert!(double_taps_collide(unsided, left));
+		assert!(double_taps_collide(left, unsided));
+		assert!(double_taps_collide(unsided, right));
+		assert!(double_taps_collide(left, left));
+		// The whole point of the sided spellings: the two sides are separable.
+		assert!(!double_taps_collide(left, right));
+		// A different family never collides, whatever the sides say.
+		assert!(!double_taps_collide(left, left_shift));
+		assert!(!double_taps_collide(unsided, left_shift));
+	}
+
+	#[test]
+	fn a_double_tap_and_a_chord_never_claim_each_other() {
+		// Different gestures on different machinery — the hook sees one, the plugin
+		// the other — so neither can be taken by the other's binding.
+		let mut registry = Registry::shipped();
+		apply_locally(
+			&mut registry,
+			Role::Capture,
+			double_tap(ModifierFamily::Control, KeySide::Left),
+		);
+		let chord = validate_chord("Ctrl+Alt+C").unwrap();
+		assert!(!claims(&registry, Role::Capture, &BoundTrigger::Chord(chord)));
+		assert!(!claims(
+			&registry,
+			Role::Summon,
+			&double_tap(ModifierFamily::Control, KeySide::Left)
+		));
+
+		// And the collision that *is* real: summon on the unsided spelling of the
+		// family capture holds one side of.
+		apply_locally(
+			&mut registry,
+			Role::Summon,
+			BoundTrigger::DoubleTap(WatchedTrigger::unsided(ModifierFamily::Control)),
+		);
+		assert!(claims(
+			&registry,
+			Role::Summon,
+			&double_tap(ModifierFamily::Control, KeySide::Left)
+		));
 	}
 
 	#[test]
 	fn combinations_windows_never_delivers_are_reserved() {
 		for chord in ["Super+L", "Alt+Tab", "Ctrl+Alt+Delete", "PrintScreen"] {
-			let err = validate_summon_chord(chord).unwrap_err();
+			let err = validate_chord(chord).unwrap_err();
 			assert_eq!(err.kind(), "reserved", "{chord} was not reserved");
 			assert!(!err.message().is_empty());
 		}
 		// A Windows-key chord that also carries a combining modifier is fine —
 		// Windows only keeps the bare ones for itself.
-		assert!(validate_summon_chord("Ctrl+Super+K").is_ok());
+		assert!(validate_chord("Ctrl+Super+K").is_ok());
 	}
 
 	#[test]
-	fn capture_accepts_both_shapes_r_q52_allows() {
+	fn both_shapes_r_q52_allows_are_accepted_for_either_role() {
 		assert_eq!(
-			validate_capture_trigger("Shift Shift").unwrap(),
-			CaptureTrigger::DoubleTap(ModifierFamily::Shift)
+			validate_trigger("Shift Shift").unwrap(),
+			double_tap(ModifierFamily::Shift, KeySide::Either)
 		);
 		assert_eq!(
-			validate_capture_trigger("Ctrl Ctrl").unwrap(),
-			CaptureTrigger::DoubleTap(ModifierFamily::Control)
+			validate_trigger("Ctrl Ctrl").unwrap(),
+			double_tap(ModifierFamily::Control, KeySide::Either)
 		);
 		assert_eq!(
-			validate_capture_trigger("Alt Alt").unwrap(),
-			CaptureTrigger::DoubleTap(ModifierFamily::Alt)
+			validate_trigger("Alt Alt").unwrap(),
+			double_tap(ModifierFamily::Alt, KeySide::Either)
 		);
 		// Case is not part of the binding.
 		assert_eq!(
-			validate_capture_trigger("control control").unwrap(),
-			CaptureTrigger::DoubleTap(ModifierFamily::Control)
+			validate_trigger("control control").unwrap(),
+			double_tap(ModifierFamily::Control, KeySide::Either)
 		);
 		assert!(matches!(
-			validate_capture_trigger("Ctrl+Alt+C").unwrap(),
-			CaptureTrigger::Chord(_)
+			validate_trigger("Ctrl+Alt+C").unwrap(),
+			BoundTrigger::Chord(_)
 		));
 	}
 
 	#[test]
-	fn capture_rejects_the_shapes_it_cannot_service() {
-		// Double-tapping Win opens the Start menu on the release of a bare press.
-		assert_eq!(validate_capture_trigger("Win Win").unwrap_err().kind(), "reserved");
-		// A bare modifier is not a double-tap.
-		assert_eq!(validate_capture_trigger("Shift").unwrap_err().kind(), "modifier-only");
-		// Two different modifiers are neither a double-tap nor a chord.
+	fn the_sided_spellings_parse_and_keep_their_side() {
+		// These are what the recorder now writes when the user taps one physical
+		// key, and what `settings.json` then holds. A spelling that stopped parsing
+		// would fall back to the shipped default and silently lose the binding.
+		for (text, family, side) in [
+			("LShift LShift", ModifierFamily::Shift, KeySide::Left),
+			("RShift RShift", ModifierFamily::Shift, KeySide::Right),
+			("LCtrl LCtrl", ModifierFamily::Control, KeySide::Left),
+			("RCtrl RCtrl", ModifierFamily::Control, KeySide::Right),
+			("LAlt LAlt", ModifierFamily::Alt, KeySide::Left),
+			("RAlt RAlt", ModifierFamily::Alt, KeySide::Right),
+			// The long spelling of Control, sided, since the parser takes it unsided.
+			("LControl LControl", ModifierFamily::Control, KeySide::Left),
+		] {
+			assert_eq!(
+				validate_trigger(text).unwrap(),
+				double_tap(family, side),
+				"{text} did not parse as itself"
+			);
+		}
+		// And case is no more part of a sided binding than an unsided one.
 		assert_eq!(
-			validate_capture_trigger("Shift Ctrl").unwrap_err().kind(),
-			"invalid-chord"
+			validate_trigger("lctrl LCTRL").unwrap(),
+			double_tap(ModifierFamily::Control, KeySide::Left)
 		);
+	}
+
+	#[test]
+	fn a_double_tap_of_two_different_keys_is_not_a_binding() {
+		// Including two sides of one family: `LCtrl RCtrl` is a gesture nothing
+		// recognises, and reading it as `Ctrl Ctrl` would be inventing a binding.
+		for text in ["LCtrl RCtrl", "Shift Ctrl", "LShift RShift"] {
+			assert_eq!(
+				validate_trigger(text).unwrap_err().kind(),
+				"invalid-chord",
+				"{text} was accepted"
+			);
+		}
+	}
+
+	#[test]
+	fn the_shapes_the_hook_cannot_service_are_refused() {
+		// Double-tapping Win opens the Start menu on the release of a bare press —
+		// on either side of the keyboard, so both spellings say so.
+		for text in ["Win Win", "LWin LWin", "RWin RWin", "Super Super"] {
+			assert_eq!(
+				validate_trigger(text).unwrap_err().kind(),
+				"reserved",
+				"{text} was not reserved"
+			);
+		}
+		// A bare modifier is not a double-tap.
+		assert_eq!(validate_trigger("Shift").unwrap_err().kind(), "modifier-only");
 	}
 
 	#[test]
@@ -1479,10 +1862,10 @@ mod tests {
 			"Ctrl+Alt+Digit1",
 			"Shift+Alt+ArrowUp",
 		] {
-			let chord = validate_summon_chord(text).unwrap();
+			let chord = validate_chord(text).unwrap();
 			let rendered = display_chord(&chord);
 			assert_eq!(
-				validate_summon_chord(&rendered).unwrap(),
+				validate_chord(&rendered).unwrap(),
 				chord,
 				"{text} rendered as {rendered}, which does not read back"
 			);
@@ -1490,32 +1873,75 @@ mod tests {
 	}
 
 	#[test]
-	fn the_display_spelling_is_the_one_a_person_reads() {
-		let chord = validate_summon_chord("Ctrl+Alt+KeyC").unwrap();
-		assert_eq!(display_chord(&chord), "Ctrl+Alt+C");
-		let digit = validate_summon_chord("Ctrl+Digit1").unwrap();
-		assert_eq!(display_chord(&digit), "Ctrl+1");
-		// Modifier order is Windows', not the order they were typed in.
-		let jumbled = validate_summon_chord("Shift+Alt+Ctrl+K").unwrap();
-		assert_eq!(display_chord(&jumbled), "Ctrl+Alt+Shift+K");
-	}
-
-	#[test]
-	fn a_double_tap_renders_as_the_pair_it_is_stored_as() {
-		assert_eq!(double_tap_text(ModifierFamily::Shift), DEFAULT_CAPTURE_TRIGGER);
-		assert_eq!(double_tap_text(ModifierFamily::Control), "Ctrl Ctrl");
-		assert_eq!(double_tap_text(ModifierFamily::Alt), "Alt Alt");
-		// And reads back as the same family.
+	fn every_double_tap_round_trips_through_its_stored_spelling() {
+		// The same guarantee for the other shape, over every binding the recorder
+		// can produce rather than a sample — this is what a `settings.json` written
+		// by one build has to survive being read by the next.
 		for family in [
 			ModifierFamily::Shift,
 			ModifierFamily::Control,
 			ModifierFamily::Alt,
 		] {
-			assert_eq!(
-				validate_capture_trigger(&double_tap_text(family)).unwrap(),
-				CaptureTrigger::DoubleTap(family)
-			);
+			for side in [KeySide::Either, KeySide::Left, KeySide::Right] {
+				let trigger = WatchedTrigger { family, side };
+				let rendered = double_tap_text(trigger);
+				assert_eq!(
+					validate_trigger(&rendered).unwrap(),
+					BoundTrigger::DoubleTap(trigger),
+					"{trigger:?} rendered as {rendered:?}, which does not read back"
+				);
+			}
 		}
+	}
+
+	#[test]
+	fn the_display_spelling_is_the_one_a_person_reads() {
+		let chord = validate_chord("Ctrl+Alt+KeyC").unwrap();
+		assert_eq!(display_chord(&chord), "Ctrl+Alt+C");
+		let digit = validate_chord("Ctrl+Digit1").unwrap();
+		assert_eq!(display_chord(&digit), "Ctrl+1");
+		// Modifier order is Windows', not the order they were typed in.
+		let jumbled = validate_chord("Shift+Alt+Ctrl+K").unwrap();
+		assert_eq!(display_chord(&jumbled), "Ctrl+Alt+Shift+K");
+	}
+
+	#[test]
+	fn a_double_tap_renders_as_the_pair_it_is_stored_as() {
+		assert_eq!(
+			double_tap_text(WatchedTrigger::unsided(ModifierFamily::Shift)),
+			DEFAULT_CAPTURE_TRIGGER
+		);
+		assert_eq!(
+			double_tap_text(WatchedTrigger::unsided(ModifierFamily::Control)),
+			"Ctrl Ctrl"
+		);
+		assert_eq!(
+			double_tap_text(WatchedTrigger::unsided(ModifierFamily::Alt)),
+			"Alt Alt"
+		);
+		// The sided spellings are the family label with one letter in front, which
+		// is what the settings view then expands back into "Left Ctrl".
+		assert_eq!(
+			double_tap_text(WatchedTrigger {
+				family: ModifierFamily::Control,
+				side: KeySide::Left
+			}),
+			"LCtrl LCtrl"
+		);
+		assert_eq!(
+			double_tap_text(WatchedTrigger {
+				family: ModifierFamily::Shift,
+				side: KeySide::Right
+			}),
+			"RShift RShift"
+		);
+		assert_eq!(
+			double_tap_text(WatchedTrigger {
+				family: ModifierFamily::Alt,
+				side: KeySide::Left
+			}),
+			"LAlt LAlt"
+		);
 	}
 
 	#[test]
@@ -1542,6 +1968,7 @@ mod tests {
 			capture_registered: true,
 			capture_error: None,
 			capture_fallback: Some(FALLBACK_CAPTURE_CHORD.to_owned()),
+			summon_fallback: Some(FALLBACK_SUMMON_CHORD.to_owned()),
 		};
 		let payload = serde_json::to_value(&state).unwrap();
 
@@ -1554,10 +1981,13 @@ mod tests {
 			"captureRegistered",
 			"captureError",
 			"captureFallback",
+			"summonFallback",
 		] {
 			assert!(payload.get(key).is_some(), "get_shortcut_state is missing {key}: {payload}");
 		}
-		assert_eq!(payload.as_object().unwrap().len(), 8, "get_shortcut_state grew a field");
+		// Nine since task-020: summon gained an insurance chord of its own, because
+		// a double-tap summon can be lost to a dead hook exactly as capture can.
+		assert_eq!(payload.as_object().unwrap().len(), 9, "get_shortcut_state grew a field");
 		assert!(!serde_json::to_string(&state).unwrap().contains('_'));
 		// The defaults travel so Reset renders without a second copy of them in
 		// TypeScript.
@@ -1566,9 +1996,23 @@ mod tests {
 	}
 
 	#[test]
-	fn the_fallback_chord_is_bindable() {
-		// It is only ever registered on a failure path, so nothing else would notice
-		// if it stopped parsing.
-		assert!(validate_summon_chord(FALLBACK_CAPTURE_CHORD).is_ok());
+	fn both_insurance_chords_are_bindable_and_distinct() {
+		// They are only ever registered on a failure path, so nothing else would
+		// notice if one stopped parsing — or, worse, if the two became the same
+		// chord and the second registration were refused as a duplicate.
+		let capture = validate_chord(FALLBACK_CAPTURE_CHORD).unwrap();
+		let summon = validate_chord(FALLBACK_SUMMON_CHORD).unwrap();
+		assert_ne!(capture, summon);
+		// Neither may be one Windows keeps for itself, which is the failure that
+		// would present as insurance that registers and then never fires.
+		assert!(reserved_reason(&capture, FALLBACK_CAPTURE_CHORD).is_none());
+		assert!(reserved_reason(&summon, FALLBACK_SUMMON_CHORD).is_none());
+		// And neither is a shipped binding, or a fresh install with a dead hook
+		// would have the insurance collide with the thing it is insuring.
+		assert_ne!(
+			BoundTrigger::Chord(summon),
+			shipped_trigger(Role::Summon),
+			"the summon insurance chord is the shipped summon chord"
+		);
 	}
 }

@@ -16,6 +16,7 @@
  * copy of something already shared.
  */
 import type { ShortcutTarget } from '@/composables/useSettings'
+import { capLabel } from '@/lib/chordDisplay'
 
 const props = defineProps<{
 	label: string
@@ -48,13 +49,20 @@ const box = useTemplateRef<HTMLElement>('box')
  *  must keep showing their bindings rather than all entering the state at once. */
 const recording = computed(() => isRecording.value && recordingTarget.value === props.target)
 
-/** `"Shift Shift"` and friends: the same modifier twice, separated by a space. */
+/** `"Shift Shift"`, `"LCtrl LCtrl"` and friends: the same modifier twice,
+ *  separated by a space. */
 const doubleTap = computed(() => {
 	const parts = props.value.split(' ')
 	return parts.length === 2 && parts[0] === parts[1] ? parts[0] : null
 })
 
-const chips = computed(() => (doubleTap.value ? [doubleTap.value] : props.value.split('+')))
+// `capLabel` expands the sided tokens (`LCtrl` → `Left Ctrl`); it lives in
+// `lib/chordDisplay` because `EmptyState` teaches the same bindings and the two
+// must not drift apart.
+const chips = computed(() => {
+	const keys = doubleTap.value ? [doubleTap.value] : props.value.split('+')
+	return keys.map(capLabel)
+})
 
 const canReset = computed(() => props.value !== props.defaultValue)
 
