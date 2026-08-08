@@ -15,18 +15,28 @@
  */
 
 class KeyframeEffectShim {
+	target: Element | null
+	keyframes: Keyframe[] | PropertyIndexedKeyframes | null
+	options?: number | KeyframeEffectOptions
+
 	constructor(
-		public target: Element | null,
-		public keyframes: Keyframe[] | PropertyIndexedKeyframes | null,
-		public options?: number | KeyframeEffectOptions,
-	) {}
+		target: Element | null,
+		keyframes: Keyframe[] | PropertyIndexedKeyframes | null,
+		options?: number | KeyframeEffectOptions,
+	) {
+		this.target = target
+		this.keyframes = keyframes
+		this.options = options
+	}
 }
 
 class AnimationShim extends EventTarget {
 	playState: AnimationPlayState = 'idle'
+	effect: unknown
 
-	constructor(public effect?: unknown) {
+	constructor(effect?: unknown) {
 		super()
+		this.effect = effect
 	}
 
 	/** A microtask, never synchronous: auto-animate attaches its `finish`
