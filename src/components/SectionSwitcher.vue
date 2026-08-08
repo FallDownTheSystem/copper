@@ -181,7 +181,10 @@ function onKeydown(event: KeyboardEvent) {
 	     specifies. The finding is one node on reka's own content element, the field
 	     is labelled and fully operable by keyboard, and the switcher's axe
 	     assertion names the rule and this reason rather than passing quietly. -->
-	<div class="px-1 pb-1">
+	<!-- `p-1` rather than `px-1 pb-1`: the content element's own `p-1` is the same
+	     4px on every side, so leaving the top off here left the field 4px below the
+	     menu's edge and 8px in from its sides. -->
+	<div class="p-1">
 		<!-- Named for both jobs, because it does both: what it filters to nothing it
 		     offers to create. -->
 		<label for="section-filter" class="sr-only">Filter or create a section</label>
@@ -198,8 +201,21 @@ function onKeydown(event: KeyboardEvent) {
 	</div>
 
 	<!-- Capped and scrolled internally, so twenty sections cannot outgrow the
-	     fixed panel or push the menu outside its rounded clip. -->
-	<div class="thin-scrollbar max-h-52 overflow-y-auto overflow-x-hidden">
+	     fixed panel or push the menu outside its rounded clip.
+
+	     `px-1 pb-1` puts the rows' own 8px inset on the same two edges the field
+	     already sits on — the item's highlight pill is the box being aligned, not
+	     its text — and leaves the menu the bottom breathing room its top has.
+
+	     **`scrollbar-gutter: auto` here, against `.thin-scrollbar`'s `stable`,**
+	     for the reason `PanelShell`'s scroll region makes the same override: the
+	     reserved gutter is permanent, so a list of three sections would still sit a
+	     scrollbar's width short of the field above it. Trading a one-time shift,
+	     when a list past `max-h-52` grows a real scrollbar, against a right edge
+	     that never lines up. -->
+	<div
+		class="thin-scrollbar max-h-52 overflow-y-auto overflow-x-hidden px-1 pb-1 [scrollbar-gutter:auto]"
+	>
 		<!-- `@select.prevent` on both rows: reka closes on select by default, and a
 		     refused activation has to leave the switcher standing with the failure
 		     visible. Closing is the `close` emit's job, and only on success. -->

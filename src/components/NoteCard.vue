@@ -200,9 +200,18 @@ function onDoubleClick(event: MouseEvent) {
 				     At `1.25rem` the column was 4px wider than the mark it holds, and
 				     `justify-center` split the difference — the grip sat 2px further in
 				     than the box opposite it, and every line of every note was 4px
-				     off-centre. -->
+				     off-centre.
+
+					     **`px-4` rather than `px-3`, and the number is not this row's to
+					     choose.** With the list's own `px-1` outside it the completion box
+					     lands 20px from the panel edge, which is where the search field's
+					     magnifier sits — the leading mark of every row in the panel is on
+					     that column, and `SectionHeader` splits the same 16 between its
+					     gridcell and the marker dot's pill. The 8px it takes off the text
+					     column is what the alignment costs; the grip's hit strip below
+					     follows it. -->
 				<div
-					class="grid min-h-11 min-w-0 grid-cols-[auto_minmax(0,1fr)_1rem] content-center items-start gap-2 px-3 py-2"
+					class="grid min-h-11 min-w-0 grid-cols-[auto_minmax(0,1fr)_1rem] content-center items-start gap-2 px-4 py-2"
 					role="gridcell"
 				>
 					<!-- A rounded square rather than task-004's circle, so the squircle
@@ -341,17 +350,19 @@ function onDoubleClick(event: MouseEvent) {
    fight over the same pixels. This one is exactly as tall as its own row and no
    taller.
 
-   The width is exactly the gutter it lives in — the row's 12px right padding,
+   The width is exactly the gutter it lives in — the row's 16px right padding,
    plus the 16px grip column, plus the 8px column gap — so a generous grab area
-   still never covers a word of the note. It follows the column: at 20px this was
-   2.5rem, and leaving it there after narrowing the column would put 4px of the
-   strip over the text.
+   still never covers a word of the note. It tracks both of those numbers and has
+   been wrong about each in turn: 2.5rem was right for a 20px grip column and 4px
+   too wide once the column narrowed, and 2.25rem was right for a 12px padding and
+   4px too short once the row moved to `px-4` for the leading-mark alignment. Both
+   times the strip stopped agreeing with the gutter it is supposed to be.
 
    **Fine pointers only, and `touch-action` with it.** Both halves of this exist
    to help someone aiming a cursor at a 16px mark. On a touchscreen they do the
    opposite: a full-height strip down the right edge of every row that refuses to
    pan would make the list unscrollable exactly where a thumb naturally rests. A
-   coarse pointer gets the plain 20px mark and keeps its scrolling; reordering by
+   coarse pointer gets the plain 16px mark and keeps its scrolling; reordering by
    keyboard is Alt+Arrow either way. */
 @media (pointer: fine) {
 	.note-grip {
@@ -364,7 +375,7 @@ function onDoubleClick(event: MouseEvent) {
 		top: 0;
 		right: 0;
 		bottom: 0;
-		width: 2.25rem;
+		width: 2.5rem;
 	}
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "copper"
-version = "0.1.0"
+version = "0.1.1"
 description = "Copper — a Windows note-capture panel"
 authors = ["FallDownTheSystem"]
 # `version` is the single source of truth for the whole product: tauri.conf.json

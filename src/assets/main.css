@@ -344,12 +344,14 @@
    written against a *composited* surface, and this is the number they composite
    against.
 
-   `--surface-solid` is deliberately untouched: the pinned section heading has to
-   erase the rows it scrolls over whatever the panel is doing behind it, and a
-   translucent heading band is a heading you can read the list through.
+   `--surface-solid` is deliberately untouched: it is the token for surfaces that
+   erase rather than tint, and thinning it here would defeat that.
 
    The `.section-band` gradient in `SectionHeader` paints `var(--surface)` and so
-   follows this on its own. */
+   follows this on its own — but only outside translucent mode. Repainting a 0.65
+   surface over itself lands at 0.88 and reads as a grey strip, so under
+   `.translucent` the band swaps to a masked backdrop-blur frost instead; that
+   rule lives in `SectionHeader`'s scoped block, beside the gradient it replaces. */
 .translucent {
 	--surface-alpha: 0.65;
 }
@@ -488,6 +490,45 @@
 		/* Keeps the text column — and therefore Markdown wrapping — from changing
 		   width as the list crosses the overflow threshold. */
 		scrollbar-gutter: stable;
+	}
+}
+
+/* The one place the native scrollbar above cannot be kept, and it is a shape
+   problem rather than a taste one. Chromium paints a scrollbar down the full
+   padding box and the element's radius clips it, so on a control as short as the
+   composer — 32px empty, 95px at its four-line cap, `rounded-md` — the track runs
+   straight into both corner curves and the thumb is visibly sliced at each end.
+   The list keeps `.thin-scrollbar` and its native treatment; only a field this
+   small has a radius large enough relative to its height for the collision to
+   show.
+
+   `margin-block` is the whole point of the custom track: it is the only way to
+   stop the scrollbar short of the corners, and `scrollbar-width: thin` cannot
+   express it. 6px clears the 14px `--radius-md` arc, which has already receded
+   within 6px of the right edge about 2.5px down (and sooner under `squircle`,
+   which hugs the corner tighter than a circle does).
+
+   Deliberately no `scrollbar-width` here: Chromium ignores every
+   `::-webkit-scrollbar` rule on an element whose `scrollbar-width` is not
+   `auto`, so declaring both would silently drop all of this. */
+@utility field-scrollbar {
+	&::-webkit-scrollbar {
+		width: 6px;
+	}
+
+	&::-webkit-scrollbar-track {
+		background: transparent;
+		margin-block: 6px;
+	}
+
+	&::-webkit-scrollbar-thumb {
+		background: var(--scrollbar-thumb);
+		border-radius: calc(infinity * 1px);
+	}
+
+	/* The stepper arrows are a legacy default and would eat the 6px track whole. */
+	&::-webkit-scrollbar-button {
+		display: none;
 	}
 }
 
@@ -681,8 +722,11 @@
 }
 
 /* --- The panel surface ------------------------------------------------------
-   No `backdrop-filter` anywhere: it cannot sample the desktop from inside the
-   webview and would fight the native Mica/Acrylic that Rust already applied. */
+   No `backdrop-filter` on the panel surface: it cannot sample the desktop from
+   inside the webview and would fight the native Mica/Acrylic that Rust already
+   applied. The one backdrop-filter in the app — `SectionHeader`'s translucent
+   frost — is correct for the same reason: its backdrop is the page's own note
+   rows, which the webview *can* sample, never the desktop. */
 .panel-surface {
 	background: var(--surface);
 	border-radius: var(--panel-radius);
@@ -711,13 +755,12 @@
 }
 
 @media (prefers-reduced-transparency: reduce) {
-	/* One rule where there were four. The pinned section heading used to need a
-	   pair of its own here — it paints the panel's own surface over the list, and
-	   at `--surface`'s 90% it would have composited a second time over an
-	   already-opaque panel and left a faintly lighter band standing at every
-	   heading. It wears `--surface-solid` in every mode now, so this block is back
-	   to the one surface that actually changes: the panel, which reads the same
-	   token rather than repeating its two colours by hand. */
+	/* One rule where there were four. The pinned section heading needs no pair
+	   of its own here: it paints `--surface` at 90% over a panel this rule has
+	   just made opaque in the *same* colour, and a colour composited over itself
+	   is itself — the band vanishes into the ground exactly as it should. So this
+	   block is back to the one surface that actually changes: the panel, which
+	   reads the same token rather than repeating its two colours by hand. */
 	.panel-surface {
 		background: var(--surface-solid);
 	}

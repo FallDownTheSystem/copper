@@ -191,6 +191,10 @@ pub fn run() {
 				// Fires for a `data-tauri-drag-region` drag as well as for a
 				// programmatic `set_position`; the write behind it is debounced and the
 				// store's change-guard makes the programmatic case free.
+				//
+				// There is deliberately no `WindowEvent::Resized` arm beside it. The
+				// stored size is the panel's *default*, so a manual drag-resize is
+				// session-only by design — see the ruling on `panel::on_moved`.
 				WindowEvent::Moved(position) => panel::on_moved(window.app_handle(), *position),
 				// Only while the window is following the system theme, which is exactly
 				// the case that needs re-tinting.
@@ -280,6 +284,12 @@ pub fn run() {
 			// `set_position`, so a display that was unplugged since the last run would
 			// otherwise put the panel where it cannot be reached.
 			app.manage(panel::PositionState::default());
+			// Before `restore_position`, and that order is load-bearing rather than
+			// tidy: the placement below computes the panel's corner from how big the
+			// panel is, so a size applied afterwards would leave a window sized for one
+			// rectangle sitting at a corner computed for another — visibly, as a right
+			// edge hanging off the work area on any install that chose a wider panel.
+			panel::install_panel_size(app.handle(), &window);
 			panel::restore_position(&window, store::lock(&shared).settings().panel_position);
 			// Before `theme::install` and not beside the pin below, because it changes
 			// what that call paints rather than being a second thing to paint: it

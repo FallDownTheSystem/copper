@@ -23,8 +23,10 @@ const composing = ref(false)
  *  after the user typed more cannot clear newer input. */
 let revision = 0
 
-/** Capped at five lines, tracking the `max-h-[5lh]` on the field itself. */
-const { supportsFieldSizing, scheduleAutoSize } = useAutoSize(textarea, { maxLines: 5 })
+/** Capped at four lines, tracking the `max-h-[calc(4lh_+_11px)]` on the field
+ *  itself — same cap, expressed twice, and `useAutoSize` documents why the two
+ *  expressions now land on the same pixel. */
+const { supportsFieldSizing, scheduleAutoSize } = useAutoSize(textarea, { maxLines: 4 })
 
 function focus() {
 	textarea.value?.focus()
@@ -234,7 +236,20 @@ function onKeydown(event: KeyboardEvent) {
 		<label for="composer" class="sr-only">New note</label>
 		<!-- The field and the paperclip share a row so the button does not cost a
 		     line of a panel that cannot grow, and `items-end` keeps it on the last
-		     line as the field grows to its five-line cap. -->
+		     line as the field grows to its four-line cap.
+
+		     **The two heights are equal at one line, and only by arithmetic.**
+		     `text-body` is 14px at a unitless 1.5, so `1lh` is 21px; the empty
+		     field is 21 + padding + 2px of `panel-field` border, and the paperclip
+		     is a fixed `size-8`. `py-1.5` made that 35px against the button's 32
+		     and the row read as a mismatch, so the padding is (32 − 21 − 2) / 2 =
+		     4.5px — symmetric, so the caret stays centred.
+
+		     The cap is then written against the *content* box rather than the
+		     border box: `max-h-[5lh]` capped the whole element, so padding and
+		     border ate into the fifth line and left a third of it showing. 4lh +
+		     9px of padding + 2px of border = 95px shows four lines and hides the
+		     fifth completely. Both numbers move if the body line-height does. -->
 		<div class="flex min-w-0 items-end gap-1.5">
 			<textarea
 				id="composer"
@@ -246,7 +261,7 @@ function onKeydown(event: KeyboardEvent) {
 				:value="value"
 				placeholder="Add a note or a prompt…"
 				:aria-busy="submitting"
-				class="panel-field max-h-[5lh] min-h-8 w-full min-w-0 flex-1 resize-none px-2 py-1.5"
+				class="panel-field field-scrollbar max-h-[calc(4lh_+_11px)] min-h-8 w-full min-w-0 flex-1 resize-none px-2 py-[4.5px]"
 				:class="supportsFieldSizing ? 'field-sizing-content' : ''"
 				@input="onInput"
 				@keydown="onKeydown"

@@ -71,7 +71,11 @@ const erroredMessage = computed(() =>
 		     `skeletonVisible`, so the list cannot slip through during those 400ms
 		     and flash an empty state. -->
 		<div v-if="loadState === 'loading'" aria-hidden="true">
-			<div v-if="skeletonVisible" class="px-3 pt-3">
+			<!-- `px-5`, not the `px-4` the rows themselves wear: these branches replace
+			     the slot's `px-1` wrapper rather than rendering inside it, so landing on
+			     the same 20px leading-mark column costs the 4px here that the rows get
+			     from the wrapper. -->
+			<div v-if="skeletonVisible" class="px-5 pt-3">
 				<!-- The one place a capsule is the right shape: these bars stand for
 				     lines of text, not for controls, and at 12 and 16px tall no
 				     rectangular corner off the panel's scale survives the browser's
@@ -87,7 +91,7 @@ const erroredMessage = computed(() =>
 		<!-- Error: a store failure must never be indistinguishable from an empty
 		     space. Retry re-opens by path; `get_active_space` would return the
 		     in-memory document and appear to succeed while changing nothing. -->
-		<div v-else-if="loadState === 'error'" class="px-3 pt-3">
+		<div v-else-if="loadState === 'error'" class="px-5 pt-3">
 			<p class="text-text-primary text-body font-semibold">Couldn't open this space.</p>
 			<p class="text-text-secondary mt-1 text-meta">Check the file still exists, then try again.</p>
 			<p v-if="loadError" class="text-text-secondary mt-1 text-meta break-words">{{ loadError }}</p>

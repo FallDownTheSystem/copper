@@ -126,9 +126,20 @@ function onKeydown(event: KeyboardEvent) {
 			     same stacking context — the panel's `isolate` root — and both live at
 			     the far end of the list.
 
-			     **The band paints `--surface` — the panel's own value — because a
-			     heading in a different colour from the list it heads reads as a bar
-			     laid across the panel rather than as part of it.** An opaque
+			     **The band spans the region edge to edge, which is what `-mx-1 px-1`
+			     buys.** The margin reaches past the scroll region's own `px-1` — the 4px
+			     rhythm the cards are inset by — and the padding puts the heading back
+			     where it was, so only the fill moves. A band that stopped 4px short of
+			     each edge read as a strip laid on the list rather than as the region's
+			     own top edge, and under translucency, where the band is a different
+			     material from the panel rather than more of it, those two gaps were where
+			     that showed. What it costs is the focus halo: at full width its outer 4px
+			     falls outside the scroll port and is clipped left and right, the way a
+			     pinned heading's top edge already is.
+
+			     **In the opaque mode the band paints `--surface` — the panel's own value
+			     — because a heading in a different colour from the list it heads reads as
+			     a bar laid across the panel rather than as part of it.** An opaque
 			     `--surface-solid` cannot match that colour: the list is `--surface`
 			     composited over the desktop at 90%, and the desktop is darker than the
 			     light surface and lighter than the dark one, so a fully opaque band
@@ -142,6 +153,14 @@ function onKeydown(event: KeyboardEvent) {
 			     rows sit *between* the band and the panel, so text sliding under the
 			     heading leaves a faint ghost rather than vanishing outright.
 
+			     **That second tenth is the opaque mode's arithmetic and nobody else's.**
+			     At the translucency setting's 0.65 the same repaint composites to about
+			     0.88 against a 0.65 ground, which is nowhere near below noticing — it is
+			     the visibly darker strip the setting was reported for. No alpha fixes it,
+			     because the band is over the rows as well as over the panel and one value
+			     cannot both erase text and leave the ground alone. The scoped CSS answers
+			     that mode with a different material instead; see there.
+
 			     **The gradient is what keeps that ghost from also being an edge.** The
 			     colour holds for the full height of the heading and dissolves over the
 			     8px below it, so a line of text passing under fades out instead of
@@ -154,11 +173,11 @@ function onKeydown(event: KeyboardEvent) {
 				:data-row-id="rowId"
 				data-section-row
 				:tabindex="focused ? 0 : -1"
-				class="focus-halo section-band sticky top-0 z-1 min-w-0 pt-1 pb-2"
+				class="focus-halo section-band sticky top-0 z-1 -mx-1 min-w-0 px-1 pt-1 pb-2"
 			>
 				<div
 					role="gridcell"
-					class="flex min-h-(--section-heading-height) min-w-0 items-center gap-2 px-3"
+					class="flex min-h-(--section-heading-height) min-w-0 items-center gap-2 px-4"
 				>
 					<template v-if="editing">
 						<label :for="`section-rename-${section.id}`" class="sr-only">Section name</label>
@@ -187,19 +206,24 @@ function onKeydown(event: KeyboardEvent) {
 						     The name shrinks rather than holding its width — with the
 						     chevron at the end of the row, an unshrinkable one would push it
 						     out. The inner `truncate` is what makes that safe. -->
-						<!-- **`-ml-1.5 pl-1.5` holds the dot at 12px while leaving the pill
-						     symmetric.** What lines up across rows is the leading mark: the
-						     marker dot has to land at 12px from the row edge, the note's
-						     completion box to the pixel — so the gridcell's `px-3` and the
-						     button's own inset have to add up to 12 no matter how they are
-						     split. Every split lands the dot; only this one leaves the hover
-						     surface even. Carrying all 12 on the button would put twice the
-						     room beside the dot on its left as `pr-1.5` leaves on its right,
+						<!-- **`-ml-1.5 pl-1.5` nets to zero, and that is the point: the dot is
+						     placed by the gridcell, the button only decides where the pill's
+						     edge falls.** What lines up is the leading mark of every row in
+						     the panel, and it is measured from the *panel* edge rather than
+						     from this row: the search field's magnifier sits at 20px and is
+						     the anchor the other three were brought onto — this dot, the note
+						     row's completion box, and the active-section chip's icon. Here
+						     that 20 is the row's own `px-1` giving back the 4px the `-mx-1`
+						     bleed took, plus the gridcell's `px-4`.
+
+						     Every split of that 16 lands the dot; only this one leaves the
+						     hover surface even. Carrying it all on the button would put more
+						     room beside the dot on its left than `pr-1.5` leaves on its right,
 						     and a dot with a lopsided pill around it reads as misplaced even
-						     when it is exactly where it belongs. Six each side puts the
-						     remaining six on the gridcell, where every other row already
-						     shares it. Anything that changes the note row's `px-3` has to come
-						     back here. -->
+						     when it is exactly where it belongs. Six each side is what makes
+						     it symmetric, and the note row carries the same `px-4` on its own
+						     gridcell — anything that changes that number has to come back
+						     here. -->
 						<h2 :id="headingId" class="min-w-0">
 							<button
 								type="button"
@@ -281,7 +305,11 @@ function onKeydown(event: KeyboardEvent) {
    both ends of the tail and the eye reads either corner as a faint line — which
    is the thing the tail exists to remove. The interior stops round them off.
    `color-mix` with `transparent` premultiplies, so each one is `--surface` at a
-   fraction of its own alpha rather than a step toward grey. */
+   fraction of its own alpha rather than a step toward grey.
+
+   This is the opaque mode's band in practice — the frosted override below
+   replaces the whole declaration, and reuses these four positions in its mask so
+   the two modes fade on one curve. */
 .section-band {
 	background: linear-gradient(
 		to bottom,
@@ -292,15 +320,68 @@ function onKeydown(event: KeyboardEvent) {
 	);
 }
 
+/* **Translucent mode cannot repaint the surface at all, so it frosts instead.**
+   The template carries the arithmetic; the short of it is that `--surface` is
+   the panel's own alpha and painting it over the panel composites twice, which
+   at 0.65 lands a 0.88 strip on a 0.65 ground. There is no alpha that erases
+   text and leaves the ground alone, because the band covers both.
+
+   Blur is the property that can tell them apart. `backdrop-filter` inside the
+   webview samples the *page* — the desktop is composited by Windows afterwards
+   and is not reachable from here, which is the same fact that rules the filter
+   out for `.panel-surface` in main.css and is exactly what makes it right here:
+   the only thing under this band worth touching is the page's own rows. Blurring
+   a flat area returns the same flat area, so the ground comes through unchanged
+   while a line of text sliding under becomes a smear the heading sits clear of.
+   The tint on top is a veil rather than a surface — 35% of a token already down
+   at 0.6 — carrying just enough weight to lift the heading off that smear.
+
+   The fade moves into `mask-image`, which is what keeps one curve for two
+   layers: the mask thins the blur and the veil together over the same 8px tail,
+   with the same two interior stops rounding the corners a straight ramp would
+   leave. Doing it in the gradient instead would fade the tint while the blur ran
+   to a hard edge.
+
+   The layer this promotes is one 441×32 band per *section*, which is what keeps
+   a blur radius that would be expensive on a full-viewport surface cheap here.
+
+   **Neither accessibility preference is answered again in this rule; both fall
+   back to the gradient above, which is the stronger band.** A stated preference
+   for reduced transparency is a preference against exactly this material, and
+   `prefers-contrast: more` already hands `--surface-alpha` back to 0.9 in
+   main.css — so opting out is all either one needs. */
+@media (prefers-reduced-transparency: no-preference) and (not (prefers-contrast: more)) {
+	:global(.translucent) .section-band {
+		background: color-mix(in oklab, var(--surface) 35%, transparent);
+		backdrop-filter: blur(10px);
+		mask-image: linear-gradient(
+			to bottom,
+			black calc(100% - 8px),
+			oklch(0 0 0 / 0.74) calc(100% - 5.5px),
+			oklch(0 0 0 / 0.26) calc(100% - 2.5px),
+			transparent
+		);
+	}
+}
+
 /* The one appearance that needs the band stated twice. Forced colours rewrite
    `background-color` to `Canvas` but leave `background-image` alone, so the
    gradient would survive as an author-coloured strip across a system-coloured
    panel — the only band in the app that ignores the user's palette. Nothing of
    the fade is worth that: up there the band's whole job is to erase, and an
-   opaque `Canvas` does it. */
+   opaque `Canvas` does it.
+
+   Both selectors, and the mask and the filter withdrawn by name: the frosted
+   rule is a class more specific, so a single `.section-band` here would lose to
+   it and leave the one mode that must be opaque see-through. Whether forced
+   colours also reports a contrast preference is the platform's business, not
+   something to lean on. */
 @media (forced-colors: active) {
-	.section-band {
+	.section-band,
+	:global(.translucent) .section-band {
 		background: Canvas;
+		backdrop-filter: none;
+		mask-image: none;
 	}
 }
 </style>

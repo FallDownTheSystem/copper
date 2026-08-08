@@ -12,13 +12,21 @@
  * over an acrylic backdrop; a second layer would make this view visibly darker
  * than the list it transitions from.
  */
-import type { DoubleClickAction, InsertionPoint } from '@/composables/useSettings'
 import {
-	ACCENT_COLORS,
-	NEUTRAL_TONES,
-	type AccentColor,
-	type NeutralTone,
-} from '@/lib/palette'
+	DEFAULT_PANEL_HEIGHT,
+	DEFAULT_PANEL_WIDTH,
+	PANEL_HEIGHT_MAX,
+	PANEL_HEIGHT_MIN,
+	PANEL_WIDTH_MAX,
+	PANEL_WIDTH_MIN,
+	VIBRANCY_MAX,
+	VIBRANCY_MIN,
+	VIBRANCY_STEP,
+	formatVibrancy,
+	type DoubleClickAction,
+	type InsertionPoint,
+} from '@/composables/useSettings'
+import { ACCENT_COLORS, NEUTRAL_TONES, type AccentColor, type NeutralTone } from '@/lib/palette'
 
 const {
 	shortcuts,
@@ -35,6 +43,10 @@ const {
 	translucent,
 	neutralTone,
 	accentColor,
+	vibrancy,
+	resizable,
+	panelWidth,
+	panelHeight,
 	errorFor,
 	refresh,
 	setTheme,
@@ -50,6 +62,10 @@ const {
 	setTranslucency,
 	setNeutralTone,
 	setAccentColor,
+	previewVibrancy,
+	setVibrancy,
+	setResizable,
+	setPanelSize,
 } = useSettings()
 const { isRecording, cancel } = useShortcutRecorder()
 const { showList } = useView()
@@ -81,6 +97,9 @@ const linkPreviewsError = errorFor('linkPreviews')
 const translucentError = errorFor('translucent')
 const neutralError = errorFor('neutral')
 const accentError = errorFor('accent')
+const vibrancyError = errorFor('vibrancy')
+const resizableError = errorFor('resizable')
+const panelSizeError = errorFor('panelSize')
 const summonError = errorFor('summon')
 const captureError = errorFor('capture')
 
@@ -115,6 +134,12 @@ onMounted(() => {
  */
 onBeforeUnmount(() => {
 	void cancel()
+	// The preview belongs to a drag, and there is no drag once this view is gone.
+	// Reka emits no `valueCommit` for a drag that ends where it started, so without
+	// this a nudge-and-return would leave a preview standing over `settings.json`
+	// for the rest of the session — harmless while the two agree, wrong the moment
+	// a pull disagrees.
+	previewVibrancy(null)
 	// The status itself is module-scoped and survives, so a download started here
 	// and still running when the view closes is reported correctly on the way back
 	// in. Only the listener comes down, which is what stops repeated visits
@@ -293,10 +318,12 @@ const summonNote = computed(() => {
 		</header>
 
 		<div class="thin-scrollbar min-h-0 min-w-0 flex-1 space-y-6 overflow-y-auto px-4 py-4">
-			<!-- "Appearance" rather than "Theme": the section holds three rows now and
-			     the theme is only the first of them. Light-or-dark, the grey and the
-			     accent are one decision made in three parts, and in that order — both
-			     palettes are read against whichever appearance the row above chose. -->
+			<!-- "Appearance" rather than "Theme": the theme is only the first row of
+			     several now. Light-or-dark, the grey, the accent and how strong that
+			     accent is are one decision made in four parts, and in that order — each
+			     row is read against whatever the rows above it chose. Translucency
+			     closes the section as the one change that is about the surface all four
+			     of them are painted on. -->
 			<SettingsSection title="Appearance">
 				<!-- `v-slot="{ errorId }"` on every row that can fail: the row owns the
 				     message and its live region, and hands the id down so the control
@@ -343,36 +370,50 @@ const summonNote = computed(() => {
 						@update:model-value="setAccentColor"
 					/>
 				</SettingsRow>
-			</SettingsSection>
 
-			<!-- Beside Theme rather than beside Startup: both are about the window
-			     itself, and the pin is the one setting here the user can also reach
-			     without opening this view. -->
-			<SettingsSection title="Panel">
-				<!-- The description says what turning it *off* costs, because that is the
-				     half nobody expects: the summon chord and the tray still work, and
-				     the panel simply stops floating over whatever is in front. -->
+				<!-- Directly under Accent color, because it is a dial *on* the row above
+				     rather than a setting beside it — and it is meaningless read on its
+				     own.
+
+				     The description names the design decision it lets the user overrule.
+				     Every family is scaled against the copper it was calibrated with, so
+				     the whole set arrives as restrained as the shipped panel; that reads
+				     as right on copper and as washed out on blue, which is exactly the
+				     complaint. Saying so is what makes an unlabelled multiplier a control
+				     with a reason.
+
+				     In `below` rather than the trailing column: a track squeezed into the
+				     strip beside a description would be about sixty pixels long, and a
+				     sixty-pixel track cannot be dragged with any precision. -->
 				<SettingsRow
-					v-slot="{ errorId }"
-					label="Keep on top"
-					description="Float the panel above other windows. Off, the summon shortcut and the tray still bring it back."
-					label-for="always-on-top"
-					:error="alwaysOnTopError"
+					label="Vibrancy"
+					description="How strong the accent is. Copper's palette is deliberately muted, which can leave the brighter colours looking washed out — turn this up to give them back their strength."
+					:error="vibrancyError"
 				>
-					<SettingsSwitch
-						id="always-on-top"
-						:model-value="alwaysOnTop"
-						:error-id="errorId"
-						@update:model-value="setAlwaysOnTop"
-					/>
+					<!-- `#below="{ errorId }"`, not `v-slot` on the row: the control lives
+					     down here, so the id has to arrive through this slot — and claiming
+					     the default slot from the tag alongside a named template is the one
+					     slot shape Vue refuses to compile. -->
+					<template #below="{ errorId }">
+						<SettingsSlider
+							:model-value="vibrancy"
+							:min="VIBRANCY_MIN"
+							:max="VIBRANCY_MAX"
+							:step="VIBRANCY_STEP"
+							label="Vibrancy"
+							:value-text="formatVibrancy(vibrancy)"
+							:error-id="errorId"
+							@update:model-value="previewVibrancy"
+							@commit="setVibrancy"
+						/>
+					</template>
 				</SettingsRow>
 
-				<!-- In "Panel" rather than "Appearance", even though it is the most
-				     visible appearance change in the view: this one is a property of the
-				     window — Windows paints the blur, not the stylesheet — and it is the
-				     row most likely to fail outright on a machine that cannot draw
-				     Acrylic. It belongs beside the other setting that asks Windows for
-				     something.
+				<!-- Moved here from "Panel" (2026-08-08). It is the most visible
+				     appearance change in the view, and a user looking for it looks under
+				     the heading that says appearance — the old argument for filing it by
+				     mechanism ("Windows paints the blur, not the stylesheet") described
+				     how it is implemented rather than what it is for.
 
 				     The description says what it costs rather than only what it does. A
 				     translucent panel over busy wallpaper is harder to read than an opaque
@@ -391,6 +432,58 @@ const summonNote = computed(() => {
 						:error-id="errorId"
 						@update:model-value="setTranslucency"
 					/>
+				</SettingsRow>
+			</SettingsSection>
+
+			<!-- The section is now about the window's geometry and nothing else: how
+			     big it opens, and whether the user may drag that. Its two former rows
+			     went to the headings that describe what they are *for* — translucency to
+			     Appearance, the pin to Behavior. -->
+			<SettingsSection title="Panel">
+				<!-- Off by default, and the description says what that buys rather than
+				     only what it costs: a fixed panel is one you cannot start dragging by
+				     clicking a few pixels too close to its edge. -->
+				<SettingsRow
+					v-slot="{ errorId }"
+					label="Resizable"
+					description="Let the panel be resized by dragging its edges. Off, a click near the edge can never start a drag by accident."
+					label-for="resizable"
+					:error="resizableError"
+				>
+					<SettingsSwitch
+						id="resizable"
+						:model-value="resizable"
+						:error-id="errorId"
+						@update:model-value="setResizable"
+					/>
+				</SettingsRow>
+
+				<!-- The description has to carry the relationship between the two rows,
+				     because nothing on screen shows it: a size dragged with the row above
+				     switched on is *not* written back here, so it lasts until the next
+				     launch and then this number wins. Without that sentence a user who
+				     dragged the panel wider, restarted, and found it narrow again would
+				     read it as the app forgetting. -->
+				<SettingsRow
+					label="Size"
+					description="The size the panel opens at. Resizing it by dragging lasts until you restart Copper; this is what it comes back to."
+					:error="panelSizeError"
+				>
+					<!-- `#below="{ errorId }"` for the reason the vibrancy row gives. -->
+					<template #below="{ errorId }">
+						<SettingsSizeRow
+							:width="panelWidth"
+							:height="panelHeight"
+							:min-width="PANEL_WIDTH_MIN"
+							:max-width="PANEL_WIDTH_MAX"
+							:min-height="PANEL_HEIGHT_MIN"
+							:max-height="PANEL_HEIGHT_MAX"
+							:default-width="DEFAULT_PANEL_WIDTH"
+							:default-height="DEFAULT_PANEL_HEIGHT"
+							:error-id="errorId"
+							@commit="setPanelSize"
+						/>
+					</template>
 				</SettingsRow>
 			</SettingsSection>
 
@@ -477,7 +570,34 @@ const summonNote = computed(() => {
 				</SettingsRow>
 			</SettingsSection>
 
-			<SettingsSection title="Sound and motion">
+			<!-- "Behavior" rather than "Sound and motion" (2026-08-08): the section had
+			     outgrown a title that named its two rows, and the name it needed was the
+			     one thing all three have in common — how the panel conducts itself while
+			     you are using it, as against how it looks or where it sits. -->
+			<SettingsSection title="Behavior">
+				<!-- Moved here from "Panel", which grouped it by the fact that it is a
+				     window property. That is not what a user looks it up by: staying in
+				     front is something the panel *does*, and it is the row here with the
+				     largest effect on how the app behaves, so it leads.
+
+				     The description says what turning it *off* costs, because that is the
+				     half nobody expects: the summon chord and the tray still work, and
+				     the panel simply stops floating over whatever is in front. -->
+				<SettingsRow
+					v-slot="{ errorId }"
+					label="Keep on top"
+					description="Float the panel above other windows. Off, the summon shortcut and the tray still bring it back."
+					label-for="always-on-top"
+					:error="alwaysOnTopError"
+				>
+					<SettingsSwitch
+						id="always-on-top"
+						:model-value="alwaysOnTop"
+						:error-id="errorId"
+						@update:model-value="setAlwaysOnTop"
+					/>
+				</SettingsRow>
+
 				<SettingsRow
 					v-slot="{ errorId }"
 					label="Sound"
@@ -514,8 +634,8 @@ const summonNote = computed(() => {
 				</SettingsRow>
 			</SettingsSection>
 
-			<!-- Its own section rather than a third row under "Sound and motion":
-			     that section is about how the panel behaves while you are looking at
+			<!-- Its own section rather than a fourth row under "Behavior": that
+			     section is about how the panel behaves while you are looking at
 			     it, and this is the only setting in the view that describes what
 			     Copper does while you are not. The description names the condition
 			     rather than leaving it to be discovered — with the panel on screen

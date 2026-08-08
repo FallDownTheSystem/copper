@@ -82,6 +82,18 @@ function onOpenChange(next: boolean) {
 		     comparing them cannot unsee. The field's edge wins: it is the wider
 		     object and the one the header's `px-3` was set for.
 
+		     **`pl-[7px]` against `pr-1.5`, which is the border being paid for.** What
+		     the panel lines up is the leading *mark* of every row — the search
+		     field's magnifier at 20px from the panel edge, and the section marker
+		     and completion box brought onto it — and this chip is the one of the
+		     four whose glyph sits behind a 1px border. Symmetric `px-1.5` put it at
+		     19px, one pixel adrift in a column of four; the extra pixel goes on the
+		     leading side alone, where the border took it. It runs against the usual
+		     rule that a leading icon gets *less* padding than the label side, and
+		     that rule is about optical balance inside one control while this is
+		     about a shared edge across four of them. A pixel is also below where the
+		     imbalance is visible; 19 against 20 is not.
+
 		     `rounded-inset` rather than any step of the surface ramp: a `text-label`
 		     line inside `py-0.5` is about 21px tall, so half its height is ~10px and
 		     every step on that ramp — `sm` included, now that it is 12px — lands past
@@ -91,7 +103,7 @@ function onOpenChange(next: boolean) {
 			type="button"
 			:aria-label="`Active section: ${name}, ${spokenCount}. Switch section`"
 			:title="name"
-			class="text-accent-text hover:bg-surface-hover active:bg-surface-active focus-ring squircle border-separator flex min-w-0 max-w-full items-center gap-1.5 rounded-inset border px-1.5 py-0.5 transition-colors duration-fast"
+			class="text-accent-text hover:bg-surface-hover active:bg-surface-active focus-ring squircle border-separator flex min-w-0 max-w-full items-center gap-1.5 rounded-inset border py-0.5 pr-1.5 pl-[7px] transition-colors duration-fast"
 		>
 			<IconLucideListTree class="size-3.5 shrink-0" aria-hidden="true" focusable="false" />
 			<span class="truncate text-label font-semibold uppercase">{{ name }}</span>

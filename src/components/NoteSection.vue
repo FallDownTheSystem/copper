@@ -127,7 +127,10 @@ onMounted(() => {
 		     state is additive; the headers stay visible either way, because hiding
 		     where a capture will land is worst exactly when the list is empty. -->
 		<div v-if="noteIds.length === 0 && active && !collapsed" role="row">
-			<div role="gridcell" class="text-text-secondary px-3 py-1 text-meta">
+			<!-- `px-4` joins the leading-mark column: the completion box and the marker
+			     dot land at 16px inside the region, and a line of text starting anywhere
+			     else reads as a stray. -->
+			<div role="gridcell" class="text-text-secondary px-4 py-1 text-meta">
 				No notes in this section yet.
 			</div>
 		</div>

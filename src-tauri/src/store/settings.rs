@@ -29,9 +29,41 @@ const MAX_RECENTS: usize = 20;
 
 pub const FILE_NAME: &str = "settings.json";
 
+/// The panel's shipped size, and the same fact `panel::PANEL_WIDTH` and
+/// `tauri.conf.json` each declare. `panel`'s unit tests tie the three together;
+/// the numbers live here as well because a *stored* default has to be readable
+/// without the window module.
+const DEFAULT_PANEL_WIDTH: f64 = 440.0;
+const DEFAULT_PANEL_HEIGHT: f64 = 760.0;
+
+/// The usable range of each dial, as `(min, max)`.
+///
+/// A tuple rather than a `RangeInclusive` because `RangeInclusive::new` is not
+/// const, and these have to be constants: they are the one declaration of the
+/// bounds, read by the repair below *and* by `panel::set_panel_size` through
+/// [`clamp_panel_size`], so a hand-edited file and a command cannot disagree
+/// about what a legal size is.
+///
+/// The vibrancy floor is 0.5 rather than 0 because zero chroma is not a duller
+/// palette, it is a greyscale app — a state the picker has no way to describe as
+/// deliberate and the user has no obvious way out of. The ceiling is where the
+/// accent stops reading as copper.
+const VIBRANCY_BOUNDS: (f64, f64) = (0.5, 2.0);
+/// Narrow enough that the composer's line length stays sane, wide enough for a
+/// panel used as a primary window. The floor is also the drag floor
+/// `panel::apply_resizable` installs, by construction rather than by coincidence.
+pub const PANEL_WIDTH_BOUNDS: (f64, f64) = (360.0, 1200.0);
+pub const PANEL_HEIGHT_BOUNDS: (f64, f64) = (480.0, 1600.0);
+
 /// Serialize only. Reading goes through [`RawSettings`], which repairs field by
 /// field rather than failing the whole file over one bad value.
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+///
+/// `Eq` is deliberately absent where the rest of the store's shapes have it: the
+/// size and vibrancy keys are `f64`, which is not `Eq`. Nothing here asks for
+/// more than "did this change" — the store's write guard — so `PartialEq` is the
+/// whole requirement, and deriving it by hand to keep `Eq` would be inventing a
+/// total order over settings nobody needs.
+#[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
 	pub recents: Vec<String>,
@@ -50,6 +82,10 @@ pub struct Settings {
 	pub translucent: bool,
 	pub neutral: String,
 	pub accent: String,
+	pub vibrancy: f64,
+	pub resizable: bool,
+	pub panel_width: f64,
+	pub panel_height: f64,
 }
 
 /// Where a fresh note goes inside its section.
@@ -134,7 +170,50 @@ impl Default for Settings {
 			// a name nothing recognises renders as these two anyway.
 			neutral: "warm".to_string(),
 			accent: "copper".to_string(),
+			// One, meaning the palette exactly as shipped. A multiplier rather than a
+			// flag because "more colourful" has no single right amount, and a
+			// multiplier's neutral position is the one number that changes nothing —
+			// which is what an upgraded install has to render.
+			vibrancy: 1.0,
+			// Off, matching `resizable: false` in `tauri.conf.json`. The relationship
+			// is `always_on_top`'s: the config declares what the window is *born*
+			// with, this is the stored preference that may contradict it, and the
+			// setting exists to let the user opt in rather than to change what an
+			// upgraded install does before they touch it.
+			resizable: false,
+			// The size every build so far has shipped. What is stored is the panel's
+			// **default** size, not its current one — a manual drag is session-only by
+			// design, see the ruling on `set_panel_size` — so these move only when the
+			// settings view writes them.
+			panel_width: DEFAULT_PANEL_WIDTH,
+			panel_height: DEFAULT_PANEL_HEIGHT,
 		}
+	}
+}
+
+/// Brings a size inside [`PANEL_WIDTH_BOUNDS`] / [`PANEL_HEIGHT_BOUNDS`].
+///
+/// Shared with `panel::set_panel_size` so the command and the repair below
+/// cannot drift: a size the file would have been corrected for must not be
+/// reachable by asking for it politely.
+///
+/// A non-finite value falls back to the default rather than clamping. `f64::clamp`
+/// returns NaN for a NaN input rather than a bound, so clamping alone would let an
+/// infinity or a NaN straight through to `set_size`; JSON cannot carry either, but
+/// the command's parameters are `f64` and arrive from JavaScript, where both are
+/// ordinary numbers.
+pub fn clamp_panel_size(width: f64, height: f64) -> (f64, f64) {
+	(
+		clamp_or_default(width, PANEL_WIDTH_BOUNDS, DEFAULT_PANEL_WIDTH),
+		clamp_or_default(height, PANEL_HEIGHT_BOUNDS, DEFAULT_PANEL_HEIGHT),
+	)
+}
+
+fn clamp_or_default(value: f64, (min, max): (f64, f64), default: f64) -> f64 {
+	if value.is_finite() {
+		value.clamp(min, max)
+	} else {
+		default
 	}
 }
 
@@ -178,6 +257,10 @@ struct RawSettings {
 	translucent: Value,
 	neutral: Value,
 	accent: Value,
+	vibrancy: Value,
+	resizable: Value,
+	panel_width: Value,
+	panel_height: Value,
 }
 
 impl RawSettings {
@@ -300,6 +383,35 @@ impl RawSettings {
 		let neutral = repair_named(self.neutral, "neutral", defaults.neutral, &mut notices);
 		let accent = repair_named(self.accent, "accent", defaults.accent, &mut notices);
 
+		let resizable = repair_flag(
+			self.resizable,
+			"resizable",
+			defaults.resizable,
+			&mut notices,
+		);
+
+		let vibrancy = repair_number(
+			self.vibrancy,
+			"vibrancy",
+			defaults.vibrancy,
+			VIBRANCY_BOUNDS,
+			&mut notices,
+		);
+		let panel_width = repair_number(
+			self.panel_width,
+			"panelWidth",
+			defaults.panel_width,
+			PANEL_WIDTH_BOUNDS,
+			&mut notices,
+		);
+		let panel_height = repair_number(
+			self.panel_height,
+			"panelHeight",
+			defaults.panel_height,
+			PANEL_HEIGHT_BOUNDS,
+			&mut notices,
+		);
+
 		let mut settings = Settings {
 			recents,
 			active_space,
@@ -317,6 +429,10 @@ impl RawSettings {
 			translucent,
 			neutral,
 			accent,
+			vibrancy,
+			resizable,
+			panel_width,
+			panel_height,
 		};
 		settings.clamp();
 		(settings, notices)
@@ -343,8 +459,51 @@ fn repair_named(raw: Value, key: &str, default: String, notices: &mut Vec<String
 	}
 }
 
+/// A preference stored as a number with a usable range — `vibrancy`,
+/// `panelWidth`, `panelHeight`.
+///
+/// The one repair here that goes further than [`repair_named`] and [`repair_flag`]
+/// do, and the reason is that nothing downstream narrows these. A palette name
+/// nothing recognises collapses to the shipped value wherever it is read, so it is
+/// not damage; a `panelWidth` of 40000 is applied to the window exactly as written
+/// and puts the panel where it cannot be used. So an out-of-range number is
+/// clamped **and reported** rather than either kept or silently corrected — the
+/// user asked for a size they did not get, and the notice is the only place that
+/// can say so.
+///
+/// The `Value::Null` arm carries the same weight it does in the other two: an
+/// absent key is the ordinary case for a file written before the feature existed,
+/// and a notice there would make it look damaged.
+fn repair_number(
+	raw: Value,
+	key: &str,
+	default: f64,
+	(min, max): (f64, f64),
+	notices: &mut Vec<String>,
+) -> f64 {
+	let value = match raw {
+		Value::Null => return default,
+		Value::Number(number) => number.as_f64().filter(|value| value.is_finite()),
+		_ => None,
+	};
+	let Some(value) = value else {
+		notices.push(format!(
+			"\"{key}\" was not a number and has been reset to {default}."
+		));
+		return default;
+	};
+	if value < min || value > max {
+		let clamped = value.clamp(min, max);
+		notices.push(format!(
+			"\"{key}\" was outside {min}–{max} and has been brought back to {clamped}."
+		));
+		return clamped;
+	}
+	value
+}
+
 /// A preference stored as a plain boolean — `sounds`, `alwaysOnTop`,
-/// `translucent`.
+/// `translucent`, `resizable`.
 ///
 /// The `Value::Null` arm carries the same weight it does in [`repair_named`]: it
 /// is the ordinary case for a key written before its feature existed, and a
@@ -497,6 +656,24 @@ impl Settings {
 		if let Some(accent) = patch.accent {
 			self.accent = accent;
 		}
+		if let Some(vibrancy) = patch.vibrancy {
+			self.vibrancy = vibrancy;
+		}
+		if let Some(resizable) = patch.resizable {
+			self.resizable = resizable;
+		}
+		// Written as sent, unclamped, exactly as `theme` and the palette names are.
+		// The bounds are enforced where a value can actually reach the window — on the
+		// way in through [`RawSettings::repair`], and on the way out through
+		// `panel::set_panel_size`, which is the only caller that resizes anything. A
+		// clamp here as well would silently rewrite what the settings view asked for
+		// without a notice, which is the one thing the repair path is careful not to do.
+		if let Some(panel_width) = patch.panel_width {
+			self.panel_width = panel_width;
+		}
+		if let Some(panel_height) = patch.panel_height {
+			self.panel_height = panel_height;
+		}
 	}
 }
 
@@ -537,6 +714,21 @@ pub struct SettingsPatch {
 	pub neutral: Option<String>,
 	#[serde(default)]
 	pub accent: Option<String>,
+	/// The only one of the four with no Rust side at all: it is a chroma multiplier
+	/// the frontend applies to its own palette, so the ordinary patch path is the
+	/// whole feature and a dedicated command would have nothing to do.
+	#[serde(default)]
+	pub vibrancy: Option<f64>,
+	/// Reachable through the patch as well as through the dedicated command, the
+	/// arrangement `translucent` and `always_on_top` already have: the command owns
+	/// the window half, and the key still has to exist here or [`Settings::apply_patch`]
+	/// could not restore it when that command's own write fails.
+	#[serde(default)]
+	pub resizable: Option<bool>,
+	#[serde(default)]
+	pub panel_width: Option<f64>,
+	#[serde(default)]
+	pub panel_height: Option<f64>,
 }
 
 /// Distinguishes "key absent" from "key present and null".
@@ -749,8 +941,154 @@ mod tests {
 			 \"motion\": \"auto\",\n  \"insertionPoint\": \"bottom\",\n  \"doubleClick\": \
 			 \"copy\",\n  \"alwaysOnTop\": true,\n  \"showCreated\": false,\n  \
 			 \"captureNotifications\": true,\n  \"linkPreviews\": false,\n  \"translucent\": \
-			 false,\n  \"neutral\": \"warm\",\n  \"accent\": \"copper\"\n}\n"
+			 false,\n  \"neutral\": \"warm\",\n  \"accent\": \"copper\",\n  \"vibrancy\": 1.0,\n  \
+			 \"resizable\": false,\n  \"panelWidth\": 440.0,\n  \"panelHeight\": 760.0\n}\n"
 		);
+	}
+
+	/// The three numbers are `f64`, so the pin above is also a claim about how they
+	/// are *spelled* on disk. `440.0` rather than `440` is what serde writes and what
+	/// every existing `settings.json` will therefore contain; a future change that
+	/// made them integers would rewrite the file for every user on first launch and
+	/// break the pin in a way that is easy to "fix" by editing the expected string.
+	#[test]
+	fn the_numeric_keys_are_written_as_floats() {
+		let text = to_git_json(&Settings::default()).unwrap();
+		assert!(text.contains("\"vibrancy\": 1.0"), "{text}");
+		assert!(text.contains("\"panelWidth\": 440.0"), "{text}");
+		assert!(text.contains("\"panelHeight\": 760.0"), "{text}");
+	}
+
+	/// The window round's four keys join the guarantee every key added since
+	/// task-012 holds: a `settings.json` written by an earlier build has none of
+	/// them, and reading one must be indistinguishable from reading a current file.
+	/// The visible cost of getting these backwards is a panel that comes back a
+	/// different size, or one that has suddenly grown a drag handle, because the
+	/// user updated.
+	#[test]
+	fn a_file_without_the_window_keys_reads_as_the_shipped_panel() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"theme":"dark","translucent":true}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(loaded.notice.is_none(), "absence was reported as damage: {:?}", loaded.notice);
+		assert_eq!(siblings(dir.path()), [FILE_NAME], "the file was set aside");
+		assert_eq!(loaded.settings.vibrancy, 1.0, "an absent key must not shift the palette");
+		assert!(!loaded.settings.resizable, "an absent key must not make the panel draggable");
+		assert_eq!(loaded.settings.panel_width, DEFAULT_PANEL_WIDTH);
+		assert_eq!(loaded.settings.panel_height, DEFAULT_PANEL_HEIGHT);
+		// The rest of the file survived rather than being defaulted alongside them.
+		assert_eq!(loaded.settings.theme, "dark");
+		assert!(loaded.settings.translucent);
+	}
+
+	#[test]
+	fn wrong_typed_window_values_are_repaired_and_reported() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(
+			dir.path(),
+			r#"{"vibrancy":"lots","resizable":"sure","panelWidth":"wide","panelHeight":[760]}"#,
+		);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert_eq!(loaded.settings.vibrancy, 1.0);
+		assert!(!loaded.settings.resizable);
+		assert_eq!(loaded.settings.panel_width, DEFAULT_PANEL_WIDTH);
+		assert_eq!(loaded.settings.panel_height, DEFAULT_PANEL_HEIGHT);
+		let notice = loaded.notice.expect("repairs must be reported");
+		for expected in ["vibrancy", "resizable", "panelWidth", "panelHeight"] {
+			assert!(notice.contains(expected), "{expected} unreported in: {notice}");
+		}
+	}
+
+	/// The half that separates these keys from `neutral` and `accent`: a number of
+	/// the right type that is out of range is *not* narrowed anywhere downstream, so
+	/// it has to be corrected here — and reported, because the user asked for a size
+	/// they are not going to get.
+	#[test]
+	fn out_of_range_window_values_are_clamped_and_reported() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(
+			dir.path(),
+			r#"{"vibrancy":9,"panelWidth":40000,"panelHeight":10}"#,
+		);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert_eq!(loaded.settings.vibrancy, VIBRANCY_BOUNDS.1);
+		assert_eq!(loaded.settings.panel_width, PANEL_WIDTH_BOUNDS.1);
+		assert_eq!(loaded.settings.panel_height, PANEL_HEIGHT_BOUNDS.0);
+		let notice = loaded.notice.expect("clamps must be reported");
+		for expected in ["vibrancy", "panelWidth", "panelHeight"] {
+			assert!(notice.contains(expected), "{expected} unreported in: {notice}");
+		}
+	}
+
+	#[test]
+	fn in_range_window_values_survive_a_load_unreported() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(
+			dir.path(),
+			r#"{"vibrancy":1.4,"resizable":true,"panelWidth":620,"panelHeight":900}"#,
+		);
+
+		let loaded = load(&path);
+
+		assert!(loaded.notice.is_none(), "a usable value was reported: {:?}", loaded.notice);
+		assert_eq!(loaded.settings.vibrancy, 1.4);
+		assert!(loaded.settings.resizable);
+		// An integer in the file is a perfectly good `f64`; only the *written* form
+		// is pinned to a decimal.
+		assert_eq!(loaded.settings.panel_width, 620.0);
+		assert_eq!(loaded.settings.panel_height, 900.0);
+	}
+
+	#[test]
+	fn the_size_clamp_is_the_one_the_repair_uses() {
+		assert_eq!(
+			clamp_panel_size(DEFAULT_PANEL_WIDTH, DEFAULT_PANEL_HEIGHT),
+			(DEFAULT_PANEL_WIDTH, DEFAULT_PANEL_HEIGHT),
+			"the shipped size must survive its own clamp"
+		);
+		assert_eq!(
+			clamp_panel_size(40000.0, 10.0),
+			(PANEL_WIDTH_BOUNDS.1, PANEL_HEIGHT_BOUNDS.0)
+		);
+		assert_eq!(
+			clamp_panel_size(0.0, f64::MAX),
+			(PANEL_WIDTH_BOUNDS.0, PANEL_HEIGHT_BOUNDS.1)
+		);
+		// The case `f64::clamp` alone gets wrong: it returns NaN rather than a bound,
+		// and a NaN reaching `set_size` is a window of no size at all.
+		assert_eq!(
+			clamp_panel_size(f64::NAN, f64::INFINITY),
+			(DEFAULT_PANEL_WIDTH, DEFAULT_PANEL_HEIGHT)
+		);
+	}
+
+	#[test]
+	fn a_patch_sets_the_window_keys_independently() {
+		let mut settings = Settings::default();
+
+		settings.apply_patch(patch(r#"{"vibrancy":1.6}"#));
+		assert_eq!(settings.vibrancy, 1.6);
+		assert!(!settings.resizable, "an absent key must leave the stored value alone");
+		assert_eq!(settings.panel_width, DEFAULT_PANEL_WIDTH);
+
+		settings.apply_patch(patch(r#"{"resizable":true}"#));
+		assert_eq!(settings.vibrancy, 1.6, "a resizable patch must not reset the vibrancy");
+		assert!(settings.resizable);
+
+		settings.apply_patch(patch(r#"{"panelWidth":620,"panelHeight":900}"#));
+		assert!(settings.resizable, "a size patch must not fix the panel again");
+		assert_eq!(settings.panel_width, 620.0);
+		assert_eq!(settings.panel_height, 900.0);
+		assert_eq!(settings.accent, "copper", "a size patch must not touch the palette");
 	}
 
 	/// The appearance keys join the guarantee every key added since task-012

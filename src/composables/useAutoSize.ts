@@ -32,8 +32,18 @@ export function useAutoSize(
 	return { supportsFieldSizing, scheduleAutoSize }
 }
 
-/** Measured, not assumed: the CSS cap is `5lh`, and a hardcoded pixel equivalent
- *  drifts from it at 200% browser zoom and at any user font size. */
+/**
+ * Measured, not assumed: a hardcoded pixel equivalent drifts from the CSS cap at
+ * 200% browser zoom and at any user font size.
+ *
+ * `maxLines` counts *content* lines, and the padding and border are added on top
+ * — which is what `height` means on a `content-box` textarea's inline style, and
+ * what the caller's `max-height` therefore has to say too. The composer's cap
+ * used to be a bare `max-h-[5lh]`, capping the border box, so this path allowed
+ * 14px more than CSS did and the two disagreed about where the field stopped.
+ * Now both read "four whole lines plus the chrome around them", and a call site
+ * that writes only `<n>lh` is the shape of that bug returning.
+ */
 function maxHeight(element: HTMLTextAreaElement, maxLines: number | undefined) {
 	if (maxLines === undefined) return Number.POSITIVE_INFINITY
 

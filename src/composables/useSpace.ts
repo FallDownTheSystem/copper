@@ -125,6 +125,21 @@ export type Settings = {
 	 *  `theme` and `motion` are narrowed in `useSettings`. */
 	neutral: string
 	accent: string
+	/** How far the chosen accent's chroma is scaled on top of the family's own
+	 *  multiplier. 1 is the palette as shipped. The store repairs anything
+	 *  outside 0.5–2, and `useSettings` clamps to the same band on read for the
+	 *  same reason `theme` is narrowed there. Deliberately does not touch the
+	 *  greys — `useTheme` records why. */
+	vibrancy: number
+	/** Whether Windows lets the panel's edges be dragged. A genuine boolean, like
+	 *  `alwaysOnTop`, and applied the same way: the window half lives in Rust and
+	 *  the panel only renders the switch. */
+	resizable: boolean
+	/** The size the panel window is *created* at, in logical pixels. A drag-resize
+	 *  is never written back here, which is what makes a dragged size last only
+	 *  until the next launch. The store repairs 360–1200 and 480–1600. */
+	panelWidth: number
+	panelHeight: number
 }
 
 /**

@@ -433,6 +433,12 @@ function onContextMenu(event: MouseEvent) {
 				     flush against the panel edge, which puts their rounded corners and
 				     the selection ring's outer edge hard against the window.
 
+				     It insets the *cards*, and the section band deliberately escapes it:
+				     that row cancels this with `-mx-1` and gives the 4px back through its
+				     own padding, so the pinned fill reaches both edges while the heading
+				     stays on the same column as everything else. A row that needs its
+				     background to be the region's own edge has to reach past this.
+
 				     **No top padding, so the first section heading starts flush against
 				     the top of the region.** The heading pins itself there the moment
 				     anything scrolls under it, and 8px of lead-in meant the band jumped

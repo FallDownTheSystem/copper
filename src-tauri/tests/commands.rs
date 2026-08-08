@@ -52,7 +52,7 @@ const COMMANDS: [&str; 21] = [
 ];
 
 /// The commands later phases added beside the store's twenty.
-const EXTRA_COMMANDS: [&str; 35] = [
+const EXTRA_COMMANDS: [&str; 37] = [
 	"clipboard_write_text",
 	"editor_handoffs",
 	"editor_open_note",
@@ -106,6 +106,13 @@ const EXTRA_COMMANDS: [&str; 35] = [
 	// same centralisation reason — and a command of its own because the backdrop
 	// is native state the patch path cannot apply or undo.
 	"set_translucency",
+	// The sizing round's pair, in `panel.rs` for the same centralisation reason.
+	// Commands rather than patch keys because both touch native window state that
+	// has to be applied, persisted and undone as one unit; the settings keys they
+	// write hold the panel's *default* size — a manual drag-resize is deliberately
+	// session-only.
+	"set_resizable",
+	"set_panel_size",
 	// Task-020. Note what is *not* here: nothing for `tauri-plugin-http`. Its
 	// capability entry would need a static URL scope, and a preview is fetched for
 	// whatever host a note happens to name — so the scope would have to be
@@ -129,9 +136,12 @@ const EXTRA_COMMANDS: [&str; 35] = [
 ];
 
 /// Spec 8.1c. Every argument name in the whole surface.
-const PARAMETERS: [&str; 20] = [
+const PARAMETERS: [&str; 22] = [
 	"patch", "path", "name", "body", "section", "id", "ids", "done", "index", "text", "theme",
 	"chord", "trigger", "token", "target", "enabled",
+	// `set_panel_size` is the first command to take either; both are single
+	// lowercase words, so their Rust and JavaScript spellings cannot diverge.
+	"width", "height",
 	// Task-011. `paths` is the plural of one already here and `file` is the
 	// content-addressed bare filename, deliberately not spelled `fileName` — a
 	// two-word parameter would have one spelling in Rust and another in
@@ -407,10 +417,14 @@ fn settings_cross_the_boundary_in_camel_case() {
 		"translucent",
 		"neutral",
 		"accent",
+		"vibrancy",
+		"resizable",
+		"panelWidth",
+		"panelHeight",
 	] {
 		assert!(payload.get(key).is_some(), "get_settings is missing {key}: {payload}");
 	}
-	assert_eq!(payload.as_object().unwrap().len(), 16, "get_settings grew a field");
+	assert_eq!(payload.as_object().unwrap().len(), 20, "get_settings grew a field");
 	assert_eq!(payload["shortcuts"]["capture"], "Shift Shift");
 	assert_eq!(payload["shortcuts"]["summon"], "Ctrl+Shift+Space");
 	// The shipped defaults, which are the whole of "this task changes no
@@ -445,6 +459,12 @@ fn settings_cross_the_boundary_in_camel_case() {
 	assert_eq!(payload["translucent"], false);
 	assert_eq!(payload["neutral"], "warm");
 	assert_eq!(payload["accent"], "copper");
+	// The sizing round ships as a no-op: full accent chroma, the fixed window
+	// every earlier build had, at the size `tauri.conf.json` declares.
+	assert_eq!(payload["vibrancy"], 1.0);
+	assert_eq!(payload["resizable"], false);
+	assert_eq!(payload["panelWidth"], 440.0);
+	assert_eq!(payload["panelHeight"], 760.0);
 }
 
 /// Task-020's two shapes. `link_preview` answers `null` far more often than it

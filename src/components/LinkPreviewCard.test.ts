@@ -56,6 +56,10 @@ function makeSettings(linkPreviews: boolean): Settings {
 		translucent: false,
 		neutral: 'warm',
 		accent: 'copper',
+		vibrancy: 1,
+		resizable: false,
+		panelWidth: 440,
+		panelHeight: 760,
 	}
 }
 

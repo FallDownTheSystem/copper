@@ -8,7 +8,10 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::diagnostics;
-use crate::store::settings::{PanelPosition, Settings, SettingsPatch};
+use crate::store::settings::{
+	clamp_panel_size, PanelPosition, Settings, SettingsPatch, PANEL_HEIGHT_BOUNDS,
+	PANEL_WIDTH_BOUNDS,
+};
 use crate::{store, ShellError};
 use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
 use windows::Win32::Graphics::Dwm::{
@@ -24,14 +27,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
 pub const PANEL_LABEL: &str = "main";
 
 /// The panel's declared logical size, as it appears in `tauri.conf.json`. These
-/// two and the config are separate declarations of one fact and **have to be
-/// changed together**; `the_constants_match_the_window_in_tauri_conf` reads the
-/// file and fails when they drift.
+/// two, the config and `settings.rs`'s `panelWidth`/`panelHeight` defaults are
+/// separate declarations of one fact and **have to be changed together**;
+/// `the_constants_match_the_window_in_tauri_conf` reads the file and
+/// `the_shipped_default_size_is_the_declared_one` reads the store, so neither can
+/// drift silently.
 ///
-/// A *declared* size rather than the panel's actual one. The window is
-/// `resizable: false`, so the user cannot change it — but [`fitted_logical_size`]
-/// shrinks it to fit a work area that cannot hold it, which is the one thing that
-/// makes these an upper bound rather than a constant.
+/// The size the window is *born* with, not the size it runs at. The live size is
+/// [`configured_size`], which the settings hold and the user can change — these
+/// only have to be right for the moments before [`install_panel_size`] has run.
 const PANEL_WIDTH: f64 = 440.0;
 const PANEL_HEIGHT: f64 = 760.0;
 
@@ -412,6 +416,227 @@ pub async fn set_translucency(enabled: bool, app: AppHandle) -> Result<Settings,
 	}
 }
 
+// --- size and resizing -------------------------------------------------------
+
+/// The live panel size, mirroring `settings.json`'s `panelWidth`/`panelHeight`.
+///
+/// A `Mutex` rather than the atomics [`PINNED`] and [`TRANSLUCENT`] use, because
+/// this mirror is a *pair*: read as two atomics, a size command landing between
+/// the two loads would hand [`fit_to_work_area`] one axis of the old size and one
+/// of the new, and place the panel against a rectangle that was never asked for.
+/// One lock makes the pair indivisible; nothing reads it on a hot path.
+///
+/// It starts at the declared size because that is what `tauri.conf.json` creates
+/// the window at, so until [`install_panel_size`] has run the mirror and the
+/// window agree — the same property [`TRANSLUCENT`]'s `false` gives.
+static PANEL_SIZE: Mutex<(f64, f64)> = Mutex::new((PANEL_WIDTH, PANEL_HEIGHT));
+
+/// The panel's configured logical size: what the settings ask for, before any
+/// display has been consulted.
+fn configured_size() -> (f64, f64) {
+	*PANEL_SIZE
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn set_configured_size(size: (f64, f64)) {
+	*PANEL_SIZE
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner) = size;
+}
+
+/// Applies the window's drag handles, and with them the floor a drag may not go
+/// below.
+///
+/// A minimum and deliberately **no maximum**. The floor exists because a drag has
+/// no undo: below [`PANEL_WIDTH_BOUNDS`]'s lower bound the composer and the
+/// toolbar collide, and a user who collapses the panel to a sliver has no visible
+/// way back. A ceiling would be inventing a limit that is already enforced —
+/// Windows will not let a drag leave the work area, and [`size_to_fit`] shrinks the
+/// panel to what the display can hold on the next launch regardless.
+///
+/// The floor is cleared rather than left standing when the setting goes off, so
+/// the two branches are exact opposites: toggling twice leaves the window with the
+/// constraints it was found with rather than with a limit nothing put there.
+fn apply_resizable(window: &WebviewWindow, enabled: bool) -> tauri::Result<()> {
+	window.set_resizable(enabled)?;
+	if enabled {
+		window.set_min_size(Some(LogicalSize::new(
+			PANEL_WIDTH_BOUNDS.0,
+			PANEL_HEIGHT_BOUNDS.0,
+		)))
+	} else {
+		window.set_min_size(None::<LogicalSize<f64>>)
+	}
+}
+
+/// Records the size and applies it, shrunk to the display the panel is on, then
+/// checks the panel is still reachable.
+///
+/// The mirror moves *first*, because [`size_to_fit`] reads it: the fit has to be
+/// computed against the size that was asked for, not the one the window still has.
+///
+/// The reachability check is the same one every reveal runs, and it is needed here
+/// for a reason the reveal path does not have: growing the panel moves its right
+/// and bottom edges without moving its position, so a window that was on-screen at
+/// 440 wide can have its header pushed past the edge at 1200.
+fn apply_panel_size(window: &WebviewWindow, size: (f64, f64)) -> tauri::Result<()> {
+	set_configured_size(size);
+	let Ok(position) = window.outer_position() else {
+		// No position means no display to measure against, so the size applies
+		// unfitted — closer to what was asked for than refusing to resize at all.
+		return window.set_size(LogicalSize::new(size.0, size.1));
+	};
+	size_to_fit(
+		window,
+		PanelPosition {
+			x: position.x,
+			y: position.y,
+		},
+	)?;
+	ensure_reachable(window);
+	Ok(())
+}
+
+/// Startup. Never fails the launch, exactly as [`install_always_on_top`] does not.
+///
+/// Applies rather than merely recording, unlike [`install_translucency`]: nothing
+/// downstream is going to paint this on its own. [`restore_position`] runs
+/// immediately after and re-sizes the window against the display it places it on,
+/// but it gives up early when the monitor list is unreadable — and a size the user
+/// chose has to land in that case too, so it is applied unfitted here and narrowed
+/// a moment later.
+pub fn install_panel_size(app: &AppHandle, window: &WebviewWindow) {
+	let settings = store::commands::settings(app);
+	// Clamped on the way out as well as on the way in. The load-time repair already
+	// corrected the file, but `update_settings` can write these keys directly, so
+	// the value in memory is not guaranteed to have been through it.
+	let size = clamp_panel_size(settings.panel_width, settings.panel_height);
+	set_configured_size(size);
+
+	if let Err(err) = window.set_size(LogicalSize::new(size.0, size.1)) {
+		diagnostics::log_error(&format!(
+			"[copper] panel: could not apply the stored size: {err}"
+		));
+	}
+	if let Err(err) = apply_resizable(window, settings.resizable) {
+		diagnostics::log_error(&format!(
+			"[copper] panel: could not apply the resizable setting: {err}"
+		));
+	}
+}
+
+/// Serialises both writes below, exactly as [`PIN_WRITE`] and [`EFFECT_WRITE`] do
+/// for the band and the material, and for the same reason: apply-persist-undo is
+/// one transaction, and two requests a double-click apart would otherwise both
+/// read `previous` before either had applied anything.
+///
+/// **One lock for both commands**, not one each. They are not independent: a
+/// resize and a resizable toggle both end in `patch_settings`, and only one of the
+/// two can be the last writer — sharing the lock is what stops an undo from one
+/// restoring a `Settings` the other had already moved past.
+static SIZE_WRITE: Mutex<()> = Mutex::new(());
+
+/// Applies first, persists second, and undoes the application if the write fails
+/// — [`set_translucency`]'s shape, for the same reason it has it.
+#[tauri::command]
+pub async fn set_resizable(enabled: bool, app: AppHandle) -> Result<Settings, ShellError> {
+	let Some(window) = app.get_webview_window(PANEL_LABEL) else {
+		return Err(ShellError::Invalid(
+			"The panel window is not available.".to_owned(),
+		));
+	};
+
+	// Held across the whole sequence, with no `.await` inside it — see the note on
+	// `PIN_WRITE`, including why poisoning is recovered from rather than propagated.
+	let _serialised = SIZE_WRITE
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner);
+
+	// Read inside the lock, and read from the store rather than from a mirror of its
+	// own. `PINNED` and `TRANSLUCENT` exist because something else in this process
+	// reads them — the capture notice's band, the backdrop's material — and nothing
+	// reads `resizable` at all: the window is the only thing that holds it. A second
+	// copy would exist purely to be kept in sync.
+	let previous = store::commands::settings(&app).resizable;
+	if let Err(err) = apply_resizable(&window, enabled) {
+		return Err(ShellError::Invalid(format!(
+			"Copper couldn't change whether the panel can be resized: {err}"
+		)));
+	}
+
+	let patch = SettingsPatch {
+		resizable: Some(enabled),
+		..SettingsPatch::default()
+	};
+	match store::commands::patch_settings(&app, patch) {
+		Ok(settings) => Ok(settings),
+		Err(err) => {
+			let _ = apply_resizable(&window, previous);
+			Err(ShellError::Persist(format!(
+				"Copper couldn't save the resizable setting: {}",
+				err.message()
+			)))
+		}
+	}
+}
+
+/// Applies first, persists second, and undoes the application if the write fails
+/// — [`set_translucency`]'s shape again.
+///
+/// The clamp is [`clamp_panel_size`], which is the *same* function
+/// `RawSettings::repair` uses: a size the file would have been corrected for must
+/// not be reachable by asking for it politely. It happens before the lock because
+/// it touches nothing shared, and the clamped pair is what gets both applied and
+/// persisted, so the window and the file cannot end up describing different sizes.
+#[tauri::command]
+pub async fn set_panel_size(
+	width: f64,
+	height: f64,
+	app: AppHandle,
+) -> Result<Settings, ShellError> {
+	let Some(window) = app.get_webview_window(PANEL_LABEL) else {
+		return Err(ShellError::Invalid(
+			"The panel window is not available.".to_owned(),
+		));
+	};
+	let (width, height) = clamp_panel_size(width, height);
+
+	// Held across the whole sequence, with no `.await` inside it — see the note on
+	// `PIN_WRITE`.
+	let _serialised = SIZE_WRITE
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner);
+
+	// Read inside the lock, or this is the size the *other* request is in the middle
+	// of replacing.
+	let previous = configured_size();
+	if let Err(err) = apply_panel_size(&window, (width, height)) {
+		// The mirror was already moved, so put it back — and put the window back with
+		// it, or the panel keeps a size the file never records.
+		let _ = apply_panel_size(&window, previous);
+		return Err(ShellError::Invalid(format!(
+			"Copper couldn't resize the panel: {err}"
+		)));
+	}
+
+	let patch = SettingsPatch {
+		panel_width: Some(width),
+		panel_height: Some(height),
+		..SettingsPatch::default()
+	};
+	match store::commands::patch_settings(&app, patch) {
+		Ok(settings) => Ok(settings),
+		Err(err) => {
+			let _ = apply_panel_size(&window, previous);
+			Err(ShellError::Persist(format!(
+				"Copper couldn't save the panel size: {}",
+				err.message()
+			)))
+		}
+	}
+}
+
 /// Hides the panel. The window is never destroyed, only hidden.
 ///
 /// Every hide path also ends any recording session, which is why the call lives
@@ -626,28 +851,40 @@ fn is_reachable(saved: PanelPosition, grab: GrabRect, monitors: &[MonitorRect]) 
 	})
 }
 
-/// The panel's logical size on a given monitor: the declared size, shrunk on each
-/// axis to whatever the work area can actually hold.
+/// The panel's logical size on a given monitor: the **configured** size, shrunk on
+/// each axis to whatever the work area can actually hold.
 ///
-/// **Scale is why this exists.** `tauri.conf.json` declares 440×760 *logical*, and
-/// Windows multiplies that by the display's scale factor: at 150% on a 1080p
-/// screen the panel is 1140 physical pixels tall against a work area of roughly
-/// 1040, so its bottom lands under the taskbar wherever it is placed. No
-/// arithmetic in [`default_position`] can fix a window taller than the space it
-/// goes in — only a smaller window can — which is why placement asks this first
-/// rather than clamping a coordinate afterwards.
+/// **Scale is why this exists.** The size is declared in *logical* units and
+/// Windows multiplies it by the display's scale factor: at 150% on a 1080p screen
+/// a 760-tall panel is 1140 physical pixels against a work area of roughly 1040,
+/// so its bottom lands under the taskbar wherever it is placed. No arithmetic in
+/// [`default_position`] can fix a window taller than the space it goes in — only a
+/// smaller window can — which is why placement asks this first rather than
+/// clamping a coordinate afterwards.
 ///
-/// Returned in logical units because that is what `set_size` takes and what the
-/// declaration is in; every caller that needs physical pixels multiplies by the
-/// same scale it passed in.
+/// Reads [`configured_size`] rather than the declared constants, and that is the
+/// whole of what makes the size setting real: every consumer of the panel's size —
+/// placement, the grab rectangle, the sizing call itself — goes through here, so a
+/// user who asked for 620×900 gets their placement computed against 620×900 and
+/// not against the size the window was born at.
+///
+/// Returned in logical units because that is what `set_size` takes; every caller
+/// that needs physical pixels multiplies by the same scale it passed in.
 fn fitted_logical_size(monitor: MonitorRect, scale: f64) -> (f64, f64) {
+	fit_to_work_area(configured_size(), monitor, scale)
+}
+
+/// The arithmetic on its own, over a size handed in rather than read from the
+/// mirror — so the fit can be tested against a panel that is not the shipped one
+/// without a global to put back afterwards.
+fn fit_to_work_area((width, height): (f64, f64), monitor: MonitorRect, scale: f64) -> (f64, f64) {
 	// A scale of zero or worse is not something a display reports, but it arrives
 	// here through an API rather than a constant, and dividing by it would poison
 	// the size with an infinity.
 	let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
 	(
-		PANEL_WIDTH.min(f64::from(monitor.width) / scale),
-		PANEL_HEIGHT.min(f64::from(monitor.height) / scale),
+		width.min(f64::from(monitor.width) / scale),
+		height.min(f64::from(monitor.height) / scale),
 	)
 }
 
@@ -756,44 +993,53 @@ fn grab_rect(window: &WebviewWindow, at: PanelPosition) -> GrabRect {
 	let scale = monitor.as_ref().map_or(1.0, |monitor| monitor.scale_factor());
 	let width = monitor
 		.as_ref()
-		.map_or(PANEL_WIDTH, |monitor| fitted_logical_size(rect_of(monitor), scale).0);
+		.map_or(configured_size().0, |monitor| {
+			fitted_logical_size(rect_of(monitor), scale).0
+		});
 	GrabRect {
 		width: (width * scale).round() as i64,
 		height: (HEADER_HEIGHT * scale).round() as i64,
 	}
 }
 
-/// Shrinks the window to the work area it is about to be placed in, and leaves it
-/// alone when the declared size already fits.
+/// Sizes the window to [`configured_size`], shrunk to the work area it is about to
+/// sit in.
 ///
-/// The window is `resizable: false`, which stops the *user* resizing it and not
-/// this: `set_size` still applies. Called from [`restore_position`] before the
-/// panel is ever shown, so a display whose scale cannot fit 440×760 gets a panel
-/// that is smaller rather than one whose bottom is behind the taskbar.
+/// Applies the size unconditionally rather than only when it has to shrink, and
+/// that changed with the size setting: the window is born at the *declared* size,
+/// so a configured 620×900 is a size nothing else would ever put on it. The log
+/// line still fires only for the shrinking case, which is the one worth
+/// explaining.
 ///
-/// One-way, by design. Nothing here grows the window back on a monitor that could
-/// hold it, because nothing re-runs it: this is startup placement, and a panel
-/// dragged to a roomier display keeps the size it was given until the next launch.
-/// Recording that rather than hiding it — the alternative is a resize on every
-/// `Moved` event, which is a far larger mechanism for a case that resolves itself.
-fn fit_size_to_monitor(window: &WebviewWindow, at: PanelPosition) {
+/// `resizable: false` stops the *user* resizing the panel and not this: `set_size`
+/// applies either way. Called from [`restore_position`] before the panel is ever
+/// shown, so a display whose scale cannot fit the configured size gets a panel that
+/// is smaller rather than one whose bottom is behind the taskbar.
+///
+/// One-way per call, by design. Nothing here grows the window back on a monitor
+/// that could hold it, because nothing re-runs it: this is startup placement and
+/// [`set_panel_size`], and a panel dragged to a roomier display keeps the size it
+/// was given until one of those two happens again. Recording that rather than
+/// hiding it — the alternative is a resize on every `Moved` event, which is a far
+/// larger mechanism for a case that resolves itself.
+fn size_to_fit(window: &WebviewWindow, at: PanelPosition) -> tauri::Result<()> {
+	let (width, height) = configured_size();
 	let Some(monitor) = monitor_at(window, at) else {
-		return;
+		// No display to measure against; the configured size unfitted is closer to
+		// what was asked for than leaving the window at whatever size it had.
+		return window.set_size(LogicalSize::new(width, height));
 	};
 	let scale = monitor.scale_factor();
-	let (width, height) = fitted_logical_size(rect_of(&monitor), scale);
-	if width >= PANEL_WIDTH && height >= PANEL_HEIGHT {
-		return;
+	let (fitted_width, fitted_height) = fitted_logical_size(rect_of(&monitor), scale);
+	if fitted_width < width || fitted_height < height {
+		diagnostics::log(&format!(
+			"[copper] panel: work area {}×{} at {scale}× cannot hold {width}×{height}; sizing to \
+			 {fitted_width}×{fitted_height}",
+			monitor.work_area().size.width,
+			monitor.work_area().size.height,
+		));
 	}
-
-	diagnostics::log(&format!(
-		"[copper] panel: work area {}×{} at {scale}× cannot hold {PANEL_WIDTH}×{PANEL_HEIGHT}; sizing to {width}×{height}",
-		monitor.work_area().size.width,
-		monitor.work_area().size.height,
-	));
-	if let Err(err) = window.set_size(LogicalSize::new(width, height)) {
-		diagnostics::log_error(&format!("[copper] panel: could not size the window: {err}"));
-	}
+	window.set_size(LogicalSize::new(fitted_width, fitted_height))
 }
 
 /// Places the panel at startup: the saved position when it is still reachable,
@@ -824,7 +1070,9 @@ pub fn restore_position(window: &WebviewWindow, saved: Option<PanelPosition>) {
 	// Sized before it is placed, and against the monitor it is going to: the
 	// placement above already assumes the fitted size, so applying it afterwards
 	// would leave the window one size and the arithmetic another.
-	fit_size_to_monitor(window, target);
+	if let Err(err) = size_to_fit(window, target) {
+		diagnostics::log_error(&format!("[copper] panel: could not size the window: {err}"));
+	}
 
 	if let Err(err) = window.set_position(PhysicalPosition::new(target.x, target.y)) {
 		diagnostics::log_error(&format!("[copper] panel: could not place the window: {err}"));
@@ -888,6 +1136,17 @@ pub struct PositionState {
 }
 
 /// Records a move and schedules the write.
+///
+/// **There is deliberately no `WindowEvent::Resized` counterpart, and its absence
+/// is a ruling rather than an omission.** `panelWidth`/`panelHeight` hold the
+/// panel's *default* size — what it opens at — and a manual drag-resize is
+/// session-only: it lasts until the window is next sized, and the next launch
+/// opens at the stored size again. Position and size are asymmetric here on
+/// purpose. A dragged position is the only record of where the user wants the
+/// panel, so losing it loses information; a dragged size is a temporary
+/// accommodation ("let me see more of this note for a minute"), and persisting it
+/// would silently overwrite a number the settings view presents as a deliberate
+/// choice. The one way to change the stored size is [`set_panel_size`].
 pub fn on_moved(app: &AppHandle, position: PhysicalPosition<i32>) {
 	let Some(state) = app.try_state::<PositionState>() else {
 		return;
@@ -1169,9 +1428,92 @@ mod tests {
 
 		assert_eq!(window["width"].as_f64(), Some(PANEL_WIDTH));
 		assert_eq!(window["height"].as_f64(), Some(PANEL_HEIGHT));
-		// The placement here assumes a size the user cannot change; `set_size` is the
-		// only thing that moves it, and only downwards to fit a display.
+		// Still `false`, and still correct now that the panel *can* be made
+		// resizable. The config declares what the window is born with, and it is born
+		// before any setting can be read: `install_panel_size` applies the stored
+		// `resizable` in `setup()`, after creation. Declaring `true` here would hand a
+		// drag handle to every install for the moments before that call, including the
+		// ones whose file says the panel is fixed.
 		assert_eq!(window["resizable"].as_bool(), Some(false));
+	}
+
+	/// The third declaration of the panel's size, after the constants above and
+	/// `tauri.conf.json`. `install_panel_size` reads the store, so a store default
+	/// that disagreed with the window would resize every panel on first launch —
+	/// silently, and to a size nobody chose.
+	#[test]
+	fn the_shipped_default_size_is_the_declared_one() {
+		let defaults = crate::store::settings::Settings::default();
+		assert_eq!(defaults.panel_width, PANEL_WIDTH);
+		assert_eq!(defaults.panel_height, PANEL_HEIGHT);
+		// And the panel ships fixed, matching `resizable` in the config above.
+		assert!(!defaults.resizable);
+	}
+
+	/// The mirror's initial value and the window's birth size have to agree, or
+	/// `restore_position` — which runs before anything has read the store on the
+	/// paths where `install_panel_size` failed — places the panel against a
+	/// rectangle the window does not have.
+	///
+	/// Asserted as an equality with the constants rather than by moving the mirror,
+	/// deliberately: `PANEL_SIZE` is a process static read by `fitted_logical_size`,
+	/// which almost every test in this module reaches through `default_position`.
+	/// Nothing here writes it, which is what keeps those tests describing the panel
+	/// that actually ships.
+	#[test]
+	fn the_size_mirror_starts_at_the_declared_size() {
+		assert_eq!(configured_size(), (PANEL_WIDTH, PANEL_HEIGHT));
+	}
+
+	/// The fit is a cap on whatever size is configured, not a cap on the shipped
+	/// one — the property that makes a user-chosen 1200×1600 as safe on a small
+	/// display as the default is.
+	#[test]
+	fn the_fit_caps_a_configured_size_the_display_cannot_hold() {
+		let work_area = MonitorRect {
+			x: 0,
+			y: 0,
+			width: 1920,
+			height: 1040,
+		};
+
+		// Wider and taller than the work area allows at 1×: both axes come down.
+		assert_eq!(
+			fit_to_work_area((1200.0, 1600.0), work_area, 1.0),
+			(1200.0, 1040.0),
+			"the height must be capped and the width left alone"
+		);
+		// At 150% the same work area is 1280×693 logical, so the width still fits and
+		// the height comes down much further — the axes are capped independently, which
+		// is the point.
+		let (width, height) = fit_to_work_area((1200.0, 1600.0), work_area, 1.5);
+		assert_eq!(width, 1200.0, "a width the display still holds must be left alone");
+		assert!(height < 700.0, "{height}");
+		assert!((height * 1.5).round() as u32 <= work_area.height, "{height} overflows");
+
+		// A size below the smallest sensible display is left exactly alone: the fit
+		// only ever shrinks.
+		assert_eq!(
+			fit_to_work_area((360.0, 480.0), work_area, 1.0),
+			(360.0, 480.0)
+		);
+	}
+
+	/// The floor a drag may not cross is the same number the store clamps to, not a
+	/// second opinion about how small the panel may be.
+	#[test]
+	fn the_drag_floor_is_the_stores_lower_bound() {
+		use crate::store::settings::{clamp_panel_size, PANEL_HEIGHT_BOUNDS, PANEL_WIDTH_BOUNDS};
+
+		assert_eq!(
+			clamp_panel_size(0.0, 0.0),
+			(PANEL_WIDTH_BOUNDS.0, PANEL_HEIGHT_BOUNDS.0),
+			"a size below the floor must clamp to the floor the drag also stops at"
+		);
+		// And the shipped panel is comfortably inside its own bounds, so the floor is
+		// never itself the size the app opens at.
+		assert!(PANEL_WIDTH > PANEL_WIDTH_BOUNDS.0 && PANEL_WIDTH < PANEL_WIDTH_BOUNDS.1);
+		assert!(PANEL_HEIGHT > PANEL_HEIGHT_BOUNDS.0 && PANEL_HEIGHT < PANEL_HEIGHT_BOUNDS.1);
 	}
 
 	#[test]

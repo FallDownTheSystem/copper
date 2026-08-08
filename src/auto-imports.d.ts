@@ -8,9 +8,19 @@
 // biome-ignore lint: disable
 export {}
 declare global {
+  const DEFAULT_PANEL_HEIGHT: typeof import('./composables/useSettings').DEFAULT_PANEL_HEIGHT
+  const DEFAULT_PANEL_WIDTH: typeof import('./composables/useSettings').DEFAULT_PANEL_WIDTH
+  const DEFAULT_VIBRANCY: typeof import('./composables/useSettings').DEFAULT_VIBRANCY
   const EffectScope: typeof import('vue').EffectScope
   const MAX_PER_NOTE: typeof import('./composables/useAttachments').MAX_PER_NOTE
+  const PANEL_HEIGHT_MAX: typeof import('./composables/useSettings').PANEL_HEIGHT_MAX
+  const PANEL_HEIGHT_MIN: typeof import('./composables/useSettings').PANEL_HEIGHT_MIN
+  const PANEL_WIDTH_MAX: typeof import('./composables/useSettings').PANEL_WIDTH_MAX
+  const PANEL_WIDTH_MIN: typeof import('./composables/useSettings').PANEL_WIDTH_MIN
   const UNDO_ACTION: typeof import('./composables/useNoteActions').UNDO_ACTION
+  const VIBRANCY_MAX: typeof import('./composables/useSettings').VIBRANCY_MAX
+  const VIBRANCY_MIN: typeof import('./composables/useSettings').VIBRANCY_MIN
+  const VIBRANCY_STEP: typeof import('./composables/useSettings').VIBRANCY_STEP
   const applied: typeof import('./composables/useSpace').applied
   const asyncComputed: typeof import('@vueuse/core').asyncComputed
   const autoResetRef: typeof import('@vueuse/core').autoResetRef
@@ -48,6 +58,7 @@ declare global {
   const focusRowSoon: typeof import('./composables/useSelection').focusRowSoon
   const focusableIn: typeof import('./composables/useInteractionMode').focusableIn
   const formatBytes: typeof import('./composables/useAttachments').formatBytes
+  const formatVibrancy: typeof import('./composables/useSettings').formatVibrancy
   const getCurrentInstance: typeof import('vue').getCurrentInstance
   const getCurrentScope: typeof import('vue').getCurrentScope
   const getCurrentWatcher: typeof import('vue').getCurrentWatcher
@@ -407,9 +418,19 @@ import { UnwrapRef } from 'vue'
 declare module 'vue' {
   interface GlobalComponents {}
   interface ComponentCustomProperties {
+    readonly DEFAULT_PANEL_HEIGHT: UnwrapRef<typeof import('./composables/useSettings')['DEFAULT_PANEL_HEIGHT']>
+    readonly DEFAULT_PANEL_WIDTH: UnwrapRef<typeof import('./composables/useSettings')['DEFAULT_PANEL_WIDTH']>
+    readonly DEFAULT_VIBRANCY: UnwrapRef<typeof import('./composables/useSettings')['DEFAULT_VIBRANCY']>
     readonly EffectScope: UnwrapRef<typeof import('vue')['EffectScope']>
     readonly MAX_PER_NOTE: UnwrapRef<typeof import('./composables/useAttachments')['MAX_PER_NOTE']>
+    readonly PANEL_HEIGHT_MAX: UnwrapRef<typeof import('./composables/useSettings')['PANEL_HEIGHT_MAX']>
+    readonly PANEL_HEIGHT_MIN: UnwrapRef<typeof import('./composables/useSettings')['PANEL_HEIGHT_MIN']>
+    readonly PANEL_WIDTH_MAX: UnwrapRef<typeof import('./composables/useSettings')['PANEL_WIDTH_MAX']>
+    readonly PANEL_WIDTH_MIN: UnwrapRef<typeof import('./composables/useSettings')['PANEL_WIDTH_MIN']>
     readonly UNDO_ACTION: UnwrapRef<typeof import('./composables/useNoteActions')['UNDO_ACTION']>
+    readonly VIBRANCY_MAX: UnwrapRef<typeof import('./composables/useSettings')['VIBRANCY_MAX']>
+    readonly VIBRANCY_MIN: UnwrapRef<typeof import('./composables/useSettings')['VIBRANCY_MIN']>
+    readonly VIBRANCY_STEP: UnwrapRef<typeof import('./composables/useSettings')['VIBRANCY_STEP']>
     readonly applied: UnwrapRef<typeof import('./composables/useSpace')['applied']>
     readonly asyncComputed: UnwrapRef<typeof import('@vueuse/core')['asyncComputed']>
     readonly autoResetRef: UnwrapRef<typeof import('@vueuse/core')['autoResetRef']>
@@ -447,6 +468,7 @@ declare module 'vue' {
     readonly focusRowSoon: UnwrapRef<typeof import('./composables/useSelection')['focusRowSoon']>
     readonly focusableIn: UnwrapRef<typeof import('./composables/useInteractionMode')['focusableIn']>
     readonly formatBytes: UnwrapRef<typeof import('./composables/useAttachments')['formatBytes']>
+    readonly formatVibrancy: UnwrapRef<typeof import('./composables/useSettings')['formatVibrancy']>
     readonly getCurrentInstance: UnwrapRef<typeof import('vue')['getCurrentInstance']>
     readonly getCurrentScope: UnwrapRef<typeof import('vue')['getCurrentScope']>
     readonly getCurrentWatcher: UnwrapRef<typeof import('vue')['getCurrentWatcher']>

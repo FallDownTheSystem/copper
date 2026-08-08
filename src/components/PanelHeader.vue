@@ -87,13 +87,27 @@ defineExpose({ focusSearch, query })
 	     glyph in one corner and is there whichever row the pointer is nearest.
 
 	     **The vertical padding grew and the horizontal padding did not.** `px-3` is
-	     the list's own left edge — the note rows, the section headers and the
-	     composer all start there — so widening it would push the search field out
-	     of line with everything under it to buy a 2px strip nobody could aim at
-	     anyway. -->
+	     the field boxes' left edge — the composer's box starts there too — so
+	     widening it would push the search field out of line with the one under it
+	     to buy a 2px strip nobody could aim at anyway. The list under it is on a
+	     different edge and always was: a card's own box starts at 4px, and what
+	     lines up with the header is neither of those boxes but the *leading marks*
+	     — the search icon at 20px, and the completion box and section dot brought
+	     onto it. The chip pays for its share in its own padding rather than here,
+	     because moving this number would move the field with it.
+
+	     **`pb-2` against `pt-3`, so the bottom strip is 8px and not 12.** The gap
+	     above the chip is the row `gap-1.5` plus the pixel or so the taller
+	     controls beside it centre it by — about 7px — and 12 below it read as the
+	     chip sitting high in its own row. Eight brings the two within 2px, which is
+	     as close as they should come: below the chip is a hard rule rather than
+	     another control, and an object set the same distance off a line as off its
+	     neighbour reads tighter than it measures. The strip stays a full-width 8px
+	     of drag region, and the band above and the two side strips are untouched at
+	     12 — what was given up is the least aimed-at edge of the four. -->
 	<header
 		data-tauri-drag-region
-		class="border-separator flex min-h-12 flex-col gap-1.5 border-b px-3 py-3"
+		class="border-separator flex min-h-12 flex-col gap-1.5 border-b px-3 pt-3 pb-2"
 	>
 		<!-- The search row keeps its own line, so the heading below it can be added
 		     and removed without the field ever moving. -->

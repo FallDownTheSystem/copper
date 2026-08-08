@@ -30,7 +30,13 @@ const errorId = useId()
 				{{ description }}
 			</p>
 
-			<slot name="below" />
+			<!-- The same `errorId` contract as the trailing slot below, because two of
+			     the rows keep their control down here — the slider and the size pair —
+			     and a control is pointed at the message wherever it happens to sit.
+			     A caller that takes it must take it as `#below="{ errorId }"`: `v-slot`
+			     on the component tag claims the *default* slot, and mixing that with a
+			     named template is the one slot shape Vue refuses to compile. -->
+			<slot name="below" :errorId="error ? errorId : undefined" />
 
 			<!-- Two copies, and only one of them is in the accessibility tree.
 			     Injecting an element and its text together does not announce — only a

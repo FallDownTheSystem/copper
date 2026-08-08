@@ -98,6 +98,51 @@ export type PreferenceScope =
 	| 'translucent'
 	| 'neutral'
 	| 'accent'
+	| 'vibrancy'
+	| 'resizable'
+	| 'panelSize'
+
+// --- the numeric preferences' bounds -----------------------------------------
+
+/**
+ * Restated here rather than only enforced in Rust, and the duplication is the
+ * point: the store *repairs* an out-of-band value, so a control that could ask
+ * for one would show the user a number the file then silently rewrote. Every
+ * caller clamps before it invokes, and the command's own repair stays the
+ * backstop for a hand-edited file.
+ */
+export const VIBRANCY_MIN = 0.5
+export const VIBRANCY_MAX = 2
+/** Fine enough that dragging reads as continuous, coarse enough that the
+ *  percentage lands on round numbers a keyboard user can count in. */
+export const VIBRANCY_STEP = 0.05
+export const DEFAULT_VIBRANCY = 1
+
+export const PANEL_WIDTH_MIN = 360
+export const PANEL_WIDTH_MAX = 1200
+export const PANEL_HEIGHT_MIN = 480
+export const PANEL_HEIGHT_MAX = 1600
+export const DEFAULT_PANEL_WIDTH = 440
+export const DEFAULT_PANEL_HEIGHT = 760
+
+/**
+ * The one place the dial's wording is decided.
+ *
+ * A chroma multiplier is not a thing a person reads, so nothing shows `1.35`:
+ * the settings row, the slider's `aria-valuetext` and the palette row all say
+ * the percentage, and they say it through here so they cannot drift.
+ */
+export function formatVibrancy(value: number): string {
+	return `${Math.round(value * 100)}%`
+}
+
+/** The numeric counterpart to `lib/palette`'s narrowings: the store repairs a
+ *  wrong *type*, and a number of the right type that is out of band — or a
+ *  `NaN` from a hand-edited file — collapses to the shipped value here. */
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+	if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+	return Math.min(Math.max(value, min), max)
+}
 
 // --- module-scope state ------------------------------------------------------
 
@@ -168,6 +213,53 @@ const translucent = computed(() => settings.value?.translucent === true)
  *  against, so the picker and this cannot disagree about which names exist. */
 const neutralTone = computed<NeutralTone>(() => narrowNeutral(settings.value?.neutral))
 const accentColor = computed<AccentColor>(() => narrowAccent(settings.value?.accent))
+
+/**
+ * What the slider is showing before anything has been written, or `null`.
+ *
+ * **A drag is not a sequence of writes.** Every other control here commits once
+ * per interaction, but a slider emits a value per pointer move — thirty
+ * `settings.json` rewrites to cross the range — while the whole reason this
+ * control is a slider rather than a number field is that the user is *looking*
+ * at the panel repaint as they drag. So the drag drives the document through
+ * this ref and only the released value goes to Rust.
+ *
+ * It is a preview of a value, never a second source of truth: nothing reads it
+ * but the computed below, and it is cleared as soon as the write it belongs to
+ * has landed.
+ */
+const vibrancyPreview = ref<number | null>(null)
+
+const vibrancy = computed(() =>
+	vibrancyPreview.value !== null
+		? vibrancyPreview.value
+		: clampNumber(settings.value?.vibrancy, VIBRANCY_MIN, VIBRANCY_MAX, DEFAULT_VIBRANCY),
+)
+
+/** Off unless the file says otherwise, like `sounds` and for the same reason
+ *  turned to a window property: every existing install has a fixed panel, and an
+ *  unreadable `settings.json` must not be the moment its edges start dragging
+ *  out from under a click near the border. */
+const resizable = computed(() => settings.value?.resizable === true)
+
+/** The size the window is *created* at. Clamped on read to the band the command
+ *  accepts, so a hand-edited 20000 shows as the maximum the panel would actually
+ *  have opened at rather than as a number nothing honoured. */
+const panelWidth = computed(() =>
+	Math.round(
+		clampNumber(settings.value?.panelWidth, PANEL_WIDTH_MIN, PANEL_WIDTH_MAX, DEFAULT_PANEL_WIDTH),
+	),
+)
+const panelHeight = computed(() =>
+	Math.round(
+		clampNumber(
+			settings.value?.panelHeight,
+			PANEL_HEIGHT_MIN,
+			PANEL_HEIGHT_MAX,
+			DEFAULT_PANEL_HEIGHT,
+		),
+	),
+)
 
 function fail(scope: SettingsScope, error: unknown) {
 	errors.value = { ...errors.value, [scope]: errorMessage(error) }
@@ -339,6 +431,9 @@ const rowWrites: Record<SettingsScope, Generation> = {
 	translucent: generations(),
 	neutral: generations(),
 	accent: generations(),
+	vibrancy: generations(),
+	resizable: generations(),
+	panelSize: generations(),
 	summon: generations(),
 	capture: generations(),
 }
@@ -456,6 +551,71 @@ function setNeutralTone(tone: NeutralTone): Promise<boolean> {
 
 function setAccentColor(color: AccentColor): Promise<boolean> {
 	return patchSettings('accent', { accent: color })
+}
+
+/** What the slider calls while the pointer is still down: the document repaints
+ *  from `vibrancy` and nothing is written. `null` hands the value back to
+ *  `settings.json` — the settings view calls it on the way out, so a drag the
+ *  user abandoned without changing anything cannot leave a preview standing over
+ *  a later pull. */
+function previewVibrancy(value: number | null): void {
+	vibrancyPreview.value =
+		value === null ? null : clampNumber(value, VIBRANCY_MIN, VIBRANCY_MAX, DEFAULT_VIBRANCY)
+}
+
+/**
+ * The released value, through the ordinary patch like the two palettes above:
+ * `useTheme` applies this by writing a custom property, so there is no native
+ * state for Rust to change.
+ *
+ * The preview is held *across* the round trip rather than dropped at the call,
+ * because clearing it first would show the pre-drag palette for the length of
+ * one IPC hop and then jump — the one frame this whole mechanism exists to
+ * avoid. It is only released if nothing newer has been previewed since, which is
+ * the same "a newer answer already won" rule `attempt` applies to values.
+ */
+async function setVibrancy(value: number): Promise<boolean> {
+	const clamped = clampNumber(value, VIBRANCY_MIN, VIBRANCY_MAX, DEFAULT_VIBRANCY)
+	vibrancyPreview.value = clamped
+	const applied = await patchSettings('vibrancy', { vibrancy: clamped })
+	// A refusal releases it too: the write did not happen, so the panel has to go
+	// back to what the file still says while the row explains why.
+	if (vibrancyPreview.value === clamped) vibrancyPreview.value = null
+	return applied
+}
+
+/** Its own command rather than the patch, for the reason `alwaysOnTop` has one:
+ *  Rust changes the window first and persists second, so a failed write leaves
+ *  no window whose edges disagree with the file. */
+function setResizable(enabled: boolean): Promise<boolean> {
+	return attempt(
+		settingsWrites,
+		'resizable',
+		() => invoke<Settings>('set_resizable', { enabled }),
+		(value) => {
+			settings.value = value
+		},
+	)
+}
+
+/** Clamped here as well as in Rust, so the row cannot send a number the command
+ *  would repair behind it — the field would then show what was typed while the
+ *  file held something else. */
+function setPanelSize(width: number, height: number): Promise<boolean> {
+	const args = {
+		width: Math.round(clampNumber(width, PANEL_WIDTH_MIN, PANEL_WIDTH_MAX, DEFAULT_PANEL_WIDTH)),
+		height: Math.round(
+			clampNumber(height, PANEL_HEIGHT_MIN, PANEL_HEIGHT_MAX, DEFAULT_PANEL_HEIGHT),
+		),
+	}
+	return attempt(
+		settingsWrites,
+		'panelSize',
+		() => invoke<Settings>('set_panel_size', args),
+		(value) => {
+			settings.value = value
+		},
+	)
 }
 
 /**
@@ -595,6 +755,10 @@ export function useSettings() {
 		translucent,
 		neutralTone,
 		accentColor,
+		vibrancy,
+		resizable,
+		panelWidth,
+		panelHeight,
 		errorFor,
 		initialize,
 		dispose,
@@ -611,6 +775,10 @@ export function useSettings() {
 		setTranslucency,
 		setNeutralTone,
 		setAccentColor,
+		previewVibrancy,
+		setVibrancy,
+		setResizable,
+		setPanelSize,
 		setAutostart,
 		beginRecording,
 		commitRecording,

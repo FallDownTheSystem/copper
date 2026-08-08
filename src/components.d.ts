@@ -101,6 +101,8 @@ declare module 'vue' {
     SettingsPalette: typeof import('./components/SettingsPalette.vue')['default']
     SettingsRow: typeof import('./components/SettingsRow.vue')['default']
     SettingsSection: typeof import('./components/SettingsSection.vue')['default']
+    SettingsSizeRow: typeof import('./components/SettingsSizeRow.vue')['default']
+    SettingsSlider: typeof import('./components/SettingsSlider.vue')['default']
     SettingsSwitch: typeof import('./components/SettingsSwitch.vue')['default']
     SettingsView: typeof import('./components/SettingsView.vue')['default']
     ShortcutRecorder: typeof import('./components/ShortcutRecorder.vue')['default']

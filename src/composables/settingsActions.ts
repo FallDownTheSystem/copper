@@ -26,7 +26,7 @@
 
 import { ACCENT_COLORS, NEUTRAL_TONES } from '@/lib/palette'
 
-import type { PreferenceScope } from './useSettings'
+import { formatVibrancy, type PreferenceScope } from './useSettings'
 
 export type PaletteAction = {
 	/** Stable across re-derivations: it is the `v-for` key, the listbox value and
@@ -63,6 +63,10 @@ export function settingsActions(): PaletteAction[] {
 		translucent,
 		neutralTone,
 		accentColor,
+		vibrancy,
+		resizable,
+		panelWidth,
+		panelHeight,
 		errorFor,
 		setTheme,
 		setSounds,
@@ -74,6 +78,7 @@ export function settingsActions(): PaletteAction[] {
 		setLinkPreviews,
 		setAlwaysOnTop,
 		setTranslucency,
+		setResizable,
 		setAutostart,
 		autostartEnabled,
 	} = useSettings()
@@ -182,6 +187,31 @@ export function settingsActions(): PaletteAction[] {
 			id: 'accent-color',
 			label: 'Accent color',
 			value: ACCENT_COLORS[accentColor.value].label,
+			run: showSettings,
+		},
+		// Opens Settings for the same reason the two above do, and one more of its
+		// own: this is a continuous dial, so there is no next value to cycle to —
+		// only thirty of them — and the point of moving it is watching the panel
+		// change while you do. A palette row can say where it currently stands and
+		// take you to the track; it cannot be the track.
+		vibrancy: {
+			id: 'vibrancy',
+			label: 'Vibrancy',
+			value: formatVibrancy(vibrancy.value),
+			run: showSettings,
+		},
+		resizable: {
+			id: 'resizable',
+			label: 'Resizable',
+			value: onOff(resizable.value),
+			run: () => write('resizable', () => setResizable(!resizable.value)),
+		},
+		// Two numbers with no second value to flip to, so this joins the rows that
+		// open Settings rather than the rows that act.
+		panelSize: {
+			id: 'panel-size',
+			label: 'Panel size',
+			value: `${panelWidth.value} × ${panelHeight.value}`,
 			run: showSettings,
 		},
 		autostart: {

@@ -1,6 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
+import SettingsSlider from './SettingsSlider.vue'
 import SettingsView from './SettingsView.vue'
 import type { Settings } from '@/composables/useSpace'
 
@@ -40,6 +41,10 @@ function makeSettings(over: Partial<Settings> = {}): Settings {
 		translucent: false,
 		neutral: 'warm',
 		accent: 'copper',
+		vibrancy: 1,
+		resizable: false,
+		panelWidth: 440,
+		panelHeight: 760,
 		...over,
 	}
 }
@@ -561,5 +566,98 @@ describe('the appearance rows', () => {
 
 		expect(wrapper.get('[aria-label="Warm"]').attributes('aria-checked')).toBe('true')
 		expect(wrapper.get('[aria-label="Copper"]').attributes('aria-checked')).toBe('true')
+	})
+})
+
+describe('the vibrancy, resizable and size rows', () => {
+	// Both window commands answer with the whole settings object, exactly as
+	// `set_always_on_top` and `set_translucency` do and for the same reason: a
+	// native side means the command is the writer, not the patch.
+	async function openWithWindowCommands(stored: Partial<Settings> = {}) {
+		const wrapper = await openSettings(stored)
+		const base = mocks.invoke.getMockImplementation()!
+		mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+			if (command === 'set_resizable') {
+				return makeSettings({ ...stored, resizable: args?.enabled as boolean })
+			}
+			if (command === 'set_panel_size') {
+				return makeSettings({
+					...stored,
+					panelWidth: args?.width as number,
+					panelHeight: args?.height as number,
+				})
+			}
+			return base(command, args)
+		})
+		return wrapper
+	}
+
+	/** The reorganisation, pinned by where the two moved rows now sit: the section
+	 *  that grouped by mechanism is gone, and the rows kept their ids across the
+	 *  move so nothing that points at them had to learn a new name. */
+	it('renames Sound and motion to Behavior and keeps both moved rows reachable', async () => {
+		const wrapper = await openSettings()
+
+		expect(wrapper.text()).toContain('Behavior')
+		expect(wrapper.text()).not.toContain('Sound and motion')
+		expect(wrapper.find('#translucent').exists()).toBe(true)
+		expect(wrapper.find('#always-on-top').exists()).toBe(true)
+	})
+
+	/** The slider's two events are the whole design: a drag repaints the document
+	 *  through a preview and writes nothing, and only the released value becomes a
+	 *  patch — thirty `settings.json` rewrites per drag is the failure the split
+	 *  exists to prevent. Driven through the component's own events because reka's
+	 *  pointer machinery needs real geometry happy-dom does not lay out. */
+	it('previews a vibrancy drag without writing, and patches one key on commit', async () => {
+		const wrapper = await openSettings()
+		const slider = wrapper.findComponent(SettingsSlider)
+
+		slider.vm.$emit('update:modelValue', 1.5)
+		await flush()
+		expect(patchesSent()).toEqual([])
+
+		slider.vm.$emit('commit', 1.5)
+		await flush()
+		expect(patchesSent()).toEqual([{ vibrancy: 1.5 }])
+	})
+
+	/** `aria-valuetext` because a chroma multiplier is not a number a person has
+	 *  words for: the thumb announces the same percentage the readout shows. */
+	it('announces the vibrancy value as a percentage', async () => {
+		const wrapper = await openSettings({ vibrancy: 1.35 })
+		const thumb = wrapper.get('[role="slider"][aria-label="Vibrancy"]')
+		expect(thumb.attributes('aria-valuetext')).toBe('135%')
+	})
+
+	it('ships the resizable switch off and writes through its own command', async () => {
+		const wrapper = await openWithWindowCommands()
+		const control = wrapper.get('#resizable')
+		expect(control.attributes('role')).toBe('switch')
+		expect(control.attributes('aria-checked')).toBe('false')
+
+		await control.trigger('click')
+		await flush()
+
+		// Not `update_settings`: the drag handles are native state the patch path
+		// could neither apply nor undo.
+		expect(mocks.invoke).toHaveBeenCalledWith('set_resizable', { enabled: true })
+		expect(patchesSent()).toEqual([])
+	})
+
+	/** The clamp is client-side as well as Rust-side, so the field never shows a
+	 *  number the store would have silently rewritten: a typed 9999 goes out as
+	 *  the band's maximum, and what comes back is what the field then reads. */
+	it('commits the size fields through set_panel_size, clamped to the band', async () => {
+		const wrapper = await openWithWindowCommands()
+		const width = wrapper.get('input[aria-label="Panel width in pixels"]')
+
+		await width.setValue('9999')
+		await width.trigger('blur')
+		await flush()
+
+		expect(mocks.invoke).toHaveBeenCalledWith('set_panel_size', { width: 1200, height: 760 })
+		expect((width.element as HTMLInputElement).value).toBe('1200')
+		expect(patchesSent()).toEqual([])
 	})
 })

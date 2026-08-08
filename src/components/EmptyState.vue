@@ -46,9 +46,13 @@ type Row = {
 	/** The modifier that has to be pressed twice, when the binding is a
 	 *  double-tap rather than a chord. */
 	doubleTap?: string | null
-	/** Where the action lives, for the row that has no binding. Rendered as plain
-	 *  text and never as a cap — see the template. */
-	where?: string
+	/** Text typed into the composer rather than a press. Rendered as a code chip
+	 *  and never as a cap — see the template. */
+	typed?: string
+	/** The menu an action with no binding lives in. Only `...` can appear here —
+	 *  it is the panel's one menu — so the template pairs it with that trigger's
+	 *  own icon. */
+	menu?: string
 }
 
 /**
@@ -78,8 +82,10 @@ function caps(binding: string): Pick<Row, 'keys' | 'doubleTap'> {
  *
  * The two global bindings lead because they are the only two that cannot be
  * discovered by using the panel: they fire from other applications, so nothing
- * on screen would ever reveal them. The three below them are in-panel and the
- * user is already looking at the surfaces that carry them.
+ * on screen would ever reveal them. The four below them are in-panel and the
+ * user is already looking at the surfaces that carry them, so they descend by how
+ * hidden they are: the composer's own `Enter`, then a chord, then a directive
+ * with no visible affordance at all, then a menu entry.
  *
  * **The two global rows are absent rather than empty until Rust answers.**
  * `App` pulls the shortcut state on mount, so this is a tick or two at startup —
@@ -99,7 +105,11 @@ const rows = computed<Row[]>(() => {
 	const global: Row[] = state
 		? [
 				{
-					action: 'Capture selected text',
+					// "from any app" is the whole reason this row leads, and it is the
+					// scope `SettingsView` gives the same binding ("Save whatever you have
+					// selected, from any app."). Without it the row reads as something the
+					// panel does to its own text.
+					action: 'Capture selected text from any app',
 					...caps(state.captureFallback ?? state.capture),
 				},
 				{ action: 'Show or hide Copper', ...caps(state.summon) },
@@ -119,19 +129,42 @@ const rows = computed<Row[]>(() => {
 		// palette that moved to another binding must not leave a card behind
 		// teaching the old one.
 		{ action: 'Open the command palette', keys: [CHORDS.commandPalette.display] },
-		// No binding exists for either, so the row says where they live instead of
-		// inventing one. "More actions" is the menu button's own accessible name
-		// rather than a description of it, so the words here and the words a screen
-		// reader announces at the trigger are the same words.
-		{ action: 'New space or section', where: 'More actions menu' },
+		// A real directive, not a hint at one: `submit_entry` classifies a leading
+		// `#` in Rust and makes or activates that section, which is the same call
+		// `SectionSwitcher`'s create row makes. It earns a row because it is the one
+		// route with no affordance anywhere on screen — the two menu paths at least
+		// announce themselves once `...` is open — and because the composer it is
+		// typed into is the field this card already has focus in.
+		{ action: 'New section', typed: '# Section name' },
+		// No binding and no directive, so the row names where it lives. "More
+		// actions" is the trigger's own accessible name rather than a description of
+		// it, so the words here and the words a screen reader announces at the
+		// button are the same words; the icon beside them is that button's icon, for
+		// the eye doing the same search.
+		{ action: 'New space', menu: 'More actions' },
 	]
 })
 </script>
 
 <template>
-	<!-- `px-3` is the list's own left edge — note rows, section headings and the
-	     composer all start there — so the card lines up with everything it sits
-	     among rather than floating in the middle of the column.
+	<!-- **`px-4` puts this text on the marks column, which is the edge the list is
+	     read down.** Inside `PanelShell`'s `px-1` it resolves to 20px, and 20px is
+	     where the note row's completion box, the section heading's marker dot and
+	     the search icon all sit. Not the note *body*, which is a further 24px in at
+	     44px: what lines up down the region is the leading mark, and this card is
+	     standing in for the rows, not for their text.
+
+	     It is the row gridcell's value, so it moves when that moves — the two are
+	     only ever right together, and `SectionHeader` carries the same note.
+
+	     **This is not a hypothetical alignment.** `PanelShell` renders this card
+	     *additively*, so a zero-note space still shows its section headings above it
+	     — their marker dots are the 20px column, on screen at the same time as this
+	     sentence. The bands outside the region (`PanelHeader`, `Composer`) are still
+	     at 12px and this card no longer matches them, which is a divergence the whole
+	     scroll region now has rather than this card's to fix alone: the two narrowing
+	     empty states and the section's own empty line are at 12px too, and moving one
+	     of the four would only trade which pair disagrees.
 
 	     **In flow, not centred, and the composer is the reason.** Centring this in
 	     the free space would mean measuring against the scroll region's height, and
@@ -140,7 +173,7 @@ const rows = computed<Row[]>(() => {
 	     `pt-6` instead — deeper than the 16px the two narrowing states use, because
 	     this one carries a list rather than a sentence and wants the air, and fixed
 	     so nothing below it can move it. -->
-	<div class="px-3 pt-6 pb-2">
+	<div class="px-4 pt-6 pb-2">
 		<!-- `p` rather than a heading, matching `SearchEmptyState` and
 		     `DoneEmptyState` exactly. An `h2` here would read as a peer of the
 		     section headings in the list above it, which are the outline's real
@@ -148,7 +181,7 @@ const rows = computed<Row[]>(() => {
 		     would be the defect, not the fix. -->
 		<p class="text-text-primary text-body font-semibold">No notes yet.</p>
 		<p class="text-text-secondary mt-1 text-meta text-pretty">
-			Whatever you add lands in {{ destination }}.
+			New notes land in {{ destination }}.
 		</p>
 
 		<!-- A description list because that is what these rows are: the action is
@@ -156,21 +189,54 @@ const rows = computed<Row[]>(() => {
 		     pair is valid inside `dl` and is what lets a row be a flex line without
 		     the `dt` and `dd` having to be siblings in the layout.
 
-		     16px above it against 4px between the rows — the group break has to be
-		     several times the gap inside the group or the sentence above reads as the
-		     first row of the list. -->
-		<dl class="mt-4 space-y-1">
-			<div v-for="row in rows" :key="row.action" class="flex min-w-0 items-center gap-3">
+		     **`min-h-7` is the rhythm, and no `space-y-*` beside it.** A row holding
+		     caps is 24px tall and a row of plain text is 17px, so an even gap between
+		     them produced uneven-looking spacing: what the eye measures is the
+		     distance between the words, not between the boxes. A shared floor taller
+		     than the tallest content makes every row the same band, and then the gaps
+		     are equal because they are the same gap. An explicit gap on top of it
+		     would only reintroduce a second, smaller unevenness whenever a row wraps.
+
+		     16px above the list against ~11px inside it — the group break stays wider
+		     than the row rhythm, so the sentence above does not read as the first
+		     row. -->
+		<dl class="mt-4">
+			<div v-for="row in rows" :key="row.action" class="flex min-h-7 min-w-0 items-center gap-3">
 				<dt class="text-text-primary min-w-0 flex-1 text-meta">{{ row.action }}</dt>
 				<!-- `flex-wrap` and no truncation: a rebound summon chord can be four
-				     caps wide, and a row that grows a line is a row that still reads. -->
-				<dd class="flex shrink-0 flex-wrap items-center justify-end gap-1">
+				     caps wide, and a row that grows a line is a row that still reads.
+				     `text-meta` sits here rather than on each child so the size is set
+				     once on the block that owns them. -->
+				<dd
+					class="text-text-secondary flex shrink-0 flex-wrap items-center justify-end gap-1 text-meta"
+				>
 					<KbdChord v-if="row.keys" :keys="row.keys" />
 					<!-- Plain text, never a cap, for the same reason `ShortcutRecorder`
 					     refuses to chip it: a cap says "press this key", and neither
 					     "double-tap" nor the name of a menu is a key. -->
-					<span v-if="row.doubleTap" class="text-text-secondary text-meta">double-tap</span>
-					<span v-else-if="row.where" class="text-text-secondary text-meta">{{ row.where }}</span>
+					<span v-if="row.doubleTap">double-tap</span>
+					<!-- A `code` chip rather than a cap, because this is a string the user
+					     types and not a key they press — the one distinction the cap
+					     treatment must keep. It borrows the cap's family (mono, filled,
+					     primary text, so a literal to be typed exactly is legible) and
+					     drops what makes a cap a key: no ring, no inset highlight, no
+					     `h-6` box. The 6px corner is `.note-prose code`'s, which is the
+					     app's existing appearance for typed text; the cap's own 8px is
+					     pinned to its 24px height and means nothing on a chip that is only
+					     as tall as its line box.
+
+					     On one line because `condense` turns the newlines around an
+					     interpolation into a leading and trailing space, and inside a
+					     filled chip that space is padding the chip did not ask for. -->
+					<code v-else-if="row.typed" class="bg-surface-hover text-text-primary rounded-[6px] px-1.5 py-0.5 font-mono">{{ row.typed }}</code>
+					<template v-else-if="row.menu">
+						<span>{{ row.menu }}</span>
+						<!-- The trigger's own glyph at the trigger's own size, so the search
+						     it starts ends at the right button. Hidden from the
+						     accessibility tree because the name beside it is what a screen
+						     reader announces at that button too. -->
+						<IconLucideEllipsis class="size-4 shrink-0" aria-hidden="true" focusable="false" />
+					</template>
 				</dd>
 			</div>
 		</dl>

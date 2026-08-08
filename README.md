@@ -1,5 +1,17 @@
-# Vue 3 + TypeScript + Vite
+# Copper
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+A note and prompt capture panel for Windows. Summon it with a double-tap, capture selected text from any app, and file everything into spaces and sections.
 
-Learn more about the recommended Project Setup and IDE Support in the [Vue Docs TypeScript Guide](https://vuejs.org/guide/typescript/overview.html#project-setup).
+Built with Tauri 2, Vue, and Tailwind CSS.
+
+## Credits
+
+- Copper is a Windows clone of [shadcn's Copper](https://shadcn.com/copper), which is the original idea and design this project recreates.
+- Some Windows-centric ideas come from [Carbon](https://github.com/Himanshu-Singh-Chauhan/Carbon-ShadCN-Copper-for-windows), another Windows take on Copper.
+
+## Development
+
+```
+pnpm install
+pnpm tauri dev
+```

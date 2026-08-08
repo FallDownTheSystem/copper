@@ -40,6 +40,10 @@ function makeSettings(motion: string): Settings {
 		translucent: false,
 		neutral: 'warm',
 		accent: 'copper',
+		vibrancy: 1,
+		resizable: false,
+		panelWidth: 440,
+		panelHeight: 760,
 	}
 }
 
