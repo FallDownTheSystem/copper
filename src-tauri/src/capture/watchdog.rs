@@ -129,13 +129,17 @@ enum Action {
 struct Health {
 	misses: u32,
 	unsendable: u32,
-	/// Whether an outage has already been reported.
+	/// Whether the rule is inside an outage it has already announced.
 	///
-	/// The latch, and the reason it exists: without it every threshold crossing
-	/// fires a notice, so a hook that cannot be reinstalled reveals the panel and
-	/// plays the failure sound every fifty seconds or so for as long as the app
-	/// runs. Cleared only by a probe that actually comes back, so a *second*
-	/// notice means a genuine second outage rather than the same one still going.
+	/// The latch does two jobs. It is what makes a probe that comes back produce
+	/// [`Action::Recovered`] exactly once rather than on every healthy cycle, and
+	/// it is what `notify` derives from: only the *first* threshold crossing of
+	/// an outage carries `notify: true`, so a hook that cannot be reinstalled
+	/// does not re-announce itself every fifty seconds for as long as the app
+	/// runs. Cleared only by a probe that actually comes back, so a second
+	/// announcement means a genuine second outage rather than the same one still
+	/// going. (Whether an announcement becomes a user-facing *notice* is the
+	/// loop's decision now, not this rule's — see `notified` in [`watch`].)
 	reported: bool,
 	miss_threshold: u32,
 	unsendable_threshold: u32,
@@ -446,6 +450,14 @@ fn watch(
 	notice: &Arc<NoticeController>,
 ) {
 	let mut health = Health::new(MISS_THRESHOLD, UNPROBEABLE_THRESHOLD);
+	// Whether the *current* outage has produced a notice. The pure rule's own
+	// latch marks the first threshold crossing, but "first crossing" and "worth
+	// telling" stopped being the same question when repaired outages stopped
+	// being told: a crossing whose reinstall succeeds is silent, and if the hook
+	// dies again before a probe has answered, the rule's `notify` is already
+	// spent — this flag is what lets the failing second reinstall still speak.
+	// Cleared where the rule's latch is cleared, on a probe that comes back.
+	let mut notified = false;
 
 	while wait(stop, PROBE_INTERVAL) {
 		let observation = if !hook::alive() {
@@ -482,6 +494,7 @@ fn watch(
 			Action::Recovered => {
 				diagnostics::log("[copper] capture: the keyboard hook is answering its probe again");
 				super::set_probe_blocked(false);
+				notified = false;
 				// The insurance chord stood in for a hook that is back; retiring it is
 				// the same call that put it up.
 				revisit_fallback_off_thread(app);
@@ -496,8 +509,21 @@ fn watch(
 				super::set_probe_blocked(false);
 				let recovered = reviver.revive();
 				revisit_fallback_off_thread(app);
-				if notify {
-					notice.show(&CaptureFailure::HookLost { recovered });
+				// Only a reinstall that FAILED is worth a notice. A hook that died and
+				// went straight back is a condition that has already resolved — and
+				// Windows removes hooks on its own schedule, under load, with the user
+				// nowhere near a capture, so the panel appearing to announce the repair
+				// read as Copper interrupting for nothing. The outage is in the log
+				// either way.
+				//
+				// `notified` rather than the rule's `notify`, which is left unread on
+				// purpose: the rule marks the first threshold crossing, but a crossing
+				// whose reinstall succeeded said nothing, and the notice must still be
+				// available to the crossing after it that fails.
+				let _ = notify;
+				if !recovered && !notified {
+					notified = true;
+					notice.show(&CaptureFailure::HookLost);
 				}
 			}
 			Action::Unprobeable { notify } => {
@@ -509,13 +535,16 @@ fn watch(
 				));
 				super::set_probe_blocked(true);
 				revisit_fallback_off_thread(app);
-				if notify {
-					// `recovered: false` because from the user's side that is the true
-					// part: the double-tap cannot be relied on and the settings view now
-					// names the chord standing in for it. Claiming a repair that was
-					// deliberately not attempted would be the worse of the two messages.
-					notice.show(&CaptureFailure::HookLost { recovered: false });
-				}
+				// No notice, deliberately. Blindness is not evidence the hook is
+				// broken, and the *ordinary* way to become blind is the lock screen or
+				// a UAC prompt: `SendInput` is refused on a secure desktop, so two
+				// minutes locked used to greet the returning user with a panel
+				// reporting a shortcut failure that never happened. The insurance
+				// chord goes up silently and comes down on the first probe that
+				// answers; the settings view names the standing condition for anyone
+				// who goes looking. `notify` stays in the rule unread — the tests pin
+				// the first-crossing semantics it still expresses.
+				let _ = notify;
 			}
 		}
 	}

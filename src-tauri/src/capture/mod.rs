@@ -184,14 +184,18 @@ pub enum CaptureFailure {
 	NotSaved {
 		kind: &'static str,
 	},
-	/// Windows removed the keyboard hook and the watchdog caught it. The only
-	/// variant that describes no particular capture — it reports that the trigger
-	/// itself stopped existing, which is otherwise indistinguishable from a user
-	/// who has not double-tapped anything lately.
-	HookLost {
-		/// Whether reinstalling it worked.
-		recovered: bool,
-	},
+	/// Windows removed the keyboard hook, the watchdog caught it, and putting it
+	/// back **failed**. The only variant that describes no particular capture —
+	/// it reports that the trigger itself stopped existing, which is otherwise
+	/// indistinguishable from a user who has not double-tapped anything lately.
+	///
+	/// An outage the watchdog *repaired* is deliberately not a variant any more:
+	/// it used to be, and the notice it produced was a panel appearing over the
+	/// user's work to describe a condition that had already resolved — with
+	/// nothing for them to do about it. A self-healed outage is a log line. This
+	/// survives only for the case where the double-tap is genuinely gone and the
+	/// settings view is naming the chord standing in for it.
+	HookLost,
 	/// A capture notification's re-route button was pressed after the space that
 	/// capture landed in stopped being the active one (task-018).
 	///
@@ -247,14 +251,7 @@ impl CaptureFailure {
 				"unavailable" => "Couldn't save. The active space isn't available.".to_owned(),
 				_ => "Captured, but couldn't save it.".to_owned(),
 			},
-			// Two outcomes, two sentences. Telling the user their trigger is broken
-			// when it has already been fixed would send them to the settings view for
-			// nothing; telling them it was fixed when it was not is worse, because the
-			// double-tap they then try does nothing at all.
-			Self::HookLost { recovered: true } => {
-				"Copper's keyboard shortcut stopped responding and had to be restarted.".to_owned()
-			}
-			Self::HookLost { recovered: false } => {
+			Self::HookLost => {
 				"Copper's keyboard shortcut stopped working, so double-tapping no longer captures. \
 				 Settings shows the key combination standing in for it."
 					.to_owned()
@@ -288,7 +285,7 @@ impl CaptureFailure {
 			Self::ClipboardBusy => "clipboard-busy",
 			Self::TooLarge { .. } => "too-large",
 			Self::NotSaved { .. } => "not-saved",
-			Self::HookLost { .. } => "hook-lost",
+			Self::HookLost => "hook-lost",
 			Self::SpaceSwitched => "space-switched",
 		}
 	}
@@ -799,8 +796,7 @@ mod tests {
 			CaptureFailure::Unsupported,
 			CaptureFailure::ClipboardBusy,
 			CaptureFailure::TooLarge { chars: 123_456 },
-			CaptureFailure::HookLost { recovered: true },
-			CaptureFailure::HookLost { recovered: false },
+			CaptureFailure::HookLost,
 			CaptureFailure::SpaceSwitched,
 		];
 		all.extend(STORE_ERROR_KINDS.map(|kind| CaptureFailure::NotSaved { kind }));
@@ -824,12 +820,11 @@ mod tests {
 	#[test]
 	fn every_message_is_non_empty_and_belongs_to_one_variant() {
 		// The expected number of distinct messages is derived, not written down:
-		// one per variant, plus three extra because NotSaved renders four, plus one
-		// more because HookLost renders two.
+		// one per variant, plus three extra because NotSaved renders four.
 		let samples = every_failure();
 		let variants: std::collections::HashSet<_> =
 			samples.iter().map(CaptureFailure::cause).collect();
-		let expected_distinct = variants.len() + 3 + 1;
+		let expected_distinct = variants.len() + 3;
 
 		let mut owners: HashMap<String, &'static str> = HashMap::new();
 		for failure in &samples {
@@ -851,7 +846,7 @@ mod tests {
 		assert_eq!(
 			owners.len(),
 			expected_distinct,
-			"expected one message per variant plus the extra branches NotSaved and HookLost render"
+			"expected one message per variant plus the extra branches NotSaved renders"
 		);
 	}
 
