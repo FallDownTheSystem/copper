@@ -74,15 +74,16 @@ function onOpenChange(next: boolean) {
 		     lets the chip's hover surface breathe without its text losing alignment
 		     with the search field above it.
 
-		     `rounded-sm` rather than the default control corner: a `text-label` line
-		     inside `py-0.5` is about 21px tall, so `--radius-md` would land past the
-		     capsule threshold and the chip would stop reading as the same kind of
+		     `rounded-inset` rather than any step of the surface ramp: a `text-label`
+		     line inside `py-0.5` is about 21px tall, so half its height is ~10px and
+		     every step on that ramp — `sm` included, now that it is 12px — lands past
+		     the capsule threshold. The chip would stop reading as the same kind of
 		     object as the section header it mirrors. -->
 		<DropdownMenuTrigger
 			type="button"
 			:aria-label="`Active section: ${name}, ${spokenCount}. Switch section`"
 			:title="name"
-			class="text-accent-text hover:bg-surface-hover active:bg-surface-active focus-ring squircle border-separator -mx-1 flex min-w-0 max-w-full items-center gap-1.5 rounded-sm border px-1.5 py-0.5 transition-colors duration-fast"
+			class="text-accent-text hover:bg-surface-hover active:bg-surface-active focus-ring squircle border-separator -mx-1 flex min-w-0 max-w-full items-center gap-1.5 rounded-inset border px-1.5 py-0.5 transition-colors duration-fast"
 		>
 			<IconLucideListTree class="size-3.5 shrink-0" aria-hidden="true" focusable="false" />
 			<span class="truncate text-label font-semibold uppercase">{{ name }}</span>

@@ -520,6 +520,22 @@ let pinning = false
  */
 const RELEASE_EVENTS = ['wheel', 'touchmove', 'keydown', 'pointerdown'] as const
 
+/**
+ * One of those gestures arrived: the reader owns the viewport now, and both
+ * things the app was going to do to it are withdrawn.
+ *
+ * The pin is the obvious one. **The unflushed reveal is the other, and it has to
+ * expire here or nowhere** — a request that could not find its row keeps waiting,
+ * and a reader who has scrolled, clicked or arrowed since is the clearest signal
+ * that its moment has passed. Without this, a note captured into a collapsed or
+ * filtered-away section stayed pending indefinitely and jumped the list out from
+ * under them at whatever unrelated moment finally made the row renderable.
+ */
+function readerTookOver() {
+	pinning = false
+	pendingReveal = null
+}
+
 function scrollRegion() {
 	if (typeof document === 'undefined') return null
 	const region = document.querySelector<HTMLElement>('[data-scroll-region]')
@@ -537,7 +553,7 @@ function scrollRegion() {
 			{ passive: true },
 		)
 		for (const name of RELEASE_EVENTS) {
-			region.addEventListener(name, () => (pinning = false), { passive: true })
+			region.addEventListener(name, readerTookOver, { passive: true })
 		}
 	}
 	return region
@@ -835,8 +851,17 @@ function restoreScroll(anchor: ScrollAnchor) {
  * a region of zero height. Both make a scroll a silent no-op, which is the one
  * outcome the request cannot have — "the user should always come back to the last
  * note they added" is a promise about the *next* time they look, not about now.
- * So every attempt that cannot land keeps the request, and the list flushes it
- * again on mount, on becoming visible, and when a drag ends.
+ * So every attempt that cannot land keeps the request, and it is tried again on
+ * mount, when the scroll region gains a height, when the panel reports itself
+ * visible, when a drag ends, and when the set of rendered rows changes.
+ *
+ * **It is not kept forever, and the bound is the reader rather than a clock.**
+ * The row can be absent for reasons no reveal will ever fix on its own — a
+ * collapsed section, a note the done filter hides, a section a query dropped —
+ * so `readerTookOver` expires the request the moment they scroll, click or press
+ * a key in the list. A stale reveal firing later would yank the viewport away
+ * from someone who has since chosen where to look, which is a worse failure than
+ * never scrolling at all.
  *
  * One slot, not a queue: two captures in a row mean the reader should be looking
  * at the second one, and a queue would walk them through history to get there.
@@ -874,6 +899,10 @@ export function flushReveal() {
 	// never been laid out. Scrolling it would report success and do nothing.
 	if (!region || region.clientHeight === 0) return
 
+	// The row exists in the document but not on screen: its section is collapsed,
+	// the done filter or a query has hidden it, or the patch that renders it has
+	// not run yet. Kept pending — the watcher on `rowIds` below tries again the
+	// moment it becomes renderable, and a reader's own gesture is what expires it.
 	const element = rowElement(wanted.key)
 	if (!element) return
 
@@ -944,6 +973,26 @@ watch(rowIds, (rows, previous) => {
 		if (target) target.focus()
 		else document.querySelector<HTMLElement>('[data-search]')?.focus()
 	})
+})
+
+/**
+ * The rendered rows changed, which is the one signal that a reveal waiting on a
+ * *row* rather than on a *region* can finally land.
+ *
+ * The list's own triggers all watch the panel — mount, visibility, a drop — and
+ * none of them fires when a section is expanded, a query is cleared or the done
+ * filter widens to the view that holds the note. Those are precisely the ways a
+ * captured note is in the document and not on screen, and the default view hides
+ * done notes, so a note marked done on arrival starts out in one of them.
+ *
+ * Deferred a tick because this fires on the order, and the DOM catches up after
+ * it: `rowElement` would still be looking at the previous render. Guarded on the
+ * pending request so an ordinary keystroke's filtering does not queue a tick's
+ * work to do nothing with.
+ */
+watch(rowIds, () => {
+	if (!pendingReveal) return
+	void nextTick(() => flushReveal())
 })
 
 /** Nearest survivor over the *row* order — forward first, then backward — so a

@@ -27,13 +27,22 @@ const {
 	     the menu would escape the rounded rect and the panel's contextmenu policy,
 	     landing over a transparent region with nothing behind it. Collision
 	     detection against the panel root is what flips it upward at the last card
-	     of a full list. -->
+	     of a full list.
+
+	     `w-52`, which is a preferred width that actually fits: `ContextMenuContent`
+	     caps every context menu at half the window, and half of a 440px panel is
+	     220px — so `w-56` asked for 224px and was clamped on every single open,
+	     making the ceiling the real width and this number a lie. Nothing here needs
+	     the extra 16px; the widest row is `Copy as list` beside `Ctrl+Shift+C`, and
+	     the chord is `shrink-0` so it is the label that would give first. It also
+	     puts this menu at the section menu's width, which the two being siblings
+	     always wanted. -->
 	<ContextMenuContent
 		v-if="portalTo"
 		:to="portalTo"
 		:collision-boundary="boundary ?? undefined"
 		:collision-padding="8"
-		class="text-text-secondary w-56 text-meta"
+		class="text-text-secondary w-52 text-meta"
 	>
 		<ContextMenuItem class="min-h-6" @select="copyNotes">
 			Copy

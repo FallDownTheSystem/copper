@@ -239,20 +239,42 @@
 	--color-popover: var(--popover);
 	--color-card-foreground: var(--card-foreground);
 	--color-card: var(--card);
-	/* 8 / 10 / 14 / 18. Wider steps than shadcn's generated ramp, which huddles
-	   its first three within 4px of each other — that spacing is invisible once
-	   the anchor is this large, and the three roles here are genuinely different
-	   sizes of thing: `sm` is what fits inside another rounded box (menu items,
-	   the theme segments, the attachment thumbnail) or is too short to take more
-	   without becoming a capsule (key caps, the section chip); `md` is the panel's
-	   default control corner; `lg` is a surface — a note row, a menu, a card.
-	   The upper bound on all of them is the capsule: a radius at half the
-	   element's height stops reading as a rounded rectangle at all, which is the
-	   one shape this scale is not for. */
+	/* **12 / 14 / 18 / 22 — the surface ramp, and it is not the whole scale.**
+	   Wider steps than shadcn's generated ramp, which huddles its first three
+	   within 4px of each other: that spacing is invisible once the anchor is this
+	   large. `lg` is the anchor itself and is a surface — a note row, a menu, a
+	   card; `xl` is the largest of them; `md` is the panel's default control
+	   corner; `sm` is what fits inside another rounded box (the theme segments,
+	   the attachment thumbnail).
+
+	   **The upper bound on any radius is the capsule**: at half an element's
+	   height a radius stops reading as a rounded rectangle at all, which is the
+	   one shape this scale is not for. That bound belongs to the element, not to
+	   the ramp — so raising `--radius` to the corner the largest surfaces want
+	   carried every step past it for anything around 20–24px tall, and turned the
+	   controls wearing `sm` and `md` at that size into capsules. Which is why
+	   there is a second tier below and it does not move with this one. */
 	--radius-sm: calc(var(--radius) - 6px);
 	--radius-md: calc(var(--radius) - 4px);
 	--radius-lg: var(--radius);
 	--radius-xl: calc(var(--radius) + 4px);
+
+	/* **The small-control tier: absolute, and deliberately not a calc() off
+	   `--radius`.** These are the two values the ramp used to start at, kept at
+	   what they were — they were chosen against the *heights* of the boxes that
+	   wear them, and no height changed when the anchor moved. Deriving them again
+	   would only re-arm the same failure the next time the largest surfaces want
+	   a rounder corner.
+
+	   `inset` is for a control that sits inside another rounded box, or is too
+	   short to take more without becoming a capsule: the active-section chip
+	   (~21px), the section header's collapse control (20px), a key cap (24px —
+	   `KbdChip` pins the same 8px by hand, and named the failure before it
+	   happened). `compact` is a short control's own corner, where `--radius-md`
+	   would capsule it: the section header row, whose radius exists for its focus
+	   ring alone. */
+	--radius-inset: 8px;
+	--radius-compact: 10px;
 }
 
 @layer base {

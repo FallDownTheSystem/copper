@@ -101,13 +101,16 @@ function onKeydown(event: KeyboardEvent) {
 			<!-- The radius is here for the focus ring alone: this row paints no
 			     background and no border, so nothing else in it can show a corner. A
 			     square ring around a row sitting among `rounded-lg` note rows is the
-			     one shape it should not be. -->
+			     one shape it should not be — and a capsule is the other. The row is
+			     `min-h-6`, so `--radius-md` at 14px sits past half its height; the
+			     small-control tier's 10px is the most it can take and still ring a
+			     rectangle. -->
 			<div
 				role="row"
 				:data-row-id="rowId"
 				data-section-row
 				:tabindex="focused ? 0 : -1"
-				class="focus-ring min-w-0 rounded-md"
+				class="focus-ring min-w-0 rounded-compact"
 			>
 				<div role="gridcell" class="flex min-h-6 min-w-0 items-center gap-2 px-3">
 					<template v-if="editing">
@@ -150,7 +153,7 @@ function onKeydown(event: KeyboardEvent) {
 								type="button"
 								tabindex="-1"
 								:aria-current="active ? 'true' : undefined"
-								class="hover:bg-surface-hover active:bg-surface-active flex min-w-0 items-center gap-1.5 rounded-sm py-1 pr-1.5 pl-3 transition-colors duration-fast"
+								class="hover:bg-surface-hover active:bg-surface-active flex min-w-0 items-center gap-1.5 rounded-inset py-1 pr-1.5 pl-3 transition-colors duration-fast"
 								:class="active ? 'text-accent-text' : 'text-text-secondary'"
 								@click="emit('activate')"
 							>
@@ -179,14 +182,18 @@ function onKeydown(event: KeyboardEvent) {
 						     nothing visible would read as broken. The stored state survives
 						     and comes back when the query clears; the fixed-width stand-in
 						     keeps the separator from growing and shrinking as a query is
-						     typed. -->
+						     typed.
+
+						     `rounded-inset` because the box is `size-5`: at 12px a 20px
+						     square is a circle, and a round hover surface says radio button
+						     rather than disclosure. -->
 						<button
 							v-if="collapseEnabled"
 							type="button"
 							tabindex="-1"
 							:aria-expanded="!collapsed"
 							:aria-label="`${collapsed ? 'Expand' : 'Collapse'} ${section.name}`"
-							class="text-text-disabled hover:bg-surface-hover hover:text-text-secondary focus-ring grid size-5 shrink-0 place-items-center rounded-sm transition-colors duration-fast"
+							class="text-text-disabled hover:bg-surface-hover hover:text-text-secondary focus-ring grid size-5 shrink-0 place-items-center rounded-inset transition-colors duration-fast"
 							@click="toggle"
 						>
 							<IconLucideChevronRight

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test'
+import { nextTick } from 'vue'
 
 import { useSections } from './useSections'
 import { flushReveal, noteRow, revealRow, sectionRow, useSelection } from './useSelection'
@@ -597,30 +598,45 @@ describe('revealing a row', () => {
 	 * out — plus the rows themselves, since a reveal has to find an element to
 	 * scroll to. `scrollIntoView` is stubbed per element rather than on the
 	 * prototype: what these tests are about is *which* row was asked for.
+	 *
+	 * The row keys are a parameter, and `add` puts one in later, because a list
+	 * that does not render the wanted row is a state of its own — a collapsed
+	 * section, a note the done filter hides — and not the same thing as a region
+	 * with no height.
 	 */
-	function mountList(clientHeight: number) {
+	function mountList(
+		clientHeight: number,
+		keys: string[] = [sectionRow('sec_a'), noteRow('n1'), noteRow('n2')],
+	) {
 		const region = document.createElement('div')
 		region.setAttribute('data-scroll-region', '')
 		Object.defineProperty(region, 'clientHeight', { configurable: true, get: () => clientHeight })
-		region.innerHTML = [
-			'<div data-row-id="s:sec_a"></div>',
-			'<div data-row-id="n:n1"></div>',
-			'<div data-row-id="n:n2"></div>',
-		].join('')
 		document.body.append(region)
 
 		const calls: (ScrollIntoViewOptions | undefined)[] = []
-		for (const row of region.querySelectorAll<HTMLElement>('[data-row-id]')) {
+		function add(key: string) {
+			const row = document.createElement('div')
+			row.dataset.rowId = key
 			row.scrollIntoView = (options?: boolean | ScrollIntoViewOptions) => {
 				calls.push(options as ScrollIntoViewOptions | undefined)
 			}
+			region.append(row)
+			return row
 		}
-		return { region, calls, row: (key: string) => region.querySelector(`[data-row-id="${key}"]`) }
+		for (const key of keys) add(key)
+
+		return {
+			region,
+			calls,
+			add,
+			row: (key: string) => region.querySelector(`[data-row-id="${key}"]`),
+		}
 	}
 
 	afterEach(() => {
 		// Any request the test left behind would fire inside the next one.
 		selection.resetForNewSpace()
+		sections.reset()
 		document.body.innerHTML = ''
 	})
 
@@ -686,6 +702,49 @@ describe('revealing a row', () => {
 		flushReveal()
 
 		expect(list.calls).toHaveLength(1)
+	})
+
+	/**
+	 * A height is not the only thing a reveal can be missing. The note is in a
+	 * section the reader has folded shut, so the list renders no row for it at all
+	 * — and none of the panel's own triggers (mount, visibility, a drop) fires when
+	 * a section is expanded. Without a retry on the rendered rows the request sat
+	 * there until something unrelated jumped the list.
+	 */
+	it('flushes when a row that was not rendered finally is', async () => {
+		sections.setCollapsed('sec_a', true)
+		const list = mountList(120, [sectionRow('sec_a'), sectionRow('sec_b')])
+
+		revealRow(noteRow('n1'))
+		expect(list.calls).toEqual([])
+
+		list.add(noteRow('n1'))
+		sections.setCollapsed('sec_a', false)
+		// One tick for the watcher on the row order, one for the flush it defers
+		// until the DOM has caught up with it.
+		await nextTick()
+		await nextTick()
+
+		expect(list.calls).toEqual([{ block: 'nearest' }])
+	})
+
+	/**
+	 * The other half of the same problem: a request that cannot land must not be
+	 * held indefinitely, because the reader can take the viewport in the meantime
+	 * and a reveal arriving after that yanks it away from them.
+	 */
+	it('expires a pending request the moment the reader scrolls', () => {
+		const hidden = mountList(0)
+		revealRow(noteRow('n1'))
+
+		// A wheel is a reader, unlike the scroll events the list's own reflow fires.
+		hidden.region.dispatchEvent(new Event('wheel'))
+
+		document.body.innerHTML = ''
+		const shown = mountList(120)
+		flushReveal()
+
+		expect(shown.calls).toEqual([])
 	})
 
 	/** The row key names a note in a document nobody is looking at any more, and

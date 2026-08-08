@@ -27,7 +27,7 @@ const { toggleDone, toggleNoteDone } = useNoteActions()
 const { dropTarget, isDragging } = useNoteDrag()
 
 /**
- * The three moments a reveal that could not land becomes possible again.
+ * The moments a reveal that could not land becomes possible again.
  *
  * `useSelection.revealRow` holds the request rather than performing it, because
  * the panel is usually hidden when a capture arrives and the list may not be in
@@ -36,15 +36,32 @@ const { dropTarget, isDragging } = useNoteDrag()
  *
  * - **Mount.** The list coming back from the settings view, or being rendered for
  *   the first time after a capture reached a panel that had never been opened.
- * - **Becoming visible.** The window is shown; a hidden panel's region can have no
- *   layout to scroll, and now it does. This is the case the whole feature is for.
+ * - **The region gaining a height.** The window is shown and the list is laid out
+ *   for the first time. **This is the case the whole feature is for, and it is the
+ *   only trigger here that observes the same thing the request is waiting on** —
+ *   `flushReveal` gives up on a region whose `clientHeight` is 0, and a resize is
+ *   how that number stops being 0.
+ * - **Becoming visible.** Kept, but not relied on: showing the panel does not
+ *   unmount this tree, so `visibilitychange` is only as good as the webview's
+ *   tracking of a parent window it does not own. WebView2 promises nothing here.
  * - **A drag ending.** The reveal stands aside while a row is being carried, since
  *   the drag's own auto-scroll owns the region until the drop.
  *
  * Flushing when there is nothing pending is free — the first line of `flushReveal`
  * returns.
  */
-onMounted(() => flushReveal())
+const scrollRegion = shallowRef<HTMLElement | null>(null)
+onMounted(() => {
+	flushReveal()
+	// Resolved here rather than in `setup`: this list renders *inside* the region,
+	// so on the first pass the region is not in the document yet.
+	scrollRegion.value = document.querySelector<HTMLElement>('[data-scroll-region]')
+})
+// Every box change, with no height test of its own: `flushReveal` already holds
+// the request when the region has no height, and a second copy of that condition
+// is one that can drift from it. VueUse owns the lifecycle and the
+// unsupported-environment guard, as it does for the clamp probe.
+useResizeObserver(scrollRegion, () => flushReveal())
 useEventListener(document, 'visibilitychange', () => {
 	if (document.visibilityState === 'visible') flushReveal()
 })

@@ -3942,6 +3942,65 @@ describe('top insertion', () => {
 		// to it.
 		expect(selection.focusedId.value).toBe(noteRow('nte_2'))
 	})
+
+	/**
+	 * The same reveal, reached through the signal the list actually subscribes to
+	 * rather than by calling the flush by hand.
+	 *
+	 * Showing the panel does not unmount this tree, so the `visibilitychange`
+	 * listener is only as good as the webview's tracking of a parent window it does
+	 * not own — and the case the feature exists for is precisely a capture that
+	 * arrived before the panel had ever been laid out. The region going from no
+	 * height to a height is the same transition the pending request is waiting on,
+	 * so that is what has to wake it.
+	 *
+	 * `ResizeObserver` is replaced rather than driven, since happy-dom lays nothing
+	 * out and would never fire one: the test keeps what was observed and hands it
+	 * the callback itself.
+	 */
+	it('flushes the reveal when the region gains a height, with no visibility event', async () => {
+		const observed: { target: Element; fire: () => void }[] = []
+		// On `window` rather than `globalThis`: VueUse constructs it as
+		// `new window.ResizeObserver(...)`, and under vitest the two are not
+		// guaranteed to be the same object.
+		const realResizeObserver = window.ResizeObserver
+		window.ResizeObserver = class {
+			readonly callback: () => void
+			constructor(callback: () => void) {
+				this.callback = callback
+			}
+			observe(target: Element) {
+				observed.push({ target, fire: () => this.callback() })
+			}
+			unobserve() {}
+			disconnect() {}
+		} as unknown as typeof ResizeObserver
+
+		try {
+			const wrapper = await mountWithTopInsertion()
+			document.body.dispatchEvent(paste('pasted at the top'))
+			await settle(4)
+
+			const seen: (ScrollIntoViewOptions | undefined)[] = []
+			wrapper.get(`[data-row-id="${noteRow('nte_3')}"]`).element.scrollIntoView = (
+				options?: boolean | ScrollIntoViewOptions,
+			) => {
+				seen.push(options as ScrollIntoViewOptions)
+			}
+
+			const region = wrapper.get('[data-scroll-region]').element
+			expect(observed.map((entry) => entry.target)).toContain(region)
+
+			// The panel is shown: the region is laid out for the first time, which is
+			// what the observer reports.
+			Object.defineProperty(region, 'clientHeight', { configurable: true, get: () => 120 })
+			for (const entry of observed) entry.fire()
+
+			expect(seen).toEqual([{ block: 'nearest' }])
+		} finally {
+			window.ResizeObserver = realResizeObserver
+		}
+	})
 })
 
 // --- task-016: done filtering, per-section sort, creation dates ---------------
