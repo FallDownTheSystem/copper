@@ -522,10 +522,13 @@ name = "copper"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dom_query",
  "image",
  "infer",
  "notify",
  "notify-debouncer-full",
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",

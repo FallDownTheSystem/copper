@@ -390,7 +390,12 @@ fn occupant_matches(path: &Path, bytes: &[u8]) -> Result<()> {
 /// attaches is not a thing that happens, and short enough that the directory
 /// stays readable in Explorer — which is half the reason the sidecar is a real
 /// directory rather than a container.
-fn hex16(digest: &[u8]) -> String {
+///
+/// `pub(crate)` for the preview cache, which names its files the same way over a
+/// different input — a URL rather than the bytes. The reasoning above about
+/// length and readability is what the two share, and a second copy of it would
+/// be a second place for the two directories to stop looking alike.
+pub(crate) fn hex16(digest: &[u8]) -> String {
 	let head: [u8; 8] = digest[..8].try_into().expect("a SHA-256 digest is 32 bytes");
 	format!("{:016x}", u64::from_be_bytes(head))
 }

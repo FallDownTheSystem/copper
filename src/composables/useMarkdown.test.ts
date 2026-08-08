@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it, vi } from 'vite-plus/test'
 
 import { useMarkdown } from './useMarkdown'
 
-const { renderNote, pruneCache, clearCache, ensureHighlighter, md } = useMarkdown()
+const { renderNote, noteLinks, pruneCache, clearCache, ensureHighlighter, md } = useMarkdown()
 
 function render(body: string, id = 'nte_1') {
 	clearCache()
@@ -251,5 +251,81 @@ describe('with the highlighter installed', () => {
 		const html = render(`\`\`\`js\n${'x'.repeat(30_000)}\n\`\`\``)
 
 		expect(html).toContain('shiki-plain')
+	})
+})
+
+/**
+ * Task-020. `noteLinks` decides which URLs Copper is willing to fetch a preview
+ * for, and a preview is a disclosure to a third party — so this is a security
+ * boundary in the same sense the scheme allowlist above is, and the cases that
+ * matter are the ones where a naive pattern over the body would find a link the
+ * reader cannot see.
+ */
+describe('the links a preview may be fetched for', () => {
+	function links(body: string, id = 'nte_links') {
+		clearCache()
+		return noteLinks({ id, body })
+	}
+
+	it('finds both written links and autolinked bare URLs, in order', () => {
+		expect(links('see [one](https://a.example/1) and https://b.example/2')).toEqual([
+			'https://a.example/1',
+			'https://b.example/2',
+		])
+	})
+
+	it('returns each URL once however many times the note names it', () => {
+		expect(links('https://a.example/ and [again](https://a.example/)')).toEqual([
+			'https://a.example/',
+		])
+	})
+
+	/** The case a regex over the body gets wrong. A URL inside a fence or inline
+	 *  code is text the reader can see and *not* a link they can follow, so
+	 *  fetching it would disclose a page nobody navigated to. */
+	it('ignores a URL inside code, which is text rather than a link', () => {
+		expect(links('`https://a.example/`')).toEqual([])
+		expect(links('```\nhttps://a.example/\n```')).toEqual([])
+	})
+
+	/** The same allowlist the renderer applies, so a link with no `href` in the
+	 *  output has no preview either. */
+	it('excludes every scheme the renderer refuses to emit an href for', () => {
+		expect(links('[x](file:///C:/Windows/win.ini)')).toEqual([])
+		expect(links('[x](javascript:alert(1))')).toEqual([])
+		expect(links('[x](ms-settings:privacy)')).toEqual([])
+		expect(links('[x](../../secrets/notes.copper)')).toEqual([])
+	})
+
+	/** `mailto:` passes the render-time allowlist deliberately — it is safe to
+	 *  click — and is just as deliberately not something to fetch. */
+	it('excludes mailto, which is safe to click and not a thing to fetch', () => {
+		expect(links('[mail](mailto:someone@example.com)')).toEqual([])
+	})
+
+	/** A Markdown image renders as a link *to the image file*, and an image file
+	 *  carries no Open Graph metadata — so a preview for one is a request to a
+	 *  third party that cannot succeed. It is excluded structurally rather than by
+	 *  guessing at extensions: the token is an `image`, not a `link_open`. */
+	it('excludes an image, whose anchor points at a file with no metadata', () => {
+		expect(links('![alt](https://a.example/hero.png)')).toEqual([])
+	})
+
+	/** Keyed on the body string, never on a timestamp: a `git checkout` can
+	 *  restore a historical body without touching `updated`, and a stale list
+	 *  would fetch previews for URLs the note no longer contains. */
+	it('re-reads when the body changes under the same id', () => {
+		clearCache()
+		expect(noteLinks({ id: 'nte_1', body: 'https://a.example/' })).toEqual(['https://a.example/'])
+		expect(noteLinks({ id: 'nte_1', body: 'https://b.example/' })).toEqual(['https://b.example/'])
+	})
+
+	it('forgets a note the list no longer holds', () => {
+		clearCache()
+		noteLinks({ id: 'nte_1', body: 'https://a.example/' })
+		pruneCache(['nte_2'])
+		// Nothing observable but the absence of a leak, so the assertion is that the
+		// next read still answers correctly rather than from a discarded entry.
+		expect(noteLinks({ id: 'nte_1', body: 'https://c.example/' })).toEqual(['https://c.example/'])
 	})
 })

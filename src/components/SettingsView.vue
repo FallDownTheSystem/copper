@@ -25,6 +25,7 @@ const {
 	alwaysOnTop,
 	showCreated,
 	captureNotifications,
+	linkPreviews,
 	errorFor,
 	refresh,
 	setTheme,
@@ -35,6 +36,7 @@ const {
 	setDoubleClick,
 	setShowCreated,
 	setCaptureNotifications,
+	setLinkPreviews,
 	setAlwaysOnTop,
 } = useSettings()
 const { isRecording, cancel } = useShortcutRecorder()
@@ -63,6 +65,7 @@ const doubleClickError = errorFor('doubleClick')
 const alwaysOnTopError = errorFor('alwaysOnTop')
 const showCreatedError = errorFor('showCreated')
 const captureNotificationsError = errorFor('captureNotifications')
+const linkPreviewsError = errorFor('linkPreviews')
 const summonError = errorFor('summon')
 const captureError = errorFor('capture')
 
@@ -408,6 +411,32 @@ const captureNote = computed(() => {
 						id="capture-notifications"
 						:model-value="captureNotifications"
 						@update:model-value="setCaptureNotifications"
+					/>
+				</SettingsRow>
+			</SettingsSection>
+
+			<!-- Its own section, and the only one in this view that is not about how
+			     Copper behaves. Every other row here changes something local; this is
+			     the one switch that decides whether the app talks to anyone at all,
+			     and burying it under "Notes" would make it look like a display
+			     preference.
+
+			     The description says what turning it *on* sends, in the words a
+			     person would use, rather than the spec's "Show cached page details
+			     below links" — which describes the visible half and leaves the half
+			     that matters to be discovered. The three things named are exactly what
+			     a fetch discloses: the address, the IP, and the moment of reading. -->
+			<SettingsSection title="Privacy">
+				<SettingsRow
+					label="Link previews"
+					description="Show a page's title, description and picture below links in a note. Copper has to fetch each linked page to do it, which tells whoever runs that site the address, your IP address, and when you read the note. Off, no page is ever fetched."
+					label-for="link-previews"
+					:error="linkPreviewsError"
+				>
+					<SettingsSwitch
+						id="link-previews"
+						:model-value="linkPreviews"
+						@update:model-value="setLinkPreviews"
 					/>
 				</SettingsRow>
 			</SettingsSection>

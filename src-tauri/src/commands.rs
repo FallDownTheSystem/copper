@@ -12,7 +12,8 @@
 //! which this project does not do.
 
 use crate::{
-	attachments, autostart, clipboard, editor, panel, shortcuts, spaces, store, theme, updater,
+	attachments, autostart, clipboard, editor, panel, previews, shortcuts, spaces, store, theme,
+	updater,
 };
 
 pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
@@ -46,6 +47,8 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
 		attachments::commands::attachment_full,
 		attachments::commands::attachment_open,
 		attachments::commands::attachment_reveal,
+		previews::commands::link_preview,
+		previews::commands::preview_image,
 		editor::editor_handoffs,
 		editor::editor_open_note,
 		editor::editor_stop_handoff,

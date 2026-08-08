@@ -5,9 +5,10 @@ import type { Note } from '@/composables/useSpace'
 
 const props = defineProps<{ note: Note }>()
 
-const { renderNote } = useMarkdown()
+const { renderNote, noteLinks } = useMarkdown()
 const { canExpand, isExpanded, measure, toggle, clampHeight } = useNoteDisclosure()
 const { matchNeedle } = useNoteSearch()
+const { previewFor, requestPreview, previewEpoch, enabled: previewsEnabled } = usePreviews()
 
 const html = computed(() => renderNote(props.note))
 const bodyId = computed(() => `note-body-${props.note.id}`)
@@ -49,6 +50,44 @@ watch(
 )
 
 onBeforeUnmount(() => releaseHighlight(contentRef.value))
+
+// --- link previews -----------------------------------------------------------
+
+/** Taken from the token stream rather than from the rendered DOM, so a preview
+ *  can only ever be fetched for a link that survived the render-time scheme
+ *  allowlist — and never for one inside a code fence, which looks like a URL and
+ *  is not a link. */
+const links = computed(() => noteLinks(props.note))
+
+/**
+ * The ask, driven from a watcher rather than from the read below, exactly as
+ * `AttachmentCard` does it: `previewFor` is consumed by a computed, and
+ * requesting as a side effect of reading would write the preview cache during
+ * that computed's evaluation.
+ *
+ * `previewsEnabled` is a dependency and not just a guard — switching the setting
+ * on has to make every mounted note ask, and there is no other signal that would
+ * reach one. The epoch is the mirror of that: switching it off drops the state
+ * under cards that are still mounted, and this is what makes them notice.
+ */
+watch(
+	() => [links.value, previewsEnabled.value, previewEpoch.value] as const,
+	([hrefs, on]) => {
+		if (!on) return
+		for (const href of hrefs) requestPreview(href)
+	},
+	{ immediate: true },
+)
+
+/**
+ * Only the links that have something to show.
+ *
+ * Filtering here rather than letting each card decide is what keeps the list out
+ * of the DOM entirely when nothing resolved — a `<ul>` with a top margin and no
+ * visible children would add a gap under every note containing a link, which is
+ * most of them.
+ */
+const cards = computed(() => links.value.filter((href) => previewFor(href).state === 'ready'))
 
 /**
  * Defence in depth only. The scheme allowlist is enforced at render time, so an
@@ -96,6 +135,20 @@ function onAuxClick(event: MouseEvent) {
 				@auxclick="onAuxClick"
 			/>
 		</div>
+
+		<!-- **Outside the clamp, above `Show more`.** Inside it the cards would be
+		     the first thing the clamp hid, so a note long enough to be worth
+		     collapsing would be exactly the note whose previews never appeared. They
+		     sit above the disclosure button because they belong to the body rather
+		     than to the control that reveals the rest of it.
+
+		     Hidden while the inline editor is open without needing to say so:
+		     `NoteCard` renders `NoteEditor` *instead of* this component. -->
+		<ul v-if="cards.length > 0" class="mt-1.5 flex min-w-0 flex-col gap-1">
+			<li v-for="href in cards" :key="href" class="min-w-0">
+				<LinkPreviewCard :url="href" />
+			</li>
+		</ul>
 
 		<button
 			v-if="expandable"

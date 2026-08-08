@@ -14,6 +14,9 @@ pub mod editor;
 /// store's "`body` is opaque" invariant depends on this living outside it.
 pub mod entry;
 mod panel;
+/// Public because `LinkPreview` crosses the IPC boundary and `tests/commands.rs`
+/// asserts the shape it arrives in, the same reason `store` and `entry` are.
+pub mod previews;
 mod shortcuts;
 pub mod spaces;
 pub mod store;
@@ -337,6 +340,14 @@ pub fn run() {
 			// on a type that was never managed.
 			app.manage(updater::PendingUpdate::default());
 			app.manage(updater::UpdateGate::default());
+
+			// The link-preview cache's only maintenance, and startup is the only
+			// place it can run: a sweep during a session would delete an entry a card
+			// on screen is about to ask for. It sweeps whatever the toggle says,
+			// because expiring a stale entry is not a disclosure and an install that
+			// turned previews off long ago should not still be holding the directory.
+			// Detached, like the attachment sweep: nothing waits for it.
+			previews::commands::start_prune(app.handle());
 
 			// Last, because it is the only step expected to fail in ordinary use:
 			// another application may already hold the chord. A failure here leaves

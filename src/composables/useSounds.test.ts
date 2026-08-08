@@ -52,6 +52,7 @@ function makeSettings(sounds: boolean): Settings {
 		alwaysOnTop: true,
 		showCreated: false,
 		captureNotifications: true,
+		linkPreviews: false,
 	}
 }
 

@@ -82,6 +82,7 @@ type PreferenceScope =
 	| 'alwaysOnTop'
 	| 'showCreated'
 	| 'captureNotifications'
+	| 'linkPreviews'
 
 // --- module-scope state ------------------------------------------------------
 
@@ -132,6 +133,13 @@ const showCreated = computed(() => settings.value?.showCreated === true)
  *  hidden panel produces at all. An unreadable `settings.json` leaving the user
  *  with no confirmation that the double-tap did anything is the worse failure. */
 const captureNotifications = computed(() => settings.value?.captureNotifications !== false)
+
+/** Off unless the file says otherwise, and the direction is not a style choice.
+ *  Every other default here preserves what an earlier build did; this one is
+ *  consent to make network requests, so an unreadable or older `settings.json`
+ *  must read as "no". Rust applies the same rule store-side — this computed only
+ *  decides whether a card is rendered, never whether a fetch is allowed. */
+const linkPreviews = computed(() => settings.value?.linkPreviews === true)
 
 function fail(scope: SettingsScope, error: unknown) {
 	errors.value = { ...errors.value, [scope]: errorMessage(error) }
@@ -299,6 +307,7 @@ const rowWrites: Record<SettingsScope, Generation> = {
 	alwaysOnTop: generations(),
 	showCreated: generations(),
 	captureNotifications: generations(),
+	linkPreviews: generations(),
 	summon: generations(),
 	capture: generations(),
 }
@@ -395,6 +404,14 @@ function setShowCreated(enabled: boolean): Promise<boolean> {
  *  already exists. */
 function setCaptureNotifications(enabled: boolean): Promise<boolean> {
 	return patchSettings('captureNotifications', { captureNotifications: enabled })
+}
+
+/** Through the patch like `sounds` and `captureNotifications`: the value has no
+ *  native side to apply here at all — Rust reads it out of the store before each
+ *  fetch — so a command of its own would be a pass-through to the writer that
+ *  already exists. */
+function setLinkPreviews(enabled: boolean): Promise<boolean> {
+	return patchSettings('linkPreviews', { linkPreviews: enabled })
 }
 
 /**
@@ -509,6 +526,7 @@ export function useSettings() {
 		alwaysOnTop,
 		showCreated,
 		captureNotifications,
+		linkPreviews,
 		errorFor,
 		initialize,
 		dispose,
@@ -520,6 +538,7 @@ export function useSettings() {
 		setDoubleClick,
 		setShowCreated,
 		setCaptureNotifications,
+		setLinkPreviews,
 		setAlwaysOnTop,
 		setAutostart,
 		beginRecording,

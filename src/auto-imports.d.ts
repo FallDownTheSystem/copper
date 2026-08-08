@@ -255,6 +255,7 @@ declare global {
   const usePreferredLanguages: typeof import('@vueuse/core').usePreferredLanguages
   const usePreferredReducedMotion: typeof import('@vueuse/core').usePreferredReducedMotion
   const usePreferredReducedTransparency: typeof import('@vueuse/core').usePreferredReducedTransparency
+  const usePreviews: typeof import('./composables/usePreviews').usePreviews
   const usePrevious: typeof import('@vueuse/core').usePrevious
   const useRafFn: typeof import('@vueuse/core').useRafFn
   const useReducedMotion: typeof import('./composables/useReducedMotion').useReducedMotion
@@ -364,6 +365,9 @@ declare global {
   // @ts-ignore
   export type { DoneFilter, SortMode } from './composables/useNoteList'
   import('./composables/useNoteList')
+  // @ts-ignore
+  export type { LinkPreview, PreviewState } from './composables/usePreviews'
+  import('./composables/usePreviews')
   // @ts-ignore
   export type { SwitcherHost } from './composables/useSections'
   import('./composables/useSections')
@@ -642,6 +646,7 @@ declare module 'vue' {
     readonly usePreferredLanguages: UnwrapRef<typeof import('@vueuse/core')['usePreferredLanguages']>
     readonly usePreferredReducedMotion: UnwrapRef<typeof import('@vueuse/core')['usePreferredReducedMotion']>
     readonly usePreferredReducedTransparency: UnwrapRef<typeof import('@vueuse/core')['usePreferredReducedTransparency']>
+    readonly usePreviews: UnwrapRef<typeof import('./composables/usePreviews')['usePreviews']>
     readonly usePrevious: UnwrapRef<typeof import('@vueuse/core')['usePrevious']>
     readonly useRafFn: UnwrapRef<typeof import('@vueuse/core')['useRafFn']>
     readonly useReducedMotion: UnwrapRef<typeof import('./composables/useReducedMotion')['useReducedMotion']>

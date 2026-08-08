@@ -23,7 +23,7 @@
  */
 
 import MarkdownItCallable from 'markdown-it'
-import type { MarkdownIt } from 'markdown-it'
+import type { MarkdownIt, Token } from 'markdown-it'
 import { createHighlighterCore } from 'shiki/core'
 import type { BundledLanguage } from 'shiki'
 import { createOnigurumaEngine } from 'shiki/engine/oniguruma'
@@ -314,20 +314,91 @@ function renderNote(note: Pick<Note, 'id' | 'body'>): string {
 	return html
 }
 
+// --- links -------------------------------------------------------------------
+
+/**
+ * The `http(s)` links a note's body contains, in the order they are written and
+ * without repeats.
+ *
+ * **This is the only list a link preview may ever be fetched for**, and that is
+ * the reason it lives here rather than in a regex over the body somewhere else.
+ * A preview discloses to a third party that one of their URLs is being read, so
+ * the set of URLs it can happen for has to be exactly the set the reader can
+ * see — which is what the token stream says and what a pattern over the source
+ * only approximates. A `` `https://x` `` inside a code fence is not a link, an
+ * autolinked bare URL is, and only the renderer knows the difference.
+ *
+ * Two things that *are* links are still excluded. `mailto:` passes
+ * {@link isSafeHref} and is a safe thing to click rather than a thing to fetch.
+ * And a Markdown image, which `rules.image` turns into an anchor pointing at the
+ * image file, is an `image` token rather than a `link_open` one and so never
+ * reaches here — which is the right answer for a reason that has nothing to do
+ * with the token type: an image file carries no Open Graph metadata, so a
+ * preview for one is a request to a third party that cannot succeed.
+ *
+ * Rust applies its own, stricter gate on top of this one — no credentials, no
+ * private hosts, redirects re-checked at every hop — because a rule that matters
+ * this much is not left to one side of the boundary.
+ */
+function collectLinks(tokens: Token[], into: Set<string>) {
+	for (const token of tokens) {
+		if (token.type === 'link_open') {
+			// `String(…)` because markdown-it types an attribute value as
+			// `string | number`, and the numeric case is a real one in its API even
+			// though a link's `href` is never one.
+			const raw = token.attrGet('href')
+			const href = raw === null ? '' : String(raw).trim()
+			if (href && isSafeHref(href) && /^https?:/i.test(href)) into.add(href)
+		}
+		if (token.children) collectLinks(token.children, into)
+	}
+}
+
+/**
+ * Cached the same way the rendered HTML is — on the body *string*, never on
+ * `note.updated` — and for the same reason: a `git checkout` can restore a
+ * historical body without touching a timestamp, and a stale link list would
+ * fetch previews for URLs the note no longer contains.
+ *
+ * A second parse rather than a by-product of `renderNote`, because that one is
+ * cached: a cache hit would collect nothing, and the two would silently
+ * disagree the first time a note was re-read. `parse` is the cheap half of a
+ * render — no highlighting, no renderer rules — and it runs once per body.
+ */
+const links = new Map<string, { body: string; links: string[] }>()
+
+function noteLinks(note: Pick<Note, 'id' | 'body'>): string[] {
+	const hit = links.get(note.id)
+	if (hit && hit.body === note.body) return hit.links
+
+	const found = new Set<string>()
+	collectLinks(md.parse(note.body, {}), found)
+	const collected = [...found]
+	links.set(note.id, { body: note.body, links: collected })
+	return collected
+}
+
 function pruneCache(liveIds: Iterable<string>) {
 	const live = new Set(liveIds)
 	for (const id of cache.keys()) {
 		if (!live.has(id)) cache.delete(id)
 	}
+	for (const id of links.keys()) {
+		if (!live.has(id)) links.delete(id)
+	}
 }
 
 function clearCache() {
 	cache.clear()
+	links.clear()
 }
 
 export function useMarkdown() {
 	return {
 		renderNote,
+		/** The ordered, de-duplicated `http(s)` links in a note — the only URLs a
+		 *  preview may be fetched for. */
+		noteLinks,
 		pruneCache,
 		clearCache,
 		/** Resolves when the highlighter has installed, or to `null` if it could

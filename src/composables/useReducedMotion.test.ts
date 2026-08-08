@@ -36,6 +36,7 @@ function makeSettings(motion: string): Settings {
 		alwaysOnTop: true,
 		showCreated: false,
 		captureNotifications: true,
+		linkPreviews: false,
 	}
 }
 

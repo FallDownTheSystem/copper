@@ -52,7 +52,7 @@ const COMMANDS: [&str; 21] = [
 ];
 
 /// The commands later phases added beside the store's twenty.
-const EXTRA_COMMANDS: [&str; 32] = [
+const EXTRA_COMMANDS: [&str; 34] = [
 	"clipboard_write_text",
 	"editor_handoffs",
 	"editor_open_note",
@@ -102,6 +102,18 @@ const EXTRA_COMMANDS: [&str; 32] = [
 	// because `removeUnusedCommands` prunes an ungranted window command out of the
 	// binary and because window operations are centralised in `panel.rs`.
 	"set_always_on_top",
+	// Task-020. Note what is *not* here: nothing for `tauri-plugin-http`. Its
+	// capability entry would need a static URL scope, and a preview is fetched for
+	// whatever host a note happens to name — so the scope would have to be
+	// `https://**`, which is a permanent grant of unrestricted outbound network to
+	// JavaScript. One Rust command that reads the consent flag store-side is a
+	// strictly smaller and more reversible surface.
+	"link_preview",
+	// The picture, as bytes. A separate command rather than a field on the one
+	// above for the same reason `attachment_thumb` is separate from the document:
+	// the card must never be handed a remote URL, because an `<img>` pointing at a
+	// third party is the read receipt `useMarkdown`'s image rule exists to refuse.
+	"preview_image",
 	// Task-009. Note what is *not* here: nothing for `tauri-plugin-updater`'s own
 	// four commands. The whole update flow is driven from Rust behind these three,
 	// so no `updater:*` permission is granted, the plugin's IPC surface stays
@@ -113,7 +125,7 @@ const EXTRA_COMMANDS: [&str; 32] = [
 ];
 
 /// Spec 8.1c. Every argument name in the whole surface.
-const PARAMETERS: [&str; 19] = [
+const PARAMETERS: [&str; 20] = [
 	"patch", "path", "name", "body", "section", "id", "ids", "done", "index", "text", "theme",
 	"chord", "trigger", "token", "target", "enabled",
 	// Task-011. `paths` is the plural of one already here and `file` is the
@@ -121,6 +133,11 @@ const PARAMETERS: [&str; 19] = [
 	// two-word parameter would have one spelling in Rust and another in
 	// JavaScript, which is the whole failure this list exists to prevent.
 	"attachments", "paths", "file",
+	// Task-020. `preview_image` reuses `file` rather than adding a second word for
+	// the same idea: it is a bare filename inside a directory Rust owns, validated
+	// by the same `is_bare_filename`, and one name for one concept is what keeps
+	// the two resolvers from drifting apart.
+	"url",
 ];
 
 const SOURCE: &str = include_str!("../src/store/commands.rs");
@@ -128,7 +145,7 @@ const SOURCE: &str = include_str!("../src/store/commands.rs");
 /// Command *wrappers* live next to the module they serve; only the registration
 /// is central, because Tauri accepts one `invoke_handler` and the closure
 /// `generate_handler!` builds consumes the `Invoke` it is handed.
-const OTHER_SOURCES: [&str; 9] = [
+const OTHER_SOURCES: [&str; 10] = [
 	include_str!("../src/clipboard.rs"),
 	include_str!("../src/editor.rs"),
 	include_str!("../src/spaces/mod.rs"),
@@ -137,6 +154,7 @@ const OTHER_SOURCES: [&str; 9] = [
 	include_str!("../src/autostart.rs"),
 	include_str!("../src/panel.rs"),
 	include_str!("../src/attachments/commands.rs"),
+	include_str!("../src/previews/commands.rs"),
 	include_str!("../src/updater.rs"),
 ];
 
@@ -381,10 +399,11 @@ fn settings_cross_the_boundary_in_camel_case() {
 		"alwaysOnTop",
 		"showCreated",
 		"captureNotifications",
+		"linkPreviews",
 	] {
 		assert!(payload.get(key).is_some(), "get_settings is missing {key}: {payload}");
 	}
-	assert_eq!(payload.as_object().unwrap().len(), 12, "get_settings grew a field");
+	assert_eq!(payload.as_object().unwrap().len(), 13, "get_settings grew a field");
 	assert_eq!(payload["shortcuts"]["capture"], "Shift Shift");
 	assert_eq!(payload["shortcuts"]["summon"], "Ctrl+Shift+Space");
 	// The shipped defaults, which are the whole of "this task changes no
@@ -408,6 +427,53 @@ fn settings_cross_the_boundary_in_camel_case() {
 	// hidden panel produces nothing the user can see, so shipping this off would
 	// ship a feature nobody discovers and a gesture with no confirmation.
 	assert_eq!(payload["captureNotifications"], true);
+	// Task-020's key ships **off**, and it is the only default in this list that is
+	// not an argument about preserving what an earlier build did. There was no
+	// earlier behaviour: this is the one setting whose "on" position makes Copper
+	// send anything to a third party, and shipping it on would mean an upgrade
+	// silently began disclosing which pages a user's notes mention.
+	assert_eq!(payload["linkPreviews"], false);
+}
+
+/// Task-020's two shapes. `link_preview` answers `null` far more often than it
+/// answers a card — no metadata, no network, previews switched off — so the null
+/// has to be an ordinary value the frontend reads rather than an error, and the
+/// optional fields have to arrive as `null` rather than as missing keys for the
+/// same reason `UpdateInfo`'s do.
+#[test]
+fn a_link_preview_crosses_the_boundary_in_camel_case_with_nullable_fields() {
+	use copper_lib::previews::LinkPreview;
+
+	let full = serde_json::to_value(LinkPreview {
+		url: "https://example.com/a".into(),
+		site_name: Some("Example".into()),
+		title: Some("A title".into()),
+		description: Some("A description".into()),
+		image: Some("0123456789abcdef.png".into()),
+	})
+	.unwrap();
+
+	for key in ["url", "siteName", "title", "description", "image"] {
+		assert!(full.get(key).is_some(), "link_preview is missing {key}: {full}");
+	}
+	assert_eq!(full.as_object().unwrap().len(), 5, "link_preview grew a field");
+	assert!(full.get("site_name").is_none(), "the snake_case spelling leaked over IPC");
+	// A cache **filename**, never a remote URL: the WebView asks `preview_image`
+	// for the bytes and never learns where the picture came from.
+	assert_eq!(full["image"], "0123456789abcdef.png");
+
+	let bare = serde_json::to_value(LinkPreview {
+		url: "https://example.com/a".into(),
+		..Default::default()
+	})
+	.unwrap();
+	for key in ["siteName", "title", "description", "image"] {
+		assert!(bare[key].is_null(), "{key} must be present and null, not absent");
+	}
+
+	// `null` is the whole-preview absence, and it is a value rather than an error.
+	let nothing: Option<LinkPreview> = None;
+	assert_eq!(serde_json::to_value(nothing).unwrap(), serde_json::Value::Null);
 }
 
 #[test]

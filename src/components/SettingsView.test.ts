@@ -36,6 +36,7 @@ function makeSettings(over: Partial<Settings> = {}): Settings {
 		alwaysOnTop: true,
 		showCreated: false,
 		captureNotifications: true,
+		linkPreviews: false,
 		...over,
 	}
 }
@@ -342,5 +343,63 @@ describe('the capture-notifications switch', () => {
 		await flush()
 
 		expect(patchesSent()).toEqual([{ captureNotifications: false }])
+	})
+})
+
+/**
+ * Task-020's one settings key, and the only switch in this view whose "on"
+ * position makes Copper contact anybody. The tests below are about the *default*
+ * and about what the row says, because those are the two halves of consent — a
+ * switch that shipped on, or one whose description only mentioned the visible
+ * benefit, would both be consent nobody gave.
+ */
+describe('the link-previews switch', () => {
+	it('ships off, so an upgrade fetches nothing until the user asks', async () => {
+		const wrapper = await openSettings()
+		expect(wrapper.get('#link-previews').attributes('aria-checked')).toBe('false')
+	})
+
+	/** The half this row cannot get wrong. Every `settings.json` written by an
+	 *  earlier build has no such key, and reading its absence as "on" would mean
+	 *  the upgrade itself was the moment Copper started disclosing which pages a
+	 *  user's notes mention. */
+	it('reads an absent key as off', async () => {
+		const wrapper = await openSettings({ linkPreviews: undefined })
+		expect(wrapper.get('#link-previews').attributes('aria-checked')).toBe('false')
+	})
+
+	it('reflects a stored true', async () => {
+		const wrapper = await openSettings({ linkPreviews: true })
+		expect(wrapper.get('#link-previews').attributes('aria-checked')).toBe('true')
+	})
+
+	it('writes only its own key', async () => {
+		const wrapper = await openSettings()
+
+		await wrapper.get('#link-previews').trigger('click')
+		await flush()
+
+		expect(patchesSent()).toEqual([{ linkPreviews: true }])
+	})
+
+	/** The description has to state what enabling *sends*, not only what it
+	 *  shows. "Show cached page details below links" describes the visible half
+	 *  and leaves the half a person would want to decide on to be discovered
+	 *  later, which is not a description of a privacy setting. */
+	it('says in the row what turning it on discloses', async () => {
+		const wrapper = await openSettings()
+		const row = wrapper.get('#link-previews').element.closest('div')?.parentElement
+		const text = (row?.textContent ?? '') + wrapper.text()
+
+		for (const promised of ['fetch', 'IP address', 'when you read']) {
+			expect(text).toContain(promised)
+		}
+	})
+
+	/** Its own section, and not a row under one of the behavioural ones: it is
+	 *  the only setting here that is not about how the panel behaves. */
+	it('lives in a section of its own called Privacy', async () => {
+		const wrapper = await openSettings()
+		expect(wrapper.text()).toContain('Privacy')
 	})
 })

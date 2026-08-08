@@ -46,6 +46,7 @@ pub struct Settings {
 	pub always_on_top: bool,
 	pub show_created: bool,
 	pub capture_notifications: bool,
+	pub link_previews: bool,
 }
 
 /// Where a fresh note goes inside its section.
@@ -108,6 +109,15 @@ impl Default for Settings {
 			// off because it adds noise to a path that already has a surface; this
 			// ships on because it *is* the surface.
 			capture_notifications: true,
+			// Off, and this is the one default in the file that is not about
+			// preserving what an earlier build did — there was no earlier behaviour to
+			// preserve. It ships off because turning it on is the only setting in
+			// Copper whose "on" position sends anything to a third party: every fetch
+			// tells whoever runs that host the URL, the reader's IP address and the
+			// moment the note was read. A default that quietly starts doing that to
+			// URLs the user pasted from somewhere private is not a default anyone can
+			// consent to in advance.
+			link_previews: false,
 		}
 	}
 }
@@ -148,6 +158,7 @@ struct RawSettings {
 	always_on_top: Value,
 	show_created: Value,
 	capture_notifications: Value,
+	link_previews: Value,
 }
 
 impl RawSettings {
@@ -237,6 +248,15 @@ impl RawSettings {
 			defaults.capture_notifications,
 			&mut notices,
 		);
+		// Repaired to `false` like every other unreadable value here, and that
+		// direction is not incidental: a `"linkPreviews": "yes"` someone hand-edited
+		// must not be read as consent to start fetching.
+		let link_previews = repair_flag(
+			self.link_previews,
+			"linkPreviews",
+			defaults.link_previews,
+			&mut notices,
+		);
 
 		let motion = repair_named(self.motion, "motion", defaults.motion, &mut notices);
 		let insertion_point = repair_named(
@@ -265,6 +285,7 @@ impl RawSettings {
 			always_on_top,
 			show_created,
 			capture_notifications,
+			link_previews,
 		};
 		settings.clamp();
 		(settings, notices)
@@ -432,6 +453,9 @@ impl Settings {
 		if let Some(capture_notifications) = patch.capture_notifications {
 			self.capture_notifications = capture_notifications;
 		}
+		if let Some(link_previews) = patch.link_previews {
+			self.link_previews = link_previews;
+		}
 	}
 }
 
@@ -460,6 +484,8 @@ pub struct SettingsPatch {
 	pub show_created: Option<bool>,
 	#[serde(default)]
 	pub capture_notifications: Option<bool>,
+	#[serde(default)]
+	pub link_previews: Option<bool>,
 }
 
 /// Distinguishes "key absent" from "key present and null".
@@ -671,8 +697,70 @@ mod tests {
 			 \"Ctrl+Shift+Space\"\n  },\n  \"theme\": \"system\",\n  \"sounds\": false,\n  \
 			 \"motion\": \"auto\",\n  \"insertionPoint\": \"bottom\",\n  \"doubleClick\": \
 			 \"copy\",\n  \"alwaysOnTop\": true,\n  \"showCreated\": false,\n  \
-			 \"captureNotifications\": true\n}\n"
+			 \"captureNotifications\": true,\n  \"linkPreviews\": false\n}\n"
 		);
+	}
+
+	/// Task-020's key takes the `showCreated` shape — an absent key reads as
+	/// *off* — and the reason is sharper than it is for any other flag here. Every
+	/// other absent key is a preference nobody expressed; this one is **consent to
+	/// make network requests on the user's behalf**, and reading its absence as
+	/// anything but "no" would turn an upgrade into the moment Copper silently
+	/// started telling third parties which of their pages a note mentions.
+	#[test]
+	fn a_file_without_the_link_previews_key_reads_as_off_without_a_notice() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"theme":"dark","captureNotifications":false}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(loaded.notice.is_none(), "absence was reported as damage: {:?}", loaded.notice);
+		assert_eq!(siblings(dir.path()), [FILE_NAME], "the file was set aside");
+		assert!(!loaded.settings.link_previews, "an absent key must not enable fetching");
+		// The rest of the file survived rather than being defaulted alongside it.
+		assert_eq!(loaded.settings.theme, "dark");
+		assert!(!loaded.settings.capture_notifications);
+	}
+
+	/// A value nobody can read is not consent. The repair direction is the whole
+	/// point of this test — repairing *to* `true` would be a hand-edited typo
+	/// switching the network on.
+	#[test]
+	fn a_wrong_typed_link_previews_is_repaired_to_off_and_reported() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"linkPreviews":"yes please"}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(!loaded.settings.link_previews);
+		let notice = loaded.notice.expect("repairs must be reported");
+		assert!(notice.contains("linkPreviews"), "{notice}");
+	}
+
+	#[test]
+	fn an_explicit_true_link_previews_survives_a_load() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"linkPreviews":true}"#);
+
+		let loaded = load(&path);
+
+		assert!(loaded.notice.is_none());
+		assert!(loaded.settings.link_previews);
+	}
+
+	#[test]
+	fn a_patch_sets_link_previews_without_touching_its_neighbours() {
+		let mut settings = Settings::default();
+
+		settings.apply_patch(patch(r#"{"linkPreviews":true}"#));
+		assert!(settings.link_previews);
+		assert!(settings.capture_notifications, "an absent key must leave the stored value alone");
+
+		settings.apply_patch(patch(r#"{"showCreated":true}"#));
+		assert!(settings.link_previews, "a showCreated patch must not turn previews off");
+		assert!(settings.show_created);
 	}
 
 	/// Task-018's key takes the `alwaysOnTop` shape rather than the `showCreated`

@@ -147,6 +147,32 @@ image = { version = "0.25.10", default-features = false, features = [
 	"bmp",
 ] }
 
+# --- link previews (task-020) ---
+# All three name copies that are already in the tree rather than adding a stack,
+# the same single-version rule `infer` and `sha2` are pinned under.
+#
+# `reqwest` arrives beneath `tauri-plugin-updater`, which enables exactly
+# `__rustls`, `rustls-no-provider`, `json` and `stream`. `default-features =
+# false` is not optional here: reqwest's defaults are `default-tls`, `charset`,
+# `http2` and `system-proxy`, and the first of those would resolve a second TLS
+# provider (aws-lc-rs) beside the ring one the updater already installs.
+# `charset` stays off deliberately — it would add `encoding_rs`, a large table
+# crate, so `Response` bytes are decoded as lossy UTF-8 and a windows-1252 or
+# Shift_JIS page yields mojibake in its title. That is the documented limit.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+# Named only to install the crypto provider. `rustls-no-provider` means reqwest
+# ships none, and `ClientBuilder::build` **panics** rather than erring when no
+# process default has been installed — the updater installs `ring` before its own
+# first request, so a preview fetched before any update check would be the panic.
+# `default-features = false` for the same reason as above: rustls' defaults would
+# turn on `aws-lc-rs`.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+# The HTML parser, reached today through `tauri-utils`' compression feature. It
+# is html5ever underneath, which decodes character references while parsing — the
+# thing a regex over `<meta>` cannot do, alongside attribute order, `name` versus
+# `property`, unquoted values and `<meta>` inside a comment.
+dom_query = "0.27"
+
 # --- recycle bin (task-015) ---
 # Deliberately empty. The attachment sweep moved collected blobs to the Recycle
 # Bin through the `trash` crate for exactly one commit, and the mechanism was

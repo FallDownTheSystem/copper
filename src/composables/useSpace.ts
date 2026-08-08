@@ -112,6 +112,11 @@ export type Settings = {
 	 *  notification. Read and acted on entirely in Rust — the panel only renders
 	 *  the switch. */
 	captureNotifications: boolean
+	/** Whether a link in a note may be fetched to build a preview card. The one
+	 *  setting whose "on" position makes Copper send anything to a third party,
+	 *  and the only consent surface for it — Rust reads this key store-side before
+	 *  every fetch rather than trusting the caller. */
+	linkPreviews: boolean
 }
 
 /**
