@@ -115,9 +115,17 @@
 
 	/* How much of the backdrop the panel lets through, as a token rather than an
 	   alpha written into `--surface` twice. Three rules move it and they have to be
-	   able to outrank each other: the shipped 90%, the translucency setting's
-	   thinner value, and `prefers-contrast: more` taking that back. */
-	--surface-alpha: 0.9;
+	   able to outrank each other: this shipped 1, the translucency setting's
+	   thinner value, and `prefers-contrast: more` taking that back.
+
+	   1 rather than the 0.9 it shipped at, and the tenth was bought with a bug
+	   report. At 90% the Mica underneath was invisible as *Mica* but not as
+	   arithmetic: the ground composited a step away from `--surface-solid`
+	   (measured 1b1a19 against the stuck heading plate's 191918), so the one
+	   surface that must match the ground exactly sat visibly off it. Nothing the
+	   panel gains at 90% is worth a plate that can never match; translucency is
+	   the mode that opts into alpha, below. */
+	--surface-alpha: 1;
 
 	/* --- Copper's own semantic set ------------------------------------------
 	   Contrast is verified against the panel's *composited* surface, not
@@ -142,14 +150,13 @@
 	   carried rather than re-derived by eye. */
 	--surface: oklch(0.99 calc(0.002 * var(--neutral-c)) calc(var(--neutral-h) + 20) / var(--surface-alpha));
 	/* The same colour with the alpha taken off, for the two surfaces that have to
-	   erase what is behind them rather than tint it: the pinned section heading,
-	   which paints *over* the rows it scrolls past, and the panel itself under
-	   `prefers-reduced-transparency`. Composited alpha is no use to the heading —
-	   `--surface`'s 90% leaves a tenth of every note it covers legible through the
-	   band, which is a tenth of *text*, not a tenth of a lightness step. The cost is
-	   that the band shows no Mica while the panel around it does; the band is 32px
-	   deep — heading plus its breathing room — and the alternative is a heading
-	   you can read the list through. */
+	   erase what is behind them rather than tint it: the stuck section heading's
+	   plate, which paints *over* the rows it scrolls past, and the panel itself
+	   under `prefers-reduced-transparency`. With `--surface-alpha` at 1 the two
+	   tokens coincide, but they are not one token: translucency thins `--surface`
+	   and must never thin the erasers — composited alpha is no use to a heading,
+	   because what it leaves legible through the band is a fraction of *text*,
+	   not a fraction of a lightness step. */
 	--surface-solid: oklch(0.99 calc(0.002 * var(--neutral-c)) calc(var(--neutral-h) + 20));
 	--surface-hover: oklch(0.24 calc(0.008 * var(--neutral-c)) var(--neutral-h) / 0.06);
 	--surface-active: oklch(0.24 calc(0.008 * var(--neutral-c)) var(--neutral-h) / 0.1);
@@ -327,13 +334,13 @@
 }
 
 /* --- Translucency -----------------------------------------------------------
-   The panel has always worn a native backdrop, and at 90% almost none of it has
-   ever been visible. Turning this on does two things at once: Rust swaps Mica for
-   Acrylic, which is the material that actually blurs what is behind the window,
-   and these two rules thin the surface until that blur reaches the eye. Neither
-   half is any use without the other — a thinner surface over Mica shows the
-   wallpaper rather than the desktop, and Acrylic under a 90% surface shows
-   nothing at all.
+   The panel wears a native backdrop, and at the shipped alpha of 1 none of it is
+   visible. Turning this on does two things at once: Rust swaps Mica for Acrylic,
+   which is the material that actually blurs what is behind the window, and these
+   two rules thin the surface until that blur reaches the eye. Neither half is
+   any use without the other — a thinner surface over Mica shows the wallpaper
+   rather than the desktop, and Acrylic under an opaque surface shows nothing at
+   all.
 
    0.65 light and 0.6 dark are a first tuning, chosen and not measured: the dark
    surface starts at L 0.18 against the light one's 0.99, so an equal alpha lets
@@ -347,11 +354,11 @@
    `--surface-solid` is deliberately untouched: it is the token for surfaces that
    erase rather than tint, and thinning it here would defeat that.
 
-   The `.section-band` gradient in `SectionHeader` paints `var(--surface)` and so
-   follows this on its own — but only outside translucent mode. Repainting a 0.65
-   surface over itself lands at 0.88 and reads as a grey strip, so under
-   `.translucent` the band swaps to a masked backdrop-blur frost instead; that
-   rule lives in `SectionHeader`'s scoped block, beside the gradient it replaces. */
+   The section heading is the surface this mode bends around: a stuck heading
+   cannot wear any fill over live Acrylic without reading as a strip of the wrong
+   material, so under `.translucent` the heading paints nothing and the rows
+   passing beneath erase themselves instead. The whole story lives with the
+   `.section-band` rules further down this file. */
 .translucent {
 	--surface-alpha: 0.65;
 }
@@ -722,11 +729,13 @@
 }
 
 /* --- The panel surface ------------------------------------------------------
-   No `backdrop-filter` on the panel surface: it cannot sample the desktop from
-   inside the webview and would fight the native Mica/Acrylic that Rust already
-   applied. The one backdrop-filter in the app — `SectionHeader`'s translucent
-   frost — is correct for the same reason: its backdrop is the page's own note
-   rows, which the webview *can* sample, never the desktop. */
+   No `backdrop-filter` on the panel surface — or anywhere in the app. Inside
+   the webview the filter can only sample the page's own pixels; the desktop is
+   composited by Windows afterwards and is not reachable, so a blur here would
+   fight the native Mica/Acrylic that Rust already applied and frost nothing.
+   The same fact killed the section heading's frost: over a translucent page the
+   filter's smear repaints additively and the text under it stays legible, which
+   is why the heading clips the rows instead (see `.section-band` below). */
 .panel-surface {
 	background: var(--surface);
 	border-radius: var(--panel-radius);
@@ -745,6 +754,138 @@
 	position: relative;
 }
 
+/* --- The pinned section heading ---------------------------------------------
+   Every visual rule for `.section-band` lives here rather than in
+   `SectionHeader`'s scoped block, and the location is load-bearing: the Vue 3.6
+   scoped-style compiler mis-rewrites a `:global(.translucent) .section-band`
+   descendant selector down to bare `.translucent`, which shipped 0.1.1 painting
+   the band's veil, blur and bottom-fade mask across the whole root element —
+   the broken frost and the pale strip over the composer were both that one
+   selector. Scoped CSS gets no `:global()` descendant combinators; a band this
+   entangled with root-level classes belongs in the global sheet.
+
+   **At rest the band paints nothing, in every mode.** A heading is part of the
+   list it heads, and the moment it wears its own fill it reads as a bar laid
+   across the panel — which is what the old always-painted gradient was reported
+   as, on both grounds. Paint appears only while the row is actually stuck, and
+   `scroll-state` container queries are what make "actually stuck" a CSS fact:
+   the band is its own `scroll-state` container, and the query styles its
+   `::after` — a container cannot query itself, but its pseudo-element can. The
+   plate sits at `inset: 0` / `z-index: -1`: under the heading's own text, yet
+   still over the rows the band covers, because the band's `z-1` already made it
+   a stacking context. It inherits the full `-mx-1` bleed.
+
+   **Stuck over the opaque ground the plate is `--surface-solid` — the ground's
+   own colour now that `--surface-alpha` is 1 — dissolving over the same 8px
+   tail the old gradient used**, four stops so neither end of the ramp reads as
+   a line (the interior pair round the corners a straight ramp would leave).
+
+   **Stuck over the translucent ground there is no plate at all.** Any fill is a
+   strip of the wrong material over live Acrylic — every alpha from a 35% veil
+   to a solid plate was tried against the glass and read as exactly that — and
+   `backdrop-filter` cannot frost what is behind the window (see the panel
+   surface note above). So the *content* yields instead: every non-heading row
+   runs a scroll-driven `clip-path` keyframe on its own `view()` timeline,
+   pinned to the `exit` range of a scrollport inset by the band's height —
+   heading plus its `pt-1 pb-2`, the `+ 12px`. Progress through `exit` is
+   linear in scroll and so is the keyframe, so the cut tracks the band's bottom
+   edge pixel-exactly: a row is erased precisely as far as it has passed under
+   the line, and the heading needs no background because nothing legible ever
+   reaches it. The reduced-motion blocks above are no threat — on a view
+   timeline their forced 0.01ms duration remaps onto the whole range (verified
+   live), and the clip is scroll-synced geometry, never motion, in any case.
+
+   Fallbacks, oldest engine first: without `scroll-state` containers the band
+   keeps the old always-painted gradient in `--surface`; with `scroll-state`
+   but without `view()` timelines the translucent band borrows the opaque
+   plate rather than letting rows slide legibly through the heading. Forced
+   colors overrides the stuck plate with `Canvas` in both modes — the plate is
+   a background-image, which forced colors leaves alone, and an author-coloured
+   strip across a system-coloured panel is the one thing this app must never
+   show. */
+.section-band {
+	container-type: scroll-state;
+}
+
+.section-band::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	z-index: -1;
+	pointer-events: none;
+}
+
+@container scroll-state(stuck: top) {
+	html:not(.translucent) .section-band::after {
+		background: linear-gradient(
+			to bottom,
+			var(--surface-solid) calc(100% - 8px),
+			color-mix(in oklab, var(--surface-solid) 74%, transparent) calc(100% - 5.5px),
+			color-mix(in oklab, var(--surface-solid) 26%, transparent) calc(100% - 2.5px),
+			transparent
+		);
+	}
+}
+
+@supports (animation-timeline: view()) {
+	@keyframes copper-row-clip {
+		from {
+			clip-path: inset(0 0 0 0);
+		}
+
+		to {
+			clip-path: inset(100% 0 0 0);
+		}
+	}
+
+	.translucent [role='row']:not([data-section-row]) {
+		animation: copper-row-clip linear both;
+		animation-timeline: view(block calc(var(--section-heading-height) + 12px) 0px);
+		animation-range: exit;
+	}
+}
+
+@supports not (animation-timeline: view()) {
+	@container scroll-state(stuck: top) {
+		.translucent .section-band::after {
+			background: linear-gradient(
+				to bottom,
+				var(--surface-solid) calc(100% - 8px),
+				color-mix(in oklab, var(--surface-solid) 74%, transparent) calc(100% - 5.5px),
+				color-mix(in oklab, var(--surface-solid) 26%, transparent) calc(100% - 2.5px),
+				transparent
+			);
+		}
+	}
+}
+
+@supports not (container-type: scroll-state) {
+	.section-band {
+		background: linear-gradient(
+			to bottom,
+			var(--surface) calc(100% - 8px),
+			color-mix(in oklab, var(--surface) 74%, transparent) calc(100% - 5.5px),
+			color-mix(in oklab, var(--surface) 26%, transparent) calc(100% - 2.5px),
+			transparent
+		);
+	}
+}
+
+@media (forced-colors: active) {
+	@container scroll-state(stuck: top) {
+		html:not(.translucent) .section-band::after,
+		.translucent .section-band::after {
+			background: Canvas;
+		}
+	}
+
+	@supports not (container-type: scroll-state) {
+		.section-band {
+			background: Canvas;
+		}
+	}
+}
+
 /* The toast's lift, and only the lift. Its *background* is deliberately left to a
    Tailwind utility at the call site: the error branch swaps in `bg-surface-danger`
    and exactly one background rule may be emitted, which an unlayered class here
@@ -756,11 +897,11 @@
 
 @media (prefers-reduced-transparency: reduce) {
 	/* One rule where there were four. The pinned section heading needs no pair
-	   of its own here: it paints `--surface` at 90% over a panel this rule has
-	   just made opaque in the *same* colour, and a colour composited over itself
-	   is itself — the band vanishes into the ground exactly as it should. So this
-	   block is back to the one surface that actually changes: the panel, which
-	   reads the same token rather than repeating its two colours by hand. */
+	   of its own here: at rest it paints nothing, and its stuck plate is
+	   `--surface-solid` — the very token this rule hands the panel — so the two
+	   agree without being told to. This block is the one surface that actually
+	   changes: the panel, which reads the token rather than repeating its two
+	   colours by hand. */
 	.panel-surface {
 		background: var(--surface-solid);
 	}
@@ -786,10 +927,10 @@
 	/* **Contrast wins, and this is where it wins.** A stated preference for more
 	   contrast and a preference for a see-through panel are a direct
 	   contradiction, and only one of them is an accessibility signal — so
-	   translucency gives the alpha back here rather than the two averaging into a
-	   panel that is neither. Both selectors are needed: `.translucent.dark` below
-	   carries two classes, so a single-class rule here would lose to it on
-	   specificity and leave the dark panel thin.
+	   translucency gives the alpha back here, all of it, rather than the two
+	   averaging into a panel that is neither. Both selectors are needed:
+	   `.translucent.dark` below carries two classes, so a single-class rule here
+	   would lose to it on specificity and leave the dark panel thin.
 
 	   This is the second half of a pair. `prefers-reduced-transparency` is the
 	   other, and it is handled where it already was — `.panel-surface` reads
@@ -797,7 +938,7 @@
 	   needs nothing new. */
 	.translucent,
 	.translucent.dark {
-		--surface-alpha: 0.9;
+		--surface-alpha: 1;
 	}
 }
 

@@ -137,37 +137,26 @@ function onKeydown(event: KeyboardEvent) {
 			     falls outside the scroll port and is clipped left and right, the way a
 			     pinned heading's top edge already is.
 
-			     **In the opaque mode the band paints `--surface` — the panel's own value
-			     — because a heading in a different colour from the list it heads reads as
-			     a bar laid across the panel rather than as part of it.** An opaque
-			     `--surface-solid` cannot match that colour: the list is `--surface`
-			     composited over the desktop at 90%, and the desktop is darker than the
-			     light surface and lighter than the dark one, so a fully opaque band
-			     sits visibly off the list in both themes — worst in dark, where it
-			     reads as a shadow across the top of every section.
+			     **The band's paint is not here.** `section-band` is a bare hook; every
+			     visual rule for it lives in main.css, and that location is a bug fix,
+			     not taste — the scoped-style compiler mis-rewrites
+			     `:global(.translucent) .section-band` down to bare `.translucent`,
+			     which shipped 0.1.1 painting the band's frost across the whole root
+			     element. The rules themselves say the band paints nothing at rest in
+			     every mode, wears a `--surface-solid` plate only while actually stuck
+			     over the opaque ground, and over the translucent ground wears nothing
+			     ever — the rows passing beneath clip themselves out at the band's
+			     bottom edge instead. The whole story, and its fallbacks, sits with
+			     those rules.
 
-			     **Two costs come with the alpha, and both are the price of that
-			     match.** Against the panel it composites a second time, to 99% where
-			     the ground is 90% — a tenth of the remaining tenth of the desktop, and
-			     below noticing. Against the rows it covers it is a real 10%: the note
-			     rows sit *between* the band and the panel, so text sliding under the
-			     heading leaves a faint ghost rather than vanishing outright.
-
-			     **That second tenth is the opaque mode's arithmetic and nobody else's.**
-			     At the translucency setting's 0.65 the same repaint composites to about
-			     0.88 against a 0.65 ground, which is nowhere near below noticing — it is
-			     the visibly darker strip the setting was reported for. No alpha fixes it,
-			     because the band is over the rows as well as over the panel and one value
-			     cannot both erase text and leave the ground alone. The scoped CSS answers
-			     that mode with a different material instead; see there.
-
-			     **The gradient is what keeps that ghost from also being an edge.** The
-			     colour holds for the full height of the heading and dissolves over the
-			     8px below it, so a line of text passing under fades out instead of
-			     meeting a hard boundary. `pt-1 pb-2` is asymmetric for exactly that
-			     reason: the extra bottom padding *is* the tail, room the heading never
-			     sits on, and the 4px above it is still the breathing room that keeps
-			     the pinned row off the text scrolling past. -->
+			     **`pt-1 pb-2` is asymmetric because the two paddings do different
+			     jobs.** The 8px below the heading is the stuck plate's dissolve tail —
+			     room the heading never sits on, where the plate thins to nothing so a
+			     line of text passing under fades out instead of meeting a hard
+			     boundary — and it is also the offset the translucent mode's clip line
+			     inherits, since the rows vanish at the band's bottom edge. The 4px
+			     above is only breathing room, keeping the pinned row off the text
+			     scrolling past. -->
 			<div
 				role="row"
 				:data-row-id="rowId"
@@ -295,93 +284,3 @@ function onKeydown(event: KeyboardEvent) {
 		<SectionContextMenu :section="section" />
 	</ContextMenu>
 </template>
-
-<style scoped>
-/* The band's fill can only be written here: a `bg-*` utility emits a
-   `background-color`, and a colour that has to stop being itself over the last
-   8px is a `background-image`.
-
-   Four stops rather than two, because a straight ramp changes slope abruptly at
-   both ends of the tail and the eye reads either corner as a faint line — which
-   is the thing the tail exists to remove. The interior stops round them off.
-   `color-mix` with `transparent` premultiplies, so each one is `--surface` at a
-   fraction of its own alpha rather than a step toward grey.
-
-   This is the opaque mode's band in practice — the frosted override below
-   replaces the whole declaration, and reuses these four positions in its mask so
-   the two modes fade on one curve. */
-.section-band {
-	background: linear-gradient(
-		to bottom,
-		var(--surface) calc(100% - 8px),
-		color-mix(in oklab, var(--surface) 74%, transparent) calc(100% - 5.5px),
-		color-mix(in oklab, var(--surface) 26%, transparent) calc(100% - 2.5px),
-		transparent
-	);
-}
-
-/* **Translucent mode cannot repaint the surface at all, so it frosts instead.**
-   The template carries the arithmetic; the short of it is that `--surface` is
-   the panel's own alpha and painting it over the panel composites twice, which
-   at 0.65 lands a 0.88 strip on a 0.65 ground. There is no alpha that erases
-   text and leaves the ground alone, because the band covers both.
-
-   Blur is the property that can tell them apart. `backdrop-filter` inside the
-   webview samples the *page* — the desktop is composited by Windows afterwards
-   and is not reachable from here, which is the same fact that rules the filter
-   out for `.panel-surface` in main.css and is exactly what makes it right here:
-   the only thing under this band worth touching is the page's own rows. Blurring
-   a flat area returns the same flat area, so the ground comes through unchanged
-   while a line of text sliding under becomes a smear the heading sits clear of.
-   The tint on top is a veil rather than a surface — 35% of a token already down
-   at 0.6 — carrying just enough weight to lift the heading off that smear.
-
-   The fade moves into `mask-image`, which is what keeps one curve for two
-   layers: the mask thins the blur and the veil together over the same 8px tail,
-   with the same two interior stops rounding the corners a straight ramp would
-   leave. Doing it in the gradient instead would fade the tint while the blur ran
-   to a hard edge.
-
-   The layer this promotes is one 441×32 band per *section*, which is what keeps
-   a blur radius that would be expensive on a full-viewport surface cheap here.
-
-   **Neither accessibility preference is answered again in this rule; both fall
-   back to the gradient above, which is the stronger band.** A stated preference
-   for reduced transparency is a preference against exactly this material, and
-   `prefers-contrast: more` already hands `--surface-alpha` back to 0.9 in
-   main.css — so opting out is all either one needs. */
-@media (prefers-reduced-transparency: no-preference) and (not (prefers-contrast: more)) {
-	:global(.translucent) .section-band {
-		background: color-mix(in oklab, var(--surface) 35%, transparent);
-		backdrop-filter: blur(10px);
-		mask-image: linear-gradient(
-			to bottom,
-			black calc(100% - 8px),
-			oklch(0 0 0 / 0.74) calc(100% - 5.5px),
-			oklch(0 0 0 / 0.26) calc(100% - 2.5px),
-			transparent
-		);
-	}
-}
-
-/* The one appearance that needs the band stated twice. Forced colours rewrite
-   `background-color` to `Canvas` but leave `background-image` alone, so the
-   gradient would survive as an author-coloured strip across a system-coloured
-   panel — the only band in the app that ignores the user's palette. Nothing of
-   the fade is worth that: up there the band's whole job is to erase, and an
-   opaque `Canvas` does it.
-
-   Both selectors, and the mask and the filter withdrawn by name: the frosted
-   rule is a class more specific, so a single `.section-band` here would lose to
-   it and leave the one mode that must be opaque see-through. Whether forced
-   colours also reports a contrast preference is the platform's business, not
-   something to lean on. */
-@media (forced-colors: active) {
-	.section-band,
-	:global(.translucent) .section-band {
-		background: Canvas;
-		backdrop-filter: none;
-		mask-image: none;
-	}
-}
-</style>
