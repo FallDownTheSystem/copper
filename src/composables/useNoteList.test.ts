@@ -50,15 +50,68 @@ afterEach(() => {
 })
 
 describe('the done filter', () => {
-	it('is off until asked for', () => {
-		expect(list.doneOnly.value).toBe(false)
-		expect(selection.visibleNoteIds.value).toEqual(['n1', 'n2', 'n3', 'n4', 'n5'])
+	/** The default is the narrow one, which is the behaviour change: a capture
+	 *  tool opens on the things still to do. */
+	it('hides the done notes until asked for them', () => {
+		expect(list.doneFilter.value).toBe('todo')
+		expect(list.filtersByDone.value).toBe(true)
+		expect(selection.visibleNoteIds.value).toEqual(['n1', 'n3', 'n4'])
 	})
 
 	/** AC2. */
 	it('leaves only the done notes on screen', () => {
 		list.setDoneFilter('done')
 		expect(selection.visibleNoteIds.value).toEqual(['n2', 'n5'])
+	})
+
+	/** The third state is the old default, and the only one that narrows nothing. */
+	it('shows the whole document on all', () => {
+		list.setDoneFilter('all')
+		expect(list.filtersByDone.value).toBe(false)
+		expect(selection.visibleNoteIds.value).toEqual(['n1', 'n2', 'n3', 'n4', 'n5'])
+	})
+
+	/** Three presses come back where they started, so every state is reachable
+	 *  from every other without a menu. */
+	it('cycles todo → done → all → todo', () => {
+		expect(list.nextDoneFilter.value).toBe('done')
+		list.cycleDoneFilter()
+		expect(list.doneFilter.value).toBe('done')
+
+		list.cycleDoneFilter()
+		expect(list.doneFilter.value).toBe('all')
+
+		list.cycleDoneFilter()
+		expect(list.doneFilter.value).toBe('todo')
+	})
+
+	/** Document-wide, unlike `useNoteActions.doneCount`, which is the bulk
+	 *  delete's active-section scope. The button's count is this one. */
+	it('counts every done note in the document', () => {
+		expect(list.doneTotal.value).toBe(2)
+	})
+
+	/** The default view narrows the same way the done view does, so the same rule
+	 *  applies to it: `Ctrl+A` on an ordinary list selects the unfinished notes. */
+	it('narrows what an action targets in the default view too', () => {
+		expect(selection.actionableNoteIds.value).toEqual(['n1', 'n3', 'n4'])
+
+		selection.selectAll()
+		expect(selection.selectedIds.value).toEqual(['n1', 'n3', 'n4'])
+	})
+
+	/** A section whose notes are all finished drops out of the default view
+	 *  header and all — the treatment a search miss gets, applied to the other
+	 *  half of the filter. */
+	it('drops a section with nothing left to do', () => {
+		const doc = document2()
+		for (const entry of doc.notes) {
+			if (entry.section === 'sec_b') entry.done = true
+		}
+		list.rebuild(doc)
+		selection.syncDocument(doc)
+
+		expect(selection.rowIds.value).toEqual([sectionRow('sec_a'), noteRow('n1'), noteRow('n3')])
 	})
 
 	/**
@@ -99,21 +152,13 @@ describe('the done filter', () => {
 		expect(selection.visibleNoteIds.value).toEqual(['n2', 'n5'])
 	})
 
-	it('toggles back to all', () => {
-		list.toggleDoneFilter()
-		expect(list.doneOnly.value).toBe(true)
-		list.toggleDoneFilter()
-		expect(list.doneOnly.value).toBe(false)
-		expect(selection.visibleNoteIds.value).toHaveLength(5)
-	})
-
 	/** AC3, restated against the event that actually exists: the panel renders
 	 *  every section at once, so a space switch — not a section change — is what
-	 *  drops the filter. */
-	it('drops back to all when the space is replaced', () => {
-		list.setDoneFilter('done')
+	 *  drops the filter. It drops back to the default, which is no longer `all`. */
+	it('drops back to the default view when the space is replaced', () => {
+		list.setDoneFilter('all')
 		list.reset()
-		expect(list.doneOnly.value).toBe(false)
+		expect(list.doneFilter.value).toBe('todo')
 	})
 
 	/** A capture landing while the user reviews done notes is not a change of
@@ -126,6 +171,13 @@ describe('the done filter', () => {
 })
 
 describe('sort', () => {
+	/** These are about the order, and the fixture's two done notes have to be in
+	 *  the list for a reordering of it to be observable — the default view hides
+	 *  them. Each case that is about the filter as well says so by setting it. */
+	beforeEach(() => {
+		list.setDoneFilter('all')
+	})
+
 	/** AC13, and the scope the mode being document-wide did *not* change: notes are
 	 *  ordered inside their own section, and the sections themselves neither move
 	 *  nor interleave. */

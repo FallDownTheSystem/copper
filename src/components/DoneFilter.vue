@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * The done filter and, once it is on, the purge that goes with it.
+ * The done filter and, once the done view is up, the purge that goes with it.
  *
  * **It sits in the chip's row rather than the search row**, in the strip of list
  * controls at the opposite end from `ActiveSectionChip`. That row exists precisely
@@ -13,7 +13,7 @@
  * there is something to delete — a button that explains it has nothing to do is
  * worse than one that is not there.
  */
-const { doneOnly, toggleDoneFilter } = useNoteList()
+const { doneFilter, doneOnly, doneTotal, nextDoneFilter, cycleDoneFilter } = useNoteList()
 const { doneCount, doneTargets, deleteDoneInActiveSection } = useNoteActions()
 const { activeSectionObject } = useSpace()
 
@@ -63,8 +63,9 @@ const armedTargets = computed(() => [...doneTargets.value].sort().join('\u0000')
 
 /** Re-armed whenever the offer stops being the one the user is looking at: a
  *  different set of targets under them, or the view they opened it from going
- *  away. */
-watch([armedTargets, doneOnly], () => {
+ *  away. Keyed on the whole filter rather than on `doneOnly`, so leaving the done
+ *  view disarms whichever of the other two states the press lands in. */
+watch([armedTargets, doneFilter], () => {
 	confirming.value = false
 })
 
@@ -135,6 +136,38 @@ const label = computed(() =>
 				many: (count) => `Delete ${count} done notes in ${sectionName.value}`,
 			}),
 )
+
+/**
+ * **The visible label names the state the next press produces, not the one in
+ * effect** — which is the opposite of `SortControl` beside it, deliberately.
+ *
+ * The sort has to report itself because it is otherwise invisible: Manual is the
+ * order most lists are already in, so nothing on screen distinguishes it from a
+ * sorted one. The done filter's state is the list itself — a view with no
+ * finished notes in it is what "hiding done" looks like — so the button's width
+ * is better spent on where the press goes, which is the one thing the list
+ * cannot show.
+ *
+ * The count rides on the `done` offer alone, because that is the only one of the
+ * three where a number changes the decision: `Done 0` is a view worth not opening.
+ */
+const cycleLabel = computed(() => {
+	const next = nextDoneFilter.value
+	if (next === 'done') return `Done ${doneTotal.value}`
+	return next === 'all' ? 'All' : 'Todo'
+})
+
+/** The state, then what the press does with it — `SortControl`'s sentence, and
+ *  it has to end with the visible label so the accessible name contains it. */
+const CYCLE_STATES = {
+	todo: 'Unfinished notes only',
+	done: 'Done notes only',
+	all: 'All notes',
+} as const satisfies Record<DoneFilter, string>
+
+const cycleTitle = computed(
+	() => `${CYCLE_STATES[doneFilter.value]} · press for ${cycleLabel.value}`,
+)
 </script>
 
 <template>
@@ -174,21 +207,28 @@ const label = computed(() =>
 			<span v-if="confirming" class="min-w-0 truncate text-label">{{ confirmLabel }}</span>
 		</button>
 
-		<!-- A toggle rather than a segmented "all / active / done": the unfiltered
-		     list already leads with the active notes, so a third state would divide
-		     the same set twice. `aria-pressed` carries the state to a screen reader
-		     and the accent carries it to everyone else. -->
+		<!-- **A three-state cycle, not a toggle**, and `aria-pressed` went with the
+		     second state: a control with three positions is not pressed or unpressed,
+		     and a screen reader announcing "not pressed" for the done-only view would
+		     be stating something false. The accessible name carries all of it instead
+		     — the view in effect, then the one a press produces.
+
+		     The accent marks *any* departure from the default rather than "something
+		     is hidden". Hiding done notes is what the panel now does at rest, so
+		     tinting that would leave the control permanently lit and say nothing; what
+		     is worth a colour is that the user has taken the view somewhere else and
+		     can press back to where it was. -->
 		<button
 			type="button"
 			data-done-filter
 			class="panel-button inline-flex min-h-6 shrink-0 items-center gap-1 px-1.5"
-			:class="doneOnly ? 'text-accent-text' : 'text-text-secondary'"
-			:aria-pressed="doneOnly"
-			:title="doneOnly ? 'Show all notes' : 'Show done notes only'"
-			@click="toggleDoneFilter"
+			:class="doneFilter === 'todo' ? 'text-text-secondary' : 'text-accent-text'"
+			:title="cycleTitle"
+			:aria-label="cycleTitle"
+			@click="cycleDoneFilter"
 		>
 			<IconLucideCircleCheck class="size-3.5 shrink-0" aria-hidden="true" focusable="false" />
-			<span class="text-label uppercase">Done</span>
+			<span class="text-label uppercase">{{ cycleLabel }}</span>
 		</button>
 	</div>
 </template>

@@ -1,56 +1,78 @@
 <script setup lang="ts">
-const { message, clear } = useStatusMessage()
+const { toast, clear } = useStatusMessage()
 const { errorFor } = useSpace()
 
 /**
  * A failed `list`-scope mutation is rendered here rather than only reaching the
  * assertive live region, where it would be invisible to everyone not using a
- * screen reader. It shares this band rather than getting a fourth surface — the
+ * screen reader. It shares this pill rather than getting a fourth surface — the
  * panel cannot grow, and an error and a confirmation from the same action are
  * never both true.
  *
  * The error wins when both are present: a confirmation left standing next to a
- * failure would be the more misleading of the two.
+ * failure would be the more misleading of the two. It also carries no action and
+ * no timer — it is cleared by `clearActionError`, so it stays until the thing it
+ * is about is retried.
  */
 const listError = errorFor('list')
-const text = computed(() => listError.value ?? message.value)
+const text = computed(() => listError.value ?? toast.value?.text ?? null)
+const action = computed(() => (listError.value ? null : (toast.value?.action ?? null)))
 
 /**
- * Cleared on the next user action, not on a timer — which sits inside "prefer
- * explicit dismissal over timers" instead of having to defend a five-second
- * floor.
- *
- * Registered in the **capture** phase, and that is the whole trick: it therefore
- * runs before the handler the action itself is bound to, so the press that
- * clears is always the press *before* the one that writes. A bubble-phase
- * listener would wipe the message its own keystroke had just set.
+ * Keyed on the message rather than on the toast, so the error branch does not
+ * re-animate every time an unrelated toast is replaced behind it.
  */
-useEventListener(window, 'keydown', clear, { capture: true })
-useEventListener(window, 'pointerdown', clear, { capture: true })
+const pillKey = computed(() => (listError.value ? 'error' : (toast.value?.generation ?? 0)))
+
+/** The toast has been used, so it stops offering. Cleared *before* running,
+ *  because the action may write a message of its own — `undo` says so when there
+ *  is nothing left to undo — and clearing afterwards would wipe it. */
+function run() {
+	const pressed = action.value
+	clear()
+	pressed?.run()
+}
 </script>
 
 <template>
-	<!-- Always in the DOM, empty until something writes: injecting a live region
-	     and its text together does not announce, only a text change inside a
-	     region already in the accessibility tree does. `sr-only` while empty
-	     keeps it in that tree while taking it out of flow, so the band occupies
-	     no space until it has something to say.
+	<!-- **The live region is the wrapper, and it is always in the DOM.** Injecting
+	     a region and its text together does not announce; only a text change
+	     inside a region already in the accessibility tree does. The pill itself
+	     comes and goes inside it.
 
-	     The two `:class` entries are split by role and not by convenience: the
-	     first carries visibility and shape, the second carries colour, so exactly
-	     one background utility is ever emitted. With `bg-surface` in the first
-	     entry the error branch stacked its tint over an opaque surface and the
-	     two fought at equal specificity. -->
-	<p
-		role="status"
-		class="rounded-md px-2 py-1.5 text-meta"
-		:class="[
-			text ? 'animate-in fade-in slide-in-from-bottom-1 border duration-100' : 'sr-only',
-			listError
-				? 'text-text-primary bg-surface-danger border-destructive/40'
-				: 'text-text-primary bg-surface border-separator',
-		]"
-	>
-		{{ text ?? '' }}
-	</p>
+	     Click-through, and the pill is too. This band overlays the last rows of
+	     the note list, so anything here that took a click would swallow presses
+	     aimed at a note underneath it for five seconds after every action. The one
+	     exception is the action button, which re-enables pointer events for itself
+	     — the only part of the pill that does anything. -->
+	<div class="pointer-events-none" role="status">
+		<p
+			v-if="text"
+			:key="pillKey"
+			data-status-toast
+			class="toast-pill animate-in fade-in slide-in-from-bottom-1 flex items-center gap-2 rounded-md border px-2 py-1.5 text-meta duration-100"
+			:class="
+				listError
+					? 'text-text-primary bg-surface-danger border-destructive/40'
+					: 'text-text-primary bg-toast-surface border-separator'
+			"
+		>
+			<!-- `min-w-0` so a long message wraps inside the pill rather than pushing
+			     the button off the panel's edge. -->
+			<span class="min-w-0">{{ text }}</span>
+
+			<!-- No `hit-44`: the expander is a pseudo-element reaching 44px in every
+			     direction, and on a pointer-events-auto control inside a click-through
+			     overlay that would blank a strip of the list wider than the pill. -->
+			<button
+				v-if="action"
+				type="button"
+				data-toast-action
+				class="focus-ring text-accent-text hover:bg-surface-hover pointer-events-auto -my-0.5 ml-auto shrink-0 rounded-md px-1.5 py-0.5 font-semibold transition-colors duration-fast"
+				@click="run"
+			>
+				{{ action.label }}
+			</button>
+		</p>
+	</div>
 </template>

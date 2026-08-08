@@ -24,7 +24,7 @@ import { useNoteList } from './useNoteList'
 import { useNoteSearch } from './useNoteSearch'
 import { noteRow, sectionRow, takeRow, useSelection } from './useSelection'
 import { useSettings } from './useSettings'
-import { countMessage, useStatusMessage } from './useStatusMessage'
+import { countMessage, useStatusMessage, type StatusAction } from './useStatusMessage'
 import { useSpace } from './useSpace'
 
 const space = useSpace()
@@ -280,18 +280,89 @@ function capturePaste(text: string) {
 // --- mark as done ------------------------------------------------------------
 
 /**
+ * The toast's button, and the whole of its contract: **one undo step, the same
+ * one `Ctrl+Z` takes.**
+ *
+ * That is enough because a batch is already one step. Marking a multi-note
+ * selection done is a single `set_notes_done` and a single store snapshot, so
+ * one press restores all of it; and separate presses do not accumulate, because
+ * a second one replaces the pill — the toast on screen always describes the most
+ * recent step, which is the one its button undoes. Anything cleverer (a stack of
+ * pills, an undo that walks back several steps) would be a second undo model
+ * beside the store's, disagreeing with `Ctrl+Z` in exactly the cases that are
+ * hard to reason about.
+ *
+ * One object rather than one per call: it closes over nothing, and the pill is
+ * keyed on the message's generation rather than on this identity.
+ */
+const UNDO_ACTION: StatusAction = { label: 'Undo', run: () => void undo() }
+
+/**
  * One `set_notes_done` call whatever the count, so marking five notes is one
- * undo. On a mixed selection everything becomes done; only when everything is
- * already done does it flip the other way.
+ * undo — and one toast carrying that undo.
+ *
+ * **The toast exists because the note usually vanishes.** In the default view
+ * done notes are not on screen at all, so marking one is an action whose only
+ * visible result is a row leaving the list; in the done view the same is true of
+ * unmarking one. Both directions therefore report, and both offer the way back.
+ *
+ * Focus is handed on for the same reason and through the same helper a delete
+ * uses: the row that held it may no longer be in the list.
+ */
+async function applyDone(ids: string[], done: boolean) {
+	if (ids.length === 0) return
+
+	// Read before the round trip: afterwards reconciliation has already moved the
+	// roving target off the note this is asking about.
+	const held = selection.focusedNoteId.value
+	if (!space.applied(await space.setNotesDone(ids, done))) return
+
+	handFocusOnVanished(held)
+	status.setMessage(
+		done
+			? countMessage(ids.length, {
+					one: 'Moved 1 note to Done',
+					many: (count) => `Moved ${count} notes to Done`,
+				})
+			: countMessage(ids.length, {
+					one: 'Moved 1 note out of Done',
+					many: (count) => `Moved ${count} notes out of Done`,
+				}),
+		UNDO_ACTION,
+	)
+}
+
+/**
+ * The selection-aware form. On a mixed selection everything becomes done; only
+ * when everything is already done does it flip the other way.
+ *
+ * The targets are resolved **inside** the queue, which is the reason `applyDone`
+ * does not serialise itself: `Space` twice in quick succession has to see the
+ * result of the first press before deciding what the second one means, and
+ * reading `targetNotes()` at call time sent `done: true` twice.
  */
 function toggleDone() {
 	return serialize(async () => {
 		const notes = targetNotes()
-		if (notes.length === 0) return
-		await space.setNotesDone(
+		await applyDone(
 			notes.map((note) => note.id),
 			!notes.every((note) => note.done),
 		)
+	})
+}
+
+/**
+ * The completion circle, which names one card unambiguously and so ignores the
+ * selection — the selection-aware form is `Space`.
+ *
+ * Here rather than in the card for the two things this file gives it: a place in
+ * the same queue as every other mutation, so two quick clicks do not both resolve
+ * against the document as it was before either ran, and the toast.
+ */
+function toggleNoteDone(noteId: string) {
+	return serialize(async () => {
+		const note = space.noteById(noteId)
+		if (note) await applyDone([noteId], !note.done)
 	})
 }
 
@@ -390,12 +461,19 @@ function merge() {
 
 /**
  * Gives the row reconciliation already chose the DOM half of focus, after a
- * delete that removed the row holding it.
+ * document change that took the row holding it off screen.
+ *
+ * **Two causes, one condition.** A delete removes the note; marking a note done
+ * in the default view — or unmarking one in the done view — leaves it in the
+ * document and filters it out of the list. Both end with the focused note having
+ * no row, which is why this asks `rowIds` rather than being told what was
+ * deleted: the note that is gone from the *view* is the one focus has to be
+ * handed on from, whichever of the two happened.
  *
  * **No second rule about where focus goes**, which is the whole point of doing it
  * this way. `useSelection.reconcile` has already moved the roving target to the
  * nearest survivor by the *former* row order — forward first, backward only when
- * the deleted note was the last one — so "the next note, or the previous one if
+ * the vanished note was the last one — so "the next note, or the previous one if
  * it was last" is a property of that walk and is not restated here.
  *
  * What is missing without this is only the DOM half, and both ways of asking
@@ -419,12 +497,12 @@ function merge() {
  * still using — and this caller is the one place that knows the element is going
  * away regardless of what the DOM currently says.
  *
- * Conditioned on the deleted set actually containing the focused note. A `Delete
- * all done` sweep that removes notes elsewhere in the list is not a reason to
- * pull focus out of the control the user just pressed.
+ * Conditioned on the focused note actually being the one that left. A `Delete all
+ * done` sweep that removes notes elsewhere in the list is not a reason to pull
+ * focus out of the control the user just pressed.
  */
-function handFocusOnAfterDelete(deleted: readonly string[], held: string | null) {
-	if (held === null || !deleted.includes(held)) return
+function handFocusOnVanished(held: string | null) {
+	if (held === null || selection.rowIds.value.includes(noteRow(held))) return
 	const target = selection.focusedId.value
 	if (target !== null) takeRow(target)
 }
@@ -443,12 +521,13 @@ function deleteNotes() {
 		// second mechanism would only compete with it — which is why the line below
 		// follows that decision rather than making one of its own.
 		if (!result) return
-		handFocusOnAfterDelete(ids, held)
+		handFocusOnVanished(held)
 		status.setMessage(
 			countMessage(ids.length, {
-				one: 'Deleted 1 note · Ctrl+Z to undo',
-				many: (count) => `Deleted ${count} notes · Ctrl+Z to undo`,
+				one: 'Deleted 1 note',
+				many: (count) => `Deleted ${count} notes`,
 			}),
+			UNDO_ACTION,
 		)
 	})
 }
@@ -515,12 +594,13 @@ function deleteDoneInActiveSection() {
 		const held = selection.focusedNoteId.value
 		const result = await space.deleteNotes(ids)
 		if (!result) return
-		handFocusOnAfterDelete(ids, held)
+		handFocusOnVanished(held)
 		status.setMessage(
 			countMessage(ids.length, {
-				one: 'Deleted 1 done note · Ctrl+Z to undo',
-				many: (count) => `Deleted ${count} done notes · Ctrl+Z to undo`,
+				one: 'Deleted 1 done note',
+				many: (count) => `Deleted ${count} done notes`,
 			}),
+			UNDO_ACTION,
 		)
 	})
 }
@@ -536,13 +616,15 @@ function deleteDoneInActiveSection() {
  * which counts positions in the whole section. Dropping a note between two
  * matches would silently move it somewhere else entirely.
  *
- * **The done filter** is the same defect with a different filter in front of it.
- * The subset reasoning above transfers verbatim: a done-only list omits every
- * unfinished note between two done ones, so dropping a note "between" them lands
- * it wherever those omitted notes happen to leave the count. That this was missed
- * when the filter was added is the point of stating the reason as arithmetic —
- * *any* narrowing of the rendered rows breaks the index, so a new one has to join
- * this guard rather than be judged on its own.
+ * **The done filter, in either of the two states that narrow** — which is now the
+ * default one as well as the done view. The subset reasoning above transfers
+ * verbatim: a done-only list omits every unfinished note between two done ones,
+ * so dropping a note "between" them lands it wherever those omitted notes happen
+ * to leave the count, and the default view has the same hole with the halves
+ * swapped. That this was missed when the filter was added is the point of stating
+ * the reason as arithmetic — *any* narrowing of the rendered rows breaks the
+ * index, so a new one has to join this guard rather than be judged on its own,
+ * which is why the condition asks `filtersByDone` and not which half is showing.
  *
  * **A non-manual sort** is the stronger form again: the rendered order is a
  * *permutation* of the section, so a drop index means nothing at all — and the
@@ -565,7 +647,7 @@ function reorderBlocked(): boolean {
 		status.setMessage('Clear the search to reorder notes.')
 		return true
 	}
-	if (list.doneOnly.value) {
+	if (list.filtersByDone.value) {
 		status.setMessage('Show all notes to reorder them.')
 		return true
 	}
@@ -866,6 +948,7 @@ export function useNoteActions() {
 		copySelectionAsMarkdown,
 		capturePaste,
 		toggleDone,
+		toggleNoteDone,
 		moveTo,
 		merge,
 		deleteNotes,

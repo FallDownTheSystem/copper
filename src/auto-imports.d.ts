@@ -380,6 +380,9 @@ declare global {
   export type { UnavailableReason, Availability, RecentEntry, ActivateOutcome } from './composables/useSpaces'
   import('./composables/useSpaces')
   // @ts-ignore
+  export type { StatusAction, StatusToast } from './composables/useStatusMessage'
+  import('./composables/useStatusMessage')
+  // @ts-ignore
   export type { UpdateStatus, UpdateInfo, UpdateProgress } from './composables/useUpdater'
   import('./composables/useUpdater')
   // @ts-ignore

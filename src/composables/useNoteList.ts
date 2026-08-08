@@ -36,12 +36,31 @@ import type { SpaceView } from './useSpace'
 
 export type { SortMode }
 
-/** Two states rather than three. "Active" is the complement of "done" and the
- *  unfiltered list already leads with it; a third control would divide the same
- *  set twice and give the header a segmented control where a toggle does. */
-export type DoneFilter = 'all' | 'done'
+/**
+ * Three views of one document, and the default is now the narrowest of them.
+ *
+ * **`todo` hides done notes entirely, and that is a deliberate change to what the
+ * panel shows out of the box.** The two-state form assumed the unfinished notes
+ * lead the list and the done ones merely sit below them, which stops being true
+ * the moment a section has been worked through: the list a capture tool opens on
+ * should be the things still to do. `all` is the old default and is still one
+ * press away; `done` is the review scope the bulk delete acts in.
+ *
+ * The order is the cycle the button walks, and it is narrowest → other-half →
+ * everything. Each press widens or re-aims the view rather than jumping between
+ * two unrelated scopes, and three presses come back where they started.
+ */
+export type DoneFilter = 'todo' | 'done' | 'all'
 
-const doneFilter = ref<DoneFilter>('all')
+const doneFilter = ref<DoneFilter>('todo')
+
+/** The cycle, in one place: the button, its label and the empty state all have to
+ *  agree about where a press goes. */
+const NEXT_FILTER = {
+	todo: 'done',
+	done: 'all',
+	all: 'todo',
+} as const satisfies Record<DoneFilter, DoneFilter>
 
 /**
  * One order for the whole document, applied *within* each section.
@@ -72,8 +91,33 @@ const createdAt = shallowRef(new Map<string, number | null>())
 
 const doneOnly = computed(() => doneFilter.value === 'done')
 
+/**
+ * Whether the view is a *subset* of the document, which is the question every
+ * consumer other than the button itself is actually asking.
+ *
+ * Two of the three states narrow, and they narrow in opposite directions — so
+ * "is the done filter on" is no longer answerable by `doneOnly`. Reordering is
+ * refused under both, and both drop a section that has nothing left in it; only
+ * `all` renders the whole document.
+ */
+const filtersByDone = computed(() => doneFilter.value !== 'all')
+
+/** Document-wide, and deliberately not `useNoteActions.doneCount`, which is the
+ *  active section's and belongs to the bulk delete. The button offers a view of
+ *  every done note there is, so the number beside it has to be that one. */
+const doneTotal = computed(() => doneIds.value.size)
+
+const nextDoneFilter = computed(() => NEXT_FILTER[doneFilter.value])
+
 function isDone(noteId: string) {
 	return doneIds.value.has(noteId)
+}
+
+/** The membership test the walk applies per note. `all` admits everything; the
+ *  other two are the two halves of the same predicate. */
+function passesDoneFilter(noteId: string) {
+	const mode = doneFilter.value
+	return mode === 'all' || isDone(noteId) === (mode === 'done')
 }
 
 function createdOf(noteId: string): number | null {
@@ -93,8 +137,8 @@ function setDoneFilter(next: DoneFilter) {
 	doneFilter.value = next
 }
 
-function toggleDoneFilter() {
-	setDoneFilter(doneOnly.value ? 'all' : 'done')
+function cycleDoneFilter() {
+	setDoneFilter(nextDoneFilter.value)
 }
 
 /**
@@ -140,7 +184,7 @@ function rebuild(space: SpaceView | null) {
  * drops collapse.
  */
 function reset() {
-	doneFilter.value = 'all'
+	doneFilter.value = 'todo'
 	sortMode.value = 'manual'
 }
 
@@ -148,8 +192,12 @@ export function useNoteList() {
 	return {
 		doneFilter: readonly(doneFilter),
 		doneOnly,
+		filtersByDone,
+		doneTotal,
+		nextDoneFilter,
 		setDoneFilter,
-		toggleDoneFilter,
+		cycleDoneFilter,
+		passesDoneFilter,
 		isDone,
 		createdOf,
 		sortMode: readonly(sortMode),

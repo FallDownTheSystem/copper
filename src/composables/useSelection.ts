@@ -71,7 +71,7 @@ const documentGroups = shallowRef<{ sectionId: string; noteIds: string[] }[]>([]
 
 const { matchedIds } = useNoteSearch()
 const { isCollapsed } = useSections()
-const { doneOnly, isDone, createdOf, sortMode } = useNoteList()
+const { filtersByDone, passesDoneFilter, createdOf, sortMode } = useNoteList()
 
 /**
  * Both orders are filtered, and filtering only one of them is the single easiest
@@ -113,6 +113,15 @@ const { doneOnly, isDone, createdOf, sortMode } = useNoteList()
  * document instead — see `deleteDoneInSection`, which must not be narrowed by a
  * search the way a selection legitimately is.)
  *
+ * **Two of that filter's three states narrow, and the default is one of them.**
+ * `todo` hides the done notes and `done` hides the rest, so the rule above now
+ * applies to the view the panel opens in: `Ctrl+A` on an ordinary list selects
+ * the unfinished notes, which is the set the visible list is offering. A section
+ * left with no survivor is dropped header and all under either of them, exactly
+ * as a search miss is — a fully-finished section is not a heading worth keeping
+ * on screen in a view whose subject is what remains, and `ActiveSectionChip`
+ * names where a capture lands whether or not that section has a row here.
+ *
  * The sort applies to the rows only, exactly as the ranking does, and for the
  * same reason: it is a presentation of the set, and a multi-note copy out of a
  * newest-first list must still come out in document order. **An explicit sort
@@ -123,7 +132,7 @@ const { doneOnly, isDone, createdOf, sortMode } = useNoteList()
  */
 const orders = computed(() => {
 	const matched = matchedIds.value
-	const done = doneOnly.value
+	const filtered = filtersByDone.value
 	const mode = sortMode.value
 	const groups: { sectionId: string; noteIds: string[] }[] = []
 	const rows: string[] = []
@@ -136,11 +145,11 @@ const orders = computed(() => {
 		// makes the reordering below careful about mutating in place.
 		let members = group.noteIds
 		if (matched) members = members.filter((id) => matched.has(id))
-		if (done) members = members.filter((id) => isDone(id))
+		if (filtered) members = members.filter((id) => passesDoneFilter(id))
 		// A section with no survivor is dropped entirely, header included — the same
-		// treatment a search miss gets, and what keeps the done view from being a
-		// wall of empty headings.
-		if ((matched || done) && members.length === 0) continue
+		// treatment a search miss gets, and what keeps either half of the done filter
+		// from being a wall of empty headings.
+		if ((matched || filtered) && members.length === 0) continue
 
 		// **`actionable` is filled before the ranking, and from the unsorted list.**
 		// Its contract is document order — every consumer that acts on several notes
@@ -332,7 +341,7 @@ function actionableInSection(sectionId: string): string[] {
 	const group = documentGroups.value.find((entry) => entry.sectionId === sectionId)
 	if (!group) return []
 	const members = matched ? group.noteIds.filter((id) => matched.has(id)) : group.noteIds
-	return doneOnly.value ? members.filter((id) => isDone(id)) : members
+	return filtersByDone.value ? members.filter((id) => passesDoneFilter(id)) : members
 }
 
 /**

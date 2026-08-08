@@ -26,12 +26,18 @@ onMounted(() => {
 
 	     No enter or exit transition. The notice lives for 1500 ms and the user's
 	     attention is by definition elsewhere; a fade would spend a meaningful
-	     fraction of that lifetime arriving. -->
+	     fraction of that lifetime arriving.
+
+	     It wears the same pill surface as the status toast it stacks with — a
+	     lighter fill in dark, a shadow in light. Two bands in one corner that
+	     differ in appearance would read as two unrelated mechanisms rather than
+	     the panel talking. -->
+
 	<div class="pointer-events-none" role="status">
 		<p
 			v-if="notice"
 			:data-cause="notice.cause"
-			class="border-separator bg-surface text-text-primary rounded-md border px-2 py-1.5 text-meta"
+			class="toast-pill border-separator bg-toast-surface text-text-primary rounded-md border px-2 py-1.5 text-meta"
 		>
 			{{ notice.message }}
 		</p>

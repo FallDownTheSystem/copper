@@ -3,7 +3,7 @@ import { CHORDS } from '@/lib/chords'
 import { focusableIn } from '@/composables/useInteractionMode'
 import { flushReveal, rowElement, rowSectionId } from '@/composables/useSelection'
 
-const { space, sections, activeSection, noteById, setActiveSection, setNotesDone } = useSpace()
+const { space, sections, activeSection, noteCount, noteById, setActiveSection } = useSpace()
 const {
 	focusedId,
 	focusedNoteId,
@@ -22,8 +22,8 @@ const { beginEdit } = useNoteEditor()
 const { interactionRowId, enter, reconcile } = useInteractionMode()
 const { hasQuery, resultCount } = useNoteSearch()
 const { setCollapsed, collapseEnabled } = useSections()
-const { doneOnly } = useNoteList()
-const { toggleDone } = useNoteActions()
+const { filtersByDone } = useNoteList()
+const { toggleDone, toggleNoteDone } = useNoteActions()
 const { dropTarget, isDragging } = useNoteDrag()
 
 /**
@@ -70,16 +70,26 @@ const renderedSections = computed(() => {
 const noMatches = computed(() => hasQuery.value && resultCount.value === 0)
 
 /**
- * The done filter left nothing on screen.
+ * The done filter left nothing on screen — in either of the two states that can.
  *
  * A separate condition from `noMatches` rather than a wider version of it,
  * because the two can disagree: a query can match three notes of which none are
  * done, and `resultCount` — which counts matches in the document, not survivors
  * of the filter — is 3. `noMatches` takes precedence when both hold, since the
  * query is the narrower explanation and clearing it is the shorter way back.
+ *
+ * **`noteCount` is the third condition and it is not belt-and-braces.** A space
+ * with no notes at all satisfies the other two the moment the default view is one
+ * that filters, and `PanelShell` already answers that case with "No notes yet" —
+ * so without this the empty space would be explained twice, once correctly and
+ * once by a filter that is not the reason.
  */
-const noDone = computed(
-	() => doneOnly.value && !noMatches.value && renderedSections.value.length === 0,
+const filteredEmpty = computed(
+	() =>
+		filtersByDone.value &&
+		!noMatches.value &&
+		noteCount.value > 0 &&
+		renderedSections.value.length === 0,
 )
 
 /** The roving target has to actually hold DOM focus, or arrow navigation moves
@@ -103,8 +113,7 @@ function activateSection(id: string) {
 /** A click on the completion circle names one card unambiguously, so it toggles
  *  that card rather than the selection. The selection-aware form is `Space`. */
 function toggleOne(noteId: string) {
-	const note = noteById(noteId)
-	if (note) void setNotesDone([noteId], !note.done)
+	void toggleNoteDone(noteId)
 }
 
 function startEditing(noteId: string) {
@@ -305,6 +314,6 @@ watch(() => space.value, reconcile)
 		/>
 
 		<SearchEmptyState v-if="noMatches" />
-		<DoneEmptyState v-else-if="noDone" />
+		<DoneEmptyState v-else-if="filteredEmpty" />
 	</div>
 </template>

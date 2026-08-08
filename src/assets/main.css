@@ -71,6 +71,16 @@
 	   re-resolves against the dark values on its own. */
 	--surface-danger: color-mix(in oklab, var(--destructive) 12%, var(--surface));
 	--separator: oklch(0.24 0.008 60 / 0.14);
+	/* The toast pill, which is the one surface that floats *over* the list rather
+	   than sitting in it — so it has to separate from the panel behind it, and the
+	   two themes reach that in opposite ways. On the light panel the surface is
+	   already near white and there is no room above it, so the lift is the shadow's
+	   job. On the dark one a shadow is invisible against a dark surface, so the
+	   step is a lighter fill and the shadow only deepens it. Kept close to opaque:
+	   the text underneath is note bodies, and a translucent pill over them is the
+	   one place in the panel where the Mica material would cost legibility. */
+	--toast-surface: oklch(1 0 0 / 0.97);
+	--toast-shadow: 0 6px 16px oklch(0.24 0.008 60 / 0.18), 0 2px 4px oklch(0.24 0.008 60 / 0.1);
 	--link: oklch(0.5 0.14 250);
 	/* Copper, like everything else the app draws attention with — the ring used to
 	   be the one blue thing in the panel that was not a link.
@@ -150,6 +160,10 @@
 	--surface-hover: oklch(1 0 0 / 0.07);
 	--surface-active: oklch(1 0 0 / 0.11);
 	--separator: oklch(1 0 0 / 0.14);
+	/* Three steps above `--surface`'s 0.18, which is a visible edge without
+	   becoming a second panel. */
+	--toast-surface: oklch(0.26 0.006 60 / 0.97);
+	--toast-shadow: 0 6px 16px oklch(0 0 0 / 0.45);
 	--link: oklch(0.76 0.12 240);
 	/* Brighter than `--accent-ring` here, for the same reason the light one is
 	   deeper: the ring has to separate itself from the accent it is drawn beside,
@@ -191,6 +205,7 @@
 	--color-surface-hover: var(--surface-hover);
 	--color-surface-active: var(--surface-active);
 	--color-surface-danger: var(--surface-danger);
+	--color-toast-surface: var(--toast-surface);
 	--color-separator: var(--separator);
 	--color-link: var(--link);
 	--color-focus-ring: var(--focus-ring);
@@ -437,6 +452,15 @@
 	overflow: hidden;
 	isolation: isolate;
 	position: relative;
+}
+
+/* The toast's lift, and only the lift. Its *background* is deliberately left to a
+   Tailwind utility at the call site: the error branch swaps in `bg-surface-danger`
+   and exactly one background rule may be emitted, which an unlayered class here
+   would win against every time. A shadow has no such competitor, so it lives with
+   the two per-theme values it reads. */
+.toast-pill {
+	box-shadow: var(--toast-shadow);
 }
 
 @media (prefers-reduced-transparency: reduce) {

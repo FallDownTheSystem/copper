@@ -25,7 +25,7 @@ const { stopHandoff, doubleClickNote } = useNoteActions()
 const { hasQuery } = useNoteSearch()
 const { setMessage } = useStatusMessage()
 const { beginDrag, consumeDragClick, draggingNoteId } = useNoteDrag()
-const { isSorted, doneOnly } = useNoteList()
+const { isSorted, filtersByDone } = useNoteList()
 const { showCreated } = useSettings()
 
 /** The field is omitted from the document when empty, so it arrives undefined
@@ -37,11 +37,13 @@ const focused = computed(() => focusedId.value === props.rowId)
 const editing = computed(() => isEditing(props.note.id))
 /** No handle, no drag: a searched or done-filtered list is a subset of each
  *  section and a sorted one is a permutation of it, so in none of those cases is
- *  an index read off the rendered rows the index `reorder_note` takes.
+ *  an index read off the rendered rows the index `reorder_note` takes. Either
+ *  half of the done filter narrows, the default view included, which is why this
+ *  asks `filtersByDone` rather than which half is showing.
  *  `useNoteActions.reorderBlocked` refuses all three again for the keyboard path,
  *  and carries the reasoning. */
 const draggable = computed(
-	() => !editing.value && !hasQuery.value && !doneOnly.value && !isSorted.value,
+	() => !editing.value && !hasQuery.value && !filtersByDone.value && !isSorted.value,
 )
 
 /**
