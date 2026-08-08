@@ -493,6 +493,20 @@
 	}
 }
 
+/* The near-circle variant of the same idea, for the one control pushed to its
+   capsule bound: `squircle`'s superellipse(2) at half-height still reads as a
+   flattened square at checkbox size, and the user's ask (2026-08-08) is an
+   almost-circle with a hint of flat — iOS's icon curve, not CSS's squircle.
+   superellipse(1.4) sits between round (1) and squircle (2), close enough to
+   the circle that the flat reads as character rather than squareness. Guarded
+   on the same feature query as `squircle`: a runtime that knows one knows the
+   other, and the unguarded fallback is the element's own circular `rounded-*`. */
+@utility squircle-round {
+	@supports (corner-shape: squircle) {
+		corner-shape: superellipse(1.4);
+	}
+}
+
 /* Grows a small control's hit area to the 44px baseline without growing the
    control. The expander is a pseudo-element, so nothing in the layout moves and
    nothing under it is covered — which is also why adjacent controls that sit

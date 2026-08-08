@@ -52,26 +52,23 @@ const pressTransition = { duration: 0.15, ease: EASE_OUT_QUINT }
  * Resolved once per box rather than once per render: this control is mounted on
  * every row of the list, and `cn` is a clsx join plus a tailwind-merge parse.
  *
- * The radius is what makes the superellipse visible at all. `corner-shape` bends
- * the corner arc within the radius it is given, so on a 16px box a 4px radius —
- * the reference app's value, carried over unexamined — leaves the squircle and
- * the circular arc within a pixel of each other, and the box reads as a plain
- * rounded square however well the property is supported.
+ * The radius sits at 8px — half of the 16px box, the capsule bound — and the
+ * curve, not the radius, is what decides how round this reads: `corner-shape`
+ * bends the arc within the radius it is given, so at the bound a circular arc
+ * is a full circle and CSS's `squircle` (superellipse(2)) is the visibly
+ * flat-sided classic. The user's ruling (2026-08-08) is that the flat-sided
+ * version reads as a square here and the box should be an *almost*-circle —
+ * the iOS icon curve — so this control wears `squircle-round`
+ * (superellipse(1.4)) instead of the panel's stock `squircle`.
  *
- * **8px is half of 16, which is the capsule bound everywhere else in the panel
- * and is not one here.** That is the whole reason the shape survives being pushed
- * to it: a *circular* arc at half the height would round the box into a circle,
- * and a superellipse at the same radius is the classic squircle — visibly flat
- * down the middle of each side, which is what the standing "nicely rounded, not
- * full circles" rule is asking for. So the two values are not the same number,
- * and the split is deliberate rather than a fallback that happens to differ:
- * `rounded-[7px]` is what a runtime with no `corner-shape` renders, and it is
- * held one pixel short precisely so that it stays a rounded square there instead
- * of becoming the circle this shape is defined against.
+ * The fallback split stays deliberate: `rounded-[7px]` is what a runtime with
+ * no `corner-shape` renders, held one pixel short of the bound so it stays a
+ * rounded square there instead of collapsing into the true circle that only
+ * the superellipse is allowed to approach.
  */
 const rootClass = computed(() =>
 	cn(
-		'squircle border-text-disabled focus-ring data-[state=checked]:bg-accent-ring data-[state=checked]:border-accent-ring text-accent-contrast size-4 shrink-0 rounded-[7px] supports-[corner-shape:squircle]:rounded-[8px] border transition-colors duration-base disabled:cursor-not-allowed disabled:opacity-50',
+		'squircle-round border-text-disabled focus-ring data-[state=checked]:bg-accent-ring data-[state=checked]:border-accent-ring text-accent-contrast size-4 shrink-0 rounded-[7px] supports-[corner-shape:squircle]:rounded-[8px] border transition-colors duration-base disabled:cursor-not-allowed disabled:opacity-50',
 		props.class,
 	),
 )
