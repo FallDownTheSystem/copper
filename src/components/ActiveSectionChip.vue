@@ -72,9 +72,15 @@ function onOpenChange(next: boolean) {
 <template>
 	<DropdownMenu :open="isSwitcherOpenIn('chip')" @update:open="onOpenChange">
 		<!-- The accent colour and the weight are the list's own active-section
-		     header, so the two say the same thing the same way. The negative margin
-		     lets the chip's hover surface breathe without its text losing alignment
-		     with the search field above it.
+		     header, so the two say the same thing the same way.
+
+		     **No negative margin, and that is the alignment.** It used to carry
+		     `-mx-1` so the hover surface could breathe past the chip's text, which
+		     bought 4px of padding at the cost of hanging the chip's whole box 4px
+		     left of the search field directly above it — two stacked controls in one
+		     column with two different left edges, which is the one thing a reader
+		     comparing them cannot unsee. The field's edge wins: it is the wider
+		     object and the one the header's `px-3` was set for.
 
 		     `rounded-inset` rather than any step of the surface ramp: a `text-label`
 		     line inside `py-0.5` is about 21px tall, so half its height is ~10px and
@@ -85,7 +91,7 @@ function onOpenChange(next: boolean) {
 			type="button"
 			:aria-label="`Active section: ${name}, ${spokenCount}. Switch section`"
 			:title="name"
-			class="text-accent-text hover:bg-surface-hover active:bg-surface-active focus-ring squircle border-separator -mx-1 flex min-w-0 max-w-full items-center gap-1.5 rounded-inset border px-1.5 py-0.5 transition-colors duration-fast"
+			class="text-accent-text hover:bg-surface-hover active:bg-surface-active focus-ring squircle border-separator flex min-w-0 max-w-full items-center gap-1.5 rounded-inset border px-1.5 py-0.5 transition-colors duration-fast"
 		>
 			<IconLucideListTree class="size-3.5 shrink-0" aria-hidden="true" focusable="false" />
 			<span class="truncate text-label font-semibold uppercase">{{ name }}</span>

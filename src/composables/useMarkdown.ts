@@ -211,6 +211,24 @@ type Highlighter = Awaited<ReturnType<typeof createHighlighterCore>>
 let highlighterPromise: Promise<Highlighter | null> | null = null
 
 /**
+ * An inline style with its `background-color` removed and everything else — the
+ * `--shiki-dark*` custom properties among it — left exactly as it was.
+ *
+ * Split into declarations first, so the match is anchored at the start of each
+ * one. `--shiki-dark-bg` sits in this same attribute and is the thing that must
+ * survive: a pattern run across the whole string is one careless `.*` away from
+ * taking it too, and taking it means the dark theme has nothing to paint from.
+ */
+function withoutBackground(style: unknown): string | undefined {
+	if (typeof style !== 'string') return undefined
+	const kept = style
+		.split(';')
+		.filter((declaration) => !/^\s*background-color\s*:/.test(declaration))
+		.join(';')
+	return kept.trim() === '' ? undefined : kept
+}
+
+/**
  * Created once, behind a single module-scoped promise. Until it resolves — and
  * permanently, if it rejects — code fences render through the plain path and the
  * panel is fully usable.
@@ -265,8 +283,17 @@ function installHighlighter(highlighter: Highlighter) {
 					// Shiki emits `<pre tabindex="0">`. Inside the grid that is a second
 					// Tab stop, which breaks the one-Tab-stop contract; F2 interaction
 					// mode promotes it back to 0 when the user asks for it.
+					//
+					// The same node carries the theme's own surface as an *inline*
+					// `background-color`, which no stylesheet can outrank — so a fence
+					// wore vitesse's near-black rather than the panel's warm fill, and
+					// `.note-prose pre` had nothing to say about it. Dropped here rather
+					// than fought with `!important`, and only that one declaration: the
+					// custom properties beside it are what the dark theme is painted
+					// from. The `html.dark .shiki` rule in main.css is the other half.
 					pre(node) {
 						node.properties.tabindex = '-1'
+						node.properties.style = withoutBackground(node.properties.style)
 					},
 				},
 			],

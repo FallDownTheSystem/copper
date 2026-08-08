@@ -98,12 +98,13 @@ function onKeydown(event: KeyboardEvent) {
 	     only and this one carries its own content. -->
 	<ContextMenu>
 		<ContextMenuTrigger as-child>
-			<!-- The radius rounds the focus ring and the pinned band both. A square
-			     ring around a row sitting among `rounded-lg` note rows is the one shape
-			     it should not be — and a capsule is the other. The row is
-			     `--section-heading-height` tall, so `--radius-md` at 14px sits past half
-			     its height; the small-control tier's 10px is the most it can take and
-			     still ring a rectangle.
+			<!-- **Square, and that is a property of the band rather than of the row.**
+			     The corner used to be the small-control tier's 10px, rounding the focus
+			     ring and the pinned band together. A band is what this actually is: it
+			     spans the region, it rides its top edge, and a rounded rectangle riding
+			     a straight edge reads as a card that has come loose rather than as a
+			     heading that has stuck. The ring it also rounded is gone — `focus-halo`
+			     draws no edge to round.
 
 			     **The row pins itself to the top of the region while its own section is
 			     being read**, which is what keeps the answer to "which section am I in"
@@ -125,16 +126,19 @@ function onKeydown(event: KeyboardEvent) {
 			     same stacking context — the panel's `isolate` root — and both live at
 			     the far end of the list.
 
-			     The band is the panel's own surface token, not a new material: the row
-			     has to erase whatever scrolls under it, and `--surface` composited over
-			     the panel it is already sitting on leaves 1% of that row showing. Which
-			     is also why nothing looks different until something is under it. -->
+			     **The band is `--surface-solid`, and the alpha it used to carry was a
+			     misreading of what is behind it.** `bg-surface`'s 90% was argued as
+			     leaving 1% of the desktop showing, which is true of the *panel* and
+			     beside the point: the panel is under the band, and the note rows are
+			     *between* them. A tenth of a row of text is legible text, and it was —
+			     the heading had a note running through it. Opaque is the only value that
+			     erases what it covers, and the band is 24px deep. -->
 			<div
 				role="row"
 				:data-row-id="rowId"
 				data-section-row
 				:tabindex="focused ? 0 : -1"
-				class="focus-ring bg-surface sticky top-0 z-1 min-w-0 rounded-compact"
+				class="focus-halo bg-surface-solid sticky top-0 z-1 min-w-0"
 			>
 				<div
 					role="gridcell"
@@ -167,20 +171,23 @@ function onKeydown(event: KeyboardEvent) {
 						     The name shrinks rather than holding its width — with the
 						     chevron at the end of the row, an unshrinkable one would push it
 						     out. The inner `truncate` is what makes that safe. -->
-						<!-- **`pl-3` is an alignment, not a spacing choice.** A note row is
-						     `px-3` plus a 16px completion box plus `gap-2`, so its text starts
-						     36px in; this row is `px-3` plus the marker's 6px dot plus
-						     `gap-1.5`, which landed the section name 6px to the left of every
-						     note under it. The extra 12px of button padding closes exactly
-						     that gap, so the heading and the notes it heads share one left
-						     edge. Anything that changes the note row's leading columns has to
-						     come back here. -->
+						<!-- **`-ml-3 pl-3` is one alignment expressed twice, and it replaces a
+						     text-to-text one.** The heading used to be pushed a further 12px in
+						     so its *name* began where a note's *text* does, past the completion
+						     box — which put the section label further right than anything else
+						     in the panel and made the list look indented under its own heading.
+						     What lines up now is the leading mark of each row: the negative
+						     margin takes the button back out to the row's own left edge, so its
+						     hover surface starts where a note row's does, and the `pl-3` it
+						     keeps puts the marker dot at 12px — the note's completion box to
+						     the pixel. Anything that changes the note row's `px-3` has to come
+						     back here. -->
 						<h2 :id="headingId" class="min-w-0">
 							<button
 								type="button"
 								tabindex="-1"
 								:aria-current="active ? 'true' : undefined"
-								class="hover:bg-surface-hover active:bg-surface-active flex min-w-0 items-center gap-1.5 rounded-inset py-1 pr-1.5 pl-3 transition-colors duration-fast"
+								class="hover:bg-surface-hover active:bg-surface-active -ml-3 flex min-w-0 items-center gap-1.5 rounded-inset py-1 pr-1.5 pl-3 transition-colors duration-fast"
 								:class="active ? 'text-accent-text' : 'text-text-secondary'"
 								@click="emit('activate')"
 							>

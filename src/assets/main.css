@@ -60,7 +60,7 @@
 	   so at the 6–8px this started at the superellipse and the circle sat a pixel
 	   apart and the panel read as a sharp-cornered rectangle. Raised to the radius
 	   the largest surfaces want; the small controls step down from it. */
-	--radius: 1.125rem;
+	--radius: 1.25rem;
 
 	/* --- Copper's own semantic set ------------------------------------------
 	   Contrast is verified against the panel's *composited* surface, not
@@ -71,6 +71,15 @@
 	--text-secondary: oklch(0.46 0.012 60);
 	--text-disabled: oklch(0.63 0.008 60);
 	--surface: oklch(0.99 0.002 80 / 0.9);
+	/* The same colour with the alpha taken off, for the two surfaces that have to
+	   erase what is behind them rather than tint it: the pinned section heading,
+	   which paints *over* the rows it scrolls past, and the panel itself under
+	   `prefers-reduced-transparency`. Composited alpha is no use to the heading —
+	   `--surface`'s 90% leaves a tenth of every note it covers legible through the
+	   band, which is a tenth of *text*, not a tenth of a lightness step. The cost is
+	   that the band shows no Mica while the panel around it does; the band is 24px
+	   deep and the alternative is a heading you can read the list through. */
+	--surface-solid: oklch(0.99 0.002 80);
 	--surface-hover: oklch(0.24 0.008 60 / 0.06);
 	--surface-active: oklch(0.24 0.008 60 / 0.1);
 	/* Declared once and never re-declared under `.dark`: both of its inputs are,
@@ -88,32 +97,32 @@
 	   one place in the panel where the Mica material would cost legibility. */
 	--toast-surface: oklch(1 0 0 / 0.97);
 	--toast-shadow: 0 6px 16px oklch(0.24 0.008 60 / 0.18), 0 2px 4px oklch(0.24 0.008 60 / 0.1);
+	/* A code fence's own fill and edge, in the panel's warm grey rather than in a
+	   syntax theme's neutral one — Shiki ships a near-black `#121212` surface that
+	   reads blue beside a warm panel, and the block is Copper's furniture rather
+	   than the highlighter's. A step off the surface in whichever direction the
+	   theme has room for, exactly as `--toast-surface` is: down on the light panel,
+	   which is already near white, and up on the dark one. Tints rather than
+	   opaque colours, so a fence keeps whatever shows through the window behind
+	   it. The border composites over the fill it edges rather than over the panel,
+	   so being the stronger of the two tints is what makes it an edge — a step
+	   darker than the fill on the light panel, a step lighter on the dark one, each
+	   continuing in the direction the fill already went. */
+	--code-surface: oklch(0.24 0.008 60 / 0.05);
+	--code-border: oklch(0.24 0.008 60 / 0.09);
 	--link: oklch(0.5 0.14 250);
-	/* Copper, like everything else the app draws attention with — the ring used to
-	   be the one blue thing in the panel that was not a link.
+	/* **The halo, and it is now the only token the focus treatment has of its own.**
+	   The 1px edge used to carry a second copper here, deepened until it sat a
+	   visible step away from `--accent-ring` so that two adjacent rows wearing one
+	   each could be told apart. Nothing wears one each any more: a row's indicator
+	   is this halo alone and no row draws a 1px edge, so the edge is free to *be*
+	   the accent — see the `focus-ring` and `focus-halo` utilities.
 
-	   Its distance from `--accent-ring` is the constraint that sets the value, not
-	   its distance from the surface: at the 0.56 this started at the two were
-	   1.30:1 apart, and deepened to 0.46 they are 1.98:1 — a visible step — while
-	   clearing 7.26:1 on `--surface`, 6.26:1 on `--surface-hover` and 7.47:1 on the
-	   menus' `--popover`.
-
-	   The two no longer meet on one row: a selected row wears the accent ring and
-	   withholds the focus ring entirely (see `.note-row` in NoteCard.vue). They
-	   still have to be told apart at a glance, because adjacent rows in one list
-	   wear one each — which is the same constraint over a slightly larger
-	   distance. */
-	--focus-ring: oklch(0.46 0.15 55);
-	/* The halo outside the 1px edge — see the `focus-ring` utility. Declared once
-	   and never re-declared under `.dark`, exactly as `--surface-danger` is: its
-	   input is, and `.dark` lands on the same element `:root` matches, so the mix
-	   re-resolves against the dark copper on its own.
-
-	   50% is the shadcn ratio and it survives both themes here because the two
-	   copper values are chosen to sit apart from their surfaces: composited it
-	   reads around L 0.72 on the light panel and L 0.55 on the dark one, in both
-	   cases a clear step from the surface behind it. */
-	--focus-ring-soft: color-mix(in oklab, var(--focus-ring) 50%, transparent);
+	   50% is the shadcn ratio and it survives both themes because each value sits
+	   apart from its own surface: composited the band reads around L 0.72 on the
+	   light panel and L 0.55 on the dark one. Written as an alpha rather than a
+	   `color-mix` off a second token, now that there is no second token to mix. */
+	--focus-halo: oklch(0.46 0.15 55 / 0.5);
 	/* Copper carries exactly one meaning: selection and active state. Split in
 	   two because oklch(0.62 0.11 55) is 3.77:1 on white — a pass for a UI
 	   component at 3:1 and a failure for text at 4.5:1. */
@@ -164,6 +173,7 @@
 	--text-secondary: oklch(0.73 0.012 60);
 	--text-disabled: oklch(0.55 0.008 60);
 	--surface: oklch(0.18 0.004 60 / 0.9);
+	--surface-solid: oklch(0.18 0.004 60);
 	--surface-hover: oklch(1 0 0 / 0.07);
 	--surface-active: oklch(1 0 0 / 0.11);
 	--separator: oklch(1 0 0 / 0.14);
@@ -171,12 +181,13 @@
 	   becoming a second panel. */
 	--toast-surface: oklch(0.26 0.006 60 / 0.97);
 	--toast-shadow: 0 6px 16px oklch(0 0 0 / 0.45);
+	--code-surface: oklch(1 0 0 / 0.06);
+	--code-border: oklch(1 0 0 / 0.1);
 	--link: oklch(0.76 0.12 240);
-	/* Brighter than `--accent-ring` here, for the same reason the light one is
-	   deeper: the ring has to separate itself from the accent it is drawn beside,
-	   and on a dark surface that direction is up. 1.90:1 against `--accent-ring`,
-	   and 12.95:1 / 11.33:1 / 12.34:1 on surface, surface-hover and popover. */
-	--focus-ring: oklch(0.9 0.1 55);
+	/* Brighter than the light theme's, for the reason every alpha band in this file
+	   is inverted between the two: the halo has to lift off the surface it is drawn
+	   on, and on a dark one that direction is up. */
+	--focus-halo: oklch(0.9 0.1 55 / 0.5);
 	--accent-ring: oklch(0.7 0.12 55);
 	--accent-text: oklch(0.78 0.1 60);
 	--scrollbar-thumb: oklch(1 0 0 / 0.22);
@@ -209,13 +220,13 @@
 	--color-text-secondary: var(--text-secondary);
 	--color-text-disabled: var(--text-disabled);
 	--color-surface: var(--surface);
+	--color-surface-solid: var(--surface-solid);
 	--color-surface-hover: var(--surface-hover);
 	--color-surface-active: var(--surface-active);
 	--color-surface-danger: var(--surface-danger);
 	--color-toast-surface: var(--toast-surface);
 	--color-separator: var(--separator);
 	--color-link: var(--link);
-	--color-focus-ring: var(--focus-ring);
 	/* Named `accent-ring` rather than the plan's bare `accent`: `shadcn-vue init`
 	   (planning ruling Q21) generates an `--accent` of its own meaning "subtle
 	   hover surface", which every generated component references. Two meanings
@@ -246,7 +257,7 @@
 	--color-popover: var(--popover);
 	--color-card-foreground: var(--card-foreground);
 	--color-card: var(--card);
-	/* **12 / 14 / 18 / 22 — the surface ramp, and it is not the whole scale.**
+	/* **12 / 14 / 20 / 24 — the surface ramp, and it is not the whole scale.**
 	   Wider steps than shadcn's generated ramp, which huddles its first three
 	   within 4px of each other: that spacing is invisible once the anchor is this
 	   large. `lg` is the anchor itself and is a surface — a note row, a menu, a
@@ -260,9 +271,16 @@
 	   the ramp — so raising `--radius` to the corner the largest surfaces want
 	   carried every step past it for anything around 20–24px tall, and turned the
 	   controls wearing `sm` and `md` at that size into capsules. Which is why
-	   there is a second tier below and it does not move with this one. */
-	--radius-sm: calc(var(--radius) - 6px);
-	--radius-md: calc(var(--radius) - 4px);
+	   there is a second tier below and it does not move with this one.
+
+	   **The same bound is why the two lower offsets grew when the anchor did.**
+	   `md`'s tallest constituency is `panel-field` at `h-8`, so its capsule is
+	   32 / 2 = 16px; the anchor's step from 18 to 20 would have taken a `-4px`
+	   offset exactly there and turned the search field into a pill. The offsets
+	   are `-8px` and `-6px` so that `sm` and `md` hold the 12 and 14 they were
+	   measured at, and only the two surface steps move. */
+	--radius-sm: calc(var(--radius) - 8px);
+	--radius-md: calc(var(--radius) - 6px);
 	--radius-lg: var(--radius);
 	--radius-xl: calc(var(--radius) + 4px);
 
@@ -277,11 +295,9 @@
 	   short to take more without becoming a capsule: the active-section chip
 	   (~21px), the section header's collapse control (20px), a key cap (24px —
 	   `KbdChip` pins the same 8px by hand, and named the failure before it
-	   happened). `compact` is a short control's own corner, where `--radius-md`
-	   would capsule it: the section header row, whose radius exists for its focus
-	   ring alone. */
+	   happened). The tier's second step, `compact`, went with the section header
+	   row's corner: the pinned band is square now, and it was the only caller. */
 	--radius-inset: 8px;
-	--radius-compact: 10px;
 }
 
 @layer base {
@@ -370,15 +386,23 @@
 /* **The focus treatment, and the only copy of it.** A 1px copper edge hugging
    the control with a 3px translucent copper halo outside it — shadcn's
    `border-ring` + `ring-[3px] ring-ring/50`, which is what the panel is being
-   matched to. Everything focusable either carries this class or is a utility
-   below that applies it.
+   matched to. Every focusable *control* either carries this class or is a utility
+   below that applies it; a **row** carries `focus-halo` instead and the two are
+   documented together there.
+
+   **The edge is `--accent-ring`, the same copper a selected row is ringed in**,
+   rather than a second copper of its own. The two used to be held apart on
+   purpose, because a focused row and a selected row could sit next to each other
+   wearing one each; a row draws no edge any more, so the pair never appears and
+   the deeper, greyer value it cost was buying nothing. What it cost was
+   visible — the edge read washed out against the accent it was matched to.
 
    Three layers, and each is load-bearing:
 
    **`outline` for the 1px edge, not a border.** An outline takes no layout space
    at all, so this works unchanged on the controls that have a border and on the
-   note rows, the icon buttons and the toggles that do not — and none of them
-   moves by a pixel when it takes focus. Chromium has followed `border-radius`
+   icon buttons and toggles that do not — and none of them moves by a pixel when
+   it takes focus. Chromium has followed `border-radius`
    with outlines since 94, so it hugs a rounded control the same way the halo
    does. **It is also the half that survives forced colors**, where box-shadows
    are not painted at all: Windows' high-contrast mode repaints the outline in
@@ -403,10 +427,36 @@
    trade worth composing shadow variables by hand to avoid. */
 @utility focus-ring {
 	&:focus-visible {
-		outline: 1px solid var(--focus-ring);
+		outline: 1px solid var(--accent-ring);
 		outline-offset: 0;
-		border-color: var(--focus-ring);
-		box-shadow: 0 0 0 4px var(--focus-ring-soft);
+		border-color: var(--accent-ring);
+		box-shadow: 0 0 0 4px var(--focus-halo);
+	}
+}
+
+/* **The row's half of the same treatment: the halo, and nothing else.**
+
+   A note row and a section heading are not controls with an edge — they are bands
+   of the list, 44px and 24px tall, and the 1px line `focus-ring` draws hugged the
+   full width of one. Against the rows above and below it that line read as a
+   *border on the row* rather than as an indicator on top of it, and at the dark
+   theme's lightness it read as a pale, almost white one. The halo alone says the
+   same thing without adding an edge to a thing that has none, and it is the layer
+   the two treatments share — so a focused field and a focused row still look
+   like the same event.
+
+   `outline` is still declared, at a width and a transparent colour that paint
+   nothing, because **forced colors is the one mode where the halo does not
+   exist**: Windows' high-contrast mode paints no box-shadows at all and forces
+   `outline-color` to a system colour whatever the author asked for. Without the
+   declaration a focused row would have no indicator there; with it, the same rule
+   that is invisible everywhere else becomes the whole indicator in the one place
+   it has to be. */
+@utility focus-halo {
+	&:focus-visible {
+		outline: 2px solid transparent;
+		outline-offset: 0;
+		box-shadow: 0 0 0 4px var(--focus-halo);
 	}
 }
 
@@ -493,26 +543,15 @@
 }
 
 @media (prefers-reduced-transparency: reduce) {
+	/* One rule where there were four. The pinned section heading used to need a
+	   pair of its own here — it paints the panel's own surface over the list, and
+	   at `--surface`'s 90% it would have composited a second time over an
+	   already-opaque panel and left a faintly lighter band standing at every
+	   heading. It wears `--surface-solid` in every mode now, so this block is back
+	   to the one surface that actually changes: the panel, which reads the same
+	   token rather than repeating its two colours by hand. */
 	.panel-surface {
-		background: oklch(1 0 0);
-	}
-
-	.dark .panel-surface {
-		background: oklch(0.18 0.004 60);
-	}
-
-	/* The pinned section heading is the one row that paints the panel's own
-	   surface *over* the list, so it takes the same opaque value the panel does
-	   here. Left at `bg-surface`'s 90% tint it would composite a second time over
-	   an already-opaque panel and leave a faintly lighter band standing where
-	   every heading is. Unlayered, so it wins the utility on equal specificity —
-	   the same cascade `.toast-pill` above relies on. */
-	[data-section-row] {
-		background: oklch(1 0 0);
-	}
-
-	.dark [data-section-row] {
-		background: oklch(0.18 0.004 60);
+		background: var(--surface-solid);
 	}
 }
 
@@ -699,12 +738,14 @@
 .note-prose pre {
 	margin-block: 0.5em;
 	padding: 0.6em 0.75em;
-	/* A block, so it takes the block corner — `--radius-md`'s value, written out
-	   because this rule styles `v-html` output the utility scanner never sees.
-	   Kept in step by hand when the ramp moves; there is no token to interpolate
-	   here that the scanner would honour. */
-	border-radius: 14px;
-	background: var(--surface-hover);
+	/* Half the block corner the ramp would give it, and off the ramp entirely.
+	   A fence is a rectangle of monospaced text inside a note body — content, not
+	   one of the panel's own surfaces — and at the ramp's 14px the corner competed
+	   with the note row's. Written out rather than tokenised because this rule
+	   styles `v-html` output the utility scanner never sees. */
+	border-radius: 7px;
+	background: var(--code-surface);
+	border: 1px solid var(--code-border);
 	font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
 	font-size: 0.8125rem;
 	line-height: 1.5;
@@ -798,11 +839,18 @@
 
 /* Shiki's dual-theme output carries the light colour inline and the dark one as
    a custom property, so a theme switch is pure CSS and the render cache stays
-   valid — the generated HTML is byte-identical across the toggle. */
+   valid — the generated HTML is byte-identical across the toggle.
+
+   **Colour only. The fence's surface is `.note-prose pre`'s, in both themes.**
+   Shiki also emits a theme background — inline for light, as `--shiki-dark-bg`
+   for dark — and swapping that here is what made a code block read as a near-black
+   blue-grey panel sitting in a warm one. The dark half is dropped by leaving the
+   declaration out; the light half is inline and outranks any stylesheet, so it is
+   stripped at render time instead (see `useMarkdown`'s `pre` transformer). Both
+   halves have to go together or the two themes disagree about who owns the fill. */
 html.dark .shiki,
 html.dark .shiki span {
 	color: var(--shiki-dark) !important;
-	background-color: var(--shiki-dark-bg) !important;
 	font-style: var(--shiki-dark-font-style) !important;
 	font-weight: var(--shiki-dark-font-weight) !important;
 	text-decoration: var(--shiki-dark-text-decoration) !important;

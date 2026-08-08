@@ -378,7 +378,20 @@ function onContextMenu(event: MouseEvent) {
 		     whether it was mid-sentence when the chip's switcher opened. The relay
 		     covers the chip and the `...` submenu only — task-019 moved the keyboard
 		     entry point to the palette, which returns focus itself. -->
-		<PanelHeader ref="header" @switcher-closed="composer?.restoreCaret($event)" />
+		<!-- **Every one of the shell's three flow children names its own row, and
+		     that is load-bearing rather than tidiness.** The status band below is
+		     placed at `row-start-2` deliberately, to share the middle row with the
+		     scroll region; auto-placement reads that as row 2 being *taken*, and each
+		     of these — auto-positioned in both axes — was pushed one row past where
+		     it belongs. The list landed in row 3, sized to its content rather than to
+		     the `1fr`, and the composer in an implicit row 4. What the user saw was
+		     the toast pill hugging the *top* of the notes region: it was correctly at
+		     the bottom of row 2, and row 2 was the empty strip above the list. -->
+		<PanelHeader
+			ref="header"
+			class="row-start-1"
+			@switcher-closed="composer?.restoreCaret($event)"
+		/>
 
 		<!-- The only scrollable region. `min-h-0` is load-bearing: a grid item
 		     defaults to `min-height: auto`, so without it this grows to its content
@@ -399,7 +412,7 @@ function onContextMenu(event: MouseEvent) {
 		     transient re-wrap against a permanent, always-visible asymmetry. -->
 		<main
 			data-scroll-region
-			class="thin-scrollbar min-h-0 min-w-0 overflow-y-auto overscroll-contain [scrollbar-gutter:auto]"
+			class="thin-scrollbar row-start-2 min-h-0 min-w-0 overflow-y-auto overscroll-contain [scrollbar-gutter:auto]"
 			:aria-busy="refreshing"
 		>
 			<h1 class="sr-only">{{ spaceName || 'Copper' }}</h1>
@@ -407,8 +420,20 @@ function onContextMenu(event: MouseEvent) {
 			<PanelStates>
 				<!-- `px-1` matches the 4px rhythm between rows. Without it the cards sit
 				     flush against the panel edge, which puts their rounded corners and
-				     the selection ring's outer edge hard against the window. -->
-				<div class="px-1 pt-2 pb-3">
+				     the selection ring's outer edge hard against the window.
+
+				     **No top padding, so the first section heading starts flush against
+				     the top of the region.** The heading pins itself there the moment
+				     anything scrolls under it, and 8px of lead-in meant the band jumped
+				     up by that much the first time it stuck — a heading that moves as you
+				     begin to scroll past its own section. Flush at rest is the same
+				     position it holds pinned, so nothing moves at all. What it costs is
+				     the top 4px of the *first* heading's focus halo, clipped by the
+				     region's edge; a pinned heading's is clipped there in every case
+				     already, so this makes one row consistent rather than making it
+				     worse. The landing margins in NoteSection are measured from the
+				     region's edge and are unaffected. -->
+				<div class="px-1 pb-3">
 					<NoteList />
 
 					<!-- Additive, not a replacement: a zero-note space still renders its
@@ -427,7 +452,7 @@ function onContextMenu(event: MouseEvent) {
 			</PanelStates>
 		</main>
 
-		<Composer ref="composer" />
+		<Composer ref="composer" class="row-start-3" />
 
 		<!-- Inside the panel root, so teleported menu content stays inside the clip,
 		     the rounded rect and the contextmenu policy above. `pointer-events-none`
@@ -448,7 +473,23 @@ function onContextMenu(event: MouseEvent) {
 
 		<!-- Both bands share one cell in the shell's middle row and stack inside it,
 		     so neither can displace the pinned composer of a window that cannot
-		     grow, and the two can never overlap each other. -->
+		     grow, and the two can never overlap each other. Sharing that cell is what
+		     `row-start-2` on the scroll region above now guarantees — see the note on
+		     the header for the row this used to steal.
+
+		     **`self-end` with `pb-2`: the foot of the list, floating, not stuck to
+		     it.** The pill reports what just happened to the notes, so it belongs at
+		     the end of them rather than over the first rows the eye is reading. The
+		     8px is the list's own rhythm rather than a new number — it is the gap
+		     between a section heading and the first note under it — and it is what
+		     keeps the pill from reading as a strip welded to the composer's top edge.
+
+		     `z-20` is measured, not picked: above the note rows, and above the pinned
+		     section heading's `z-1`, which is the one thing in the region that can
+		     rise to meet it. The whole band is `pointer-events-none` — see StatusLine
+		     for why the rows underneath must stay clickable through it — so nothing
+		     here costs the list a hit target, and the layout is untouched either way:
+		     these are overlays in a cell that is already the region's. -->
 		<div
 			class="pointer-events-none col-start-1 row-start-2 z-20 flex flex-col gap-1 self-end px-3 pb-2"
 		>

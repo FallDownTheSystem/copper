@@ -424,12 +424,14 @@ describe('the roving tabindex', () => {
 
 		const selected = wrapper.get(`[data-row-id="${noteRow('nte_1')}"]`)
 		expect(selected.classes()).toContain('ring-accent-ring')
-		expect(selected.classes('focus-ring')).toBe(false)
+		expect(selected.classes('focus-halo')).toBe(false)
 
 		// The unselected row keeps it: that is the case where focus and selection
-		// genuinely differ, and the only ring it can wear.
+		// genuinely differ, and the only ring it can wear. `focus-halo` and not
+		// `focus-ring` — a row wears the soft outer band alone, and the 1px edge
+		// belongs to controls that have an edge.
 		const other = wrapper.get(`[data-row-id="${noteRow('nte_2')}"]`)
-		expect(other.classes()).toContain('focus-ring')
+		expect(other.classes()).toContain('focus-halo')
 	})
 })
 
@@ -1544,15 +1546,21 @@ describe('a pinned section heading', () => {
 	 * because two of them are chosen against numbers that live in other files. A
 	 * dropped `z-1` is a heading behind the rows it is supposed to cover; a `z`
 	 * raised past `NoteList`'s indicator or `NoteCard`'s carried row hides the two
-	 * things a drag needs visible. `bg-surface` is what erases the rows passing
-	 * underneath.
+	 * things a drag needs visible.
+	 *
+	 * **`bg-surface-solid`, and the token is the assertion.** The band erases the
+	 * rows passing underneath it, which the panel's translucent `--surface` cannot
+	 * do: its 90% left a tenth of every covered note legible *through* the heading,
+	 * because the rows sit between the band and the panel rather than behind both.
+	 * Nothing about that is visible to a layout-free DOM, so the class is where it
+	 * has to be caught.
 	 */
 	it('pins itself above the rows it covers and below the carried row', async () => {
 		const wrapper = await mountPanel()
 		const heading = wrapper.get(`[data-row-id="${sectionRow('sec_a')}"]`)
 
 		expect(heading.classes()).toEqual(
-			expect.arrayContaining(['sticky', 'top-0', 'z-1', 'bg-surface']),
+			expect.arrayContaining(['sticky', 'top-0', 'z-1', 'bg-surface-solid']),
 		)
 	})
 
@@ -4682,7 +4690,21 @@ describe('creation dates', () => {
 		expect(stamps).toHaveLength(2)
 		// The machine-readable half is the stored instant, not the formatted text.
 		expect(stamps[0]!.attributes('datetime')).toBe('2026-08-05T00:00:00Z')
-		expect(stamps[0]!.text()).toContain('2026')
+	})
+
+	/**
+	 * The line reads how long ago rather than which day, and the absolute date it
+	 * gives up is on the same element as a `title`. Asserted as a pair, because
+	 * either one alone is a footer that has lost half its meaning: relative text
+	 * with no hover is a note whose day is unrecoverable, and a title with no
+	 * relative text is the old behaviour wearing a tooltip.
+	 */
+	it('reads as elapsed time, with the exact date on hover', async () => {
+		const wrapper = await mountWithDates()
+		const stamp = wrapper.findAll('time')[0]!
+
+		expect(stamp.text()).not.toContain('2026')
+		expect(stamp.attributes('title')).toContain('2026')
 	})
 
 	/**
@@ -4714,6 +4736,41 @@ describe('creation dates', () => {
 // --- the status toast --------------------------------------------------------
 
 describe('the status toast', () => {
+	/**
+	 * **The pill sits at the foot of the list, and what put it at the head of it
+	 * was grid auto-placement rather than alignment.**
+	 *
+	 * The band is the only child of the shell's grid with an explicit
+	 * `row-start-2`, so it is placed first — and every other child, auto-positioned
+	 * in both axes, was pushed past the cell it had taken. The scroll region landed
+	 * in row 3, sized to its content rather than to the `1fr`, and the composer in
+	 * an implicit row 4; the pill was correctly at the bottom of row 2, and row 2
+	 * was the empty strip above the list. It looked right only because a list
+	 * taller than the region drives that strip to zero height.
+	 *
+	 * happy-dom lays nothing out, so the row assignments are the only place this
+	 * can be caught — and they are exactly what was wrong, so they are the right
+	 * thing to pin. What the assertion means: the region and the band share the
+	 * middle row, and the two fixed bands own the rows either side of it.
+	 */
+	it('shares the row the scroll region is in rather than displacing it', async () => {
+		const wrapper = await mountPanel()
+		status.setMessage('Copied 1 note')
+		await wrapper.vm.$nextTick()
+
+		expect(wrapper.get('header').classes()).toContain('row-start-1')
+		expect(wrapper.get('[data-scroll-region]').classes()).toContain('row-start-2')
+		expect(wrapper.get('form').classes()).toContain('row-start-3')
+		// Through `closest` rather than a parent chain: the pill sits inside
+		// StatusLine's own live-region wrapper, so the band is its grandparent and
+		// counting the hops would break the moment either gains a level.
+		const band = wrapper.get('[data-status-toast]').element.closest('.row-start-2')
+		expect(band).not.toBeNull()
+		// And it is a child of the grid itself, so the row it names is a row of the
+		// shell rather than of something nested inside the region.
+		expect(band?.parentElement).toBe(wrapper.get('[data-panel-root]').element)
+	})
+
 	/**
 	 * The pill overlays the last rows of the list for five seconds after every
 	 * action, so it must not eat presses aimed at what is underneath it. The band,

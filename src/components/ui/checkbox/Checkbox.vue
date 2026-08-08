@@ -56,15 +56,22 @@ const pressTransition = { duration: 0.15, ease: EASE_OUT_QUINT }
  * the corner arc within the radius it is given, so on a 16px box a 4px radius —
  * the reference app's value, carried over unexamined — leaves the squircle and
  * the circular arc within a pixel of each other, and the box reads as a plain
- * rounded square however well the property is supported. 6px is most of the way
- * to the 8px that would make the whole edge one curve, which is where the
- * difference is legible while the shape is still a square with soft corners —
- * and it is a sane plain radius on a runtime that ignores `corner-shape`, since
- * that `rounded-[6px]` is the fallback.
+ * rounded square however well the property is supported.
+ *
+ * **8px is half of 16, which is the capsule bound everywhere else in the panel
+ * and is not one here.** That is the whole reason the shape survives being pushed
+ * to it: a *circular* arc at half the height would round the box into a circle,
+ * and a superellipse at the same radius is the classic squircle — visibly flat
+ * down the middle of each side, which is what the standing "nicely rounded, not
+ * full circles" rule is asking for. So the two values are not the same number,
+ * and the split is deliberate rather than a fallback that happens to differ:
+ * `rounded-[7px]` is what a runtime with no `corner-shape` renders, and it is
+ * held one pixel short precisely so that it stays a rounded square there instead
+ * of becoming the circle this shape is defined against.
  */
 const rootClass = computed(() =>
 	cn(
-		'squircle border-text-disabled focus-ring data-[state=checked]:bg-accent-ring data-[state=checked]:border-accent-ring text-accent-contrast size-4 shrink-0 rounded-[6px] border transition-colors duration-base disabled:cursor-not-allowed disabled:opacity-50',
+		'squircle border-text-disabled focus-ring data-[state=checked]:bg-accent-ring data-[state=checked]:border-accent-ring text-accent-contrast size-4 shrink-0 rounded-[7px] supports-[corner-shape:squircle]:rounded-[8px] border transition-colors duration-base disabled:cursor-not-allowed disabled:opacity-50',
 		props.class,
 	),
 )

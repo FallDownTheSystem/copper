@@ -42,10 +42,82 @@ const CREATED_FORMAT = new Intl.DateTimeFormat(undefined, {
 	timeStyle: 'short',
 })
 
-/** The line a card shows, or null when there is nothing honest to show. */
+/** The absolute instant, spelled out. The card carries it as a `title` now that
+ *  the line itself is relative — the exact day is the thing "3h ago" gives up,
+ *  and it is one hover away rather than gone. */
 export function formatCreated(created: string | null | undefined): string | null {
 	const at = parseCreated(created)
 	return at === null ? null : CREATED_FORMAT.format(at)
+}
+
+/**
+ * Built once, beside `CREATED_FORMAT` and for the same reason.
+ *
+ * `narrow` is what produces "2m ago" rather than "2 minutes ago" — a note footer
+ * is a `text-meta` line under a body, and the long form is wider than most of the
+ * notes it would sit under. `numeric: 'always'` rather than `'auto'`: the
+ * idiomatic forms `'auto'` reaches for are only defined at ±1 and 0, so a list
+ * would read "5m ago, 2h ago, yesterday, 3d ago, last week" — one row in six
+ * written in a different register. One shape for every row is worth more here
+ * than "yesterday" is.
+ */
+const RELATIVE_FORMAT = new Intl.RelativeTimeFormat(undefined, {
+	numeric: 'always',
+	style: 'narrow',
+})
+
+const SECOND = 1000
+const MINUTE = 60 * SECOND
+const HOUR = 60 * MINUTE
+const DAY = 24 * HOUR
+
+/**
+ * The ladder, largest first. Each step's threshold is its own length, so the unit
+ * chosen is the largest one that has completed at least once.
+ *
+ * Months and years are the calendar's, approximated — 30 and 365 days. Nothing
+ * downstream measures anything with these; they pick a word and a numeral for a
+ * footer, and a note two years old reading "2y ago" a day early is not a claim
+ * anybody can act on. `sortByCreated` is where real instants matter, and it never
+ * comes through here.
+ */
+const STEPS: { unit: Intl.RelativeTimeFormatUnit; ms: number }[] = [
+	{ unit: 'year', ms: 365 * DAY },
+	{ unit: 'month', ms: 30 * DAY },
+	{ unit: 'week', ms: 7 * DAY },
+	{ unit: 'day', ms: DAY },
+	{ unit: 'hour', ms: HOUR },
+	{ unit: 'minute', ms: MINUTE },
+	{ unit: 'second', ms: SECOND },
+]
+
+/**
+ * How long ago the note was written, in the largest unit that has run at least
+ * once — "2m ago", "3h ago", "2w ago". Null on the same terms as `formatCreated`:
+ * a `created` that cannot be read produces nothing rather than a guess.
+ *
+ * **`now` is a parameter rather than a call to `Date.now()` inside**, which is
+ * what makes this a pure function of two instants: every card on screen formats
+ * against the same tick (see `useRelativeTime`), so two notes captured in the same
+ * second cannot render as "0s ago" and "1s ago" because they were formatted a
+ * millisecond apart — and the tests need no clock control to be exact.
+ *
+ * **Truncated toward zero, never rounded.** Rounding would call a note written
+ * 1m50s ago "2m ago", which claims more time has passed than has; truncating
+ * says "1m ago" until the second minute is genuinely complete. Below one second
+ * that leaves "0s ago", which is the honest reading of a note that was written
+ * now and is replaced by the next tick.
+ */
+export function formatRelative(created: string | null | undefined, now: number): string | null {
+	const at = parseCreated(created)
+	if (at === null) return null
+
+	// Negative into the past, which is the sign `RelativeTimeFormat` reads as "ago".
+	const elapsed = at - now
+	const magnitude = Math.abs(elapsed)
+	const step = STEPS.find((candidate) => magnitude >= candidate.ms) ?? STEPS[STEPS.length - 1]!
+
+	return RELATIVE_FORMAT.format(Math.trunc(elapsed / step.ms), step.unit)
 }
 
 /**

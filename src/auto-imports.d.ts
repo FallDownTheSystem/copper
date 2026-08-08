@@ -263,6 +263,7 @@ declare global {
   const useRafFn: typeof import('@vueuse/core').useRafFn
   const useReducedMotion: typeof import('./composables/useReducedMotion').useReducedMotion
   const useRefHistory: typeof import('@vueuse/core').useRefHistory
+  const useRelativeTime: typeof import('./composables/useRelativeTime').useRelativeTime
   const useResizeObserver: typeof import('@vueuse/core').useResizeObserver
   const useSSRWidth: typeof import('@vueuse/core').useSSRWidth
   const useScreenOrientation: typeof import('@vueuse/core').useScreenOrientation
@@ -660,6 +661,7 @@ declare module 'vue' {
     readonly useRafFn: UnwrapRef<typeof import('@vueuse/core')['useRafFn']>
     readonly useReducedMotion: UnwrapRef<typeof import('./composables/useReducedMotion')['useReducedMotion']>
     readonly useRefHistory: UnwrapRef<typeof import('@vueuse/core')['useRefHistory']>
+    readonly useRelativeTime: UnwrapRef<typeof import('./composables/useRelativeTime')['useRelativeTime']>
     readonly useResizeObserver: UnwrapRef<typeof import('@vueuse/core')['useResizeObserver']>
     readonly useSSRWidth: UnwrapRef<typeof import('@vueuse/core')['useSSRWidth']>
     readonly useScreenOrientation: UnwrapRef<typeof import('@vueuse/core')['useScreenOrientation']>

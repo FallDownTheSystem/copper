@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vite-plus/test'
 
-import { formatCreated, parseCreated, sortByCreated } from './noteTime'
+import { formatCreated, formatRelative, parseCreated, sortByCreated } from './noteTime'
 
 describe('parseCreated', () => {
 	it('reads the RFC3339 the store writes', () => {
@@ -34,6 +34,71 @@ describe('formatCreated', () => {
 	it('renders nothing at all for an unreadable value', () => {
 		expect(formatCreated('yesterday afternoon')).toBeNull()
 		expect(formatCreated(undefined)).toBeNull()
+	})
+})
+
+describe('formatRelative', () => {
+	const now = Date.UTC(2026, 7, 8, 12, 0, 0)
+	/** `now` minus a span, as the RFC3339 the store writes. */
+	const ago = (ms: number) => new Date(now - ms).toISOString()
+
+	const SECOND = 1000
+	const MINUTE = 60 * SECOND
+	const HOUR = 60 * MINUTE
+	const DAY = 24 * HOUR
+
+	/**
+	 * What the ladder actually decides is a *value and a unit*; the words are the
+	 * machine's locale, and a suite that spelled them out would pin this file to
+	 * whichever machine ran it. So the expectation is built by asking Intl for the
+	 * same pair — which asserts the choice exactly while asserting nothing about
+	 * the language it comes out in.
+	 */
+	const expected = (value: number, unit: Intl.RelativeTimeFormatUnit) =>
+		new Intl.RelativeTimeFormat(undefined, { numeric: 'always', style: 'narrow' }).format(
+			value,
+			unit,
+		)
+
+	it('picks the largest unit that has run at least once', () => {
+		expect(formatRelative(ago(30 * SECOND), now)).toBe(expected(-30, 'second'))
+		expect(formatRelative(ago(2 * MINUTE), now)).toBe(expected(-2, 'minute'))
+		expect(formatRelative(ago(3 * HOUR), now)).toBe(expected(-3, 'hour'))
+		expect(formatRelative(ago(2 * DAY), now)).toBe(expected(-2, 'day'))
+		expect(formatRelative(ago(14 * DAY), now)).toBe(expected(-2, 'week'))
+		expect(formatRelative(ago(90 * DAY), now)).toBe(expected(-3, 'month'))
+		expect(formatRelative(ago(400 * DAY), now)).toBe(expected(-1, 'year'))
+	})
+
+	/**
+	 * Truncated toward zero rather than rounded, and this is the case that tells
+	 * the two apart: 1m50s has not been two minutes. Rounding would say it has,
+	 * which is the one direction a timestamp must not err in — it claims more time
+	 * has passed than the document supports.
+	 */
+	it('never says more time has passed than has', () => {
+		expect(formatRelative(ago(MINUTE + 50 * SECOND), now)).toBe(expected(-1, 'minute'))
+		expect(formatRelative(ago(23 * HOUR + 59 * MINUTE), now)).toBe(expected(-23, 'hour'))
+	})
+
+	/** The same rule `formatCreated` follows, for the same reason: a `created` the
+	 *  store preserved verbatim because it could not be parsed says nothing about
+	 *  when the note was written, so the footer says nothing either. */
+	it('renders nothing at all for an unreadable value', () => {
+		expect(formatRelative('yesterday afternoon', now)).toBeNull()
+		expect(formatRelative(undefined, now)).toBeNull()
+		expect(formatRelative(null, now)).toBeNull()
+	})
+
+	/**
+	 * `now` is a parameter, and that is what makes the whole list agree: two notes
+	 * captured in the same second are formatted against one tick, so neither can
+	 * drift a unit away from the other because they were rendered a millisecond
+	 * apart.
+	 */
+	it('formats identical instants identically', () => {
+		const at = ago(5 * MINUTE)
+		expect(formatRelative(at, now)).toBe(formatRelative(at, now))
 	})
 })
 

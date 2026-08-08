@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { formatCreated } from '@/lib/noteTime'
+import { formatCreated, formatRelative } from '@/lib/noteTime'
 import type { Note } from '@/composables/useSpace'
 
 const props = defineProps<{
@@ -27,6 +27,7 @@ const { setMessage } = useStatusMessage()
 const { beginDrag, consumeDragClick, draggingNoteId } = useNoteDrag()
 const { isSorted, filtersByDone } = useNoteList()
 const { showCreated } = useSettings()
+const { now } = useRelativeTime()
 
 /** The field is omitted from the document when empty, so it arrives undefined
  *  on every note written before this feature existed. */
@@ -54,8 +55,17 @@ const draggable = computed(
  * **nothing** rather than a placeholder. A dash would claim the note has no date
  * when what is true is that the one it has cannot be read, and inventing a
  * plausible one would be worse still.
+ *
+ * **The line is relative and the title is absolute**, which is the split rather
+ * than a fallback: "3h ago" is what the reader of a capture list actually wants —
+ * how fresh is this — and it is a strictly worse label for the one question it
+ * cannot answer, which day. The exact instant is a hover away on the same
+ * element, and `datetime` carries it to a machine either way.
  */
-const createdLabel = computed(() => (showCreated.value ? formatCreated(props.note.created) : null))
+const createdLabel = computed(() =>
+	showCreated.value ? formatRelative(props.note.created, now.value) : null,
+)
+const createdTitle = computed(() => (showCreated.value ? formatCreated(props.note.created) : null))
 const descendantTabIndex = computed(() => (props.interactive ? 0 : -1))
 const handingOff = computed(() => isHandingOff(props.note.id))
 const conflicted = computed(() => isConflicted(props.note.id))
@@ -132,9 +142,15 @@ function onDoubleClick(event: MouseEvent) {
 			     What is lost is knowing *which* selected row holds focus, and it is
 			     affordable here: plain arrows move focus and selection together, and
 			     the case where they separate — Ctrl+Arrow — leaves the row unselected,
-			     which is exactly when the focus ring is drawn. Back at
-			     `-outline-offset-2` now that it has the edge to itself, matching the
-			     section header row above it. -->
+			     which is exactly when the focus ring is drawn.
+
+			     **What is drawn there is the halo alone — `focus-halo`, not
+			     `focus-ring`.** The 1px edge belongs to a control that has an edge; on a
+			     44px band spanning the width of the list it read as a *border on the
+			     row* rather than as an indicator over it, and at the dark theme's
+			     lightness it read as an almost white one. The soft outer band is the
+			     half both treatments share, so a focused row and a focused field still
+			     look like the same event. -->
 			<div
 				role="row"
 				:data-row-id="rowId"
@@ -143,7 +159,7 @@ function onDoubleClick(event: MouseEvent) {
 				:tabindex="focused ? 0 : -1"
 				class="note-row group/row rounded-lg"
 				:class="[
-					selected ? 'row-selected ring-accent-ring ring-2 ring-inset' : 'focus-ring',
+					selected ? 'row-selected ring-accent-ring ring-2 ring-inset' : 'focus-halo',
 					'hover:bg-surface-hover transition-colors duration-fast',
 				]"
 				@click="emit('pointerSelect', $event)"
@@ -257,7 +273,9 @@ function onDoubleClick(event: MouseEvent) {
 						     `<time>` carries the machine-readable instant, which is the
 						     stored RFC3339 string rather than the formatted local text. -->
 						<p v-if="!editing && createdLabel" class="text-text-secondary mt-1 text-meta">
-							<time :datetime="note.created">{{ createdLabel }}</time>
+							<time :datetime="note.created" :title="createdTitle ?? undefined">
+								{{ createdLabel }}
+							</time>
 						</p>
 					</div>
 

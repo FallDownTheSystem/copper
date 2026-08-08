@@ -228,6 +228,25 @@ describe('with the highlighter installed', () => {
 		expect(html).toContain('--shiki-dark')
 	})
 
+	/**
+	 * The fence's fill belongs to the panel, and Shiki's claim on it is *inline* —
+	 * which no stylesheet can outrank, so `.note-prose pre` had nothing to say and
+	 * a code block wore the theme's near-black surface inside a warm panel.
+	 *
+	 * Both halves are asserted because dropping the wrong one is the plausible
+	 * mistake: take the whole `style` attribute and the dark theme loses the custom
+	 * properties it is painted from, leaving fences unstyled after a theme switch.
+	 * `background-color` goes; `--shiki-dark-bg` is inert either way and is left
+	 * alone rather than pattern-matched at.
+	 */
+	it('leaves the fence with no background of its own for the panel to fight', () => {
+		const html = render('```js\nconst a = 1\n```')
+		const pre = /<pre[^>]*>/.exec(html)?.[0] ?? ''
+
+		expect(pre).not.toContain('background-color')
+		expect(pre).toContain('--shiki-dark')
+	})
+
 	it('keeps the highlighted fence out of the tab order too', () => {
 		const html = render('```js\nconst a = 1\n```')
 
