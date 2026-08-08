@@ -10,7 +10,7 @@ use std::time::Duration;
 use crate::diagnostics;
 use crate::store::settings::{PanelPosition, Settings, SettingsPatch};
 use crate::{store, ShellError};
-use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindow};
+use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
 use windows::Win32::Graphics::Dwm::{
 	DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
 	DWM_WINDOW_CORNER_PREFERENCE,
@@ -23,12 +23,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// Label of the single panel window, as declared in `tauri.conf.json`.
 pub const PANEL_LABEL: &str = "main";
 
-/// The panel's fixed logical size, as declared in `tauri.conf.json`. The window
-/// is `resizable: false`, so this cannot drift at runtime — but these two and the
-/// config are separate declarations of one fact and **have to be changed
-/// together**. Nothing enforces it: the placement below would keep positioning a
-/// 390-wide panel perfectly while a 440-wide one hung over the edge of the work
-/// area, and no test would fail.
+/// The panel's declared logical size, as it appears in `tauri.conf.json`. These
+/// two and the config are separate declarations of one fact and **have to be
+/// changed together**; `the_constants_match_the_window_in_tauri_conf` reads the
+/// file and fails when they drift.
+///
+/// A *declared* size rather than the panel's actual one. The window is
+/// `resizable: false`, so the user cannot change it — but [`fitted_logical_size`]
+/// shrinks it to fit a work area that cannot hold it, which is the one thing that
+/// makes these an upper bound rather than a constant.
 const PANEL_WIDTH: f64 = 440.0;
 const PANEL_HEIGHT: f64 = 760.0;
 
@@ -497,21 +500,56 @@ fn is_reachable(saved: PanelPosition, grab: GrabRect, monitors: &[MonitorRect]) 
 	})
 }
 
+/// The panel's logical size on a given monitor: the declared size, shrunk on each
+/// axis to whatever the work area can actually hold.
+///
+/// **Scale is why this exists.** `tauri.conf.json` declares 440×760 *logical*, and
+/// Windows multiplies that by the display's scale factor: at 150% on a 1080p
+/// screen the panel is 1140 physical pixels tall against a work area of roughly
+/// 1040, so its bottom lands under the taskbar wherever it is placed. No
+/// arithmetic in [`default_position`] can fix a window taller than the space it
+/// goes in — only a smaller window can — which is why placement asks this first
+/// rather than clamping a coordinate afterwards.
+///
+/// Returned in logical units because that is what `set_size` takes and what the
+/// declaration is in; every caller that needs physical pixels multiplies by the
+/// same scale it passed in.
+fn fitted_logical_size(monitor: MonitorRect, scale: f64) -> (f64, f64) {
+	// A scale of zero or worse is not something a display reports, but it arrives
+	// here through an API rather than a constant, and dividing by it would poison
+	// the size with an infinity.
+	let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+	(
+		PANEL_WIDTH.min(f64::from(monitor.width) / scale),
+		PANEL_HEIGHT.min(f64::from(monitor.height) / scale),
+	)
+}
+
 /// Right-aligned with an inset, vertically centred.
 ///
 /// A corner rather than the screen centre, because the panel is a side companion
 /// to whatever the user is actually working in — centring would put it on top of
 /// that.
+///
+/// Computed against [`fitted_logical_size`] rather than the declared size, so the
+/// placement and the window agree about how big the panel is. With the two out of
+/// step the arithmetic centred a panel that did not fit: `y` clamped to the top of
+/// the work area and the bottom disappeared under the taskbar.
 fn default_position(monitor: MonitorRect, scale: f64) -> PanelPosition {
-	let panel_width = (PANEL_WIDTH * scale).round() as i64;
-	let panel_height = (PANEL_HEIGHT * scale).round() as i64;
+	let (width, height) = fitted_logical_size(monitor, scale);
+	let panel_width = (width * scale).round() as i64;
+	let panel_height = (height * scale).round() as i64;
 	let inset = (DEFAULT_INSET * scale).round() as i64;
 
-	let x = monitor.right() - panel_width - inset;
-	let y = monitor.top() + (i64::from(monitor.height) - panel_height) / 2;
+	// Only a lower bound is needed on each axis. The panel now fits by construction,
+	// so subtracting it from the far edge cannot overshoot the near one — an inset
+	// wider than the leftover space is the single case that can, and it clamps to a
+	// panel flush with the right edge rather than one hanging off it.
+	let x = (monitor.right() - panel_width - inset).max(monitor.left());
+	let y = (monitor.top() + (i64::from(monitor.height) - panel_height) / 2).max(monitor.top());
 	PanelPosition {
-		x: x.clamp(monitor.left(), monitor.right()) as i32,
-		y: y.clamp(monitor.top(), monitor.bottom()) as i32,
+		x: x as i32,
+		y: y as i32,
 	}
 }
 
@@ -567,21 +605,68 @@ fn fallback_position(window: &WebviewWindow, monitors: &[MonitorRect]) -> Option
 		.map(|rect| default_position(*rect, 1.0))
 }
 
-/// The grab rectangle at the scale of whichever monitor the position lands on.
-///
-/// The saved position is physical, and on a 150% display the panel is half again
-/// as wide as its logical size — so a logical-pixel grab rect would judge a
-/// perfectly reachable position as lost.
-fn grab_rect(window: &WebviewWindow, at: PanelPosition) -> GrabRect {
-	let scale = window
+/// The monitor a position lands on, falling back to the one the pointer is on.
+fn monitor_at(window: &WebviewWindow, at: PanelPosition) -> Option<tauri::window::Monitor> {
+	window
 		.monitor_from_point(f64::from(at.x), f64::from(at.y))
 		.ok()
 		.flatten()
 		.or_else(|| current_monitor(window))
-		.map_or(1.0, |monitor| monitor.scale_factor());
+}
+
+/// The grab rectangle at the scale of whichever monitor the position lands on.
+///
+/// The saved position is physical, and on a 150% display the panel is half again
+/// as wide as its logical size — so a logical-pixel grab rect would judge a
+/// perfectly reachable position as lost. Its width comes from
+/// [`fitted_logical_size`] for the same reason [`default_position`] does: a panel
+/// narrowed to fit the display has a narrower header to grab, and measuring the
+/// declared width would judge reachability against a window that is not there.
+///
+/// The header's height is never fitted. It is 48 logical pixels against a monitor
+/// hundreds tall, and a display too short for it is one no placement could save.
+fn grab_rect(window: &WebviewWindow, at: PanelPosition) -> GrabRect {
+	let monitor = monitor_at(window, at);
+	let scale = monitor.as_ref().map_or(1.0, |monitor| monitor.scale_factor());
+	let width = monitor
+		.as_ref()
+		.map_or(PANEL_WIDTH, |monitor| fitted_logical_size(rect_of(monitor), scale).0);
 	GrabRect {
-		width: (PANEL_WIDTH * scale).round() as i64,
+		width: (width * scale).round() as i64,
 		height: (HEADER_HEIGHT * scale).round() as i64,
+	}
+}
+
+/// Shrinks the window to the work area it is about to be placed in, and leaves it
+/// alone when the declared size already fits.
+///
+/// The window is `resizable: false`, which stops the *user* resizing it and not
+/// this: `set_size` still applies. Called from [`restore_position`] before the
+/// panel is ever shown, so a display whose scale cannot fit 440×760 gets a panel
+/// that is smaller rather than one whose bottom is behind the taskbar.
+///
+/// One-way, by design. Nothing here grows the window back on a monitor that could
+/// hold it, because nothing re-runs it: this is startup placement, and a panel
+/// dragged to a roomier display keeps the size it was given until the next launch.
+/// Recording that rather than hiding it — the alternative is a resize on every
+/// `Moved` event, which is a far larger mechanism for a case that resolves itself.
+fn fit_size_to_monitor(window: &WebviewWindow, at: PanelPosition) {
+	let Some(monitor) = monitor_at(window, at) else {
+		return;
+	};
+	let scale = monitor.scale_factor();
+	let (width, height) = fitted_logical_size(rect_of(&monitor), scale);
+	if width >= PANEL_WIDTH && height >= PANEL_HEIGHT {
+		return;
+	}
+
+	diagnostics::log(&format!(
+		"[copper] panel: work area {}×{} at {scale}× cannot hold {PANEL_WIDTH}×{PANEL_HEIGHT}; sizing to {width}×{height}",
+		monitor.work_area().size.width,
+		monitor.work_area().size.height,
+	));
+	if let Err(err) = window.set_size(LogicalSize::new(width, height)) {
+		diagnostics::log_error(&format!("[copper] panel: could not size the window: {err}"));
 	}
 }
 
@@ -609,6 +694,11 @@ pub fn restore_position(window: &WebviewWindow, saved: Option<PanelPosition>) {
 		Some(saved) => clamp_to_visible_monitor(saved, grab_rect(window, saved), &monitors, fallback),
 		None => fallback,
 	};
+
+	// Sized before it is placed, and against the monitor it is going to: the
+	// placement above already assumes the fitted size, so applying it afterwards
+	// would leave the window one size and the arithmetic another.
+	fit_size_to_monitor(window, target);
 
 	if let Err(err) = window.set_position(PhysicalPosition::new(target.x, target.y)) {
 		diagnostics::log_error(&format!("[copper] panel: could not place the window: {err}"));
@@ -901,13 +991,89 @@ mod tests {
 		assert!(crate::store::settings::Settings::default().always_on_top);
 	}
 
-	/// The panel's size lives in three places — `tauri.conf.json`, the two
-	/// constants above, and every fixture in here — and only this test notices when
-	/// they stop agreeing. It failed on the 390×660 → 440×760 change, which is the
-	/// whole reason it exists.
+	/// Ties the fixtures in here to the real function, so a resize cannot leave
+	/// these tests describing a panel that no longer ships. It failed on the
+	/// 390×660 → 440×760 change, which is the whole reason it exists.
 	#[test]
 	fn the_fallback_fixture_is_the_real_default() {
 		assert_eq!(default_position(PRIMARY, 1.0), FALLBACK);
+	}
+
+	/// The drift this half is about is between the constants and
+	/// `tauri.conf.json` — the *other* declaration of the same size, and the one
+	/// that actually creates the window. The test above was documented as catching
+	/// it and never could have: it reads the constants only, so editing both of
+	/// them and leaving the config alone passed. This reads the file.
+	#[test]
+	fn the_constants_match_the_window_in_tauri_conf() {
+		let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+			.expect("tauri.conf.json is valid JSON");
+		let window = config["app"]["windows"]
+			.as_array()
+			.and_then(|windows| {
+				windows
+					.iter()
+					.find(|window| window["label"] == serde_json::json!(PANEL_LABEL))
+			})
+			.expect("tauri.conf.json declares the panel window");
+
+		assert_eq!(window["width"].as_f64(), Some(PANEL_WIDTH));
+		assert_eq!(window["height"].as_f64(), Some(PANEL_HEIGHT));
+		// The placement here assumes a size the user cannot change; `set_size` is the
+		// only thing that moves it, and only downwards to fit a display.
+		assert_eq!(window["resizable"].as_bool(), Some(false));
+	}
+
+	#[test]
+	fn the_default_fits_a_work_area_too_small_for_the_declared_size() {
+		// The reported case, in the shape it was reported: a 1920×1080 display at
+		// 150%, whose work area is 1920×1040 physical once the taskbar is out. The
+		// panel wants 760 × 1.5 = 1140 physical pixels of height, which is 100 more
+		// than there is — so the old arithmetic centred it to a negative `y`, clamped
+		// that to the top, and left the bottom under the taskbar.
+		let work_area = MonitorRect {
+			x: 0,
+			y: 0,
+			width: 1920,
+			height: 1040,
+		};
+		for scale in [1.25, 1.5] {
+			let placed = default_position(work_area, scale);
+			let (width, height) = fitted_logical_size(work_area, scale);
+			let right = i64::from(placed.x) + (width * scale).round() as i64;
+			let bottom = i64::from(placed.y) + (height * scale).round() as i64;
+
+			assert!(i64::from(placed.x) >= work_area.left(), "scale {scale}: {placed:?}");
+			assert!(i64::from(placed.y) >= work_area.top(), "scale {scale}: {placed:?}");
+			assert!(
+				right <= work_area.right(),
+				"scale {scale}: right edge {right} past {}",
+				work_area.right()
+			);
+			assert!(
+				bottom <= work_area.bottom(),
+				"scale {scale}: bottom edge {bottom} past {} — under the taskbar",
+				work_area.bottom()
+			);
+		}
+	}
+
+	#[test]
+	fn a_work_area_that_fits_the_panel_leaves_its_size_alone() {
+		// The fit is a cap, not a policy: the ordinary display must still get the
+		// panel the design asks for, at every scale it can hold it at.
+		let roomy = MonitorRect {
+			x: 0,
+			y: 0,
+			width: 3840,
+			height: 2160,
+		};
+		assert_eq!(fitted_logical_size(roomy, 2.0), (PANEL_WIDTH, PANEL_HEIGHT));
+		assert_eq!(fitted_logical_size(PRIMARY, 1.0), (PANEL_WIDTH, PANEL_HEIGHT));
+
+		// And a scale a display would never report cannot divide the size into an
+		// infinity.
+		assert_eq!(fitted_logical_size(PRIMARY, 0.0), (PANEL_WIDTH, PANEL_HEIGHT));
 	}
 
 	#[test]

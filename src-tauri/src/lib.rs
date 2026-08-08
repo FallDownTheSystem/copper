@@ -297,11 +297,12 @@ pub fn run() {
 			// scavenge still runs against an empty registry.
 			editor::scavenge();
 			app.manage(editor::HandoffRegistry::default());
-			// After the registry it sweeps, and it is the only thing that ever ends a
-			// handoff without being asked to: an editor's exit is not a signal Copper
-			// can observe — `code` hands the file to a running instance and returns
-			// immediately — so a session that is finished has to be recognised by the
-			// file going quiet instead. See `editor::has_gone_idle`.
+			// After the registry it sweeps. It ends nothing: an editor's exit is not a
+			// signal Copper can observe — `code` hands the file to a running instance
+			// and returns immediately — so a finished session is recognised by the file
+			// going quiet, and all that recognition does is clear the card. The handoff
+			// itself lives until something asks for it to end. See
+			// `editor::has_gone_idle`.
 			editor::start_idle_sweeper(app.handle());
 
 			// A `.copper` path on the command line — as Explorer passes on a
@@ -438,6 +439,11 @@ fn teardown_steps(handle: &tauri::AppHandle) {
 	panel::flush_position(handle);
 	shortcuts::shutdown(handle);
 	capture::shutdown(handle);
+	// Joined, not merely signalled, and before the two steps that walk the same
+	// registry. The sweep only clears cards, so an overlap would be survivable —
+	// but "teardown has the registry to itself" is worth being true rather than
+	// nearly true, and `shutting_down()` above is explicitly advisory.
+	editor::stop_idle_sweeper();
 	// Before `scavenge`: each live handoff applies or refuses whatever is on disk,
 	// so exiting is not a way to silently discard unsaved editor work. The at-exit
 	// form skips the mid-write read retry, which would otherwise cost a debounce

@@ -21,8 +21,10 @@
 //!    window closes, `code.exe` returns immediately, `code --wait` returns on tab
 //!    close. Nothing here awaits the child; the file watch is the only trigger.
 //!    The same asymmetry is why a handoff cannot end when its editor does —
-//!    there is no such signal to end it on — so it ends when the file goes quiet
-//!    instead. See [`has_gone_idle`].
+//!    there is no such signal to end it on. A handoff therefore ends only where
+//!    somebody asked for it: an explicit Stop, the note being deleted, a space
+//!    switch, or exit. Going quiet is not one of those; it only clears the
+//!    *card*. See [`has_gone_idle`].
 //! 4. **The store mutex and the registry mutex are never held at the same time**,
 //!    in either order. Every function below collects what it needs under one
 //!    lock, releases it, and only then takes the other.
@@ -60,7 +62,9 @@ use crate::store::{self, ops, SharedStore};
 
 /// Reaching it **refuses** the next open rather than ending the oldest handoff:
 /// eviction would delete a temp file the user may have unsaved edits in, which
-/// is silent data loss to save a few kilobytes.
+/// is silent data loss to save a few kilobytes. That includes handoffs whose card
+/// has gone quiet — quiet says the file stopped changing, not that the editor
+/// closed, so evicting one is the same gamble with a longer fuse.
 const MAX_HANDOFFS: usize = 8;
 
 /// The same value and the same reasoning as the space-file watcher: long enough
@@ -79,8 +83,10 @@ const HANDOFF_CHANGED: &str = "editor-handoff-changed";
 
 type FileWatcher = Debouncer<RecommendedWatcher, RecommendedCache>;
 
-/// Console editors need a terminal to draw in; every other candidate is spawned
-/// detached.
+/// Console editors need a terminal to draw in. Deliberately a short list of the
+/// names that are certain: [`console_flags`] gives everything *not* on it the
+/// benefit of the doubt rather than a suppressed window, so a missing name here
+/// costs a console that had to be asked for, not an editor that never appears.
 const CONSOLE_EDITORS: [&str; 8] = ["vi", "vim", "nvim", "nano", "micro", "helix", "hx", "emacs"];
 
 /// `CREATE_NEW_CONSOLE` and `CREATE_NO_WINDOW`, the two mutually exclusive
@@ -92,12 +98,13 @@ const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// How long a handoff's temp file must sit unchanged **after a save has been
-/// applied** before the handoff ends itself.
+/// applied** before its card stops being shown.
 ///
 /// Long enough that a pause between two saves in the same editing session does
-/// not end it, short enough that a user who saved and closed their editor is not
-/// left staring at a card that says it is still checked out. See
-/// [`has_gone_idle`] for why the rule needs a save to have landed first.
+/// not clear the card, short enough that a user who saved and closed their editor
+/// is not left staring at one that says the note is still checked out. See
+/// [`has_gone_idle`] for why the rule needs a save to have landed first, and for
+/// what going quiet does *not* do.
 const IDLE_AFTER_SAVE: Duration = Duration::from_secs(120);
 
 /// How often the idle sweep looks. Deliberately coarse: the deadline it enforces
@@ -133,16 +140,29 @@ struct Handoff {
 	/// opening write and every [`rewrite_temp_file`] refresh — cannot extend a
 	/// session the editor has stopped touching.
 	saved_at: Option<Instant>,
+	/// Set by the idle sweep, and the **only** thing going quiet does. A hidden
+	/// handoff is left entirely intact — file, watcher, debounce — and simply stops
+	/// being reported to the frontend, so the card clears while a later save still
+	/// reaches the note.
+	card_hidden: bool,
 }
 
 impl Handoff {
-	/// Whether this handoff has gone quiet long enough to end itself.
+	/// Whether this handoff has gone quiet long enough for its card to clear.
 	fn is_idle(&self) -> bool {
 		has_gone_idle(
 			self.conflicted,
 			self.saved_at.map(|at| at.elapsed()),
 			IDLE_AFTER_SAVE,
 		)
+	}
+
+	/// A save reached this handoff — applied or refused. Either way the editor is
+	/// demonstrably still on the file, so a card the sweep had cleared comes back.
+	/// Returns whether it was in fact hidden, which is a change the frontend needs
+	/// telling about.
+	fn wake_card(&mut self) -> bool {
+		std::mem::replace(&mut self.card_hidden, false)
 	}
 }
 
@@ -320,26 +340,44 @@ pub fn resolve_editor() -> Vec<EditorTarget> {
 }
 
 /// Which console the editor's child process gets, as a `CreateProcessW` flag.
+/// Three answers, not two, and the third is "say nothing".
 ///
-/// A console editor needs a terminal to draw in, and gets one from
-/// `CREATE_NEW_CONSOLE` rather than from a shell wrapper. **Everything else must
-/// be told explicitly not to have one**, and the reason is one step removed from
-/// the editor itself: with no flag at all, a windowless GUI process spawning a
-/// console program makes Windows allocate a fresh console for it. `code.exe` is
-/// not a console program — but `EDITOR=code` resolves to `code.cmd`, which std
-/// runs through `cmd.exe`, which is. So the ordinary case of opening a note in VS
-/// Code flashed a command prompt on screen, and `CREATE_NO_WINDOW` is what stops
-/// it. The flag is inert for a GUI target, so `notepad.exe` is unaffected by
-/// being given it.
+/// - **A console editor** needs a terminal to draw in, and gets one from
+///   `CREATE_NEW_CONSOLE` rather than from a shell wrapper of our own.
+/// - **A `cmd` shim** gets `CREATE_NO_WINDOW`. This is the case the flag was added
+///   for: `EDITOR=code` resolves to `code.cmd`, std runs a `.cmd` target through
+///   `cmd.exe`, and a windowless GUI process spawning a console program makes
+///   Windows allocate a fresh console — so opening a note in VS Code flashed a
+///   command prompt on screen.
+/// - **Everything else gets no flag at all**, which is the important part.
+///   Suppressing the window for every unrecognised target is not a harmless
+///   default: `CONSOLE_EDITORS` is a list of eight names, and any console editor
+///   not on it — a fork, a rename, a wrapper, a TUI nobody thought of — would be
+///   started with `CREATE_NO_WINDOW` and draw into nothing at all, which looks
+///   exactly like an editor that failed to launch. A wrongly-shown console costs a
+///   flash; a wrongly-hidden one costs the editor.
 ///
-/// The two flags are mutually exclusive, which is why this is one choice
-/// returning one value rather than two independent conditions.
+/// The two flags are mutually exclusive, which is why this is one choice returning
+/// one value rather than two independent conditions.
 fn console_flags(program: &Path) -> u32 {
 	if is_console_editor(program) {
 		CREATE_NEW_CONSOLE
-	} else {
+	} else if is_cmd_shim(program) {
 		CREATE_NO_WINDOW
+	} else {
+		0
 	}
+}
+
+/// Whether std will run this target through `cmd.exe` — which is what puts a
+/// console in the picture for a program that has nothing to do with one.
+fn is_cmd_shim(path: &Path) -> bool {
+	let extension = path
+		.extension()
+		.and_then(|extension| extension.to_str())
+		.unwrap_or_default()
+		.to_ascii_lowercase();
+	matches!(extension.as_str(), "cmd" | "bat")
 }
 
 fn is_console_editor(path: &Path) -> bool {
@@ -553,13 +591,30 @@ fn write_if_unchanged(
 
 // --- registry operations -----------------------------------------------------
 
+/// What the frontend is told about one handoff, or `None` while its card is
+/// hidden.
+///
+/// **The registry and the card are not the same list**, and this is the one place
+/// that difference is expressed. A handoff whose file has gone quiet keeps its
+/// watch and its temp file — it simply stops being announced, which is what makes
+/// the "Editing Externally (Stop)" card clear on its own without anything being
+/// torn down behind it. A hidden card cannot be conflicted: every save, accepted
+/// or refused, calls [`Handoff::wake_card`] first, so a refusal always has a card
+/// to appear on.
+fn card_for(note_id: &str, conflicted: bool, card_hidden: bool) -> Option<HandoffState> {
+	if card_hidden {
+		return None;
+	}
+	Some(HandoffState {
+		note_id: note_id.to_string(),
+		conflicted,
+	})
+}
+
 fn states(app: &AppHandle) -> Vec<HandoffState> {
 	let mut list: Vec<HandoffState> = entries(app)
 		.iter()
-		.map(|(note_id, handoff)| HandoffState {
-			note_id: note_id.clone(),
-			conflicted: handoff.conflicted,
-		})
+		.filter_map(|(note_id, handoff)| card_for(note_id, handoff.conflicted, handoff.card_hidden))
 		.collect();
 	// Stable order, so the frontend's list does not reshuffle on every emit.
 	list.sort_by(|a, b| a.note_id.cmp(&b.note_id));
@@ -597,7 +652,7 @@ fn remove(app: &AppHandle, note_id: &str) -> Removed {
 	}
 
 	remove_tree(&handoff.dir);
-	Removed::Deleted
+	Removed::Ended
 }
 
 /// Whether ending a handoff keeps its temp file.
@@ -618,45 +673,58 @@ fn should_rewrite_temp_file(conflicted: bool, baseline: &str, body: &str) -> boo
 	!conflicted && baseline != body
 }
 
-/// Whether a handoff whose last applied save was `since_save` ago should end
-/// itself.
+/// Whether a handoff whose last applied save was `since_save` ago has gone quiet
+/// enough to stop showing its card.
 ///
-/// **This is the whole of the session-end mechanism, and it exists because there
-/// is no better signal to be had.** A handoff used to end only when the user
-/// pressed Stop, when the note was deleted, or when the space closed — so the
-/// ordinary case, editing in VS Code and closing the window, left the card
-/// reading "Editing externally" forever. Nothing here can detect that: the
-/// process is not tracked and could not usefully be, because `code` is a
-/// launcher that hands the file to an already-running instance and exits at once,
-/// so its exit says nothing about whether the editor is still open. Nor does a
-/// file handle: VS Code, like `notepad.exe`, reads the file and closes it, so
-/// probing for an exclusive open would say "nobody has it" while the tab is still
-/// on screen and would end every session within one tick of opening it.
+/// **This ends nothing.** It is a presentation rule and only a presentation rule:
+/// the handoff keeps its temp file, its watcher and its debounce, and a save
+/// arriving an hour later still reaches the note and brings the card back. The
+/// timer earlier tore the handoff down instead, which cost exactly the case the
+/// mechanism was added for — save, keep editing for three minutes, save again, and
+/// the second save landed in a directory that no longer existed. A user's own save
+/// applying to their own note is never spooky; deleting the file they are still
+/// typing into is.
+///
+/// The problem it *does* solve is real, and there is no better signal for it. A
+/// handoff ends only on an explicit Stop, on the note being deleted, on a space
+/// switch or at exit, so the ordinary case — editing in VS Code and closing the
+/// window — left the card reading "Editing externally" forever. Nothing here can
+/// detect that close: the process is not tracked and could not usefully be, because
+/// `code` is a launcher that hands the file to an already-running instance and
+/// exits at once, so its exit says nothing about whether the editor is still open.
+/// Nor does a file handle: VS Code, like `notepad.exe`, reads the file and closes
+/// it, so probing for an exclusive open would say "nobody has it" while the tab is
+/// still on screen and would clear every card within one tick of opening it.
 ///
 /// Two conditions, and each is load-bearing:
 ///
-/// - **A save must have landed.** Until one has, the note's text exists only in
-///   the editor's buffer, and ending the handoff would delete the temp file
-///   underneath a user who has been composing in it. A handoff that is opened and
-///   never saved to therefore stays until it is stopped by hand — which costs
-///   nothing, because nothing was written.
-/// - **Never while conflicted.** A conflicted handoff's temp file is the only
-///   copy of a save Copper refused to apply, and it is waiting on a decision the
-///   user has to make. Ending it on a timer is precisely the silent discard the
-///   refusal existed to prevent.
+/// - **A save must have landed.** Until one has, nothing has come back from the
+///   editor at all, and a card that vanished before the user's first save would
+///   read as Copper having quietly dropped the handoff. A handoff opened and never
+///   saved to therefore keeps its card until it is stopped by hand.
+/// - **Never while conflicted.** A conflicted handoff's temp file is the only copy
+///   of a save Copper refused to apply, and it is waiting on a decision the user
+///   has to make. That decision is made *on the card* — Stop is what reports where
+///   the retained file is — so hiding it on a timer would take away the only route
+///   to the thing the refusal preserved.
 ///
-/// What the rule concedes: an editor left open past the window loses its watch,
-/// and a later save does not reach the note. It cannot lose work — the temp
-/// directory is gone, so the save fails visibly in the editor rather than
-/// silently vanishing — and the note already holds everything saved up to that
-/// point.
+/// What the rule concedes: a handoff with no card cannot be stopped by hand, so it
+/// holds its temp directory and one watcher until the space switches or the app
+/// exits, and it still counts against [`MAX_HANDOFFS`]. Bounded, invisible, and
+/// far cheaper than the deletion it replaced.
 fn has_gone_idle(conflicted: bool, since_save: Option<Duration>, idle: Duration) -> bool {
 	!conflicted && since_save.is_some_and(|elapsed| elapsed >= idle)
 }
 
 enum Removed {
 	Absent,
-	Deleted,
+	/// The entry is gone and its temp tree was asked to go with it. Deliberately
+	/// **not** called `Deleted`: [`remove_tree`] is best-effort — an editor or a
+	/// scanner holding a handle open leaves the directory behind — and this variant
+	/// only ever claimed otherwise. Nothing acts on the difference, so the honest
+	/// name is the fix rather than a fourth variant; [`scavenge`] is what actually
+	/// makes the deletion true, on the next startup.
+	Ended,
 	/// The handoff was conflicted, so its temp file was kept. Carries the path,
 	/// which is the only way the user can reach the refused text.
 	Retained(PathBuf),
@@ -722,13 +790,18 @@ fn with_handoff<T>(
 
 fn mark_conflicted(app: &AppHandle, note_id: &str, handoff_id: &str) -> bool {
 	with_handoff(app, note_id, handoff_id, |handoff| {
-		!std::mem::replace(&mut handoff.conflicted, true)
+		// Woken first, and unconditionally: a refusal is the one thing the user has
+		// to act on, and a refusal that arrived after the card had gone quiet would
+		// otherwise be marked on a card nobody can see.
+		let woken = handoff.wake_card();
+		!std::mem::replace(&mut handoff.conflicted, true) || woken
 	})
 	.unwrap_or(false)
 }
 
 /// Returns whether the card's state changed — that is, whether an earlier
-/// refusal has just stopped being true.
+/// refusal has just stopped being true, or a card the idle sweep had cleared has
+/// just come back.
 fn accept_save(
 	app: &AppHandle,
 	note_id: &str,
@@ -739,10 +812,14 @@ fn accept_save(
 	with_handoff(app, note_id, handoff_id, |handoff| {
 		handoff.file_seen = bytes;
 		handoff.body_baseline = body;
-		// The one place the idle clock is armed, and it re-arms on every save, so a
-		// session stays alive for exactly as long as the editor keeps writing.
+		// The one place the idle clock is armed, and it re-arms on every save, so the
+		// card stays up for exactly as long as the editor keeps writing.
 		handoff.saved_at = Some(Instant::now());
-		std::mem::replace(&mut handoff.conflicted, false)
+		// A save landing after the card cleared is the user editing that note again,
+		// so the card returns. It says something true — the note *is* checked out to
+		// an editor — and there is no other place for a later refusal to show up.
+		let woken = handoff.wake_card();
+		std::mem::replace(&mut handoff.conflicted, false) || woken
 	})
 	.unwrap_or(false)
 }
@@ -968,6 +1045,7 @@ pub async fn editor_open_note(id: String, app: AppHandle) -> Result<OpenOutcome,
 			body_baseline: body,
 			conflicted: false,
 			saved_at: None,
+			card_hidden: false,
 		},
 	);
 
@@ -1087,34 +1165,28 @@ fn rewrite_temp_file(app: &AppHandle, note_id: &str, body: &str) {
 
 // --- the idle sweep ----------------------------------------------------------
 
-/// Ends every handoff that [`has_gone_idle`] says is finished, and emits once for
-/// the batch.
+/// Hides the card of every handoff [`has_gone_idle`] says has gone quiet, and
+/// emits once for the batch.
 ///
-/// Nothing here holds two locks at a time, per the module's fourth rule: the scan
-/// collects ids under the registry lock and drops it, and everything after that
-/// takes one lock at a time.
+/// **This is the whole of the sweep.** It touches one `bool` per handoff and
+/// nothing else — no temp file is deleted, no watcher dropped, no store lock
+/// taken, and no save applied. That is what makes it safe to run alongside
+/// anything: the worst a sweep landing next to [`end_all`] can do is emit a state
+/// that is already correct, because [`states`] reads the registry live.
+///
+/// The scan is done under the registry lock and the flags are set under it too;
+/// the emit happens after it is dropped, per the module's fourth rule.
 fn sweep_idle_handoffs(app: &AppHandle) {
-	let ids: Vec<String> = entries(app)
-		.iter()
-		.filter(|(_, handoff)| handoff.is_idle())
-		.map(|(note_id, _)| note_id.clone())
-		.collect();
-	if ids.is_empty() {
-		return;
-	}
-
 	let mut changed = false;
-	for id in ids {
-		// The same courtesy every other ending pays: a handoff is never ended without
-		// first applying — or refusing and reporting — whatever is on disk. Here it is
-		// nearly always a no-op, since going idle means the bytes are already ours.
-		changed |= apply_saved_file(app, &id, None);
-		// Asked again rather than trusted from the scan. `apply_saved_file` takes the
-		// store lock with the registry lock released, so a save can land in the gap
-		// and re-arm the clock, or be refused and make the handoff conflicted — and
-		// either answer means this one is no longer idle after all.
-		if entries(app).get(&id).is_some_and(Handoff::is_idle) {
-			changed |= remove(app, &id).existed();
+	{
+		let mut guard = entries(app);
+		for handoff in guard.values_mut() {
+			// `card_hidden` is checked as well as `is_idle`, so a sweep every 15 seconds
+			// over a long-quiet handoff emits once rather than forever.
+			if !handoff.card_hidden && handoff.is_idle() {
+				handoff.card_hidden = true;
+				changed = true;
+			}
 		}
 	}
 
@@ -1123,27 +1195,80 @@ fn sweep_idle_handoffs(app: &AppHandle) {
 	}
 }
 
-/// Starts the one thread that ends idle handoffs, and returns at once.
+/// The sweeper thread's stop signal and its handle.
+///
+/// A `Condvar` rather than a polled flag: the tick is 15 seconds and exit must not
+/// wait one out to join a thread whose only remaining act is to return.
+struct Sweeper {
+	stop: Mutex<bool>,
+	wake: std::sync::Condvar,
+	thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+static SWEEPER: Sweeper = Sweeper {
+	stop: Mutex::new(false),
+	wake: std::sync::Condvar::new(),
+	thread: Mutex::new(None),
+};
+
+/// Poison is recovered from rather than propagated, as everywhere else in this
+/// module: the guarded values are a `bool` and a `JoinHandle`, so a panicking
+/// holder leaves no invariant broken.
+fn recover<T>(result: std::sync::LockResult<T>) -> T {
+	result.unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Sleeps for one tick, or returns `true` at once if the sweeper has been asked
+/// to stop. A spurious wake costs one early sweep, which is idempotent.
+fn wait_for_tick() -> bool {
+	let guard = recover(SWEEPER.stop.lock());
+	let (guard, _) = recover(SWEEPER.wake.wait_timeout(guard, IDLE_TICK));
+	*guard
+}
+
+/// Starts the one thread that clears idle cards, and returns at once.
 ///
 /// A thread rather than anything hung off the watcher, because idleness is the
 /// *absence* of file events — the debouncer never fires for it by construction.
 /// One thread for the whole registry rather than one per handoff, so the cost is
 /// a single sleeping thread whatever the user has open.
-///
-/// It exits on shutdown rather than racing it: teardown is already applying and
-/// ending every handoff, and a sweep joining in would take the same locks to do
-/// work that is being done.
 pub fn start_idle_sweeper(app: &AppHandle) {
+	let mut slot = recover(SWEEPER.thread.lock());
+	if slot.is_some() {
+		// Startup calls this once. A second thread would double the emits and leak the
+		// first handle, so the guard is here rather than in a comment asking callers
+		// not to.
+		return;
+	}
 	let app = app.clone();
-	std::thread::spawn(move || {
-		while !crate::shutting_down() {
-			std::thread::sleep(IDLE_TICK);
-			if crate::shutting_down() {
-				return;
-			}
+	*slot = Some(std::thread::spawn(move || {
+		while !wait_for_tick() {
 			sweep_idle_handoffs(&app);
 		}
-	});
+	}));
+}
+
+/// Stops the sweeper and **waits for it**, so teardown does not run beside a
+/// sweep in flight.
+///
+/// The join is what makes the ordering in `teardown_steps` a fact rather than a
+/// hope. The advisory `shutting_down()` flag this used to read narrows a race
+/// without closing it — a thread that reads `false` and is then descheduled wakes
+/// up inside teardown — and while a presentation-only sweep is harmless there, the
+/// comment claiming teardown owns the registry alone should be true rather than
+/// nearly true.
+///
+/// Idempotent: a second call finds the handle taken and the flag already set.
+pub fn stop_idle_sweeper() {
+	*recover(SWEEPER.stop.lock()) = true;
+	SWEEPER.wake.notify_all();
+	let handle = recover(SWEEPER.thread.lock()).take();
+	if let Some(handle) = handle {
+		// The sweeper takes no lock this thread is holding — `stop` was released
+		// above, and it never touches `thread` — so the join cannot deadlock against
+		// it. A panicked sweeper is nothing to propagate here.
+		let _ = handle.join();
+	}
 }
 
 /// The one way to end every live handoff at once — Phase 6 calls it on a space
@@ -1399,13 +1524,46 @@ mod tests {
 		// spawning a console program is given a fresh console unless it says
 		// otherwise.
 		assert_eq!(console_flags(Path::new(r"C:\bin\code.cmd")), CREATE_NO_WINDOW);
-		assert_eq!(console_flags(Path::new(r"C:\Windows\notepad.exe")), CREATE_NO_WINDOW);
-		// Mutually exclusive flags, so the choice must never produce both.
-		assert_ne!(CREATE_NEW_CONSOLE & CREATE_NO_WINDOW, CREATE_NO_WINDOW);
+		assert_eq!(console_flags(Path::new(r"C:\bin\wrapper.BAT")), CREATE_NO_WINDOW);
+		// A console editor whose shim is a `.cmd` is still a console editor: the
+		// terminal wins over the suppression, or it would draw into nothing.
+		assert_eq!(console_flags(Path::new(r"C:\bin\nvim.cmd")), CREATE_NEW_CONSOLE);
 	}
 
 	#[test]
-	fn a_handoff_goes_idle_only_after_a_save_and_never_while_conflicted() {
+	fn an_unrecognised_editor_is_given_no_console_flag_at_all() {
+		// The regression this pins: suppressing the window for everything not on the
+		// eight-name list started any console editor missing from it — a fork, a
+		// rename, a TUI nobody listed — with nowhere to draw, which is
+		// indistinguishable from an editor that failed to launch.
+		assert_eq!(console_flags(Path::new(r"C:\Windows\notepad.exe")), 0);
+		assert_eq!(console_flags(Path::new(r"C:\tools\kakoune.exe")), 0);
+		assert_eq!(console_flags(Path::new("subl")), 0);
+	}
+
+	#[test]
+	fn the_two_console_flags_are_never_both_set() {
+		// Mutually exclusive bits, and the choice must never produce both — which is
+		// a claim about the flags themselves as well as about every input class.
+		assert_eq!(CREATE_NEW_CONSOLE & CREATE_NO_WINDOW, 0);
+		for program in [
+			r"C:\tools\vim.exe",
+			"nano",
+			r"C:\bin\code.cmd",
+			r"C:\bin\wrapper.BAT",
+			r"C:\Windows\notepad.exe",
+			"subl",
+		] {
+			let flags = console_flags(Path::new(program));
+			assert!(
+				flags & CREATE_NEW_CONSOLE == 0 || flags & CREATE_NO_WINDOW == 0,
+				"{program} asked for both consoles"
+			);
+		}
+	}
+
+	#[test]
+	fn a_card_clears_only_after_a_save_and_never_while_conflicted() {
 		let idle = Duration::from_secs(120);
 
 		// The repro: a save landed, the editor was closed, and nothing has touched
@@ -1415,18 +1573,41 @@ mod tests {
 		assert!(has_gone_idle(false, Some(idle + Duration::from_secs(1)), idle));
 
 		// Still being saved to: the clock re-arms on every save, so a pause between
-		// two saves in one session must not end it.
+		// two saves in one session must not clear the card.
 		assert!(!has_gone_idle(false, Some(idle - Duration::from_secs(1)), idle));
 
-		// Opened and never saved to. The note's text is only in the editor's buffer,
-		// and deleting the temp file underneath it would take the work with it.
+		// Opened and never saved to. Nothing has come back from the editor yet, so a
+		// card that vanished here would read as Copper having dropped the handoff.
 		assert!(!has_gone_idle(false, None, idle));
 
-		// Conflicted: the temp file is the only copy of a save Copper refused, and it
-		// is waiting on the user. Ending it on a timer is the silent discard the
-		// refusal exists to prevent.
+		// Conflicted: the temp file is the only copy of a save Copper refused, and the
+		// card is where the user acts on it. Hiding it on a timer takes away the only
+		// route to the text the refusal preserved.
 		assert!(!has_gone_idle(true, Some(idle * 100), idle));
 		assert!(!has_gone_idle(true, None, idle));
+	}
+
+	#[test]
+	fn a_quiet_handoff_leaves_the_card_list_without_leaving_the_registry() {
+		// The whole of what going quiet does. The registry entry — file, watcher,
+		// debounce — is untouched; it is only this projection that drops it, so a save
+		// three minutes later still applies to the note. The earlier form deleted the
+		// temp tree here, and that save landed in a directory that no longer existed.
+		assert_eq!(card_for("nte_01000001", false, true), None);
+		assert_eq!(
+			card_for("nte_01000001", false, false),
+			Some(HandoffState {
+				note_id: "nte_01000001".to_string(),
+				conflicted: false,
+			})
+		);
+		assert_eq!(
+			card_for("nte_01000001", true, false),
+			Some(HandoffState {
+				note_id: "nte_01000001".to_string(),
+				conflicted: true,
+			})
+		);
 	}
 
 	#[test]
