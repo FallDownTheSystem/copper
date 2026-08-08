@@ -105,7 +105,9 @@ declare global {
   const rowElement: typeof import('./composables/useSelection').rowElement
   const rowNoteId: typeof import('./composables/useSelection').rowNoteId
   const rowSectionId: typeof import('./composables/useSelection').rowSectionId
+  const scrollRowIntoView: typeof import('./composables/useSelection').scrollRowIntoView
   const sectionRow: typeof import('./composables/useSelection').sectionRow
+  const settingsActions: typeof import('./composables/settingsActions').settingsActions
   const shallowReactive: typeof import('vue').shallowReactive
   const shallowReadonly: typeof import('vue').shallowReadonly
   const shallowRef: typeof import('vue').shallowRef
@@ -242,6 +244,7 @@ declare global {
   const useOnline: typeof import('@vueuse/core').useOnline
   const useOverlayHost: typeof import('./composables/useOverlayHost').useOverlayHost
   const usePageLeave: typeof import('@vueuse/core').usePageLeave
+  const usePalette: typeof import('./composables/usePalette').usePalette
   const useParallax: typeof import('@vueuse/core').useParallax
   const useParentElement: typeof import('@vueuse/core').useParentElement
   const usePerformanceObserver: typeof import('@vueuse/core').usePerformanceObserver
@@ -348,6 +351,9 @@ declare global {
   export type { Component, Slot, Slots, ComponentPublicInstance, ComputedRef, DirectiveBinding, ExtractDefaultPropTypes, ExtractPropTypes, ExtractPublicPropTypes, InjectionKey, PropType, Ref, ShallowRef, MaybeRef, MaybeRefOrGetter, VNode, WritableComputedRef } from 'vue'
   import('vue')
   // @ts-ignore
+  export type { PaletteAction } from './composables/settingsActions'
+  import('./composables/settingsActions')
+  // @ts-ignore
   export type { Attachment, Preview } from './composables/useAttachments'
   import('./composables/useAttachments')
   // @ts-ignore
@@ -375,7 +381,7 @@ declare global {
   export type { ScrollAnchor, SelectionSnapshot } from './composables/useSelection'
   import('./composables/useSelection')
   // @ts-ignore
-  export type { ThemePreference, MotionPreference, InsertionPoint, DoubleClickAction, ShortcutState, ShortcutTarget, SettingsScope } from './composables/useSettings'
+  export type { ThemePreference, MotionPreference, InsertionPoint, DoubleClickAction, ShortcutState, ShortcutTarget, SettingsScope, PreferenceScope } from './composables/useSettings'
   import('./composables/useSettings')
   // @ts-ignore
   export type { Note, Section, Space, StoreStatus, Settings, SpaceView, NoteView, ChangeReason, SpaceChangedPayload, StoreErrorPayload, SubmitOutcome, AddNoteResult, SubmitResult, LoadState, ActionErrorScope, ActionError, MutationResult } from './composables/useSpace'
@@ -496,7 +502,9 @@ declare module 'vue' {
     readonly rowElement: UnwrapRef<typeof import('./composables/useSelection')['rowElement']>
     readonly rowNoteId: UnwrapRef<typeof import('./composables/useSelection')['rowNoteId']>
     readonly rowSectionId: UnwrapRef<typeof import('./composables/useSelection')['rowSectionId']>
+    readonly scrollRowIntoView: UnwrapRef<typeof import('./composables/useSelection')['scrollRowIntoView']>
     readonly sectionRow: UnwrapRef<typeof import('./composables/useSelection')['sectionRow']>
+    readonly settingsActions: UnwrapRef<typeof import('./composables/settingsActions')['settingsActions']>
     readonly shallowReactive: UnwrapRef<typeof import('vue')['shallowReactive']>
     readonly shallowReadonly: UnwrapRef<typeof import('vue')['shallowReadonly']>
     readonly shallowRef: UnwrapRef<typeof import('vue')['shallowRef']>
@@ -633,6 +641,7 @@ declare module 'vue' {
     readonly useOnline: UnwrapRef<typeof import('@vueuse/core')['useOnline']>
     readonly useOverlayHost: UnwrapRef<typeof import('./composables/useOverlayHost')['useOverlayHost']>
     readonly usePageLeave: UnwrapRef<typeof import('@vueuse/core')['usePageLeave']>
+    readonly usePalette: UnwrapRef<typeof import('./composables/usePalette')['usePalette']>
     readonly useParallax: UnwrapRef<typeof import('@vueuse/core')['useParallax']>
     readonly useParentElement: UnwrapRef<typeof import('@vueuse/core')['useParentElement']>
     readonly usePerformanceObserver: UnwrapRef<typeof import('@vueuse/core')['usePerformanceObserver']>
