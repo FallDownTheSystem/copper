@@ -48,9 +48,10 @@ import { useSpace } from './useSpace'
  * heading pinned across the top of the region overlays the rows under it, so a
  * pointer held there resolves against rows the user cannot see — the one place
  * sticky positioning can lie to a hit test, since it moves what is painted and
- * not what is measured. It cannot be held there: the heading is 24px deep and
- * this band is twice that, so every position that could resolve to a hidden row
- * is already scrolling the list toward the top, where nothing is hidden at all.
+ * not what is measured. It cannot be held there: the pinned band is 32px deep
+ * (heading plus its vertical padding) and this band overshoots it by half again,
+ * so every position that could resolve to a hidden row is already scrolling the
+ * list toward the top, where nothing is hidden at all.
  * The drop indicator meanwhile paints at `z-20` against the heading's `z-1`, so
  * the line stays visible across it for the moment that takes.
  */

@@ -77,8 +77,9 @@
 	   `prefers-reduced-transparency`. Composited alpha is no use to the heading —
 	   `--surface`'s 90% leaves a tenth of every note it covers legible through the
 	   band, which is a tenth of *text*, not a tenth of a lightness step. The cost is
-	   that the band shows no Mica while the panel around it does; the band is 24px
-	   deep and the alternative is a heading you can read the list through. */
+	   that the band shows no Mica while the panel around it does; the band is 32px
+	   deep — heading plus its breathing room — and the alternative is a heading
+	   you can read the list through. */
 	--surface-solid: oklch(0.99 0.002 80);
 	--surface-hover: oklch(0.24 0.008 60 / 0.06);
 	--surface-active: oklch(0.24 0.008 60 / 0.1);
@@ -184,10 +185,14 @@
 	--code-surface: oklch(1 0 0 / 0.06);
 	--code-border: oklch(1 0 0 / 0.1);
 	--link: oklch(0.76 0.12 240);
-	/* Brighter than the light theme's, for the reason every alpha band in this file
-	   is inverted between the two: the halo has to lift off the surface it is drawn
-	   on, and on a dark one that direction is up. */
-	--focus-halo: oklch(0.9 0.1 55 / 0.5);
+	/* Same lightness as `--accent-ring` below rather than lifted toward white:
+	   "lift off a dark surface means go up" was the first version of this value,
+	   at L 0.9 — and at 50% alpha over the dark panel that composites to a pale
+	   cream band the user read as a *white* ring (ruling 2026-08-08). A halo is
+	   allowed to glow, not to outline, and what makes it read as copper instead
+	   of white is chroma at the accent's own lightness: the glow and the 1px
+	   accent edge become one hue, dimmer only by its alpha. */
+	--focus-halo: oklch(0.7 0.12 55 / 0.5);
 	--accent-ring: oklch(0.7 0.12 55);
 	--accent-text: oklch(0.78 0.1 60);
 	--scrollbar-thumb: oklch(1 0 0 / 0.22);

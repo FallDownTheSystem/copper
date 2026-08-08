@@ -147,8 +147,9 @@ onMounted(() => {
  * to the top edge lands *under* the pinned heading, which is the one place the
  * feature could hide the thing it was asked to show.
  *
- * The row's own margin is the heading's height plus the 4px the rows already sit
- * apart by, so a landing clears the band by the same gap as the row above it. The
+ * The row's own margin is the band's full depth — the heading's height plus its
+ * 8px of vertical padding — plus the 4px the rows already sit apart by, so a
+ * landing clears the band by the same gap as the row above it. The
  * group's is 4px flat, and that 4px is the focus ring's halo: the group is where
  * a *pinned* heading is scrolled to (see `scrollRowIntoView`), and landing its
  * top flush against the region would clip the outer ring of a heading that
@@ -159,7 +160,7 @@ onMounted(() => {
 }
 
 .section-group > :deep([data-note-row]) {
-	scroll-margin-top: calc(var(--section-heading-height) + 4px);
+	scroll-margin-top: calc(var(--section-heading-height) + 12px);
 }
 
 .section-group > :deep([role='row'] + [role='row']) {

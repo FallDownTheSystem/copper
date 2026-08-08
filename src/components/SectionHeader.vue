@@ -132,13 +132,15 @@ function onKeydown(event: KeyboardEvent) {
 			     beside the point: the panel is under the band, and the note rows are
 			     *between* them. A tenth of a row of text is legible text, and it was —
 			     the heading had a note running through it. Opaque is the only value that
-			     erases what it covers, and the band is 24px deep. -->
+			     erases what it covers, and the band is 32px deep — 24 of heading
+			     and the 4px of breathing room above and below it that keeps the
+			     pinned row from sitting flush against the text sliding under. -->
 			<div
 				role="row"
 				:data-row-id="rowId"
 				data-section-row
 				:tabindex="focused ? 0 : -1"
-				class="focus-halo bg-surface-solid sticky top-0 z-1 min-w-0"
+				class="focus-halo bg-surface-solid sticky top-0 z-1 min-w-0 py-1"
 			>
 				<div
 					role="gridcell"
