@@ -55,9 +55,14 @@ use crate::store::model::{Attachment, Space};
 // Constants, not settings (Open Question 3, answered 2026-08-05). One named
 // place each; never a literal at a call site.
 
-/// Per file. A drop or paste over this is refused by name, and the rest of a
-/// multi-file drop still proceeds.
-pub const ATTACHMENT_MAX_BYTES: u64 = 10 * 1024 * 1024;
+/// Per file. A drop or paste over this keeps its path as a note instead of its
+/// bytes, and the rest of a multi-file drop still attaches.
+///
+/// 32 MiB, raised from 10 on 2026-08-09 by user request. Still a constant and
+/// not a setting: blobs are content-addressed copies inside the space's own
+/// sidecar, so this number is the ceiling on what a shared or synced space
+/// quietly grows by per file.
+pub const ATTACHMENT_MAX_BYTES: u64 = 32 * 1024 * 1024;
 /// How many attachments one **submission** may carry.
 ///
 /// Deliberately not enforced on `merge_notes`: merging two full notes produces

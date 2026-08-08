@@ -54,6 +54,12 @@ pub enum ChangeReason {
 	/// scroll request, neither of which belongs to a note the user is merely
 	/// filing from a toast.
 	Reroute,
+	/// `append_paths_note` — the note that stands in for files too large to
+	/// attach (2026-08-09). The fifth Rust-side writer, and not [`Self::Capture`]
+	/// for the same reason `Reroute` is not: the user is at the panel with their
+	/// hands on the drop or the paste, so the capture sound and its scroll
+	/// request would be answering an absence nobody experienced.
+	Attach,
 }
 
 /// Braces, not a unit struct: `struct SettingsChanged;` and Rust's `()` both
@@ -225,6 +231,7 @@ mod tests {
 			(ChangeReason::Reload, "reload"),
 			(ChangeReason::Editor, "editor"),
 			(ChangeReason::Reroute, "reroute"),
+			(ChangeReason::Attach, "attach"),
 		] {
 			assert_eq!(serde_json::to_value(reason).unwrap(), expected);
 		}

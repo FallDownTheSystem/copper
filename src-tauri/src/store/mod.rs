@@ -878,6 +878,36 @@ pub fn move_notes(shared: &SharedStore, ids: &[String], section: &str) -> Result
 	Ok(())
 }
 
+/// The attachments' entry point: capture file paths as a note, from Rust.
+///
+/// The note that stands in for files too large to attach (2026-08-09, user
+/// request): a refused 4 GB video used to cost the user the reference along
+/// with the bytes, and "is too large" was all they kept. The wording and the
+/// joining of several paths into one body belong to the caller — this writes
+/// opaque text, exactly as [`append_capture`] does.
+///
+/// The same seam shape as [`append_capture`] and [`move_notes`], for the same
+/// reasons: `commands::add_note` is a `#[tauri::command]` the attach commands
+/// cannot call; `mutate` makes the note one undo snapshot and one `Ctrl+Z`; and
+/// it emits because no return value reaches the frontend from here — the attach
+/// command's own reply carries attachments, not documents. The reason is
+/// [`ChangeReason::Attach`], not `Capture`: the user's hands are on the drop or
+/// the paste, so the capture sound and its scroll request would be answering an
+/// absence nobody experienced.
+pub fn append_paths_note(shared: &SharedStore, body: &str) -> Result<()> {
+	let mut guard = lock(shared);
+	let at = guard.settings().insertion();
+	let (_, doc) = guard.mutate(|space| ops::add_note(space, body, None, &[], at))?;
+	let path = guard.active_path().map(path_string).unwrap_or_default();
+	let produced = vec![StoreEvent::SpaceChanged(SpaceChanged {
+		id: doc.id,
+		path,
+		reason: ChangeReason::Attach,
+	})];
+	emit_after(guard, produced);
+	Ok(())
+}
+
 /// Drops the guard, then emits. The order is the whole point (spec 2.10).
 fn emit_after(guard: MutexGuard<'_, Store>, produced: Vec<StoreEvent>) {
 	let sink = Arc::clone(&guard.sink);

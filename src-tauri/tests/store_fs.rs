@@ -1532,6 +1532,40 @@ fn move_notes_from_rust_emits_one_reroute_and_is_undoable() {
 	);
 }
 
+/// The attachments' fallback writer: a file too large to attach leaves its path
+/// behind as a note, through the same seam shape `append_capture` and
+/// `move_notes` use.
+#[test]
+fn append_paths_note_emits_one_attach_and_is_undoable() {
+	let harness = Harness::new();
+	harness.sink.take();
+
+	store::append_paths_note(&harness.shared, "C:\\Videos\\too-big.mp4").unwrap();
+
+	let events = harness.sink.take();
+	assert_eq!(events.len(), 1);
+	// Not `Capture`: the panel answers that reason with a sound and a scroll
+	// request, and the user is standing at the panel with their hands on the
+	// drop that produced this.
+	assert_eq!(reasons(&events), [ChangeReason::Attach]);
+
+	let doc = harness.doc();
+	let note = doc
+		.notes
+		.iter()
+		.find(|note| note.body == "C:\\Videos\\too-big.mp4")
+		.expect("the path landed as a note body, verbatim");
+	assert_eq!(note.section, doc.active_section, "an unaddressed note lands in the active section");
+
+	// One snapshot, one `Ctrl+Z` — the same cost as any note added from the panel.
+	assert!(harness.status().can_undo);
+	store::lock(&harness.shared).undo().unwrap();
+	assert!(
+		!harness.doc().notes.iter().any(|note| note.body == "C:\\Videos\\too-big.mp4"),
+		"undo removes the path note"
+	);
+}
+
 #[test]
 fn the_emit_matrix_holds_for_every_command_path() {
 	let harness = Harness::new();

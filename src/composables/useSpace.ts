@@ -154,7 +154,7 @@ export type Settings = {
 export type SpaceView = DeepReadonly<Space>
 export type NoteView = DeepReadonly<Note>
 
-export type ChangeReason = 'external' | 'capture' | 'reload' | 'editor' | 'reroute'
+export type ChangeReason = 'external' | 'capture' | 'reload' | 'editor' | 'reroute' | 'attach'
 export type SpaceChangedPayload = { id: string; path: string; reason: ChangeReason }
 export type StoreErrorPayload = { kind: string; message: string }
 /** What a composer submission turned out to be. `# Name` is classified in Rust,
@@ -528,6 +528,9 @@ async function refresh() {
  * identity-only payload. `reroute` — a capture notification's button filing the
  * note elsewhere — is deliberately *not* `capture`, because it would otherwise
  * play the capture sound and ask the list to scroll to a note nothing added.
+ * `attach` — the note standing in for a file too large to attach — declines the
+ * capture treatment for the same reason: the user's hands are on the drop or
+ * the paste, and the bottom pin already shows them what landed.
  *
  * `reload` is the one with distinct behaviour: it is errored-state recovery, and
  * it fires **even when the recovered document is byte-identical**, deliberately

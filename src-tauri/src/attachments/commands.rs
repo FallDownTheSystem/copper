@@ -85,15 +85,31 @@ fn clipboard_failure(err: clipboard::ClipboardError) -> StoreError {
 	}
 }
 
-/// Ingests each path, keeping the successes and the failures apart.
+/// Ingests each path, keeping the successes and the failures apart — and the
+/// oversized apart from both, because they are not failures any more.
 ///
 /// A multi-file drop with one oversized file in it attaches the rest — the user
 /// dropped five things and getting four is better than getting none — so the
 /// per-file error is collected rather than returned. The refusals come back as
 /// one message the caller shows beside the tray.
-fn ingest_paths(space: &Path, paths: &[PathBuf]) -> Result<Vec<Attachment>> {
+///
+/// **An oversized file's path is captured as a note instead** (2026-08-09, user
+/// request: "when a file is too large, paste the path instead"). The bytes are
+/// refused exactly as before — the size ceiling is not negotiable — but the
+/// *reference* survives, which for a 4 GB video is usually the part the user
+/// wanted anyway. The cheap `stat` is what routes here; the late bound inside
+/// `read_capped` still refuses outright, because a file that outgrew its own
+/// `stat` mid-read is a race, not the ordinary drop this affordance is for.
+///
+/// The note is written through [`store::append_paths_note`], one note per
+/// gesture however many paths were oversized — a drop is one action and undoes
+/// as one `Ctrl+Z`. A store that refuses the note (a write conflict, an
+/// unavailable space) turns the paths back into ordinary refusals, so the user
+/// is never told nothing.
+fn ingest_paths(shared: &SharedStore, space: &Path, paths: &[PathBuf]) -> Result<Vec<Attachment>> {
 	let mut attached = Vec::new();
 	let mut refused: Vec<String> = Vec::new();
+	let mut oversized: Vec<&Path> = Vec::new();
 
 	for path in paths {
 		let name = path
@@ -109,13 +125,12 @@ fn ingest_paths(space: &Path, paths: &[PathBuf]) -> Result<Vec<Attachment>> {
 				refused.push(format!("{name} is a folder"));
 				continue;
 			}
-			// A cheap early refusal for the ordinary oversized file, so a 4 GB video
-			// costs a `stat` and not four gigabytes of reading. It is **not** the
-			// bound — the read below carries that, because a length read here can be
-			// stale by the time the read happens and is simply a lie for a pipe or a
-			// device.
+			// The cheap early check, so a 4 GB video costs a `stat` and not four
+			// gigabytes of reading. It is **not** the bound — the read below carries
+			// that, because a length read here can be stale by the time the read
+			// happens and is simply a lie for a pipe or a device.
 			Ok(metadata) if metadata.len() > ATTACHMENT_MAX_BYTES => {
-				refused.push(format!("{name} is too large"));
+				oversized.push(path);
 				continue;
 			}
 			Ok(_) => {}
@@ -131,6 +146,27 @@ fn ingest_paths(space: &Path, paths: &[PathBuf]) -> Result<Vec<Attachment>> {
 				Err(err) => refused.push(err.message()),
 			},
 			Err(err) => refused.push(err.message()),
+		}
+	}
+
+	if !oversized.is_empty() {
+		// One paragraph per path rather than one line: a single newline is a soft
+		// break in Markdown and would run two paths together on one rendered line.
+		// The body is the bare paths and nothing else, so a double-click copy of
+		// the note yields something another program can open.
+		let body = oversized
+			.iter()
+			.map(|path| path.display().to_string())
+			.collect::<Vec<_>>()
+			.join("\n\n");
+		if let Err(err) = store::append_paths_note(shared, &body) {
+			for path in &oversized {
+				refused.push(format!(
+					"{} is too large, and its path could not be captured: {}",
+					path.display(),
+					err.message()
+				));
+			}
 		}
 	}
 
@@ -157,16 +193,21 @@ fn ingest_paths(space: &Path, paths: &[PathBuf]) -> Result<Vec<Attachment>> {
 #[tauri::command]
 pub async fn attach_paste(state: State<'_, SharedStore>) -> Reply<Vec<Attachment>> {
 	let space = space_path(&state)?;
+	// The `Arc` itself, so the blocking closure can reach the store for the
+	// oversized-path note. The guard is still never held across this command —
+	// `ingest_paths` locks only for the moment of that one write.
+	let shared = state.inner().clone();
 
 	tauri::async_runtime::spawn_blocking(move || {
 		let found = clipboard::read_attachment().map_err(clipboard_failure)?;
 
 		match found {
 			None => Ok(Vec::new()),
-			Some(ClipboardAttachment::Files(paths)) => ingest_paths(&space, &paths),
+			Some(ClipboardAttachment::Files(paths)) => ingest_paths(&shared, &space, &paths),
 			Some(ClipboardAttachment::Dib(dib)) => {
 				// Encoded before storage: a DIB is not a portable file format and must
-				// never be written to disk as one.
+				// never be written to disk as one. An oversized image has no path
+				// fallback either — clipboard pixels have no path to capture.
 				let png = thumb::dib_to_png(&dib)?;
 				Ok(vec![ingest(&space, &png, "Pasted image.png")?])
 			}
@@ -189,13 +230,14 @@ pub async fn attach_paste(state: State<'_, SharedStore>) -> Reply<Vec<Attachment
 #[tauri::command]
 pub async fn attach_pick(app: AppHandle, state: State<'_, SharedStore>) -> Reply<Vec<Attachment>> {
 	let space = space_path(&state)?;
+	let shared = state.inner().clone();
 	let picked = spaces::pick_attachment_files(&app).await?;
 	if picked.is_empty() {
 		// Cancelling is a success with no state change.
 		return Ok(Vec::new());
 	}
 
-	tauri::async_runtime::spawn_blocking(move || ingest_paths(&space, &picked))
+	tauri::async_runtime::spawn_blocking(move || ingest_paths(&shared, &space, &picked))
 		.await
 		.map_err(|err| StoreError::Io(format!("the files could not be attached: {err}")))?
 }
@@ -209,9 +251,10 @@ pub async fn attach_pick(app: AppHandle, state: State<'_, SharedStore>) -> Reply
 #[tauri::command]
 pub async fn attach_paths(paths: Vec<String>, state: State<'_, SharedStore>) -> Reply<Vec<Attachment>> {
 	let space = space_path(&state)?;
+	let shared = state.inner().clone();
 	let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
 
-	tauri::async_runtime::spawn_blocking(move || ingest_paths(&space, &paths))
+	tauri::async_runtime::spawn_blocking(move || ingest_paths(&shared, &space, &paths))
 		.await
 		.map_err(|err| StoreError::Io(format!("the dropped files could not be attached: {err}")))?
 }
@@ -279,7 +322,7 @@ pub async fn attachment_thumb(
 /// sniffed mime, never the extension and never the document's `mime` (AC22).
 ///
 /// In `spawn_blocking`, like every other command here: it is a blob read of up to
-/// ten megabytes.
+/// thirty-two megabytes.
 #[tauri::command]
 pub async fn attachment_full(
 	file: String,
@@ -296,7 +339,7 @@ pub async fn attachment_full(
 			)));
 		}
 		// Raw, like the thumbnail: a plain `Vec<u8>` return is serialised as a JSON
-		// array of numbers, which would quadruple ten megabytes on the wire.
+		// array of numbers, which would quadruple thirty-two megabytes on the wire.
 		Ok(tauri::ipc::Response::new(bytes))
 	})
 	.await
@@ -318,7 +361,7 @@ pub async fn attachment_full(
 /// editing the JSON.
 ///
 /// The sniff reads a bounded **prefix**, not the file. `infer` inspects a few
-/// hundred bytes at most, so loading a 10 MiB blob into memory to decide
+/// hundred bytes at most, so loading a 32 MiB blob into memory to decide
 /// whether to launch it or reveal it was pure cost — and it is cost an attacker
 /// controls, since the blob's size is whatever they put in the directory.
 ///

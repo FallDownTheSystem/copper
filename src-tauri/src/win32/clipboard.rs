@@ -70,7 +70,7 @@ const MAX_ENUMERATED_FORMATS: usize = 256;
 /// The ceiling on a clipboard payload [`read_attachment`] will copy out.
 ///
 /// Deliberately larger than `attachments::ATTACHMENT_MAX_BYTES`, not equal to
-/// it: a DIB is uncompressed, so a screenshot that lands well under the 10 MiB
+/// it: a DIB is uncompressed, so a screenshot that lands well under the 32 MiB
 /// attachment limit once it is PNG-encoded arrives here several times that
 /// size. Matching the two would refuse ordinary screenshots for being large in
 /// a representation the user never sees. This bound exists to stop an absurd
@@ -559,7 +559,7 @@ pub fn read_attachment() -> Result<Option<ClipboardAttachment>> {
 ///
 /// The size belongs in the message because [`ATTACHMENT_READ_LIMIT`] is not the
 /// attachment limit the user was told about — it is deliberately much larger —
-/// so "too large" without a number sends someone looking for a 10 MB file that
+/// so "too large" without a number sends someone looking for a 32 MB file that
 /// is not the problem.
 fn too_large_to_take(what: &str) -> ClipboardError {
 	ClipboardError::Refused(format!(

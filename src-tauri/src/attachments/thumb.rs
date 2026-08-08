@@ -66,7 +66,7 @@ pub fn is_thumbnailable(mime: &str) -> bool {
 /// decodable image.
 ///
 /// Read from the header rather than by decoding: this runs on every ingest, and
-/// a 10 MiB JPEG's dimensions should not cost a full decode. Advisory in the
+/// a 32 MiB JPEG's dimensions should not cost a full decode. Advisory in the
 /// document either way — nothing sizes an allocation from these.
 pub fn dimensions(bytes: &[u8], mime: &str) -> (Option<u32>, Option<u32>) {
 	if !is_thumbnailable(mime) {
