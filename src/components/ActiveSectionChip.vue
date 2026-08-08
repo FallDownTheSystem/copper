@@ -7,8 +7,10 @@
  * lands" belongs next to the thing that captures. It reads better here: the
  * active section is what the list below is *of*, and a label above a list is
  * where a reader already looks for that. It is still the same control — the same
- * switcher, the same `Ctrl+K` anchor — and still a button in its own right, so
- * the switcher is reachable by mouse without opening `...`.
+ * switcher — and still a button in its own right, so the switcher is reachable
+ * by mouse without opening `...`. It was also the `Ctrl+K` anchor until task-019
+ * gave that chord to the command palette; the pointer route stayed, because the
+ * palette absorbs section *switching* and not section *creation*.
  *
  * Task-004 pins the composer *placeholder* to the space name and says explicitly
  * that it does not change when the active section does. That rule is upheld here,
@@ -39,11 +41,11 @@ const { isSwitcherOpenIn, setSwitcherOpen, closeSwitcher } = useSections()
  * Reka's own close-focus event, forwarded rather than consumed.
  *
  * Left alone it returns focus to this trigger, which is the right answer when the
- * switcher was opened by clicking it. It is the wrong answer for `Ctrl+K`, where
- * the user was mid-sentence in the composer — so the composer takes the event and
- * calls `preventDefault()` on it only when it actually held focus at the time.
- * Deciding that here would mean this component tracking where focus came from,
- * which the composer already knows.
+ * switcher was opened by clicking it. It is the wrong answer whenever the user
+ * was mid-sentence in the composer — so the composer takes the event and calls
+ * `preventDefault()` on it only when it actually held focus at the time. Deciding
+ * that here would mean this component tracking where focus came from, which the
+ * composer already knows.
  */
 const emit = defineEmits<{ closed: [event: Event] }>()
 

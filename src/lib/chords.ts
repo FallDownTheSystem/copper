@@ -47,15 +47,22 @@ export const CHORDS = {
 		matches: (event) => ctrl(event) && event.shiftKey && letter(event, 'm'),
 	},
 	/**
-	 * The one chord that fires **from the composer**, and the documented exception
-	 * to the suppression rule below. "I am mid-thought, typing, and I want this and
-	 * the next five captures to go somewhere else" is the entire use case, so a
-	 * binding the composer swallowed would be a binding for nothing.
+	 * The one chord that fires **from every surface**, text ones included, and the
+	 * only exception to the suppression rule below.
+	 *
+	 * It was the section switcher's, where the exception was narrower: the composer
+	 * only, because "I am mid-thought, typing, and I want this and the next five
+	 * captures to go somewhere else" was the whole use case and the search field
+	 * and the inline editor are not places that question is asked. Task-019 gave
+	 * the binding to the command palette, and that argument does not survive the
+	 * change of meaning — "open the command palette" is asked from anywhere, and a
+	 * palette the search field swallowed would be a palette with a hole in it. So
+	 * the exception widened to every surface and `inComposer()` went with it.
 	 *
 	 * `Ctrl+Shift+K` was considered and rejected: it is the browser devtools
 	 * console chord.
 	 */
-	switchSection: {
+	commandPalette: {
 		display: 'Ctrl+K',
 		matches: (event) => ctrl(event) && !event.shiftKey && letter(event, 'k'),
 	},
@@ -120,28 +127,26 @@ export function inTextSurface(target: EventTarget | null): boolean {
 }
 
 /**
- * The composer specifically, as opposed to the other two text surfaces.
- *
- * `Ctrl+K` is the only chord allowed through the guard above, and only from
- * here: inside the inline note editor and the search input it stays suppressed,
- * because neither is a place where "where does the next capture land" is the
- * question being asked.
- */
-export function inComposer(target: EventTarget | null): boolean {
-	return target instanceof HTMLElement && target.closest('[data-composer]') !== null
-}
-
-/**
  * An open menu owns the keyboard while it is up.
  *
  * Its content is portalled inside the panel root, so a keypress inside it still
  * bubbles to the shell — and without this a `Delete` typed at an open menu would
  * delete the notes *and* leave the menu standing.
+ *
+ * **The command palette is on the list even though it is not a reka menu.** It
+ * is rendered inside the panel root rather than portalled, so its presses bubble
+ * the same way; the entry is what makes `Delete` at an open palette filter the
+ * palette instead of deleting the selection underneath it, and what keeps
+ * `Escape` off the shell's ladder so the palette closes without also clearing
+ * the query. The selector matches its outermost element, so everything the
+ * overlay contains resolves here — including a press that landed on the dialog
+ * container itself rather than on the field.
  */
 export function inOverlay(target: EventTarget | null): boolean {
 	return (
 		target instanceof HTMLElement &&
-		target.closest('[data-slot="context-menu-content"], [data-slot="dropdown-menu-content"]') !==
-			null
+		target.closest(
+			'[data-slot="context-menu-content"], [data-slot="dropdown-menu-content"], [data-slot="command-overlay"]',
+		) !== null
 	)
 }

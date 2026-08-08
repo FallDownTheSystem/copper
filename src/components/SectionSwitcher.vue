@@ -5,9 +5,15 @@
  *
  * **The body only, not the menu around it** — exactly as `MoveToSubmenu` renders
  * items for whichever content element hosts it. There are two entry points, and
- * one list: `Ctrl+K` opens it as a dropdown anchored on the chip under the search
- * field, and `Switch section ▸` opens it as a submenu of `...`. Building a second
- * list for the second trigger is how they would come to disagree.
+ * one list: the chip under the search field opens it as a dropdown, and
+ * `Switch section ▸` opens it as a submenu of `...`. Building a second list for
+ * the second trigger is how they would come to disagree.
+ *
+ * Both are pointer routes. `Ctrl+K` was the third until task-019, which gave the
+ * chord to the command palette — and this survived the takeover because the
+ * palette absorbs *switching* and not *creating*: a palette that hides empty
+ * groups has nowhere to put the create row below, and without that row a section
+ * could only be made from `...` → `New section…` or a `# Name` directive.
  *
  * **One field does the filtering and the creating**, which is why it is named for
  * both. A second, dedicated "new section" input at the top would fork the

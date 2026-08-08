@@ -1527,6 +1527,64 @@ describe('scrolling to a section', () => {
 	})
 })
 
+describe('a pinned section heading', () => {
+	/**
+	 * The heading of the section being read stays at the top of the region, so the
+	 * answer to "which section am I in" survives a long one.
+	 *
+	 * It is a CSS declaration and happy-dom lays nothing out, so the classes are
+	 * the only place the pin can be asserted — and they are worth asserting,
+	 * because two of them are chosen against numbers that live in other files. A
+	 * dropped `z-1` is a heading behind the rows it is supposed to cover; a `z`
+	 * raised past `NoteList`'s indicator or `NoteCard`'s carried row hides the two
+	 * things a drag needs visible. `bg-surface` is what erases the rows passing
+	 * underneath.
+	 */
+	it('pins itself above the rows it covers and below the carried row', async () => {
+		const wrapper = await mountPanel()
+		const heading = wrapper.get(`[data-row-id="${sectionRow('sec_a')}"]`)
+
+		expect(heading.classes()).toEqual(
+			expect.arrayContaining(['sticky', 'top-0', 'z-1', 'bg-surface']),
+		)
+	})
+
+	/**
+	 * The same rule the reveal path follows, through the other entrance.
+	 *
+	 * A heading pinned to the top of the region is already where `block: 'nearest'`
+	 * would put it, so an arrow key reaching it scrolls nothing and leaves the
+	 * focus ring hard against the region's edge with its outer halo clipped. The
+	 * section's rowgroup is the heading's un-pinned position, and landing that is
+	 * what brings the whole ring back on screen.
+	 */
+	it('lands the section when an arrow key reaches a heading that is pinned', async () => {
+		const wrapper = await mountPanel()
+		const heading = wrapper.get(`[data-row-id="${sectionRow('sec_a')}"]`).element
+		const group = wrapper.get('[data-section-id="sec_a"]').element
+
+		// Scrolled into the section: the heading has been pushed 120px down inside
+		// its own group to stay on screen, which is the whole of the pinned test.
+		group.getBoundingClientRect = (() => ({ top: -120, bottom: 200, height: 320 })) as () => DOMRect
+		heading.getBoundingClientRect = (() => ({ top: 0, bottom: 24, height: 24 })) as () => DOMRect
+
+		const seen: (ScrollIntoViewOptions | undefined)[] = []
+		group.scrollIntoView = (options?: boolean | ScrollIntoViewOptions) => {
+			seen.push(options as ScrollIntoViewOptions | undefined)
+		}
+		heading.scrollIntoView = () => {
+			seen.push(undefined)
+		}
+
+		selection.select('nte_1')
+		await wrapper.find(`[data-row-id="${noteRow('nte_1')}"]`).trigger('keydown', { key: 'ArrowUp' })
+		await settle(3)
+
+		expect(selection.focusedId.value).toBe(sectionRow('sec_a'))
+		expect(seen).toEqual([{ block: 'start' }])
+	})
+})
+
 describe('the section switcher', () => {
 	function content() {
 		return document.querySelector<HTMLElement>('[data-slot="dropdown-menu-content"]')
@@ -3144,6 +3202,31 @@ describe('reordering', () => {
 
 			expect(store.calls).toEqual([{ id: 'nte_1', section: 'sec_b', index: 0 }])
 			expect(store.order('sec_b')).toEqual(['nte_1'])
+		})
+
+		it("places an empty section's line from its group, not from a pinned heading", async () => {
+			// The one measurement `position: sticky` can falsify. An empty section has
+			// no row to sit beside, so the line goes just under its heading — and a
+			// heading pinned to the top of the region is painted nowhere near the
+			// section it belongs to. Read off its rect, the line for a drop into
+			// `sec_b` would be drawn at the top of the list, across a section the note
+			// is not going to.
+			const wrapper = await mountPanel()
+			installReorderingStore()
+			const heading = wrapper.get('[data-section-id="sec_b"] [data-section-row]').element
+			heading.getBoundingClientRect = (() => ({ top: 0, bottom: 16, height: 16 })) as () => DOMRect
+
+			const grip = gripOf(wrapper, 'n:nte_1')
+			grip.dispatchEvent(pointer('pointerdown', 40))
+			window.dispatchEvent(pointer('pointermove', 150))
+			await settle()
+
+			// The group's own top plus the heading's height — 124 and 16 — plus the
+			// 2px that keeps the line off the row edge.
+			expect(drag.dropTarget.value).toMatchObject({ sectionId: 'sec_b', indicatorY: 142 })
+
+			window.dispatchEvent(pointer('pointerup', 150))
+			await settle(4)
 		})
 
 		it('holds a press that has barely moved, so the grip stays clickable', async () => {

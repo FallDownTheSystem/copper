@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { invoke } from '@tauri-apps/api/core'
 
-import { CHORDS, inComposer, inOverlay, inTextSurface } from '@/lib/chords'
+import { CHORDS, inOverlay, inTextSurface } from '@/lib/chords'
 
 const {
 	loadState,
@@ -18,7 +18,7 @@ const { ensureHighlighter } = useMarkdown()
 // reads them from the composable itself rather than being handed them.
 const { setOverlayHost } = useOverlayHost()
 const { hasQuery, clearQuery, resultCount } = useNoteSearch()
-const { openSwitcher } = useSections()
+const { open: openPalette } = usePalette()
 const { selectedIds, clear } = useSelection()
 const { editingNoteId, cancel } = useNoteEditor()
 const { isOpen: viewerOpen, close: closeViewer } = useImageViewer()
@@ -145,6 +145,14 @@ watch([hasQuery, resultCount], announceResults)
  * the `inOverlay` guard before this is ever consulted; the viewer is hand-rolled
  * and matches no reka slot, so without this rung `Escape` over an open image
  * would clear the search or hide the panel while the image stayed up.
+ *
+ * **Task-019's command palette is hand-rolled too and still has no rung**, which
+ * is the one case where the two properties come apart. What decides it is the
+ * focus trap, not who wrote the overlay: the palette wraps its contents in a
+ * trapped `FocusScope`, so every `Escape` arrives with a target inside it and
+ * resolves at the `inOverlay` guard — which now names the palette — before this
+ * is reached. It closes itself there. The viewer needs a rung because it matches
+ * nothing that guard tests, not because it is hand-rolled.
  */
 function onEscape(event: KeyboardEvent) {
 	if (viewerOpen.value) {
@@ -200,17 +208,19 @@ function onShellKeydown(event: KeyboardEvent) {
 
 	// **Above the suppression guard, and the only chord that is.** Task-006's rule
 	// is that no in-panel chord fires from a text surface; this is the documented
-	// exception, because switching where the next capture lands is a thing you do
-	// while typing the note before it. Still suppressed in the other two surfaces,
-	// and it cannot reach task-008's shortcut recorder at all — that lives in the
+	// exception. It was the section switcher's, suppressed everywhere but the
+	// composer — the only surface where "where does the next capture land" is the
+	// question being asked. Task-019 gave the binding to the command palette, and
+	// with it the condition went: "open the command palette" is asked from the
+	// search field and the inline editor too, so there is no surface left to
+	// suppress it in and `inComposer()` had no second caller.
+	//
+	// It still cannot reach task-008's shortcut recorder — that lives in the
 	// settings view, which unmounts this tree, and it `preventDefault`s and
 	// consumes every key but Tab besides.
-	if (
-		CHORDS.switchSection.matches(event) &&
-		(!inTextSurface(event.target) || inComposer(event.target))
-	) {
+	if (CHORDS.commandPalette.matches(event)) {
 		event.preventDefault()
-		openSwitcher()
+		openPalette()
 		return
 	}
 
@@ -365,7 +375,9 @@ function onContextMenu(event: MouseEvent) {
 	>
 		<!-- The section switcher's close-focus event, relayed from the heading in the
 		     header to the composer. The two are siblings, and only the composer knows
-		     whether it was mid-sentence when `Ctrl+K` opened the switcher. -->
+		     whether it was mid-sentence when the chip's switcher opened. The relay
+		     covers the chip and the `...` submenu only — task-019 moved the keyboard
+		     entry point to the palette, which returns focus itself. -->
 		<PanelHeader ref="header" @switcher-closed="composer?.restoreCaret($event)" />
 
 		<!-- The only scrollable region. `min-h-0` is load-bearing: a grid item
@@ -447,6 +459,12 @@ function onContextMenu(event: MouseEvent) {
 		<!-- After the band it has to paint over, and at a z-index between the band's
 		     `z-20` and the portal host's `z-30`: above the list, below any menu. -->
 		<ImageViewer />
+
+		<!-- Last of the overlays and above the portal host, because it is the one
+		     that is modal to the whole panel. Nothing can be open underneath it: the
+		     chord that opens it is declined from inside any other overlay, so the
+		     ordering settles a case that cannot arise rather than one that does. -->
+		<Palette />
 
 		<!-- Pre-rendered and empty. Injecting the element and its text together
 		     does not announce; only a text change inside a live region already in

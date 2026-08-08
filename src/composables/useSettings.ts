@@ -72,7 +72,11 @@ export type ShortcutTarget = 'summon' | 'capture'
 /** Which row an error belongs under. A failure has to render next to the control
  *  that produced it, exactly as `useSpace`'s scoped action errors do. */
 export type SettingsScope = PreferenceScope | ShortcutTarget
-type PreferenceScope =
+/** Exported for `settingsActions`, which keys its registry by this union so that
+ *  adding a preference here fails to compile until the command palette offers a
+ *  way to reach it. The two `ShortcutTarget` rows are deliberately outside it:
+ *  they need Rust's recording lease and the palette cannot execute them. */
+export type PreferenceScope =
 	| 'theme'
 	| 'autostart'
 	| 'sounds'
