@@ -83,11 +83,21 @@ function onKeydown(event: KeyboardEvent) {
 	}
 
 	if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+		// `stopPropagation` for the same reason `Escape` above has it: the press has
+		// to be *withheld* from the shell, not merely handled here. Ctrl+Enter is
+		// two things by context — `CHORDS.openInEditor` starts the `$EDITOR` handoff
+		// from a focused card — and the shell resolves that today by declining every
+		// chord from a text surface. That guard is one reordering away from not
+		// covering this: `Ctrl+K` already sits above it as a documented exception,
+		// so a second exception would fork a handoff off a note whose inline draft
+		// is mid-commit.
 		event.preventDefault()
+		event.stopPropagation()
 		void commit().then(returnFocusToRow)
 	}
-	// Bare Enter inserts a newline: a note body is a document, unlike the
-	// composer's capture line.
+	// Bare Enter and Shift+Enter both insert a newline: a note body is a document,
+	// unlike the composer's capture line, where the matrix is the other way up and
+	// Enter submits.
 }
 
 /**

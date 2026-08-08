@@ -127,6 +127,51 @@ describe('moveFocus', () => {
 	})
 })
 
+describe('moveFocusOnly', () => {
+	it('moves the roving target and leaves both the selection and the anchor alone', () => {
+		selection.select('n1')
+		selection.moveFocusOnly(1)
+
+		expect(selection.focusedId.value).toBe(noteRow('n2'))
+		expect(selection.selectedIds.value).toEqual(['n1'])
+		// The anchor stays where the last deliberate act put it, so a `Shift+Arrow`
+		// after this still grows from there rather than from wherever focus wandered.
+		expect(selection.anchorId.value).toBe('n1')
+	})
+
+	it('traverses header rows exactly as the plain move does', () => {
+		selection.select('n2')
+		selection.moveFocusOnly(1)
+
+		expect(selection.focusedId.value).toBe(sectionRow('sec_b'))
+		expect(selection.selectedIds.value).toEqual(['n2'])
+	})
+
+	it('clamps at both ends rather than wrapping', () => {
+		selection.focusRow(sectionRow('sec_a'))
+		selection.moveFocusOnly(-1)
+		expect(selection.focusedId.value).toBe(sectionRow('sec_a'))
+
+		selection.focusLast()
+		selection.moveFocusOnly(1)
+		expect(selection.focusedId.value).toBe(noteRow('n4'))
+	})
+
+	/** The gesture the whole traversal exists for. `toggle` was already the one
+	 *  path to a discontiguous selection; until this there was no way to *reach*
+	 *  the second note without the trip there replacing the first. */
+	it('composes with toggle into a discontiguous selection', () => {
+		selection.select('n1')
+		selection.moveFocusOnly(1)
+		selection.moveFocusOnly(1)
+		selection.moveFocusOnly(1)
+		expect(selection.focusedId.value).toBe(noteRow('n3'))
+
+		selection.toggle('n3')
+		expect(selection.selectedIds.value).toEqual(['n1', 'n3'])
+	})
+})
+
 describe('extendFocus', () => {
 	it('moves between notes only, skipping the header between them', () => {
 		selection.select('n2')

@@ -196,7 +196,12 @@ function onKeydown(event: KeyboardEvent) {
 	if (event.key === 'Enter') {
 		// Deviation from the form convention, and a deliberate one: the composer is
 		// a capture line in a keyboard-first tool, so the most frequent action in
-		// the app must not require a chord. Both modifiers give a newline.
+		// the app must not require a chord. Shift+Enter and Ctrl+Enter both give a
+		// newline, and both by *declining* the press rather than inserting one:
+		// Chromium maps either to `InsertNewline` in a textarea, so the field keeps
+		// its own undo stack and its IME behaviour. This is the inverse of the
+		// inline note editor, where Ctrl+Enter saves — a note body there is a
+		// document, and this is one line being captured.
 		if (event.shiftKey || event.ctrlKey || event.metaKey) return
 		event.preventDefault()
 		void submit()

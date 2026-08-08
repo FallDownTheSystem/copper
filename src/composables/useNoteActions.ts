@@ -388,16 +388,62 @@ function merge() {
 
 // --- delete ------------------------------------------------------------------
 
+/**
+ * Gives the row reconciliation already chose the DOM half of focus, after a
+ * delete that removed the row holding it.
+ *
+ * **No second rule about where focus goes**, which is the whole point of doing it
+ * this way. `useSelection.reconcile` has already moved the roving target to the
+ * nearest survivor by the *former* row order — forward first, backward only when
+ * the deleted note was the last one — so "the next note, or the previous one if
+ * it was last" is a property of that walk and is not restated here.
+ *
+ * What is missing without this is only the DOM half, and both ways of asking
+ * `restoreDom` for it fail on a delete:
+ *
+ * - **From the context menu, focus was never on a row at all.** It was inside the
+ *   portalled menu, so the snapshot records no row, and `restoreDom` — which
+ *   moves focus solely when the element that *had* it is gone — correctly decides
+ *   nothing was lost. The grid was left with its roving `tabindex="0"` on a row
+ *   nothing was focused on, and the next arrow key went nowhere.
+ * - **From the keyboard it was, and the test still answers "still connected".**
+ *   auto-animate takes a removed row back out of the DOM on its exit animation's
+ *   `finish`, not when Vue patches — so at the tick `restoreDom` runs, the row
+ *   that held focus is both deleted and `isConnected`. It declines, the row leaves
+ *   a moment later, and focus falls to the body. That path passed intermittently
+ *   depending on which side of the animation the tick landed on, which is a worse
+ *   failure than not working at all.
+ *
+ * Moving focus here rather than relaxing that `isConnected` test, because the test
+ * is right about what it guards — never steal focus out of something the user is
+ * still using — and this caller is the one place that knows the element is going
+ * away regardless of what the DOM currently says.
+ *
+ * Conditioned on the deleted set actually containing the focused note. A `Delete
+ * all done` sweep that removes notes elsewhere in the list is not a reason to
+ * pull focus out of the control the user just pressed.
+ */
+function handFocusOnAfterDelete(deleted: readonly string[], held: string | null) {
+	if (held === null || !deleted.includes(held)) return
+	const target = selection.focusedId.value
+	if (target !== null) takeRow(target)
+}
+
 function deleteNotes() {
 	return serialize(async () => {
 		const ids = targetIds()
 		if (ids.length === 0) return
 
+		// Read before the round trip: afterwards reconciliation has already moved the
+		// roving target off the note this is asking about.
+		const held = selection.focusedNoteId.value
 		const result = await space.deleteNotes(ids)
-		// Selection and focus are not fixed up here: task-004's reconciliation has
-		// already pruned the dead ids and moved focus to the nearest survivor. A
-		// second mechanism would only compete with it.
+		// The *selection* is not fixed up here: task-004's reconciliation has already
+		// pruned the dead ids and moved the roving target to the nearest survivor. A
+		// second mechanism would only compete with it — which is why the line below
+		// follows that decision rather than making one of its own.
 		if (!result) return
+		handFocusOnAfterDelete(ids, held)
 		status.setMessage(
 			countMessage(ids.length, {
 				one: 'Deleted 1 note · Ctrl+Z to undo',
@@ -455,16 +501,21 @@ const doneCount = computed(() => doneTargets.value.length)
  * undoing a five-note purge take five presses — the discipline `useSpace`'s batch
  * mutations already state.
  *
- * Selection and focus are left to task-004's reconciliation, exactly as
- * `deleteNotes` leaves them.
+ * Selection is left to task-004's reconciliation, exactly as `deleteNotes`
+ * leaves it, and focus follows that reconciliation the same way — but only when
+ * the sweep took the focused note with it. This one is pressed from a button, so
+ * most of the time it does not, and pulling focus off that button on the strength
+ * of a note going away somewhere else in the list would be a surprise.
  */
 function deleteDoneInActiveSection() {
 	return serialize(async () => {
 		const ids = doneInActiveSection()
 		if (ids.length === 0) return
 
+		const held = selection.focusedNoteId.value
 		const result = await space.deleteNotes(ids)
 		if (!result) return
+		handFocusOnAfterDelete(ids, held)
 		status.setMessage(
 			countMessage(ids.length, {
 				one: 'Deleted 1 done note · Ctrl+Z to undo',
@@ -687,6 +738,17 @@ async function openInEditor() {
 
 	const id = ids[0]
 	if (id === undefined) return
+
+	// **An open inline edit owns Ctrl+Enter for the note it is editing.** The
+	// editor's textarea contains the press itself, but the conflict card's buttons
+	// are inside the editor and are not a text surface, so the shell's guard lets
+	// one through from there — and a handoff started off an uncommitted draft
+	// forks a second writer over the same body, which is exactly what the conflict
+	// state the user is standing in exists to stop.
+	if (id === editor.editingNoteId.value) {
+		status.setMessage('Finish the inline edit first, or press Escape to discard it.')
+		return
+	}
 
 	const outcome = await handoff.openInEditor(id)
 	switch (outcome.kind) {

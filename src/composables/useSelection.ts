@@ -372,15 +372,42 @@ function landOn(key: string | undefined) {
 	else focusedId.value = key
 }
 
-/** Moves over `rowIds`, headers included, clamping at both ends rather than
- *  wrapping. */
-function moveFocus(delta: number) {
+/** The row `delta` steps from the roving target over `rowIds`, headers included,
+ *  clamping at both ends rather than wrapping. A list with no rows has no
+ *  answer, and neither has a caller. */
+function rowAt(delta: number): string | undefined {
 	const rows = rowIds.value
-	if (rows.length === 0) return
+	if (rows.length === 0) return undefined
 
 	const current = focusedId.value ? rows.indexOf(focusedId.value) : -1
 	const next = Math.min(rows.length - 1, Math.max(0, current === -1 ? 0 : current + delta))
-	landOn(rows[next])
+	return rows[next]
+}
+
+/** Arrow: the roving target moves and the selection follows it. */
+function moveFocus(delta: number) {
+	landOn(rowAt(delta))
+}
+
+/**
+ * Ctrl+Arrow: the same traversal with the selection left exactly as it is.
+ *
+ * **The missing half of discontiguous keyboard selection.** `Ctrl+Space` toggles
+ * the focused note without disturbing the rest, but every way of *reaching*
+ * another note replaced the selection on arrival — so the two could never be
+ * combined and the discontiguous case was pointer-only. Focus and selection are
+ * separate pieces of state here; this is the one caller that moves one without
+ * the other.
+ *
+ * A traversal of its own rather than a flag through `landOn`, because what it
+ * skips is the whole of `landOn`: no `select`, and no anchor either. The anchor
+ * is the origin a `Shift` range grows from, and moving it here would make
+ * "arrive somewhere quietly" silently re-aim the next `Shift+Arrow` — where
+ * leaving it put means a range still grows from the note the user last acted on.
+ */
+function moveFocusOnly(delta: number) {
+	const key = rowAt(delta)
+	if (key) focusedId.value = key
 }
 
 function focusFirst() {
@@ -952,6 +979,7 @@ export function useSelection() {
 		clear,
 		focusRow,
 		moveFocus,
+		moveFocusOnly,
 		focusFirst,
 		focusLast,
 		syncDocument,

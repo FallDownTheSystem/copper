@@ -413,6 +413,55 @@ describe('the roving tabindex', () => {
 	})
 })
 
+describe('Ctrl+Arrow', () => {
+	/**
+	 * The missing half of discontiguous keyboard selection. `Ctrl+Space` toggles
+	 * the focused note without disturbing the rest, but every way of *reaching*
+	 * another note replaced the selection on arrival — so the two could not be
+	 * combined and the discontiguous case was pointer-only.
+	 */
+	it('moves the roving focus without changing the selection, and composes with Ctrl+Space', async () => {
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		await settle(2)
+
+		await wrapper
+			.get(`[data-row-id="${noteRow('nte_1')}"]`)
+			.trigger('keydown', { key: 'ArrowDown', ctrlKey: true })
+		await settle(2)
+
+		expect(selection.focusedId.value).toBe(noteRow('nte_2'))
+		expect(selection.selectedIds.value).toEqual(['nte_1'])
+
+		await wrapper
+			.get(`[data-row-id="${noteRow('nte_2')}"]`)
+			.trigger('keydown', { key: ' ', ctrlKey: true })
+		await settle(2)
+
+		expect(selection.selectedIds.value).toEqual(['nte_1', 'nte_2'])
+	})
+
+	it('leaves the plain form selecting, and lets Shift win when both are held', async () => {
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		await settle(2)
+
+		await wrapper
+			.get(`[data-row-id="${noteRow('nte_1')}"]`)
+			.trigger('keydown', { key: 'ArrowDown' })
+		await settle(2)
+		expect(selection.selectedIds.value).toEqual(['nte_2'])
+
+		// Ctrl+Shift+Arrow extends. A focus-only move would have left the selection
+		// at `nte_2` alone, so the range is what proves which branch ran.
+		await wrapper
+			.get(`[data-row-id="${noteRow('nte_2')}"]`)
+			.trigger('keydown', { key: 'ArrowUp', shiftKey: true, ctrlKey: true })
+		await settle(2)
+		expect(selection.selectedIds.value).toEqual(['nte_1', 'nte_2'])
+	})
+})
+
 describe('the composer', () => {
 	it('reads its placeholder from the active space name', async () => {
 		const wrapper = await mountPanel()
@@ -1030,6 +1079,202 @@ describe('the composer submit', () => {
 		// Editing a body must never be able to delete the note being edited.
 		expect(mocks.invoke).toHaveBeenCalledWith('edit_note', { id: 'nte_1', body: '# Research' })
 		expect(mocks.invoke).not.toHaveBeenCalledWith('submit_entry', expect.anything())
+	})
+})
+
+/**
+ * The two Enter matrices, which are deliberate inverses of each other: the
+ * composer is a capture line where the most frequent action must not cost a
+ * chord, and a note body is a document where a newline must not.
+ */
+describe('the Enter matrix', () => {
+	it('submits the composer on a bare Enter and leaves both modified forms to the field', async () => {
+		const wrapper = await mountPanel()
+		const composer = wrapper.find('#composer')
+		await composer.setValue('captured')
+
+		for (const modifier of [{ shiftKey: true }, { ctrlKey: true }]) {
+			await composer.trigger('keydown', { key: 'Enter', ...modifier })
+			await settle(2)
+		}
+		// Neither one submits, and neither is prevented — the newline is Chromium's
+		// `InsertNewline`, which is what keeps the field's own undo stack intact.
+		expect(mocks.invoke).not.toHaveBeenCalledWith('submit_entry', expect.anything())
+
+		await composer.trigger('keydown', { key: 'Enter' })
+		await settle(3)
+		expect(mocks.invoke).toHaveBeenCalledWith('submit_entry', {
+			body: 'captured',
+			attachments: [],
+		})
+	})
+
+	it('leaves both bare and Shift+Enter to the field inside the inline editor', async () => {
+		const wrapper = await mountPanel()
+		editor.beginEdit(SPACE, SPACE.notes[0]!)
+		await wrapper.vm.$nextTick()
+
+		const field = wrapper.find('textarea[aria-label="Edit note"]')
+		await field.setValue('first line')
+		await field.trigger('keydown', { key: 'Enter' })
+		await field.trigger('keydown', { key: 'Enter', shiftKey: true })
+		await settle(3)
+
+		expect(mocks.invoke).not.toHaveBeenCalledWith('edit_note', expect.anything())
+		// Still open: a newline is not a save, so the session survives both presses.
+		expect(editor.session.value).not.toBeNull()
+	})
+
+	/**
+	 * Ctrl+Enter is two things by context — `CHORDS.openInEditor` starts the
+	 * `$EDITOR` handoff from a focused card — and inside the editor it may only be
+	 * one of them. The press is stopped at the textarea rather than left to the
+	 * shell's text-surface guard, which `Ctrl+K` has already been made an exception
+	 * to once.
+	 */
+	it('saves on Ctrl+Enter without also starting the external handoff', async () => {
+		const wrapper = await mountPanel()
+		editor.beginEdit(SPACE, SPACE.notes[0]!)
+		await wrapper.vm.$nextTick()
+
+		const field = wrapper.find('textarea[aria-label="Edit note"]')
+		await field.setValue('edited body')
+		await field.trigger('keydown', { key: 'Enter', ctrlKey: true })
+		await settle(3)
+
+		expect(mocks.invoke).toHaveBeenCalledWith('edit_note', { id: 'nte_1', body: 'edited body' })
+		expect(mocks.invoke).not.toHaveBeenCalledWith('editor_open_note', expect.anything())
+	})
+
+	/**
+	 * The conflict card's buttons are inside the editor and are not a text surface,
+	 * so a Ctrl+Enter from one of them reaches the shell's chord layer — and a
+	 * handoff forked off an uncommitted draft is a second writer over the same
+	 * body, which is what the conflict state exists to prevent.
+	 */
+	it('declines the handoff chord for the note the inline editor is holding', async () => {
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		editor.beginEdit(SPACE, SPACE.notes[0]!)
+		await settle(2)
+
+		await wrapper.trigger('keydown', { key: 'Enter', ctrlKey: true })
+		await settle(3)
+
+		expect(mocks.invoke).not.toHaveBeenCalledWith('editor_open_note', expect.anything())
+		expect(wrapper.text()).toContain('Finish the inline edit first')
+	})
+})
+
+describe('focus after a delete', () => {
+	/** Three notes in one section, so "the next one" and "the previous one" name
+	 *  different rows. `nte_3` is the done one, for the sweep below. */
+	const THREE: Space = {
+		...SPACE,
+		notes: ['nte_1', 'nte_2', 'nte_3'].map((id, order) => ({
+			id,
+			section: 'sec_a',
+			order,
+			done: id === 'nte_3',
+			body: id,
+			created: '2026-08-05T00:00:00Z',
+			updated: '2026-08-05T00:00:00Z',
+		})),
+	}
+
+	/** The explicit `space.refresh()` is not ceremony — `initialize()` is memoised,
+	 *  so mounting after installing a different store does not re-pull it. */
+	async function mountWithThree() {
+		mocks.invoke.mockImplementation(async (command: string, args?: { ids?: string[] }) => {
+			if (command === 'get_active_space') return THREE
+			if (command === 'delete_notes') {
+				return { ...THREE, notes: THREE.notes.filter((note) => !args?.ids?.includes(note.id)) }
+			}
+			return baseInvoke(command)
+		})
+		const wrapper = await mountPanel()
+		await space.refresh()
+		await settle(3)
+		return wrapper
+	}
+
+	function rowElementOf(wrapper: Awaited<ReturnType<typeof mountPanel>>, id: string) {
+		return wrapper.get(`[data-row-id="${noteRow(id)}"]`).element
+	}
+
+	/** The keyboard path, where the row genuinely holds DOM focus — which is what
+	 *  `takeRow` supplies and a bare `select` does not. */
+	async function focusRowAndDelete(wrapper: Awaited<ReturnType<typeof mountPanel>>, id: string) {
+		selection.select(id)
+		takeRow(noteRow(id))
+		await settle(2)
+		expect(document.activeElement).toBe(rowElementOf(wrapper, id))
+
+		await wrapper.get(`[data-row-id="${noteRow(id)}"]`).trigger('keydown', { key: 'Delete' })
+		await settle(5)
+	}
+
+	it('lands on the next note in document order', async () => {
+		const wrapper = await mountWithThree()
+		await focusRowAndDelete(wrapper, 'nte_2')
+
+		expect(selection.focusedId.value).toBe(noteRow('nte_3'))
+		expect(document.activeElement).toBe(rowElementOf(wrapper, 'nte_3'))
+	})
+
+	it('falls back to the previous note when the deleted one was last', async () => {
+		const wrapper = await mountWithThree()
+		await focusRowAndDelete(wrapper, 'nte_3')
+
+		expect(selection.focusedId.value).toBe(noteRow('nte_2'))
+		expect(document.activeElement).toBe(rowElementOf(wrapper, 'nte_2'))
+	})
+
+	/**
+	 * The path that had no focus at all. A delete from the context menu has DOM
+	 * focus inside the portalled menu rather than on the row, so `restoreDom` —
+	 * which moves focus only when the element that *had* it is gone — correctly
+	 * decides nothing was lost, and the grid was left with its roving
+	 * `tabindex="0"` on a row nothing was focused on.
+	 */
+	it('takes the row even when focus was never on one', async () => {
+		const wrapper = await mountWithThree()
+		selection.select('nte_2')
+		await settle(2)
+		;(wrapper.element as HTMLElement).focus()
+
+		await actions.deleteNotes()
+		await settle(5)
+
+		expect(document.activeElement).toBe(rowElementOf(wrapper, 'nte_3'))
+	})
+
+	it('follows a done sweep that took the focused note with it', async () => {
+		const wrapper = await mountWithThree()
+		selection.select('nte_3')
+		await settle(2)
+
+		await actions.deleteDoneInActiveSection()
+		await settle(5)
+
+		expect(selection.focusedId.value).toBe(noteRow('nte_2'))
+		expect(document.activeElement).toBe(rowElementOf(wrapper, 'nte_2'))
+	})
+
+	/** The complement, and the reason the move is conditional: a sweep pressed from
+	 *  a button that removes notes elsewhere in the list must not pull focus off
+	 *  that button. */
+	it('leaves focus alone when the sweep did not touch the focused note', async () => {
+		const wrapper = await mountWithThree()
+		selection.select('nte_1')
+		await settle(2)
+		const root = wrapper.element as HTMLElement
+		root.focus()
+
+		await actions.deleteDoneInActiveSection()
+		await settle(5)
+
+		expect(document.activeElement).toBe(root)
 	})
 })
 

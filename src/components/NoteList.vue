@@ -13,6 +13,7 @@ const {
 	extendFocus,
 	selectAll,
 	moveFocus,
+	moveFocusOnly,
 	focusFirst,
 	focusLast,
 	visibleGroups,
@@ -170,17 +171,24 @@ function onKeydown(event: KeyboardEvent) {
 
 	switch (event.key) {
 		case 'ArrowDown':
+		case 'ArrowUp': {
+			// **Ctrl+Arrow moves the roving target and leaves the selection alone**,
+			// which is what makes `Ctrl+Space` usable more than once: travelling to
+			// the next note in order to toggle it would otherwise have replaced the
+			// selection on the way there, and the discontiguous case below is the
+			// whole reason that chord exists.
+			//
+			// Shift is tested first and so wins a Ctrl+Shift+Arrow. Extending is the
+			// louder intent, and "move quietly" has nothing to add to a press that is
+			// already growing a range.
 			event.preventDefault()
-			if (event.shiftKey) extendFocus(1)
-			else moveFocus(1)
+			const delta = event.key === 'ArrowDown' ? 1 : -1
+			if (event.shiftKey) extendFocus(delta)
+			else if (event.ctrlKey || event.metaKey) moveFocusOnly(delta)
+			else moveFocus(delta)
 			syncDomFocus()
 			return
-		case 'ArrowUp':
-			event.preventDefault()
-			if (event.shiftKey) extendFocus(-1)
-			else moveFocus(-1)
-			syncDomFocus()
-			return
+		}
 		case 'ArrowLeft':
 		case 'ArrowRight':
 			// The disclosure idiom, and both keys are otherwise unbound here: the grid
