@@ -382,10 +382,14 @@ impl StrategyResult {
 /// reachable only when nothing else is known.
 ///
 /// The elevation arm needs **both** halves. A target above us proves nothing on
-/// its own — a signed installed build with `uiAccess="true"` reaches elevated
-/// windows normally — and a target whose token could not be read proves nothing
-/// either, which is why `Unknown` gets its own cause instead of being folded
-/// into the administrator wording.
+/// its own — the uiAccess token flag, not the target's level, decides whether
+/// UIPI lets us through, and the check reads the token rather than assuming any
+/// particular build shape. (No shipped build sets `uiAccess="true"`: the flag
+/// breaks WebView2's process model outright — user ruling 2026-08-08, evidence
+/// in dsgn-001 — so in practice this arm reports every elevated target.) A
+/// target whose token could not be read proves nothing either, which is why
+/// `Unknown` gets its own cause instead of being folded into the administrator
+/// wording.
 ///
 /// **Orchestrator ruling, 2026-08-05: rule 4's precedence is amended.** As R11
 /// was originally written, an `Unknown` probe outranked everything the cascade

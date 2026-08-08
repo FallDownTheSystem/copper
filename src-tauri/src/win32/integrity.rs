@@ -8,9 +8,12 @@
 //!   UIAccess flag.
 //!
 //! Only both together justify saying "Copper can't read from apps running as
-//! administrator". A signed, installed build with `uiAccess="true"` reaches
-//! elevated windows normally, so the target being higher proves nothing on its
-//! own; and a target we could not read the token of proves nothing either, which
+//! administrator". No shipped build carries `uiAccess="true"` — the flag lifts
+//! the host's integrity above WebView2's browser process, whose `SetParent`
+//! then fails and the app cannot boot (measured 2026-08-08; upstream
+//! WebView2Feedback#4884, closed "not planned") — but the check stays paired
+//! because the flag is a property of the token, not of our build plans, and a
+//! target we could not read the token of proves nothing either, which
 //! is why the tri-state has an `Unknown` arm instead of folding denial into
 //! "elevated". Claiming a process is running as administrator when its token was
 //! never read would be a confident lie on the one surface that ever speaks to
