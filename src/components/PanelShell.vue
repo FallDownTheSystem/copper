@@ -369,7 +369,7 @@ function onContextMenu(event: MouseEvent) {
 		ref="root"
 		data-panel-root
 		tabindex="-1"
-		class="relative grid h-full min-h-0 w-full grid-rows-[auto_1fr_auto] outline-none select-none font-sans text-body"
+		class="relative grid h-full min-h-0 w-full grid-cols-1 grid-rows-[auto_1fr_auto] outline-none select-none font-sans text-body"
 		@keydown="onShellKeydown"
 		@contextmenu="onContextMenu"
 	>
@@ -378,18 +378,35 @@ function onContextMenu(event: MouseEvent) {
 		     whether it was mid-sentence when the chip's switcher opened. The relay
 		     covers the chip and the `...` submenu only — task-019 moved the keyboard
 		     entry point to the palette, which returns focus itself. -->
-		<!-- **Every one of the shell's three flow children names its own row, and
-		     that is load-bearing rather than tidiness.** The status band below is
-		     placed at `row-start-2` deliberately, to share the middle row with the
-		     scroll region; auto-placement reads that as row 2 being *taken*, and each
-		     of these — auto-positioned in both axes — was pushed one row past where
-		     it belongs. The list landed in row 3, sized to its content rather than to
-		     the `1fr`, and the composer in an implicit row 4. What the user saw was
-		     the toast pill hugging the *top* of the notes region: it was correctly at
-		     the bottom of row 2, and row 2 was the empty strip above the list. -->
+		<!-- **Every one of the shell's three flow children names its own row *and*
+		     its own column, and both halves are load-bearing.** The status band below
+		     is placed at `col-start-1 row-start-2` deliberately, to share the middle
+		     cell with the scroll region. An item definite in *both* axes is placed
+		     before auto-placement runs at all, so that cell is already occupied for
+		     everything that follows — and auto-placement will not put anything on top
+		     of an occupied cell.
+
+		     Naming only the row was half a fix, and the half that was missing broke
+		     the other axis. An item locked to a row but auto in its column is placed
+		     at the earliest column that does not *overlap*, and the grid grows an
+		     implicit column rather than accept one: the scroll region was pushed out
+		     of column 1 into a second track on the right, 111px of a 441px panel,
+		     while the header and the composer — whose rows nothing had claimed —
+		     stayed in the 330px one. Note bodies wrapped at a character or two per
+		     line. Naming neither axis was the failure before that: the three were
+		     pushed a row past where they belong, the list into a content-sized row 3
+		     and the composer into an implicit row 4, which is what put the toast pill
+		     at the *top* of the notes region — correctly at the bottom of a row 2 that
+		     was the empty strip above the list.
+
+		     Both axes on all four is what ends it: every flow child is then placed in
+		     the first step, where an explicit overlap is precisely what is being asked
+		     for. `grid-cols-1` on the root says out loud that the shell is one column;
+		     on its own it fixes nothing, because the no-overlap rule creates implicit
+		     tracks whatever the explicit grid says. -->
 		<PanelHeader
 			ref="header"
-			class="row-start-1"
+			class="col-start-1 row-start-1"
 			@switcher-closed="composer?.restoreCaret($event)"
 		/>
 
@@ -412,7 +429,7 @@ function onContextMenu(event: MouseEvent) {
 		     transient re-wrap against a permanent, always-visible asymmetry. -->
 		<main
 			data-scroll-region
-			class="thin-scrollbar row-start-2 min-h-0 min-w-0 overflow-y-auto overscroll-contain [scrollbar-gutter:auto]"
+			class="thin-scrollbar col-start-1 row-start-2 min-h-0 min-w-0 overflow-y-auto overscroll-contain [scrollbar-gutter:auto]"
 			:aria-busy="refreshing"
 		>
 			<h1 class="sr-only">{{ spaceName || 'Copper' }}</h1>
@@ -452,7 +469,7 @@ function onContextMenu(event: MouseEvent) {
 			</PanelStates>
 		</main>
 
-		<Composer ref="composer" class="row-start-3" />
+		<Composer ref="composer" class="col-start-1 row-start-3" />
 
 		<!-- Inside the panel root, so teleported menu content stays inside the clip,
 		     the rounded rect and the contextmenu policy above. `pointer-events-none`
@@ -474,8 +491,9 @@ function onContextMenu(event: MouseEvent) {
 		<!-- Both bands share one cell in the shell's middle row and stack inside it,
 		     so neither can displace the pinned composer of a window that cannot
 		     grow, and the two can never overlap each other. Sharing that cell is what
-		     `row-start-2` on the scroll region above now guarantees — see the note on
-		     the header for the row this used to steal.
+		     `col-start-1 row-start-2` on the scroll region above now guarantees — see
+		     the note on the header for the row, and then the column, this used to
+		     take from it.
 
 		     **`self-end` with `pb-2`: the foot of the list, floating, not stuck to
 		     it.** The pill reports what just happened to the notes, so it belongs at

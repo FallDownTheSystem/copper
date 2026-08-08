@@ -4740,24 +4740,52 @@ describe('the status toast', () => {
 	 * **The pill sits at the foot of the list, and what put it at the head of it
 	 * was grid auto-placement rather than alignment.**
 	 *
-	 * The band is the only child of the shell's grid with an explicit
-	 * `row-start-2`, so it is placed first — and every other child, auto-positioned
-	 * in both axes, was pushed past the cell it had taken. The scroll region landed
-	 * in row 3, sized to its content rather than to the `1fr`, and the composer in
-	 * an implicit row 4; the pill was correctly at the bottom of row 2, and row 2
-	 * was the empty strip above the list. It looked right only because a list
-	 * taller than the region drives that strip to zero height.
+	 * The band is definite in both axes, so it is placed before auto-placement
+	 * runs and its cell counts as occupied for everything after it — and nothing
+	 * auto-placed is ever put on top of an occupied cell. Whichever axis a sibling
+	 * leaves to the grid is the axis it gets moved in.
 	 *
-	 * happy-dom lays nothing out, so the row assignments are the only place this
-	 * can be caught — and they are exactly what was wrong, so they are the right
-	 * thing to pin. What the assertion means: the region and the band share the
-	 * middle row, and the two fixed bands own the rows either side of it.
+	 * With no placement at all, the three were pushed a *row* past where they
+	 * belong: the region into a content-sized row 3, the composer into an implicit
+	 * row 4, and the pill was correctly at the bottom of a row 2 that had become
+	 * the empty strip above the list. Naming only the row moved the failure into
+	 * the *column*: the region, locked to row 2 but auto in its column, was placed
+	 * at the earliest column that did not overlap the band — an implicit second
+	 * track, 111px of a 441px panel — while the header and the composer stayed in
+	 * the first. Note bodies wrapped at a character or two per line.
+	 *
+	 * So the assertion is over both axes and over every flow child, not over the
+	 * three by name: leaving *either* axis to the grid on *any* of them is the
+	 * whole bug, including on a child added later. happy-dom lays nothing out, so
+	 * the placement classes are as close to the real thing as this environment
+	 * reaches — that the resulting single column then fills the panel is the one
+	 * part only a real render can show.
 	 */
-	it('shares the row the scroll region is in rather than displacing it', async () => {
+	it('places every flow child of the shell in both axes, in one column', async () => {
 		const wrapper = await mountPanel()
 		status.setMessage('Copied 1 note')
 		await wrapper.vm.$nextTick()
 
+		const root = wrapper.get('[data-panel-root]')
+		expect(root.classes()).toContain('grid-cols-1')
+
+		// Out-of-flow children are not grid items and place themselves: the portal
+		// host, the clamp probe and the two live regions.
+		const flow = [...root.element.children].filter(
+			(child) => !/(^|\s)(absolute|sr-only)(\s|$)/.test(child.className),
+		)
+		expect(flow.length).toBeGreaterThanOrEqual(4)
+		for (const child of flow) {
+			expect
+				.soft(child.className, `${child.tagName} names a column`)
+				.toMatch(/(^|\s)col-start-1(\s|$)/)
+			expect
+				.soft(child.className, `${child.tagName} names a row`)
+				.toMatch(/(^|\s)row-start-[123](\s|$)/)
+		}
+
+		// And the rows they name: the two fixed bands either side of the region, and
+		// the toast band sharing the region's cell rather than taking a row from it.
 		expect(wrapper.get('header').classes()).toContain('row-start-1')
 		expect(wrapper.get('[data-scroll-region]').classes()).toContain('row-start-2')
 		expect(wrapper.get('form').classes()).toContain('row-start-3')
@@ -4766,9 +4794,9 @@ describe('the status toast', () => {
 		// counting the hops would break the moment either gains a level.
 		const band = wrapper.get('[data-status-toast]').element.closest('.row-start-2')
 		expect(band).not.toBeNull()
-		// And it is a child of the grid itself, so the row it names is a row of the
+		// And it is a child of the grid itself, so the cell it names is a cell of the
 		// shell rather than of something nested inside the region.
-		expect(band?.parentElement).toBe(wrapper.get('[data-panel-root]').element)
+		expect(band?.parentElement).toBe(root.element)
 	})
 
 	/**
