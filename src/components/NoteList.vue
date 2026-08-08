@@ -30,6 +30,7 @@ const { setCollapsed, collapseEnabled } = useSections()
 const { filtersByDone } = useNoteList()
 const { toggleDone, toggleNoteDone } = useNoteActions()
 const { dropTarget, isDragging } = useNoteDrag()
+const { setPanelVisible } = usePreviews()
 
 /**
  * The moments a reveal that could not land becomes possible again.
@@ -61,18 +62,43 @@ onMounted(() => {
 	// Resolved here rather than in `setup`: this list renders *inside* the region,
 	// so on the first pass the region is not in the document yet.
 	scrollRegion.value = document.querySelector<HTMLElement>('[data-scroll-region]')
+	syncPreviewVisibility()
 })
 // Every box change, with no height test of its own: `flushReveal` already holds
 // the request when the region has no height, and a second copy of that condition
 // is one that can drift from it. VueUse owns the lifecycle and the
 // unsupported-environment guard, as it does for the clamp probe.
-useResizeObserver(scrollRegion, () => flushReveal())
+useResizeObserver(scrollRegion, () => {
+	flushReveal()
+	syncPreviewVisibility()
+})
 useEventListener(document, 'visibilitychange', () => {
 	if (document.visibilityState === 'visible') flushReveal()
+	syncPreviewVisibility()
 })
+
 watch(isDragging, (dragging) => {
 	if (!dragging) void nextTick(() => flushReveal())
 })
+
+/**
+ * Whether the panel is on screen, answered for `usePreviews` off the same two
+ * signals the reveal above stands on — and in that order of trust.
+ *
+ * A link preview is an outbound request to a stranger's server, so it may not be
+ * issued while nobody is looking at the panel; the window is mounted hidden at
+ * launch, which without this made a cold start fetch every link in the space. The
+ * region's height is the load-bearing half: it goes from 0 to a real number when
+ * the window is laid out for the first time, and it is the same transition
+ * `flushReveal` waits on. `visibilitychange` is kept for the other direction —
+ * the panel going away again — while being worth exactly what WebView2's tracking
+ * of a parent window it does not own is worth, which is why it is not the only
+ * signal here.
+ */
+function syncPreviewVisibility() {
+	const laidOut = (scrollRegion.value?.clientHeight ?? 0) > 0
+	setPanelVisible(laidOut && document.visibilityState !== 'hidden')
+}
 
 /**
  * The rendered list, paired with its section objects in one place. Derived from

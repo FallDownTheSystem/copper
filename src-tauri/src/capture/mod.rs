@@ -177,6 +177,16 @@ pub enum CaptureFailure {
 		/// Whether reinstalling it worked.
 		recovered: bool,
 	},
+	/// A capture notification's re-route button was pressed after the space that
+	/// capture landed in stopped being the active one (task-018).
+	///
+	/// Like [`Self::HookLost`], this describes no capture attempt: the note is
+	/// safe where it was written and nothing was lost. What failed is the *move*,
+	/// and it fails silently without this — `move_notes` against a document that
+	/// has never heard of the note is an error that reaches a log line and no
+	/// human. Copper does not switch spaces to satisfy a button press, so saying
+	/// so is the whole of the answer.
+	SpaceSwitched,
 }
 
 impl CaptureFailure {
@@ -234,6 +244,12 @@ impl CaptureFailure {
 				 Settings shows the key combination standing in for it."
 					.to_owned()
 			}
+			// Names the note as safe first: the sentence is read by someone who
+			// pressed a button and has to be told what did *not* happen.
+			Self::SpaceSwitched => {
+				"That capture's space isn't open any more, so the note stayed where it was."
+					.to_owned()
+			}
 		}
 	}
 
@@ -258,6 +274,7 @@ impl CaptureFailure {
 			Self::TooLarge { .. } => "too-large",
 			Self::NotSaved { .. } => "not-saved",
 			Self::HookLost { .. } => "hook-lost",
+			Self::SpaceSwitched => "space-switched",
 		}
 	}
 }
@@ -762,6 +779,7 @@ mod tests {
 			CaptureFailure::TooLarge { chars: 123_456 },
 			CaptureFailure::HookLost { recovered: true },
 			CaptureFailure::HookLost { recovered: false },
+			CaptureFailure::SpaceSwitched,
 		];
 		all.extend(STORE_ERROR_KINDS.map(|kind| CaptureFailure::NotSaved { kind }));
 		all
@@ -776,8 +794,8 @@ mod tests {
 			every_failure().iter().map(CaptureFailure::cause).collect();
 		assert_eq!(
 			sampled.len(),
-			13,
-			"every_failure() must cover all thirteen variants, found {sampled:?}"
+			14,
+			"every_failure() must cover all fourteen variants, found {sampled:?}"
 		);
 	}
 

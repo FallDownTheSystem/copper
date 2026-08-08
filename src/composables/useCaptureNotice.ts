@@ -1,10 +1,16 @@
 /**
- * The failure notice, and the readiness signal that lets capture start firing.
+ * The failure notice, the readiness signal that lets capture start firing, and
+ * the scroll a capture notification asks for.
  *
- * A capture is silent on success and visible only on failure, so this is the
- * only surface the capture pipeline ever renders. Rust emits `capture://failed`
- * *before* it reveals the panel, so the notice is painted by the time the window
- * appears rather than flashing an empty panel.
+ * A capture is silent on success and visible only on failure, so the notice is
+ * the only surface the capture pipeline ever renders. Rust emits
+ * `capture://failed` *before* it reveals the panel, so it is painted by the time
+ * the window appears rather than flashing an empty panel.
+ *
+ * The third listener is here because this is the module that owns the `capture://`
+ * channel, not because it is a notice: clicking a capture notification's body
+ * names the note that toast was about, and the panel it reveals has to be looking
+ * at *that* note rather than at whatever the most recent capture armed.
  *
  * Two things here are load-bearing:
  *
@@ -16,7 +22,7 @@
  * - **Readiness.** Tauri does not buffer or replay events, so a failure emitted
  *   before these listeners resolve would reveal a panel with nothing in it.
  *   Rust keeps the keyboard hook disarmed until `capture://ready` arrives, which
- *   is emitted below only after both `listen()` calls have resolved.
+ *   is emitted below only after every `listen()` call has resolved.
  *
  * It does not go through `useSpace.ts`: that file's single-seam rule is about
  * `invoke` strings for the store, and these are unrelated listens.
@@ -24,10 +30,12 @@
 
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 
+import { noteRow, revealRow } from './useSelection'
 import { useSounds } from './useSounds'
 
 export type CaptureNotice = { cause: string; message: string; generation: number }
 type ClearedPayload = { generation: number }
+type RevealPayload = { note: string }
 
 /** The event Rust waits on before arming the keyboard hook. */
 const READY_EVENT = 'capture://ready'
@@ -59,6 +67,20 @@ function onCleared(payload: ClearedPayload) {
 }
 
 /**
+ * A capture notification's body was clicked: the reader is asking for *that*
+ * note.
+ *
+ * `revealRow` holds the request until the list has somewhere to scroll, which is
+ * exactly what this needs — the panel is being revealed by the same activation
+ * and is not laid out yet. It replaces whatever request was standing, which is
+ * the point: two captures leave one slot armed for the second note, and clicking
+ * the first toast has to overrule it.
+ */
+function onReveal(payload: RevealPayload) {
+	if (payload.note) revealRow(noteRow(payload.note))
+}
+
+/**
  * Registers the listeners and tells Rust it is safe to arm capture. Idempotent.
  *
  * A failure here is the one that disables the whole feature: capture stays
@@ -73,6 +95,7 @@ function initialize(): Promise<void> {
 			unlisteners = await Promise.all([
 				listen<CaptureNotice>('capture://failed', (event) => onFailed(event.payload)),
 				listen<ClearedPayload>('capture://cleared', (event) => onCleared(event.payload)),
+				listen<RevealPayload>('capture://reveal', (event) => onReveal(event.payload)),
 			])
 			// Only now: a hook armed before this point could reveal an empty panel.
 			await emit(READY_EVENT)

@@ -18,13 +18,22 @@
 //!
 //! # Where the consent lives
 //!
-//! **In `settings.json`, read store-side.** [`preview`] takes the flag as an
-//! argument and returns `None` before touching the cache or the network when it
-//! is false, so "no fetches when the toggle is off" is a property of the code
-//! rather than a rule the frontend has to keep. This is `Settings::insertion()`'s
-//! arrangement — read on the store side rather than taken as a command
-//! parameter — applied to a decision where a frontend-only gate would be one
-//! stale `settings.value` away from a leak that cannot be taken back.
+//! **In `settings.json`, read store-side, and read again at every step.**
+//! `commands::consent` is the gate: it reads `settings.link_previews` through
+//! the store lock and hands [`preview`] a closure that re-reads it, so "no
+//! fetches when the toggle is off" is a property of the code rather than a rule
+//! the frontend has to keep. This is `Settings::insertion()`'s arrangement —
+//! read on the store side rather than taken as a command parameter — applied to
+//! a decision where a frontend-only gate would be one stale `settings.value`
+//! away from a leak that cannot be taken back.
+//!
+//! The re-reads are not belt and braces. A fetch takes seconds; the switch is in
+//! a panel the user can be looking at while it runs. Consent is checked before
+//! the page request, again before the `og:image` request to whatever second host
+//! the page names, and again before the cache is written — so withdrawing it
+//! stops the next disclosure rather than only the next *link*. The frontend's
+//! own epoch drops a late response, but by then the request has already been
+//! made, which is why that is not the gate either.
 //!
 //! Turning the toggle **off does not delete the cache**. Deleting it would mean
 //! off-then-on re-fetches every URL and leaks a second time, which is the
@@ -143,10 +152,21 @@ pub struct Page {
 /// The preview for `raw`, from the cache in `dir` when there is one and from the
 /// network when there is not.
 ///
-/// `enabled` is the first thing read and the only early return that happens
-/// before anything is looked at, which is what makes AC-7 structural: with the
-/// toggle off this touches neither the network nor the cache, whatever the
-/// caller asks for.
+/// `consented` is **asked again at every step that would disclose or record
+/// something**, not read once at the top. A page fetch takes seconds against a
+/// slow host, and the switch is one click away in a panel the user is looking at
+/// while it runs — so a single read at entry would let a withdrawal be followed
+/// by a second request to a second host (the `og:image`) and by two cache entries
+/// recording that the page was read. Each re-read is a store-side `bool`, taken
+/// and released without a lock crossing an `await`.
+///
+/// The first call is still the only early return that happens before anything is
+/// looked at, which is what makes AC-7 structural: with the toggle off this
+/// touches neither the network nor the cache, whatever the caller asks for.
+///
+/// Withdrawal mid-flight returns `None` silently, like every other failure here
+/// (AC-6) — and deliberately caches nothing, so switching back on re-asks rather
+/// than serving a page from an entry written after consent was taken away.
 ///
 /// **Every step that is not the request itself runs in `spawn_blocking`.** An
 /// html5ever parse and an image decode are CPU-bound, and the async runtime's
@@ -154,11 +174,11 @@ pub struct Page {
 /// command already applies, for the same reason it applies there.
 pub async fn preview(
 	dir: &Path,
-	enabled: bool,
+	consented: &(dyn Fn() -> bool + Sync),
 	raw: &str,
 	pages: &dyn Pages,
 ) -> Option<LinkPreview> {
-	if !enabled {
+	if !consented() {
 		return None;
 	}
 
@@ -182,10 +202,25 @@ pub async fn preview(
 	let page = pages.page(&url).await?;
 	let meta = blocking(move || extract::extract(&page.html, &page.url)).await?;
 
+	// The page leg is over; the image leg is a request to a *second* host, often a
+	// CDN the note never named. Whatever the user did with the toggle while the
+	// first request was outstanding decides whether it happens.
+	if !consented() {
+		return None;
+	}
+
 	let downloaded = match meta.image.as_deref().and_then(vet) {
 		Some(source) => pages.image(&source).await,
 		None => None,
 	};
+
+	// Asked once more before anything is written down. A cache entry is a record
+	// that this URL was fetched and it is what makes the card come back instantly
+	// when previews are switched on again — neither belongs to a read the user has
+	// since withdrawn consent for.
+	if !consented() {
+		return None;
+	}
 
 	let built = blocking({
 		let host = url.host_str().map(str::to_string);
@@ -348,11 +383,12 @@ mod tests {
 		}
 	}
 
-	/// One canned page, and a count of how many times it was asked for.
+	/// One canned page, and a count of how many times each leg was asked for.
 	struct Canned {
 		html: String,
 		image: Option<Vec<u8>>,
 		pages: std::sync::atomic::AtomicUsize,
+		images: std::sync::atomic::AtomicUsize,
 	}
 
 	impl Canned {
@@ -361,6 +397,7 @@ mod tests {
 				html: html.to_string(),
 				image: None,
 				pages: std::sync::atomic::AtomicUsize::new(0),
+				images: std::sync::atomic::AtomicUsize::new(0),
 			}
 		}
 
@@ -373,6 +410,10 @@ mod tests {
 
 		fn fetches(&self) -> usize {
 			self.pages.load(std::sync::atomic::Ordering::Relaxed)
+		}
+
+		fn image_fetches(&self) -> usize {
+			self.images.load(std::sync::atomic::Ordering::Relaxed)
 		}
 	}
 
@@ -387,6 +428,7 @@ mod tests {
 		}
 
 		fn image<'a>(&'a self, _url: &'a Url) -> Pending<'a, Option<Vec<u8>>> {
+			self.images.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 			let bytes = self.image.clone();
 			Box::pin(async move { bytes })
 		}
@@ -431,10 +473,34 @@ mod tests {
 		let dir = tempfile::tempdir().unwrap();
 		let cache = cache_dir(&dir);
 
-		let answer = block(preview(&cache, false, "https://example.com/", &NeverAsked));
+		let answer = block(preview(&cache, &|| false, "https://example.com/", &NeverAsked));
 
 		assert_eq!(answer, None);
 		assert!(!cache.exists(), "the disabled path touched the cache directory");
+	}
+
+	/// Consent withdrawn while the page request was outstanding stops everything
+	/// that had not happened yet: the `og:image` request to a second host, and both
+	/// cache entries. The page fetch itself is already gone and cannot be recalled,
+	/// which is exactly why the later steps have to be asked about separately.
+	#[test]
+	fn withdrawing_consent_mid_fetch_stops_the_image_leg_and_the_cache_write() {
+		let dir = tempfile::tempdir().unwrap();
+		let cache = cache_dir(&dir);
+		let html = r#"<meta property="og:title" content="A title">
+			<meta property="og:image" content="https://cdn.example.com/hero.png">"#;
+		let source = Canned::with_image(html, wide_png());
+
+		// True for the entry check, false from the moment the page leg is over —
+		// the toggle being switched off while a slow host was still answering.
+		let asked = std::sync::atomic::AtomicUsize::new(0);
+		let consented = || asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0;
+
+		assert_eq!(block(preview(&cache, &consented, "https://example.com/", &source)), None);
+
+		assert_eq!(source.fetches(), 1, "the page leg should have run before the withdrawal");
+		assert_eq!(source.image_fetches(), 0, "the image was fetched after consent was withdrawn");
+		assert!(!cache.exists(), "the withdrawn fetch was written to the cache");
 	}
 
 	/// AC-3 and AC-5 together: the first read fetches, and every read after it is
@@ -446,8 +512,8 @@ mod tests {
 		let cache = cache_dir(&dir);
 		let source = Canned::new(PAGE);
 
-		let first = block(preview(&cache, true, "https://example.com/a", &source)).unwrap();
-		let second = block(preview(&cache, true, "https://example.com/a", &source)).unwrap();
+		let first = block(preview(&cache, &|| true, "https://example.com/a", &source)).unwrap();
+		let second = block(preview(&cache, &|| true, "https://example.com/a", &source)).unwrap();
 
 		assert_eq!(first, second);
 		assert_eq!(first.title.as_deref(), Some("A title"));
@@ -464,11 +530,11 @@ mod tests {
 		let cache = cache_dir(&dir);
 		let source = Canned::new(PAGE);
 
-		block(preview(&cache, true, "https://example.com/a?v=1", &source));
-		block(preview(&cache, true, "https://example.com/a?v=1#top", &source));
+		block(preview(&cache, &|| true, "https://example.com/a?v=1", &source));
+		block(preview(&cache, &|| true, "https://example.com/a?v=1#top", &source));
 		assert_eq!(source.fetches(), 1, "a fragment was treated as a different page");
 
-		block(preview(&cache, true, "https://example.com/a?v=2", &source));
+		block(preview(&cache, &|| true, "https://example.com/a?v=2", &source));
 		assert_eq!(source.fetches(), 2, "a query was treated as the same page");
 	}
 
@@ -480,8 +546,8 @@ mod tests {
 		let cache = cache_dir(&dir);
 		let source = Canned::new("<html><head></head><body>hello</body></html>");
 
-		assert_eq!(block(preview(&cache, true, "https://example.com/", &source)), None);
-		assert_eq!(block(preview(&cache, true, "https://example.com/", &source)), None);
+		assert_eq!(block(preview(&cache, &|| true, "https://example.com/", &source)), None);
+		assert_eq!(block(preview(&cache, &|| true, "https://example.com/", &source)), None);
 		assert_eq!(source.fetches(), 1, "an empty page was fetched twice");
 	}
 
@@ -493,10 +559,10 @@ mod tests {
 		let dir = tempfile::tempdir().unwrap();
 		let cache = cache_dir(&dir);
 
-		assert_eq!(block(preview(&cache, true, "https://example.com/", &Silent)), None);
+		assert_eq!(block(preview(&cache, &|| true, "https://example.com/", &Silent)), None);
 
 		let source = Canned::new(PAGE);
-		let recovered = block(preview(&cache, true, "https://example.com/", &source));
+		let recovered = block(preview(&cache, &|| true, "https://example.com/", &source));
 		assert!(recovered.is_some(), "the failure was cached and blocked a later success");
 	}
 
@@ -508,7 +574,7 @@ mod tests {
 			<meta property="og:image" content="https://cdn.example.com/hero.png">"#;
 		let source = Canned::with_image(html, wide_png());
 
-		let built = block(preview(&cache, true, "https://example.com/", &source)).unwrap();
+		let built = block(preview(&cache, &|| true, "https://example.com/", &source)).unwrap();
 
 		let file = built.image.expect("the image should have been stored");
 		let stored = cache.join(&file);

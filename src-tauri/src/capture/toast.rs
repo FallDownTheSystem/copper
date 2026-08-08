@@ -37,9 +37,10 @@
 //! expected and must not be mistaken for a defect; this feature is verifiable only
 //! from an installed build.
 
-use std::sync::{Mutex, Once};
+use std::sync::{Arc, Mutex, Once};
 
-use tauri::{AppHandle, Manager};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager};
 use windows::core::{IInspectable, Interface, Ref, HSTRING};
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::Foundation::TypedEventHandler;
@@ -52,7 +53,7 @@ use crate::diagnostics;
 use crate::panel;
 use crate::store::{self, Landed, SectionRef, SharedStore};
 
-use super::on_main_thread;
+use super::{notice::NoticeController, on_main_thread, CaptureFailure};
 
 /// How much of the captured text the toast carries.
 ///
@@ -97,11 +98,36 @@ enum Activation {
 	/// The body was clicked: show the user the note.
 	Reveal { note: String },
 	/// A button was clicked: file the note elsewhere and stay out of the way.
-	Reroute { note: String, section: String },
+	///
+	/// **Names the space as well as the note**, because this one *writes*. A toast
+	/// stays live in the Action Center long after the space it was fired for was
+	/// switched away from, and a move addressed by note id alone would then be
+	/// applied to whatever document happens to be open — or, more usually, refused
+	/// for an unknown id with nobody told. The reveal below needs no such thing:
+	/// it asks the panel to scroll to a row, and a row that is not in the list is
+	/// simply never found.
+	Reroute {
+		space: String,
+		note: String,
+		section: String,
+	},
 }
 
 const REVEAL_VERB: &str = "note:";
 const REROUTE_VERB: &str = "move:";
+
+/// Tells the panel which note a toast body click was about.
+///
+/// The frontend arms its own reveal request against it, which is held until the
+/// list has somewhere to scroll — the same request a capture arms, and the reason
+/// this is an event rather than a scroll performed from here.
+const REVEAL_EVENT: &str = "capture://reveal";
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RevealPayload {
+	note: String,
+}
 
 /// Announces a capture, if the user asked to be told and could not have seen it
 /// land.
@@ -244,6 +270,17 @@ fn activated(app: &AppHandle, arguments: &str) {
 	match activation {
 		Activation::Reveal { note } => {
 			retire(&note);
+			// **Armed here, for this note, rather than trusted from the capture.**
+			// `append_capture`'s `space-changed` armed a reveal at the moment the note
+			// landed, and by now that request may be gone — a reader's own scroll or
+			// keypress expires it — or, with two captures waiting, may name the
+			// *other* note, since the request is one slot and not a queue. Clicking
+			// the first of two toasts has to scroll to the first of two notes.
+			if let Err(err) = app.emit(REVEAL_EVENT, RevealPayload { note: note.clone() }) {
+				diagnostics::log_error(&format!(
+					"[copper] capture: could not emit {REVEAL_EVENT}: {err}"
+				));
+			}
 			let handle = app.clone();
 			// `reveal_or_log`, not `reveal_without_activating`: a click on the toast is
 			// a deliberate ask for the panel, so it takes the focused path — and that
@@ -254,12 +291,12 @@ fn activated(app: &AppHandle, arguments: &str) {
 			on_main_thread(app, "reveal the panel for a capture notification", move || {
 				panel::reveal_or_log(&handle);
 			});
-			// Nothing scrolls the list from here. `append_capture`'s own
-			// `space-changed` already armed the reveal request the note list holds
-			// until it has somewhere to scroll, and the reveal above is exactly the
-			// moment that becomes true.
 		}
-		Activation::Reroute { note, section } => {
+		Activation::Reroute {
+			space,
+			note,
+			section,
+		} => {
 			retire(&note);
 			// No window is touched on this path, which is the whole of "re-route
 			// without opening the panel": it is satisfied by not calling into `panel`
@@ -271,6 +308,17 @@ fn activated(app: &AppHandle, arguments: &str) {
 				);
 				return;
 			};
+			// **Refused rather than applied to whatever is open now**, and refused
+			// where the user can see it. Copper does not switch spaces to satisfy a
+			// button press — that would move the window and the document out from
+			// under whatever they are doing — so the honest answer is to say the
+			// offer has expired. Without this the move is attempted, `move_notes`
+			// errs on an id the open document has never had, and the only trace is a
+			// log line: a button that silently does nothing.
+			if store::lock(&store).active_id() != Some(space.as_str()) {
+				report(app, &CaptureFailure::SpaceSwitched);
+				return;
+			}
 			if let Err(err) = store::move_notes(&store, std::slice::from_ref(&note), &section) {
 				diagnostics::log_error(&format!(
 					"[copper] capture: the capture notification could not move the note: {}",
@@ -281,18 +329,47 @@ fn activated(app: &AppHandle, arguments: &str) {
 	}
 }
 
+/// Puts a failure on the panel's notice surface, the one place capture ever
+/// reports anything.
+///
+/// Through the same controller the capture pipeline uses, so a refusal from here
+/// takes part in the same episode: it reveals the panel if it was hidden, clears
+/// itself on the same timer, and puts the window back afterwards if it was the
+/// reason it came up.
+fn report(app: &AppHandle, failure: &CaptureFailure) {
+	let Some(notice) = app.try_state::<Arc<NoticeController>>() else {
+		diagnostics::log_error(&format!(
+			"[copper] capture: no notice controller; {} went unreported",
+			failure.cause()
+		));
+		return;
+	};
+	notice.show(failure);
+}
+
 /// The activation argument scheme, in one place.
 ///
 /// Total and refusing: an argument that is not one of the two shapes is reported
 /// rather than guessed at, because guessing wrong here moves the user's note.
+///
+/// The re-route form carries exactly three colon-separated fields and nothing
+/// that could be a fourth — [`actionable`] drops any button whose ids would not
+/// survive the round trip, so a trailing field means the argument is not one this
+/// build wrote.
 fn parse(arguments: &str) -> Option<Activation> {
 	if let Some(note) = arguments.strip_prefix(REVEAL_VERB) {
 		return (!note.is_empty()).then(|| Activation::Reveal {
 			note: note.to_owned(),
 		});
 	}
-	let (note, section) = arguments.strip_prefix(REROUTE_VERB)?.split_once(':')?;
-	(!note.is_empty() && !section.is_empty()).then(|| Activation::Reroute {
+
+	let mut fields = arguments.strip_prefix(REROUTE_VERB)?.split(':');
+	let (space, note, section) = (fields.next()?, fields.next()?, fields.next()?);
+	if fields.next().is_some() {
+		return None;
+	}
+	(!space.is_empty() && !note.is_empty() && !section.is_empty()).then(|| Activation::Reroute {
+		space: space.to_owned(),
 		note: note.to_owned(),
 		section: section.to_owned(),
 	})
@@ -313,14 +390,17 @@ fn document(landed: &Landed, snippet: &str) -> String {
 		escape(snippet),
 	);
 
-	let buttons = actionable(&landed.alternatives);
+	let buttons = actionable(landed);
 	if !buttons.is_empty() {
 		xml.push_str("<actions>");
 		for section in buttons {
 			xml.push_str(&format!(
 				"<action content=\"{}\" arguments=\"{}\" activationType=\"foreground\"/>",
 				escape(&section.name),
-				escape(&format!("{REROUTE_VERB}{}:{}", landed.note, section.id)),
+				escape(&format!(
+					"{REROUTE_VERB}{}:{}:{}",
+					landed.space, landed.note, section.id
+				)),
 			));
 		}
 		xml.push_str("</actions>");
@@ -333,13 +413,23 @@ fn document(landed: &Landed, snippet: &str) -> String {
 /// The sections that get a button: document order, capped, and skipping any id
 /// that would not survive the round trip.
 ///
-/// A `.copper` file is hand-editable, so a section id is not guaranteed to be the
-/// `sec_########` this app generates — and a colon inside one would split the
-/// re-route argument in the wrong place, filing the note into a section the user
-/// did not choose. Dropping the button is the only answer that cannot move
-/// somebody's note by accident.
-fn actionable(alternatives: &[SectionRef]) -> Vec<&SectionRef> {
-	alternatives
+/// A `.copper` file is hand-editable, so neither a section id nor a space id is
+/// guaranteed to be the `sec_########` / `spc_########` this app generates — and
+/// a colon inside either would split the re-route argument in the wrong place,
+/// filing the note into a section the user did not choose, or into a section of
+/// that name in a space they did not mean. Dropping the button is the only answer
+/// that cannot move somebody's note by accident.
+///
+/// A space id that cannot be encoded takes **every** button with it, since none
+/// of them could name the document they belong to. The toast itself still fires:
+/// announcing the capture is what it is mainly for, and its body click carries no
+/// space id to break.
+fn actionable(landed: &Landed) -> Vec<&SectionRef> {
+	if landed.space.is_empty() || landed.space.contains(':') {
+		return Vec::new();
+	}
+	landed
+		.alternatives
 		.iter()
 		.filter(|section| !section.id.contains(':') && !section.name.is_empty())
 		.take(MAX_ACTIONS)
@@ -409,6 +499,7 @@ mod tests {
 	fn landed(alternatives: Vec<SectionRef>) -> Landed {
 		Landed {
 			note: "nte_0000abcd".to_owned(),
+			space: "spc_00000001".to_owned(),
 			notify: true,
 			section: section("sec_11112222", "Inbox"),
 			alternatives,
@@ -426,8 +517,9 @@ mod tests {
 			})
 		);
 		assert_eq!(
-			parse("move:nte_0000abcd:sec_33334444"),
+			parse("move:spc_00000001:nte_0000abcd:sec_33334444"),
 			Some(Activation::Reroute {
+				space: "spc_00000001".to_owned(),
 				note: "nte_0000abcd".to_owned(),
 				section: "sec_33334444".to_owned()
 			})
@@ -450,8 +542,9 @@ mod tests {
 				},
 			),
 			(
-				format!("arguments=\"move:{}:sec_33334444\"", landed.note),
+				format!("arguments=\"move:{}:{}:sec_33334444\"", landed.space, landed.note),
 				Activation::Reroute {
+					space: landed.space.clone(),
 					note: landed.note.clone(),
 					section: "sec_33334444".to_owned(),
 				},
@@ -475,8 +568,16 @@ mod tests {
 			"note:",
 			"move:",
 			"move:nte_1",
-			"move:nte_1:",
-			"move::sec_1",
+			"move:spc_1:nte_1",
+			"move:spc_1:nte_1:",
+			"move:spc_1::sec_1",
+			"move::nte_1:sec_1",
+			// The pre-space form. An argument this build cannot have written is
+			// refused rather than read as a move in the space that happens to be open.
+			"move:nte_1:sec_1",
+			// And nothing may follow the section: a fourth field means the ids were
+			// not the ones `actionable` vetted.
+			"move:spc_1:nte_1:sec_1:extra",
 			"open:nte_1",
 			"nte_1",
 		] {
@@ -525,6 +626,20 @@ mod tests {
 		);
 		assert!(!xml.contains("Broken"), "{xml}");
 		assert!(xml.contains("content=\"Fine\""), "{xml}");
+	}
+
+	/// The space id rides on every re-route argument, so one that cannot be
+	/// encoded takes every button with it — a move that cannot name its document
+	/// is a move that would be applied to whichever one is open.
+	#[test]
+	fn a_space_whose_id_would_break_the_argument_gets_no_buttons_at_all() {
+		let mut hostile = landed(vec![section("sec_33334444", "Ideas")]);
+		hostile.space = "spc:broken".to_owned();
+		let xml = document(&hostile, "a capture");
+
+		assert!(!xml.contains("<actions>"), "{xml}");
+		// The announcement itself is still worth firing.
+		assert!(xml.contains("<text>Captured to Inbox</text>"), "{xml}");
 	}
 
 	#[test]

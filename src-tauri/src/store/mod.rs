@@ -186,6 +186,17 @@ impl Store {
 		self.open.as_ref().map(|open| open.doc.name.as_str())
 	}
 
+	/// The open document's own `id`, without cloning the document to read it.
+	///
+	/// For the callers that hold an identity from an earlier moment and have to ask
+	/// whether it is still the one in front of the user — task-018's capture
+	/// notification, whose buttons outlive the space they were fired for. The name
+	/// above is not that answer: two spaces may share a name, and the id is what
+	/// the document is keyed on everywhere else.
+	pub fn active_id(&self) -> Option<&str> {
+		self.open.as_ref().map(|open| open.doc.id.as_str())
+	}
+
 	/// The bytes the store believes are on disk, for tests and diagnostics.
 	pub fn on_disk_text(&self) -> Option<&str> {
 		self.open.as_ref().map(|open| open.on_disk_text.as_str())
@@ -767,6 +778,16 @@ impl From<&Section> for SectionRef {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Landed {
 	pub note: String,
+	/// The id of the space this capture was written into.
+	///
+	/// **Carried because a notification outlives the space it describes.** Its
+	/// buttons stay live in the Action Center for as long as Windows keeps them,
+	/// and a re-route pressed after a space switch would otherwise be a
+	/// `move_notes` against ids the active document has never heard of — an error
+	/// that reaches a log line and nothing the user can see. The note id alone
+	/// cannot answer the question: ids are unique *within* a document, so "not
+	/// found here" and "belongs to another space" are the same silence.
+	pub space: String,
 	/// Whether the user asked to be told about captures. Read here rather than
 	/// through `commands::settings` for the same reason the sections are.
 	pub notify: bool,
@@ -804,6 +825,7 @@ pub fn append_capture(shared: &SharedStore, body: &str) -> Result<Landed> {
 		.unwrap_or_default();
 	let landed = Landed {
 		note,
+		space: doc.id.clone(),
 		notify,
 		section: doc
 			.sections

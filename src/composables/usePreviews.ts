@@ -56,14 +56,19 @@ export type PreviewState =
  * Lower than `useAttachments`' four, and the reason is different in kind. That
  * bound exists to stop the backend being asked for two thousand image decodes;
  * this one governs **requests to other people's servers**, made because a note
- * scrolled into view. A note pasted from a link dump can carry thirty URLs, and
- * opening the panel should not look like a crawler to thirty hosts at once.
+ * carrying a link is mounted in a panel that is on screen. A note pasted from a
+ * link dump can carry thirty URLs, and showing the panel should not look like a
+ * crawler to thirty hosts at once.
+ *
+ * Nothing here is per-row: every mounted note asks for its links, whether or not
+ * it is scrolled into view. Narrowing that to the rows actually on screen is an
+ * open lever recorded in task-020 rather than something this bound provides.
  */
 const MAX_CONCURRENT_PREVIEWS = 3
 
 // --- module-scope state ------------------------------------------------------
 
-/** Keyed on the href markdown-it emitted, which is the key Rust hashes. */
+/** Keyed on the normalised href — see {@link previewKey}. */
 const previews = ref(new Map<string, PreviewState>())
 /** The URLs this module created, so revoking is exhaustive rather than a walk
  *  over whatever the cache happens to hold at the time. */
@@ -76,13 +81,38 @@ const waiting: string[] = []
 let running = 0
 
 /**
+ * Whether the panel is on screen, and therefore whether a request may go out.
+ *
+ * **A fetch is a disclosure, and it may not happen in a window nobody is
+ * looking at.** The panel window is mounted hidden at launch and stays that way
+ * until the user summons it, so without this a cold start with previews on
+ * contacted every host named anywhere in the space before anything was ever
+ * shown — the one moment the user could not possibly have asked for it.
+ *
+ * The gate holds requests rather than dropping them: `requestPreview` still
+ * records the link and queues it, and {@link setPanelVisible} drains the queue
+ * when the panel appears. Dropping instead would need every note to re-ask, and
+ * the only signal that would reach one is a re-render nothing guarantees.
+ *
+ * Starts false and is answered by `NoteList`, which owns the two signals the
+ * reveal machinery already trusts for the same question — the scroll region
+ * gaining a height, and `visibilitychange`.
+ */
+let panelVisible = false
+
+/**
  * Bumped when previews are switched off, captured by every request in flight.
  *
  * It does the job `useAttachments`' epoch does on a space switch: a response
  * that lands after the toggle went off describes a fetch the user has since
- * withdrawn consent for, and writing it into the cache would mean the card
- * reappears the instant the toggle comes back — from a request made *after* the
- * withdrawal. Dropping it is the honest reading.
+ * withdrawn consent for, and publishing it would put a card back on screen from
+ * a request they have since taken back. Dropping it is the honest reading.
+ *
+ * **It guards this module's state and nothing else.** The fetch is already gone
+ * by the time a response can be dropped here, and the on-disk cache entry it
+ * wrote was written in Rust before this side saw anything — stopping the *fetch*
+ * and the cache write on a mid-flight withdrawal is `previews::preview`'s job,
+ * which re-reads consent between its legs for exactly that reason.
  */
 const generation = ref(0)
 
@@ -187,18 +217,35 @@ async function loadImage(url: string, preview: LinkPreview) {
  * writing reactive state during a computed's evaluation. `NoteBody` watches its
  * own link list instead.
  */
-function requestPreview(url: string) {
+function requestPreview(href: string) {
 	// The rendering gate. Rust refuses independently; this only avoids a round
 	// trip that is guaranteed to come back null.
 	if (!linkPreviews.value) return
-	if (requested.has(url)) return
+	const url = previewKey(href)
+	if (url === '' || requested.has(url)) return
 	requested.add(url)
 	setPreview(url, LOADING)
 	waiting.push(url)
 	pump()
 }
 
+/**
+ * The panel appeared, or went away.
+ *
+ * Called with the answer rather than asking for it, because the two signals that
+ * carry it belong to the list: the scroll region gaining a height is what
+ * `NoteList` already observes for a pending reveal, and it is the one signal
+ * WebView2 is known to produce for a window that was mounted hidden.
+ */
+function setPanelVisible(visible: boolean) {
+	if (panelVisible === visible) return
+	panelVisible = visible
+	if (visible) pump()
+}
+
 function pump() {
+	// Held, not dropped: the queue is drained the moment the panel is shown.
+	if (!panelVisible) return
 	while (running < MAX_CONCURRENT_PREVIEWS && waiting.length > 0) {
 		const next = waiting.shift()
 		if (next === undefined) return
@@ -210,11 +257,33 @@ function pump() {
 	}
 }
 
-/** The state for `url`, or `loading` while there is none. A pure read — see
+/**
+ * The identity two links share when they name one page: the href with its
+ * fragment dropped.
+ *
+ * **This is Rust's cache key, restated on this side so the two agree.**
+ * `previews::cache_key` drops the fragment and keeps the query, so
+ * `…/page` and `…/page#section` are one cache entry there — while a dedup on the
+ * raw href made them two requests here, and two requests racing to write the same
+ * entry. The query is kept for the reason Rust keeps it: `?v=`, `?id=` and `?p=`
+ * routinely *are* the address.
+ *
+ * A string cut rather than `new URL`, which throws on anything not absolute and
+ * would have to be guarded per call; `#` cannot appear in an href except as the
+ * fragment delimiter, since a literal one is percent-encoded by the time
+ * markdown-it emits it.
+ */
+function previewKey(href: string): string {
+	const trimmed = href.trim()
+	const hash = trimmed.indexOf('#')
+	return hash === -1 ? trimmed : trimmed.slice(0, hash)
+}
+
+/** The state for `href`, or `loading` while there is none. A pure read — see
  *  {@link requestPreview} for the half that asks. */
-function previewFor(url: string): PreviewState {
+function previewFor(href: string): PreviewState {
 	if (!linkPreviews.value) return NONE
-	return previews.value.get(url) ?? LOADING
+	return previews.value.get(previewKey(href)) ?? LOADING
 }
 
 export function usePreviews() {
@@ -225,6 +294,7 @@ export function usePreviews() {
 		enabled: linkPreviews,
 		previewFor,
 		requestPreview,
+		setPanelVisible,
 		/** Watch it alongside the links: bumping it is what tells a card whose
 		 *  preview was just dropped to stop showing one. */
 		previewEpoch: readonly(generation),

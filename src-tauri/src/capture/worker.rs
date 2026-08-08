@@ -273,6 +273,7 @@ mod tests {
 		CaptureOutcome::Captured {
 			landed: store::Landed {
 				note: "nte_0000abcd".to_owned(),
+				space: "spc_00000001".to_owned(),
 				notify: true,
 				section: store::SectionRef {
 					id: "sec_11112222".to_owned(),

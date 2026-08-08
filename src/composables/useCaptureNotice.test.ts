@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
 	/** Drives the setup-failure path, which is the one that would otherwise leave
 	 *  capture disarmed for the session with nothing written anywhere. */
 	failNextEmit: false,
+	/** The row keys handed to `useSelection.revealRow`, in order. */
+	revealed: [] as string[],
 }))
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -41,6 +43,11 @@ vi.mock('@tauri-apps/api/event', () => ({
 	},
 }))
 
+vi.mock('./useSelection', () => ({
+	noteRow: (id: string) => `n:${id}`,
+	revealRow: (key: string) => mocks.revealed.push(key),
+}))
+
 const { useCaptureNotice } = await import('./useCaptureNotice')
 
 function fail(payload: CaptureNotice) {
@@ -49,6 +56,10 @@ function fail(payload: CaptureNotice) {
 
 function clear(generation: number) {
 	mocks.handlers.get('capture://cleared')?.({ payload: { generation } })
+}
+
+function reveal(note: string) {
+	mocks.handlers.get('capture://reveal')?.({ payload: { note } })
 }
 
 const FIRST: CaptureNotice = {
@@ -66,6 +77,7 @@ describe('useCaptureNotice', () => {
 		mocks.emitted = []
 		mocks.handlersAtReady = -1
 		mocks.failNextEmit = false
+		mocks.revealed = []
 	})
 
 	it('renders the message a failure carries', async () => {
@@ -107,7 +119,7 @@ describe('useCaptureNotice', () => {
 		await initialize()
 
 		expect(mocks.emitted).toEqual(['capture://ready'])
-		expect(mocks.handlersAtReady).toBe(2)
+		expect(mocks.handlersAtReady).toBe(3)
 	})
 
 	it('registers once no matter how many callers there are', async () => {
@@ -115,7 +127,7 @@ describe('useCaptureNotice', () => {
 		const second = useCaptureNotice().initialize()
 		await Promise.all([first, second])
 
-		expect(mocks.listenCount).toBe(2)
+		expect(mocks.listenCount).toBe(3)
 		expect(mocks.emitted).toEqual(['capture://ready'])
 	})
 
@@ -126,7 +138,30 @@ describe('useCaptureNotice', () => {
 		const second = useCaptureNotice().initialize()
 		await Promise.all([first, second])
 
-		expect(mocks.listenCount).toBe(2)
+		expect(mocks.listenCount).toBe(3)
+	})
+
+	it('arms a reveal for the note a capture notification names', async () => {
+		// The toast body click is the ask, and the note it names is the one to
+		// scroll to — not whatever the most recent capture happened to arm. Two
+		// captures leave one slot pointing at the second note; clicking the first
+		// toast has to overrule it.
+		const { initialize } = useCaptureNotice()
+		await initialize()
+
+		reveal('nte_second')
+		reveal('nte_first')
+
+		expect(mocks.revealed).toEqual(['n:nte_second', 'n:nte_first'])
+	})
+
+	it('ignores a reveal that names no note', async () => {
+		const { initialize } = useCaptureNotice()
+		await initialize()
+
+		reveal('')
+
+		expect(mocks.revealed).toEqual([])
 	})
 
 	it('shares one notice across callers', async () => {
@@ -162,10 +197,10 @@ describe('useCaptureNotice', () => {
 
 		dispose()
 
-		expect(mocks.unlistenCount).toBe(2)
+		expect(mocks.unlistenCount).toBe(3)
 		expect(notice.value).toBeNull()
 		// And it can start again cleanly.
 		await initialize()
-		expect(mocks.listenCount).toBe(4)
+		expect(mocks.listenCount).toBe(6)
 	})
 })

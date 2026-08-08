@@ -69,6 +69,12 @@ const links = computed(() => noteLinks(props.note))
  * on has to make every mounted note ask, and there is no other signal that would
  * reach one. The epoch is the mirror of that: switching it off drops the state
  * under cards that are still mounted, and this is what makes them notice.
+ *
+ * **Asking is not fetching.** This fires when the note mounts and whenever its
+ * link list changes — nothing here observes whether the row is on screen, or even
+ * whether the panel is. Holding the request until the panel is visible is
+ * `usePreviews`' job, and it is a rule about disclosure rather than an
+ * optimisation, so it lives on the side that issues the command.
  */
 watch(
 	() => [links.value, previewsEnabled.value, previewEpoch.value] as const,

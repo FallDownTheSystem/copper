@@ -22,7 +22,7 @@ import { useNoteDisclosure } from './useNoteDisclosure'
 import { useNoteEditor } from './useNoteEditor'
 import { useNoteList } from './useNoteList'
 import { useNoteSearch } from './useNoteSearch'
-import { noteRow, sectionRow, takeRow, useSelection } from './useSelection'
+import { noteRow, rowNoteId, sectionRow, takeRow, useSelection } from './useSelection'
 import { useSettings } from './useSettings'
 import { countMessage, useStatusMessage, type StatusAction } from './useStatusMessage'
 import { useSpace } from './useSpace'
@@ -285,12 +285,20 @@ function capturePaste(text: string) {
  *
  * That is enough because a batch is already one step. Marking a multi-note
  * selection done is a single `set_notes_done` and a single store snapshot, so
- * one press restores all of it; and separate presses do not accumulate, because
- * a second one replaces the pill — the toast on screen always describes the most
- * recent step, which is the one its button undoes. Anything cleverer (a stack of
- * pills, an undo that walks back several steps) would be a second undo model
- * beside the store's, disagreeing with `Ctrl+Z` in exactly the cases that are
- * hard to reason about.
+ * one press restores all of it.
+ *
+ * **What makes the pill on screen describe the step this undoes is not this
+ * file.** A second reporting action replaces the pill, but most mutations report
+ * nothing and still push an undo step — `submitEntry`, a zero-focus paste, a
+ * drag, an Alt+Arrow, a `Move to ▸` — so "the newest toast names the newest
+ * step" is true only because `useSpace.mutate` retires the standing pill for
+ * every mutation that does not replace it. Without that, marking a note done and
+ * then composing one left this button removing the new note under a toast that
+ * said it would put a done one back.
+ *
+ * Anything cleverer (a stack of pills, an undo that walks back several steps)
+ * would be a second undo model beside the store's, disagreeing with `Ctrl+Z` in
+ * exactly the cases that are hard to reason about.
  *
  * One object rather than one per call: it closes over nothing, and the pill is
  * keyed on the message's generation rather than on this identity.
@@ -307,14 +315,17 @@ const UNDO_ACTION: StatusAction = { label: 'Undo', run: () => void undo() }
  * unmarking one. Both directions therefore report, and both offer the way back.
  *
  * Focus is handed on for the same reason and through the same helper a delete
- * uses: the row that held it may no longer be in the list.
+ * uses: the row that held it may no longer be in the list. **Which note it is
+ * handed on from is decided by DOM focus first**, because the completion circle
+ * acts on a card the keyboard may never have been near — see `domFocusHolder`.
  */
 async function applyDone(ids: string[], done: boolean) {
 	if (ids.length === 0) return
 
-	// Read before the round trip: afterwards reconciliation has already moved the
-	// roving target off the note this is asking about.
-	const held = selection.focusedNoteId.value
+	// Read before the round trip: afterwards the element that had focus has left
+	// the DOM with its row, and reconciliation has already moved the roving target
+	// off the note this is asking about.
+	const held = domFocusHolder() ?? selection.focusedNoteId.value
 	if (!space.applied(await space.setNotesDone(ids, done))) return
 
 	handFocusOnVanished(held)
@@ -501,6 +512,32 @@ function merge() {
  * done` sweep that removes notes elsewhere in the list is not a reason to pull
  * focus out of the control the user just pressed.
  */
+/**
+ * The note whose row holds DOM focus right now, or null when focus is anywhere
+ * else — the composer, a portalled menu, the body.
+ *
+ * **Asked because the roving target is a different question, and the completion
+ * circle is where the two come apart.** `Checkbox` is a focusable control inside
+ * the row and takes DOM focus on the press that toggles the note, while the
+ * roving target is still wherever the keyboard left it: null in a panel nobody
+ * has arrowed through yet, or another note entirely. In the default view the note
+ * then vanishes from the list, `handFocusOnVanished` is asked about a note that
+ * is still on screen (or about nothing), it correctly declines — and the element
+ * that had focus leaves the DOM with the row, dropping focus to `<body>` where no
+ * arrow key does anything.
+ *
+ * The row is read from the *element that has focus*, so a click on the circle
+ * names the card it sits in without the card having to say so, and the keyboard
+ * path answers the same as before: `Space` presses arrive on the row itself.
+ * Focus inside a menu resolves to no row at all, which is right — the menu is
+ * about to close and the roving target is the only thing left to follow.
+ */
+function domFocusHolder(): string | null {
+	if (typeof document === 'undefined') return null
+	const row = document.activeElement?.closest?.('[data-row-id]')
+	return rowNoteId(row instanceof HTMLElement ? (row.dataset.rowId ?? null) : null)
+}
+
 function handFocusOnVanished(held: string | null) {
 	if (held === null || selection.rowIds.value.includes(noteRow(held))) return
 	const target = selection.focusedId.value

@@ -4804,6 +4804,37 @@ describe('the status toast', () => {
 		expect(wrapper.find('[data-toast-action]').exists()).toBe(false)
 	})
 
+	/**
+	 * **The button undoes the top of the store's stack, so the pill has to be
+	 * retired by anything that changes what that is.** Most mutations push a step
+	 * and report nothing — a composer submit, a paste, a drag, an Alt+Arrow, a
+	 * `Move to ▸` — so without the invalidation in `useSpace.mutate` this exact
+	 * sequence left "Moved 1 note to Done" on screen over a button that removed the
+	 * note just written.
+	 */
+	it('retires the pill when a later mutation lands without one of its own', async () => {
+		const wrapper = await mountPanel()
+
+		selection.select('nte_1')
+		await settle(2)
+		await actions.toggleDone()
+		await settle(4)
+		expect(wrapper.get('[data-status-toast]').text()).toContain('Moved 1 note to Done')
+
+		const composer = wrapper.find('#composer')
+		await composer.setValue('a new note')
+		await composer.trigger('keydown', { key: 'Enter' })
+		await settle(4)
+
+		expect(mocks.invoke).toHaveBeenCalledWith(
+			'submit_entry',
+			expect.objectContaining({ body: 'a new note' }),
+		)
+		// Message and button together: a pill naming a step that is no longer the
+		// one its button would take has no honest half left.
+		expect(wrapper.find('[data-status-toast]').exists()).toBe(false)
+	})
+
 	/** The reverse direction reports too, and for the same reason: in the done view
 	 *  it is unmarking that makes a row disappear. */
 	it('reports a note moved out of Done', async () => {
@@ -4869,5 +4900,103 @@ describe('the status toast', () => {
 
 		expect(selection.focusedId.value).toBe(noteRow('nte_3'))
 		expect(document.activeElement).toBe(wrapper.get(`[data-row-id="${noteRow('nte_3')}"]`).element)
+	})
+
+	/**
+	 * **The completion circle is a control inside the row, and the press that
+	 * toggles the note takes DOM focus itself.** So the note focus has to be handed
+	 * on *from* is the one whose row holds the focused element — not the roving
+	 * target, which in a panel nobody has arrowed through is nothing at all, and
+	 * otherwise is some other note still happily on screen. Asked that way,
+	 * `handFocusOnVanished` correctly declines both times, the row leaves with the
+	 * focused button inside it, and focus falls to `<body>` where no arrow key does
+	 * anything.
+	 *
+	 * Focused explicitly because happy-dom dispatches a click without moving focus;
+	 * a real press focuses the button first, which is the state under test.
+	 *
+	 * **These assert the guarantee, not the mechanism, and they cannot do more
+	 * here.** The failure in a real WebView needs auto-animate's exit window — the
+	 * row is removed from the list and still `isConnected` at the tick
+	 * `restoreDom` runs, so its own handoff declines; the same race
+	 * `handFocusOnVanished` was written for. In this environment the row leaves
+	 * synchronously, `restoreDom` covers the same ground, and no arrangement of
+	 * the stubbed WAAPI reopens the window.
+	 */
+	describe('clicking the completion circle', () => {
+		const THREE: Space = {
+			...SPACE,
+			notes: ['nte_1', 'nte_2', 'nte_3'].map((id, order) => ({
+				id,
+				section: 'sec_a',
+				order,
+				done: false,
+				body: id,
+				created: '2026-08-05T00:00:00Z',
+				updated: '2026-08-05T00:00:00Z',
+			})),
+		}
+
+		async function mountThree() {
+			mocks.invoke.mockImplementation(async (command: string, args?: { ids?: string[] }) => {
+				if (command === 'get_active_space') return THREE
+				if (command === 'set_notes_done') {
+					return {
+						...THREE,
+						notes: THREE.notes.map((entry) =>
+							args?.ids?.includes(entry.id) ? { ...entry, done: true } : entry,
+						),
+					}
+				}
+				return baseInvoke(command)
+			})
+			// The panel's real default, in which a note marked done leaves the list.
+			list.reset()
+			const wrapper = await mountPanel()
+			await space.refresh()
+			await settle(3)
+			return wrapper
+		}
+
+		async function clickCircle(wrapper: Awaited<ReturnType<typeof mountPanel>>, noteId: string) {
+			const circle = wrapper.get(`[data-row-id="${noteRow(noteId)}"] [data-slot="checkbox"]`)
+			;(circle.element as HTMLElement).focus()
+			await circle.trigger('click')
+			await settle(5)
+		}
+
+		it('hands focus on from the clicked row, not from the roving target', async () => {
+			const wrapper = await mountThree()
+			selection.select('nte_1')
+			takeRow(noteRow('nte_1'))
+			await settle(2)
+
+			await clickCircle(wrapper, 'nte_3')
+
+			expect(wrapper.findAll('[data-note-row]')).toHaveLength(2)
+			// The roving target never moved — `nte_1` is still on screen — and the
+			// whole point is that DOM focus came back to it out of the row that left,
+			// instead of being dropped on the floor with the button it was on.
+			expect(selection.focusedId.value).toBe(noteRow('nte_1'))
+			expect(document.activeElement).toBe(
+				wrapper.get(`[data-row-id="${noteRow('nte_1')}"]`).element,
+			)
+		})
+
+		it('still walks focus forward when the clicked note is the roving target', async () => {
+			const wrapper = await mountThree()
+			selection.select('nte_2')
+			takeRow(noteRow('nte_2'))
+			await settle(2)
+
+			await clickCircle(wrapper, 'nte_2')
+
+			// Reconciliation's nearest-survivor walk, unchanged by reading the handoff
+			// source off the DOM: forward first, and the row it chose has focus.
+			expect(selection.focusedId.value).toBe(noteRow('nte_3'))
+			expect(document.activeElement).toBe(
+				wrapper.get(`[data-row-id="${noteRow('nte_3')}"]`).element,
+			)
+		})
 	})
 })

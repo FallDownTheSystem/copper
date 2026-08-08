@@ -70,7 +70,14 @@ pub async fn link_preview(
 		return Ok(None);
 	};
 
-	Ok(super::preview(&dir, true, &url, &net::Web).await)
+	// The same read, as something `preview` can perform again between its legs. A
+	// `State` cannot outlive the command, so the closure owns an `Arc` of its own;
+	// each call takes the lock, reads a `bool` and drops it, and none of that
+	// happens while a request is in flight.
+	let shared = state.inner().clone();
+	let consented = move || store::lock(&shared).settings().link_previews;
+
+	Ok(super::preview(&dir, &consented, &url, &net::Web).await)
 }
 
 /// The bytes of a cached preview picture, or **an empty response**.

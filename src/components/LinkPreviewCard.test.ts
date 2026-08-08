@@ -5,6 +5,7 @@ import NoteBody from './NoteBody.vue'
 import LinkPreviewCard from './LinkPreviewCard.vue'
 import type { Note, Settings } from '@/composables/useSpace'
 import { useSettings } from '@/composables/useSettings'
+import { usePreviews } from '@/composables/usePreviews'
 
 /**
  * Task-020, asserted through `NoteBody` rather than through the card alone,
@@ -102,6 +103,12 @@ async function withPreviews(enabled: boolean) {
 		}
 	})
 	await useSettings().refresh()
+	// The other precondition of a fetch, and it is a separate one: a request may
+	// not be issued while the panel window is not on screen, which is how it starts
+	// life. `NoteList` answers that question in the app and is not mounted here, so
+	// the cases below stand the panel up themselves — except the one asserting the
+	// gate, which puts it back down.
+	usePreviews().setPanelVisible(true)
 	await flush()
 }
 
@@ -238,6 +245,50 @@ describe('when link previews are switched on', () => {
 		await flush()
 
 		expect(wrapper.findComponent(LinkPreviewCard).get('button').attributes('tabindex')).toBe('-1')
+	})
+
+	/**
+	 * The panel window is mounted hidden at launch and stays that way until the
+	 * user summons it. Fetching then would contact every host named anywhere in the
+	 * space at the one moment nobody could have asked for it — so the request is
+	 * held, and released when the panel appears.
+	 */
+	it('issues nothing while the panel is hidden and flushes when it is shown', async () => {
+		await withPreviews(true)
+		const { setPanelVisible } = usePreviews()
+		setPanelVisible(false)
+
+		mount(NoteBody, { props: { note: makeNote('https://hidden.example/x', 'nte_hidden') } })
+		await flush()
+		expect(previewCalls()).toEqual([])
+
+		setPanelVisible(true)
+		await flush()
+
+		// Held, not dropped: nothing re-renders the note, so a dropped request would
+		// be a link that never resolves for the life of the session.
+		expect(previewCalls()).toEqual([['link_preview', { url: 'https://hidden.example/x' }]])
+	})
+
+	/**
+	 * Rust keys its cache on the URL with the fragment dropped, so two links
+	 * differing only by `#section` are one entry there. Dedup on the raw href made
+	 * them two requests here — two disclosures, racing to write the same file.
+	 */
+	it('treats two fragment variants of one URL as one page', async () => {
+		await withPreviews(true)
+
+		const wrapper = mount(NoteBody, {
+			props: {
+				note: makeNote('https://frag.example/p#one and https://frag.example/p#two', 'nte_fragment'),
+			},
+		})
+		await flush()
+
+		expect(previewCalls()).toEqual([['link_preview', { url: 'https://frag.example/p' }]])
+		// And both links read the one answer, rather than one card and one link that
+		// never resolves.
+		expect(wrapper.findAllComponents(LinkPreviewCard).length).toBe(2)
 	})
 
 	/** A URL the renderer refuses to make a link of is not a link, so no request

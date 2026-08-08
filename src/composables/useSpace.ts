@@ -49,6 +49,7 @@ import { useNoteSearch } from './useNoteSearch'
 import { useSectionEditor } from './useSectionEditor'
 import { useSections } from './useSections'
 import { useSounds } from './useSounds'
+import { useStatusMessage } from './useStatusMessage'
 
 // --- the document, mirroring task-003 exactly --------------------------------
 
@@ -238,6 +239,7 @@ const sectionState = useSections()
 const listState = useNoteList()
 const handoff = useEditorHandoff()
 const attachmentState = useAttachments()
+const status = useStatusMessage()
 
 /** Re-exported for the adapters beside this one, which have always taken it from
  *  here. It moved to `lib/` when `useAttachments` needed it too — importing it
@@ -634,6 +636,30 @@ const { initialize, dispose } = createStartup(
 // --- mutations ---------------------------------------------------------------
 
 /**
+ * The standing toast belongs to the mutation that set it, and this is a
+ * different one.
+ *
+ * **Every store mutation passes through `mutate` or `restore`, which is why the
+ * rule lives here rather than at the callers.** The toast carries an `Undo`
+ * button bound to the top of the store's undo stack, and most mutations set no
+ * toast at all — a composer submit, a zero-focus paste, a drag, an Alt+Arrow, a
+ * `Move to ▸` — so each of them used to leave the *previous* action's pill on
+ * screen over a button that now undid theirs. Marking a note done and then
+ * composing one left "Moved 1 note to Done · Undo" standing over a press that
+ * removed the note just written.
+ *
+ * The message and the button go together. A pill whose button has gone stale has
+ * no honest remainder: "Moved 1 note to Done" is a claim about what the last
+ * thing to happen was, and it is no longer true either.
+ *
+ * Callers that *do* report set their message after their command resolves, so
+ * this clears a moment before they write, never over them.
+ */
+function retireStandingToast() {
+	status.clear()
+}
+
+/**
  * Nothing is cleared optimistically and nothing is retried automatically: a
  * failure leaves the text in place with a visible message, because a silently
  * lost capture is the failure mode the whole product is designed against.
@@ -667,6 +693,10 @@ async function mutate<T>(
 		useSounds().actionFailed()
 		return null
 	}
+
+	// After the command, not before it: a refused mutation changed nothing, so the
+	// pill on screen is still describing the most recent thing that happened.
+	retireStandingToast()
 
 	const revealId = options.revealNote?.(result) ?? null
 	if (revealId) revealAddedNote = { kind: 'note', id: revealId }
@@ -940,6 +970,12 @@ async function restore(command: 'undo' | 'redo'): Promise<'applied' | 'empty' | 
 		await pullStatus()
 		return 'empty'
 	}
+
+	// The other half of the rule `mutate` states: a step walked back is a step the
+	// pill can no longer offer to walk back. Leaving it up after its own `Undo` was
+	// pressed invites a second press, which takes the step *before* the one the
+	// pill names.
+	retireStandingToast()
 
 	// Routed through the ordinary applied-document path, so task-004's selection
 	// reconciliation runs and prunes ids the restored document no longer has.
