@@ -68,6 +68,21 @@ windows = { version = "=0.61.3", features = [
 	"Win32_System_Threading",
 	"Win32_UI_Accessibility",
 	"Win32_UI_Input_KeyboardAndMouse",
+	# --- capture notifications (task-018) ---
+	# Features, not a new crate. `tauri-winrt-notification` is a thin wrapper over
+	# exactly these four APIs, but its current release moved to windows 0.62 and
+	# would resolve the second, semver-incompatible copy of `windows` the `=0.61.3`
+	# pin above exists to prevent — pinning it to the last 0.61-compatible version
+	# instead buys convenience for a pin that rots the moment Tauri moves.
+	#
+	# `Data_Xml_Dom` is the toast payload (XmlDocument), `Foundation` is
+	# TypedEventHandler — the activation callback, and the whole reason the plugin
+	# cannot do this — and `UI_Notifications` is ToastNotification itself.
+	# `Foundation_Collections` is deliberately absent: it gates only
+	# `ToastActivatedEventArgs::UserInput`, and this toast has no input fields.
+	"Data_Xml_Dom",
+	"Foundation",
+	"UI_Notifications",
 ] }
 tauri-plugin-single-instance = "2.4.3"
 tauri-plugin-global-shortcut = "2.3.2"

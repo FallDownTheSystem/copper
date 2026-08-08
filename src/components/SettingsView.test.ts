@@ -35,6 +35,7 @@ function makeSettings(over: Partial<Settings> = {}): Settings {
 		doubleClick: 'copy',
 		alwaysOnTop: true,
 		showCreated: false,
+		captureNotifications: true,
 		...over,
 	}
 }
@@ -306,5 +307,40 @@ describe('the date-added switch', () => {
 		await flush()
 
 		expect(patchesSent()).toEqual([{ showCreated: true }])
+	})
+})
+
+/**
+ * Task-018's one settings key, and the one row in this view whose default is
+ * *on*. A capture that lands while the panel is hidden produces nothing the user
+ * can see, so shipping this off would ship a gesture with no confirmation and a
+ * feature nobody discovers.
+ */
+describe('the capture-notifications switch', () => {
+	it('ships on, so a hidden capture confirms itself out of the box', async () => {
+		const wrapper = await openSettings()
+		expect(wrapper.get('#capture-notifications').attributes('aria-checked')).toBe('true')
+	})
+
+	/** The half a default-off row cannot get wrong: an older `settings.json` has
+	 *  no such key at all, and reading its absence as "off" would silence the
+	 *  feature for every existing install. */
+	it('reads an absent key as on', async () => {
+		const wrapper = await openSettings({ captureNotifications: undefined })
+		expect(wrapper.get('#capture-notifications').attributes('aria-checked')).toBe('true')
+	})
+
+	it('reflects a stored false', async () => {
+		const wrapper = await openSettings({ captureNotifications: false })
+		expect(wrapper.get('#capture-notifications').attributes('aria-checked')).toBe('false')
+	})
+
+	it('writes only its own key', async () => {
+		const wrapper = await openSettings()
+
+		await wrapper.get('#capture-notifications').trigger('click')
+		await flush()
+
+		expect(patchesSent()).toEqual([{ captureNotifications: false }])
 	})
 })

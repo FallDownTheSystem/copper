@@ -51,6 +51,7 @@ function makeSettings(sounds: boolean): Settings {
 		doubleClick: 'copy',
 		alwaysOnTop: true,
 		showCreated: false,
+		captureNotifications: true,
 	}
 }
 

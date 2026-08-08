@@ -353,7 +353,7 @@ pub async fn redo(state: State<'_, SharedStore>) -> Reply<Option<Space>> {
 // --- Rust-side entry points --------------------------------------------------
 
 /// Phase 4's capture hook (spec 8.5), taking the handle it already has.
-pub fn append_capture(app: &AppHandle, body: &str) -> Reply<String> {
+pub fn append_capture(app: &AppHandle, body: &str) -> Reply<super::Landed> {
 	let state = app.state::<SharedStore>();
 	super::append_capture(&state, body)
 }

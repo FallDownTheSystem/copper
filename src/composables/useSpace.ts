@@ -108,6 +108,10 @@ export type Settings = {
 	 *  task-003. A display preference only — nothing about it changes what is
 	 *  written. */
 	showCreated: boolean
+	/** Whether a capture that lands while the panel is hidden fires a Windows
+	 *  notification. Read and acted on entirely in Rust — the panel only renders
+	 *  the switch. */
+	captureNotifications: boolean
 }
 
 /**
@@ -122,7 +126,7 @@ export type Settings = {
 export type SpaceView = DeepReadonly<Space>
 export type NoteView = DeepReadonly<Note>
 
-export type ChangeReason = 'external' | 'capture' | 'reload' | 'editor'
+export type ChangeReason = 'external' | 'capture' | 'reload' | 'editor' | 'reroute'
 export type SpaceChangedPayload = { id: string; path: string; reason: ChangeReason }
 export type StoreErrorPayload = { kind: string; message: string }
 /** What a composer submission turned out to be. `# Name` is classified in Rust,
@@ -464,7 +468,11 @@ async function refresh() {
 }
 
 /**
- * All three reasons are live and each has exactly one producer.
+ * Every reason is live and each has exactly one producer. Only `capture` is
+ * branched on here; the rest reach the same re-pull, which is the point of an
+ * identity-only payload. `reroute` — a capture notification's button filing the
+ * note elsewhere — is deliberately *not* `capture`, because it would otherwise
+ * play the capture sound and ask the list to scroll to a note nothing added.
  *
  * `reload` is the one with distinct behaviour: it is errored-state recovery, and
  * it fires **even when the recovered document is byte-identical**, deliberately

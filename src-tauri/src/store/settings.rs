@@ -45,6 +45,7 @@ pub struct Settings {
 	pub double_click: String,
 	pub always_on_top: bool,
 	pub show_created: bool,
+	pub capture_notifications: bool,
 }
 
 /// Where a fresh note goes inside its section.
@@ -100,6 +101,13 @@ impl Default for Settings {
 			// its display is new — so turning this on reveals real history rather
 			// than starting to collect it.
 			show_created: false,
+			// On, and the opposite way round to `sounds` on purpose. A capture that
+			// lands while the panel is hidden produces nothing the user can see —
+			// that is the whole point of a global capture — so without this they have
+			// no confirmation at all that the double-tap did anything. `sounds` ships
+			// off because it adds noise to a path that already has a surface; this
+			// ships on because it *is* the surface.
+			capture_notifications: true,
 		}
 	}
 }
@@ -139,6 +147,7 @@ struct RawSettings {
 	double_click: Value,
 	always_on_top: Value,
 	show_created: Value,
+	capture_notifications: Value,
 }
 
 impl RawSettings {
@@ -222,6 +231,12 @@ impl RawSettings {
 			defaults.show_created,
 			&mut notices,
 		);
+		let capture_notifications = repair_flag(
+			self.capture_notifications,
+			"captureNotifications",
+			defaults.capture_notifications,
+			&mut notices,
+		);
 
 		let motion = repair_named(self.motion, "motion", defaults.motion, &mut notices);
 		let insertion_point = repair_named(
@@ -249,6 +264,7 @@ impl RawSettings {
 			double_click,
 			always_on_top,
 			show_created,
+			capture_notifications,
 		};
 		settings.clamp();
 		(settings, notices)
@@ -413,6 +429,9 @@ impl Settings {
 		if let Some(show_created) = patch.show_created {
 			self.show_created = show_created;
 		}
+		if let Some(capture_notifications) = patch.capture_notifications {
+			self.capture_notifications = capture_notifications;
+		}
 	}
 }
 
@@ -439,6 +458,8 @@ pub struct SettingsPatch {
 	pub always_on_top: Option<bool>,
 	#[serde(default)]
 	pub show_created: Option<bool>,
+	#[serde(default)]
+	pub capture_notifications: Option<bool>,
 }
 
 /// Distinguishes "key absent" from "key present and null".
@@ -649,8 +670,72 @@ mod tests {
 			 \"shortcuts\": {\n    \"capture\": \"Shift Shift\",\n    \"summon\": \
 			 \"Ctrl+Shift+Space\"\n  },\n  \"theme\": \"system\",\n  \"sounds\": false,\n  \
 			 \"motion\": \"auto\",\n  \"insertionPoint\": \"bottom\",\n  \"doubleClick\": \
-			 \"copy\",\n  \"alwaysOnTop\": true,\n  \"showCreated\": false\n}\n"
+			 \"copy\",\n  \"alwaysOnTop\": true,\n  \"showCreated\": false,\n  \
+			 \"captureNotifications\": true\n}\n"
 		);
+	}
+
+	/// Task-018's key takes the `alwaysOnTop` shape rather than the `showCreated`
+	/// one: its default is `true`, so an absent key must read as *on*. Getting this
+	/// backwards would silence capture notifications for every existing install the
+	/// first time it upgraded, over a setting nobody had touched.
+	#[test]
+	fn a_file_without_the_capture_notifications_key_reads_as_on_without_a_notice() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"theme":"dark","showCreated":true}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(loaded.notice.is_none(), "absence was reported as damage: {:?}", loaded.notice);
+		assert_eq!(siblings(dir.path()), [FILE_NAME], "the file was set aside");
+		assert!(
+			loaded.settings.capture_notifications,
+			"an absent key must leave capture notifications on"
+		);
+		// The rest of the file survived rather than being defaulted alongside it.
+		assert_eq!(loaded.settings.theme, "dark");
+		assert!(loaded.settings.show_created);
+	}
+
+	#[test]
+	fn a_wrong_typed_capture_notifications_is_repaired_to_on_and_reported() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"captureNotifications":"loudly"}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(loaded.settings.capture_notifications);
+		let notice = loaded.notice.expect("repairs must be reported");
+		assert!(notice.contains("captureNotifications"), "{notice}");
+	}
+
+	#[test]
+	fn an_explicit_false_capture_notifications_survives_a_load() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"captureNotifications":false}"#);
+
+		let loaded = load(&path);
+
+		assert!(loaded.notice.is_none());
+		assert!(!loaded.settings.capture_notifications);
+	}
+
+	#[test]
+	fn a_patch_sets_capture_notifications_without_touching_its_neighbours() {
+		let mut settings = Settings::default();
+
+		settings.apply_patch(patch(r#"{"captureNotifications":false}"#));
+		assert!(!settings.capture_notifications);
+		assert!(settings.always_on_top, "an absent key must leave the stored value alone");
+
+		settings.apply_patch(patch(r#"{"showCreated":true}"#));
+		assert!(
+			!settings.capture_notifications,
+			"a showCreated patch must not turn notifications back on"
+		);
+		assert!(settings.show_created);
 	}
 
 	/// The pin joins `sounds`, `motion` and task-013's two keys in the same

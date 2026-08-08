@@ -48,6 +48,12 @@ pub enum ChangeReason {
 	/// writer the frontend did not invoke, so its `Space` return value reaches
 	/// nobody and the panel would otherwise keep rendering the pre-save body.
 	Editor,
+	/// A capture notification's re-route button (task-018) — the fourth Rust-side
+	/// writer, and the reason it is not folded into [`Self::Capture`]: the panel
+	/// treats `capture` as "a note just landed" and answers it with a sound and a
+	/// scroll request, neither of which belongs to a note the user is merely
+	/// filing from a toast.
+	Reroute,
 }
 
 /// Braces, not a unit struct: `struct SettingsChanged;` and Rust's `()` both
@@ -218,6 +224,7 @@ mod tests {
 			(ChangeReason::Capture, "capture"),
 			(ChangeReason::Reload, "reload"),
 			(ChangeReason::Editor, "editor"),
+			(ChangeReason::Reroute, "reroute"),
 		] {
 			assert_eq!(serde_json::to_value(reason).unwrap(), expected);
 		}

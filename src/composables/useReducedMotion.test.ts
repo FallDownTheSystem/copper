@@ -35,6 +35,7 @@ function makeSettings(motion: string): Settings {
 		doubleClick: 'copy',
 		alwaysOnTop: true,
 		showCreated: false,
+		captureNotifications: true,
 	}
 }
 

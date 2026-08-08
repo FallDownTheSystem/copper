@@ -60,7 +60,7 @@ pub fn spawn(
 				let outcome = capture_once(&app, &mut uia);
 				check_focus_did_not_move(before);
 				report(&outcome, trigger);
-				route(&notice, outcome);
+				route(&app, &notice, outcome);
 			}
 		})
 }
@@ -89,7 +89,11 @@ fn with_clipboard_loss(outcome: CaptureOutcome, restore_failed: bool) -> Capture
 		return outcome;
 	}
 	match outcome {
-		CaptureOutcome::Captured => CaptureOutcome::CapturedWithClipboardLoss,
+		// The landing details go with it, and so does the capture notification they
+		// were read for: this outcome already reveals the panel to say the clipboard
+		// was lost, so the note is on screen and a toast about it would be a second
+		// interruption for one gesture.
+		CaptureOutcome::Captured { .. } => CaptureOutcome::CapturedWithClipboardLoss,
 		CaptureOutcome::Failed(_) => CaptureOutcome::Failed(CaptureFailure::ClipboardRestoreFailed),
 		// Neither reaches the clipboard at all, so neither can carry its loss.
 		already @ (CaptureOutcome::CapturedWithClipboardLoss | CaptureOutcome::Ignored) => already,
@@ -183,17 +187,32 @@ fn save(app: &AppHandle, text: &str) -> CaptureOutcome {
 	};
 
 	match store::append_capture(&store, text) {
-		Ok(_) => CaptureOutcome::Captured,
+		// The snippet is taken here, where the text still exists: `text` is borrowed
+		// from a buffer that ends with this function, and it can be a hundred thousand
+		// characters the notification would only throw away.
+		Ok(landed) => CaptureOutcome::Captured {
+			landed,
+			snippet: super::toast::snippet(text),
+		},
 		Err(err) => CaptureOutcome::Failed(CaptureFailure::NotSaved { kind: err.kind() }),
 	}
 }
 
-/// Routes the outcome. Success does nothing whatsoever — no window, no sound, no
-/// event. If the panel happens to be visible the new note simply appears, via the
-/// store's own change event.
-fn route(notice: &NoticeController, outcome: CaptureOutcome) {
+/// Routes the outcome. Success still shows nothing in the panel — if it happens
+/// to be visible the new note simply appears, via the store's own change event —
+/// but a capture the user could not have watched land now announces itself with a
+/// Windows notification (task-018).
+///
+/// **Deliberately here rather than inside [`save`].** Everything on this line runs
+/// after the store's commit point, so nothing a notification does can block, delay
+/// or corrupt the capture it is describing. That is what AC-6 asks for, and it is
+/// structural rather than something this function has to remember.
+fn route(app: &AppHandle, notice: &NoticeController, outcome: CaptureOutcome) {
 	match outcome {
-		CaptureOutcome::Captured | CaptureOutcome::Ignored => {}
+		CaptureOutcome::Captured { landed, snippet } => {
+			super::toast::announce(app, &landed, &snippet);
+		}
+		CaptureOutcome::Ignored => {}
 		CaptureOutcome::CapturedWithClipboardLoss => {
 			notice.show(&CaptureFailure::ClipboardRestoreFailed);
 		}
@@ -246,11 +265,30 @@ fn report(_outcome: &CaptureOutcome, _trigger: Trigger) {}
 mod tests {
 	use super::*;
 
+	/// A successful capture as the store reports one. The values are inert here:
+	/// nothing under test reads them, and what matters is that a success carrying
+	/// landing details still folds into a clipboard loss the same way a bare one
+	/// did.
+	fn captured() -> CaptureOutcome {
+		CaptureOutcome::Captured {
+			landed: store::Landed {
+				note: "nte_0000abcd".to_owned(),
+				notify: true,
+				section: store::SectionRef {
+					id: "sec_11112222".to_owned(),
+					name: "Inbox".to_owned(),
+				},
+				alternatives: Vec::new(),
+			},
+			snippet: "captured".to_owned(),
+		}
+	}
+
 	/// Every shape `run_cascade` can return, so a variant added later without a
 	/// rule here fails to compile rather than silently swallowing a data loss.
 	fn every_outcome() -> Vec<CaptureOutcome> {
 		vec![
-			CaptureOutcome::Captured,
+			captured(),
 			CaptureOutcome::CapturedWithClipboardLoss,
 			CaptureOutcome::Ignored,
 			CaptureOutcome::Failed(CaptureFailure::NoSelection),
@@ -291,7 +329,7 @@ mod tests {
 		// The note was written; the clipboard was not put back. R8's silence on
 		// success is qualified by exactly this case.
 		assert_eq!(
-			with_clipboard_loss(CaptureOutcome::Captured, true),
+			with_clipboard_loss(captured(), true),
 			CaptureOutcome::CapturedWithClipboardLoss
 		);
 	}

@@ -81,6 +81,7 @@ type PreferenceScope =
 	| 'doubleClick'
 	| 'alwaysOnTop'
 	| 'showCreated'
+	| 'captureNotifications'
 
 // --- module-scope state ------------------------------------------------------
 
@@ -125,6 +126,12 @@ const alwaysOnTop = computed(() => settings.value?.alwaysOnTop !== false)
  *  unreadable or older `settings.json` leaves the cards looking exactly as they
  *  did rather than adding a line nobody asked for. */
 const showCreated = computed(() => settings.value?.showCreated === true)
+
+/** On unless the file explicitly says otherwise — `alwaysOnTop`'s shape rather
+ *  than `showCreated`'s, because this one is the only feedback a capture into a
+ *  hidden panel produces at all. An unreadable `settings.json` leaving the user
+ *  with no confirmation that the double-tap did anything is the worse failure. */
+const captureNotifications = computed(() => settings.value?.captureNotifications !== false)
 
 function fail(scope: SettingsScope, error: unknown) {
 	errors.value = { ...errors.value, [scope]: errorMessage(error) }
@@ -291,6 +298,7 @@ const rowWrites: Record<SettingsScope, Generation> = {
 	doubleClick: generations(),
 	alwaysOnTop: generations(),
 	showCreated: generations(),
+	captureNotifications: generations(),
 	summon: generations(),
 	capture: generations(),
 }
@@ -379,6 +387,14 @@ function setDoubleClick(action: DoubleClickAction): Promise<boolean> {
 
 function setShowCreated(enabled: boolean): Promise<boolean> {
 	return patchSettings('showCreated', { showCreated: enabled })
+}
+
+/** Through the patch and not a command of its own, like `sounds` and unlike
+ *  `alwaysOnTop`: Rust reads this at capture time, so there is no native state to
+ *  apply here and a dedicated command would be a pass-through to the writer that
+ *  already exists. */
+function setCaptureNotifications(enabled: boolean): Promise<boolean> {
+	return patchSettings('captureNotifications', { captureNotifications: enabled })
 }
 
 /**
@@ -492,6 +508,7 @@ export function useSettings() {
 		doubleClickAction,
 		alwaysOnTop,
 		showCreated,
+		captureNotifications,
 		errorFor,
 		initialize,
 		dispose,
@@ -502,6 +519,7 @@ export function useSettings() {
 		setInsertionPoint,
 		setDoubleClick,
 		setShowCreated,
+		setCaptureNotifications,
 		setAlwaysOnTop,
 		setAutostart,
 		beginRecording,

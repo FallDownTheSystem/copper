@@ -736,6 +736,46 @@ pub fn patch_settings(shared: &SharedStore, patch: SettingsPatch) -> Result<Sett
 	lock(shared).update_settings(patch)
 }
 
+/// A section named from outside the store — on a toast button, in a log line.
+///
+/// Deliberately not `model::Section`: that carries `order`, which is an
+/// implementation detail of the document's layout and means nothing to a caller
+/// that only has to render a name and remember an id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SectionRef {
+	pub id: String,
+	pub name: String,
+}
+
+impl From<&Section> for SectionRef {
+	fn from(section: &Section) -> Self {
+		Self {
+			id: section.id.clone(),
+			name: section.name.clone(),
+		}
+	}
+}
+
+/// What a capture landed as.
+///
+/// More than the note id, because task-018's notification has to name the
+/// destination and offer the alternatives — and every one of those is read from
+/// the document [`append_capture`] has *just written*, under the guard it is
+/// already holding. Re-reading them afterwards would mean a second acquisition of
+/// the same lock on the worker thread, in the window where the next capture is
+/// most likely to want it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Landed {
+	pub note: String,
+	/// Whether the user asked to be told about captures. Read here rather than
+	/// through `commands::settings` for the same reason the sections are.
+	pub notify: bool,
+	pub section: SectionRef,
+	/// Every *other* section, in document order. Uncapped: how many of them fit on
+	/// a notification is the notification's business, not the store's.
+	pub alternatives: Vec<SectionRef>,
+}
+
 /// Phase 4's entry point: append a captured note without touching store
 /// internals. Contains no capture logic.
 ///
@@ -743,18 +783,77 @@ pub fn patch_settings(shared: &SharedStore, patch: SettingsPatch) -> Result<Sett
 /// whatever the emit does (spec 8.5a) — the note is on disk, and reporting a
 /// durable write as failed would send Phase 4's user-visible failure path into a
 /// retry that duplicates the note.
-pub fn append_capture(shared: &SharedStore, body: &str) -> Result<String> {
+pub fn append_capture(shared: &SharedStore, body: &str) -> Result<Landed> {
 	let mut guard = lock(shared);
-	let at = guard.settings().insertion();
-	let (id, doc) = guard.mutate(|space| ops::add_note(space, body, None, &[], at))?;
+	// Both read out before `mutate` takes the guard mutably, rather than one call
+	// each side of it: they describe the settings the capture was written against.
+	let (at, notify) = {
+		let settings = guard.settings();
+		(settings.insertion(), settings.capture_notifications)
+	};
+	let (note, doc) = guard.mutate(|space| ops::add_note(space, body, None, &[], at))?;
 	let path = guard.active_path().map(path_string).unwrap_or_default();
+
+	// Read off `doc` rather than off the section the caller asked for, because
+	// nobody asked for one: `add_note` with `section: None` lands in whatever
+	// `active_section` was at the moment of the write, which is the only place the
+	// answer exists.
+	let landed_in = doc
+		.note(&note)
+		.map(|written| written.section.clone())
+		.unwrap_or_default();
+	let landed = Landed {
+		note,
+		notify,
+		section: doc
+			.sections
+			.iter()
+			.find(|section| section.id == landed_in)
+			.map(SectionRef::from)
+			.unwrap_or_else(|| SectionRef {
+				id: landed_in.clone(),
+				name: String::new(),
+			}),
+		alternatives: doc
+			.sections
+			.iter()
+			.filter(|section| section.id != landed_in)
+			.map(SectionRef::from)
+			.collect(),
+	};
+
 	let produced = vec![StoreEvent::SpaceChanged(SpaceChanged {
 		id: doc.id,
 		path,
 		reason: ChangeReason::Capture,
 	})];
 	emit_after(guard, produced);
-	Ok(id)
+	Ok(landed)
+}
+
+/// Task-018's entry point: file notes into a section from Rust.
+///
+/// `commands::move_notes` is a `#[tauri::command]`, so the notification's
+/// re-route button cannot call it — the same problem [`patch_settings`] and
+/// [`append_capture`] were carved out for, with the same answer. It goes through
+/// `mutate`, so a re-route is one undo snapshot and one `Ctrl+Z`, exactly like
+/// the same move made from the panel.
+///
+/// It emits, unlike the command it stands beside: no return value reaches the
+/// frontend from here, so `space-changed` is the panel's only way to learn that
+/// the note moved. The reason is [`ChangeReason::Reroute`] rather than `Capture`
+/// — nothing was captured, and the panel answers `Capture` with a sound.
+pub fn move_notes(shared: &SharedStore, ids: &[String], section: &str) -> Result<()> {
+	let mut guard = lock(shared);
+	let (_, doc) = guard.mutate(|space| ops::move_notes(space, ids, section))?;
+	let path = guard.active_path().map(path_string).unwrap_or_default();
+	let produced = vec![StoreEvent::SpaceChanged(SpaceChanged {
+		id: doc.id,
+		path,
+		reason: ChangeReason::Reroute,
+	})];
+	emit_after(guard, produced);
+	Ok(())
 }
 
 /// Drops the guard, then emits. The order is the whole point (spec 2.10).

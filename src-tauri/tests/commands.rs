@@ -380,10 +380,11 @@ fn settings_cross_the_boundary_in_camel_case() {
 		"doubleClick",
 		"alwaysOnTop",
 		"showCreated",
+		"captureNotifications",
 	] {
 		assert!(payload.get(key).is_some(), "get_settings is missing {key}: {payload}");
 	}
-	assert_eq!(payload.as_object().unwrap().len(), 11, "get_settings grew a field");
+	assert_eq!(payload.as_object().unwrap().len(), 12, "get_settings grew a field");
 	assert_eq!(payload["shortcuts"]["capture"], "Shift Shift");
 	assert_eq!(payload["shortcuts"]["summon"], "Ctrl+Shift+Space");
 	// The shipped defaults, which are the whole of "this task changes no
@@ -402,6 +403,11 @@ fn settings_cross_the_boundary_in_camel_case() {
 	// starting to record any — which is why turning it on is safe at any time and
 	// why leaving it off changes nothing about an upgraded install.
 	assert_eq!(payload["showCreated"], false);
+	// Task-018's notification ships **on**, the opposite way round to `sounds` and
+	// `showCreated` and for a reason neither of them has: a capture that lands in a
+	// hidden panel produces nothing the user can see, so shipping this off would
+	// ship a feature nobody discovers and a gesture with no confirmation.
+	assert_eq!(payload["captureNotifications"], true);
 }
 
 #[test]

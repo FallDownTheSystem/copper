@@ -24,6 +24,7 @@ const {
 	doubleClickAction,
 	alwaysOnTop,
 	showCreated,
+	captureNotifications,
 	errorFor,
 	refresh,
 	setTheme,
@@ -33,6 +34,7 @@ const {
 	setInsertionPoint,
 	setDoubleClick,
 	setShowCreated,
+	setCaptureNotifications,
 	setAlwaysOnTop,
 } = useSettings()
 const { isRecording, cancel } = useShortcutRecorder()
@@ -60,6 +62,7 @@ const insertionError = errorFor('insertionPoint')
 const doubleClickError = errorFor('doubleClick')
 const alwaysOnTopError = errorFor('alwaysOnTop')
 const showCreatedError = errorFor('showCreated')
+const captureNotificationsError = errorFor('captureNotifications')
 const summonError = errorFor('summon')
 const captureError = errorFor('capture')
 
@@ -383,6 +386,28 @@ const captureNote = computed(() => {
 						id="motion"
 						:model-value="motionPreference === 'auto'"
 						@update:model-value="setAnimations"
+					/>
+				</SettingsRow>
+			</SettingsSection>
+
+			<!-- Its own section rather than a third row under "Sound and motion":
+			     that section is about how the panel behaves while you are looking at
+			     it, and this is the only setting in the view that describes what
+			     Copper does while you are not. The description names the condition
+			     rather than leaving it to be discovered — with the panel on screen
+			     this switch reads "on" and nothing appears, which looks broken unless
+			     the row says why. -->
+			<SettingsSection title="Notifications">
+				<SettingsRow
+					label="Capture notifications"
+					description="When the panel is hidden, show a Windows notification with the capture and buttons to file it in another section."
+					label-for="capture-notifications"
+					:error="captureNotificationsError"
+				>
+					<SettingsSwitch
+						id="capture-notifications"
+						:model-value="captureNotifications"
+						@update:model-value="setCaptureNotifications"
 					/>
 				</SettingsRow>
 			</SettingsSection>

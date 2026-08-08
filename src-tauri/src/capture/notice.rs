@@ -27,7 +27,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::diagnostics;
 use crate::panel;
 
-use super::{CaptureFailure, FAILURE_NOTICE_DURATION};
+use super::{on_main_thread, CaptureFailure, FAILURE_NOTICE_DURATION};
 
 const FAILED_EVENT: &str = "capture://failed";
 const CLEARED_EVENT: &str = "capture://cleared";
@@ -219,7 +219,7 @@ impl NoticeController {
 
 		// Every window operation is marshalled to the main thread; the worker
 		// never touches a window handle itself.
-		on_main_thread(&self.shared.app, "show", move || {
+		on_main_thread(&self.shared.app, "show a notice", move || {
 			let Some(window) = shared.app.get_webview_window(panel::PANEL_LABEL) else {
 				diagnostics::log_error("[copper] capture: the panel window is gone; no notice shown");
 				return;
@@ -257,17 +257,6 @@ impl NoticeController {
 	}
 }
 
-/// Runs `op` on the main thread, reporting a failure to *get* there rather than
-/// dropping it. Every window operation goes this way; neither the worker nor the
-/// timer thread touches a window handle itself.
-fn on_main_thread(app: &AppHandle, verb: &str, op: impl FnOnce() + Send + 'static) {
-	if let Err(err) = app.run_on_main_thread(op) {
-		diagnostics::log_error(&format!(
-			"[copper] capture: could not reach the main thread to {verb} a notice: {err}"
-		));
-	}
-}
-
 fn timer_loop(shared: &Arc<Shared>, schedule: &mpsc::Receiver<(u64, Instant)>) {
 	let mut pending: Option<(u64, Instant)> = None;
 	loop {
@@ -295,7 +284,7 @@ fn timer_loop(shared: &Arc<Shared>, schedule: &mpsc::Receiver<(u64, Instant)>) {
 fn expire(shared: &Arc<Shared>, generation: u64) {
 	let shared = Arc::clone(shared);
 	let app = shared.app.clone();
-	on_main_thread(&app, "clear", move || {
+	on_main_thread(&app, "clear a notice", move || {
 		// Re-checked **inside** the main-thread closure, not only on the timer
 		// thread. Checking on the timer thread alone leaves a gap: a stale timer
 		// can pass its check, enqueue the hide, and have a newer failure land

@@ -48,6 +48,7 @@
 mod clipboard_fallback;
 mod hook;
 mod notice;
+mod toast;
 mod uia;
 mod watchdog;
 mod worker;
@@ -126,8 +127,18 @@ pub enum CaptureStrategy {
 /// What one capture attempt produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CaptureOutcome {
-	/// A note was written. The app does nothing whatsoever.
-	Captured,
+	/// A note was written. The app shows nothing in the panel — and fires a
+	/// notification only when the panel was not on screen to show it in.
+	Captured {
+		/// What the store made of it: which note, which section, and which other
+		/// sections the notification can offer. Read under the write's own guard,
+		/// so nothing here costs a second lock on the worker thread.
+		landed: crate::store::Landed,
+		/// The captured text as the notification carries it. Reduced here, where
+		/// the text still exists, rather than moving a selection of up to
+		/// [`MAX_CAPTURE_CHARS`] through the outcome to be thrown away.
+		snippet: String,
+	},
 	/// A note was written, but the user's previous clipboard could not be put
 	/// back. The one successful outcome that still shows a notice.
 	CapturedWithClipboardLoss,
@@ -694,6 +705,22 @@ pub struct CaptureState(pub std::sync::Mutex<CaptureHandle>);
 /// same problem for the same reason.
 fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 	mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Runs `op` on the main thread, reporting a failure to *get* there rather than
+/// dropping it. `verb` names the action in that log line, e.g. "show a notice".
+///
+/// **Every window operation in this module tree goes this way.** None of the four
+/// threads that carry a capture may touch a window handle, and the `Activated`
+/// handler behind a capture notification runs on a thread WinRT owns, which is not
+/// one of them either. One helper rather than one per surface, so a new one cannot
+/// be the one that reaches a window directly.
+fn on_main_thread(app: &AppHandle, verb: &str, op: impl FnOnce() + Send + 'static) {
+	if let Err(err) = app.run_on_main_thread(op) {
+		diagnostics::log_error(&format!(
+			"[copper] capture: could not reach the main thread to {verb}: {err}"
+		));
+	}
 }
 
 /// Stops capture, if it started. Idempotent.

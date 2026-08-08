@@ -32,6 +32,7 @@ const SETTINGS = {
 	doubleClick: 'copy',
 	alwaysOnTop: true,
 	showCreated: false,
+	captureNotifications: true,
 }
 
 const SHORTCUTS = {

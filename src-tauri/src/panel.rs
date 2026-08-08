@@ -399,7 +399,12 @@ pub fn summon_or_log(app: &AppHandle) {
 
 /// Whether the panel is currently visible, defaulting to `false` if it cannot be
 /// determined — a failed query should not leave the tray toggle stuck.
-fn is_visible(window: &WebviewWindow) -> bool {
+///
+/// Read by capture as well as by the two toggles: a capture notification is worth
+/// firing only when the note lands somewhere the user cannot see it. The default
+/// serves that reading too, since a toast the user did not need costs less than a
+/// capture they never learn about. Main thread only, like every window call here.
+pub fn is_visible(window: &WebviewWindow) -> bool {
 	window.is_visible().unwrap_or(false)
 }
 

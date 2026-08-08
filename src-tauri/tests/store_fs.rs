@@ -781,7 +781,7 @@ fn a_capture_never_honours_a_directive() {
 	// Open Question 1, answered 2026-08-05: the capture path saves `# Name` as an
 	// ordinary note, exactly like any other capture. This is the assertion that
 	// keeps a future refactor from routing capture through `submit`.
-	let id = store::append_capture(&harness.shared, "# Research").unwrap();
+	let id = store::append_capture(&harness.shared, "# Research").unwrap().note;
 
 	assert_eq!(harness.doc().note(&id).unwrap().body, "# Research");
 	assert_eq!(harness.doc().sections.len(), sections);
@@ -1440,7 +1440,7 @@ fn append_capture_emits_exactly_one_space_changed_with_reason_capture() {
 	let harness = Harness::new();
 	harness.sink.take();
 
-	let id = store::append_capture(&harness.shared, "captured from the hook").unwrap();
+	let id = store::append_capture(&harness.shared, "captured from the hook").unwrap().note;
 
 	let events = harness.sink.take();
 	assert_eq!(events.len(), 1);
@@ -1453,6 +1453,82 @@ fn append_capture_emits_exactly_one_space_changed_with_reason_capture() {
 		harness.sink.events().is_empty(),
 		"the capture's own write produced a watcher event: {:?}",
 		harness.sink.names()
+	);
+}
+
+/// Task-018. The capture notification names the destination and offers the rest,
+/// and both answers come out of the write's own guard — so this asserts the
+/// *content* of that answer rather than that a second read could produce it.
+#[test]
+fn append_capture_reports_where_the_note_landed_and_where_else_it_could_go() {
+	let harness = Harness::new();
+	harness.submit("# Ideas").unwrap();
+	harness.submit("# Tasks").unwrap();
+
+	let landed = store::append_capture(&harness.shared, "captured").unwrap();
+
+	assert_eq!(
+		landed.section.name, "Tasks",
+		"the destination is the active section at the moment of the write"
+	);
+	assert_eq!(harness.doc().note(&landed.note).unwrap().section, landed.section.id);
+	// Document order, not creation order and not activation order: no most-recently-
+	// used state exists anywhere in this codebase, and inventing one for a
+	// notification would be a second source of truth about section ordering.
+	assert_eq!(
+		landed
+			.alternatives
+			.iter()
+			.map(|section| section.name.as_str())
+			.collect::<Vec<_>>(),
+		["Notes", "Ideas"]
+	);
+	assert!(
+		landed.alternatives.iter().all(|section| section.id != landed.section.id),
+		"the destination was offered as an alternative to itself"
+	);
+}
+
+#[test]
+fn append_capture_carries_the_notification_setting_it_was_written_under() {
+	let harness = Harness::new();
+	assert!(
+		store::append_capture(&harness.shared, "first").unwrap().notify,
+		"capture notifications ship on"
+	);
+
+	store::lock(&harness.shared)
+		.update_settings(serde_json::from_str(r#"{"captureNotifications":false}"#).unwrap())
+		.unwrap();
+
+	assert!(!store::append_capture(&harness.shared, "second").unwrap().notify);
+}
+
+/// The other half of task-018: a notification's re-route button reaches the same
+/// writer the panel does, without going out through IPC to get there.
+#[test]
+fn move_notes_from_rust_emits_one_reroute_and_is_undoable() {
+	let harness = Harness::new();
+	let landed = store::append_capture(&harness.shared, "captured").unwrap();
+	let elsewhere = harness.submit("# Ideas").unwrap().section_id;
+	harness.sink.take();
+
+	store::move_notes(&harness.shared, std::slice::from_ref(&landed.note), &elsewhere).unwrap();
+
+	let events = harness.sink.take();
+	assert_eq!(events.len(), 1);
+	// Not `Capture`: the panel answers that reason with a sound and a scroll
+	// request, and nothing was captured here.
+	assert_eq!(reasons(&events), [ChangeReason::Reroute]);
+	assert_eq!(harness.doc().note(&landed.note).unwrap().section, elsewhere);
+
+	// One snapshot, so a re-route the user did not mean is one `Ctrl+Z` — exactly
+	// what the same move made from the panel costs.
+	assert!(harness.status().can_undo);
+	store::lock(&harness.shared).undo().unwrap();
+	assert_eq!(
+		harness.doc().note(&landed.note).unwrap().section,
+		landed.section.id
 	);
 }
 
@@ -1685,7 +1761,7 @@ fn every_write_path_reads_the_insertion_point_setting() {
 	// rather than a constant.
 	let pasted = commands::add(&harness.shared, "pasted", None).unwrap().note_id;
 	let composed = harness.submit("composed").unwrap().note_id.unwrap();
-	let captured = store::append_capture(&harness.shared, "captured").unwrap();
+	let captured = store::append_capture(&harness.shared, "captured").unwrap().note;
 	assert_eq!(
 		ids(&harness.doc()),
 		vec![pasted.clone(), composed.clone(), captured.clone()],
@@ -1702,7 +1778,7 @@ fn every_write_path_reads_the_insertion_point_setting() {
 	let top_composed = harness.submit("composed at the top").unwrap().note_id.unwrap();
 	assert_eq!(position_of(&harness.doc(), &top_composed), 0, "submit ignored the setting");
 
-	let top_captured = store::append_capture(&harness.shared, "captured at the top").unwrap();
+	let top_captured = store::append_capture(&harness.shared, "captured at the top").unwrap().note;
 	assert_eq!(
 		position_of(&harness.doc(), &top_captured),
 		0,
