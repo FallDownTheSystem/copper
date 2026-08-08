@@ -13,6 +13,7 @@ import { useNoteDrag } from '@/composables/useNoteDrag'
 import { useNoteEditor } from '@/composables/useNoteEditor'
 import { useNoteList } from '@/composables/useNoteList'
 import { useNoteSearch } from '@/composables/useNoteSearch'
+import { usePalette } from '@/composables/usePalette'
 import { useSections } from '@/composables/useSections'
 import { flushReveal, noteRow, sectionRow, takeRow, useSelection } from '@/composables/useSelection'
 import { useImageViewer } from '@/composables/useImageViewer'
@@ -27,6 +28,7 @@ const drag = useNoteDrag()
 const interaction = useInteractionMode()
 const editor = useNoteEditor()
 const list = useNoteList()
+const palette = usePalette()
 const search = useNoteSearch()
 const sections = useSections()
 const selection = useSelection()
@@ -297,6 +299,11 @@ afterEach(async () => {
 	// And so does the image viewer, whose overlay would otherwise still be up in
 	// the next test — declining every chord and swallowing the Escape ladder.
 	viewer.close()
+	// The command palette is on that list for exactly the same reason, and it is
+	// the one a stray `Ctrl+K` leaves behind: it declines every chord through the
+	// shell's overlay guard, so the next test's arrow keys and Delete do nothing
+	// and fail with the panel simply sitting there.
+	palette.close()
 	// The action-error band is module-scoped for the same reason everything above
 	// it is. A message left standing takes the status line's place, so the next
 	// test's "Copied 2 notes" is simply not on screen.
@@ -1590,16 +1597,32 @@ describe('the section switcher', () => {
 		return document.querySelector<HTMLElement>('[data-slot="dropdown-menu-content"]')
 	}
 
-	async function openWithChord(wrapper: Awaited<ReturnType<typeof mountPanel>>) {
-		const composer = wrapper.find('#composer')
-		;(composer.element as HTMLTextAreaElement).focus()
-		await composer.trigger('keydown', { key: 'k', ctrlKey: true })
+	function chip(wrapper: Awaited<ReturnType<typeof mountPanel>>) {
+		return wrapper.find('[data-slot="dropdown-menu-trigger"][title]')
+	}
+
+	/**
+	 * Opened through the state the chip's `open` is bound to rather than by a
+	 * chord: task-019 gave `Ctrl+K` to the command palette, and the switcher's two
+	 * surviving entry points are both pointer-driven.
+	 *
+	 * The composer is focused first because one case below is about what happens
+	 * when it held the caret — and driving the controlled state is what keeps that
+	 * case reachable. A real click on the chip moves focus to the trigger *before*
+	 * the switcher opens, which is the other half of the contract and the one
+	 * reka's own close-focus already handles.
+	 */
+	async function showSwitcher(wrapper: Awaited<ReturnType<typeof mountPanel>>) {
+		;(wrapper.find('#composer').element as HTMLTextAreaElement).focus()
+		sections.openSwitcher('chip')
 		await settle(3)
 	}
 
-	it('opens from the composer, which is the documented suppression exception', async () => {
+	it('opens from the chip under the search field', async () => {
 		const wrapper = await mountPanel()
-		await openWithChord(wrapper)
+		await chip(wrapper).trigger('pointerdown', { button: 0 })
+		await chip(wrapper).trigger('click')
+		await settle(3)
 
 		expect(sections.switcherOpen.value).toBe(true)
 		// The filter takes focus on open: reka's own open-focus would land on the
@@ -1623,7 +1646,7 @@ describe('the section switcher', () => {
 		// is the document's rather than the filtered list's — a query narrows what is
 		// on screen, not what a section holds.
 		const wrapper = await mountPanel()
-		await openWithChord(wrapper)
+		await showSwitcher(wrapper)
 
 		const rows = [...(content()?.querySelectorAll('[role="menuitem"]') ?? [])]
 		expect(rows[0]?.textContent).toContain('Research')
@@ -1638,27 +1661,30 @@ describe('the section switcher', () => {
 		// fork the keyboard path — two places for Enter to mean something — and
 		// duplicate a creation route that already exists.
 		const wrapper = await mountPanel()
-		await openWithChord(wrapper)
+		await showSwitcher(wrapper)
 
 		expect(content()?.querySelectorAll('input')).toHaveLength(1)
 		const filter = content()!.querySelector<HTMLInputElement>('#section-filter')!
 		expect(filter.placeholder).toBe('Filter or create a section…')
 	})
 
-	it('stays suppressed in the search field and the inline editor', async () => {
+	/**
+	 * `Ctrl+K` was this surface's for three tasks and is the command palette's
+	 * now. The switcher kept both of its pointer routes, because the palette
+	 * absorbs *switching* and not *creating* — but the chord opens the palette
+	 * from every surface, including the composer, which is the one place the
+	 * switcher's narrower exception used to let it through.
+	 */
+	it('no longer answers the chord, which belongs to the palette', async () => {
 		const wrapper = await mountPanel()
 
-		await wrapper.find('#panel-search').trigger('keydown', { key: 'k', ctrlKey: true })
-		await settle()
-		expect(sections.switcherOpen.value).toBe(false)
+		const composer = wrapper.find('#composer')
+		;(composer.element as HTMLTextAreaElement).focus()
+		await composer.trigger('keydown', { key: 'k', ctrlKey: true })
+		await settle(3)
 
-		editor.beginEdit(SPACE, SPACE.notes[0]!)
-		await wrapper.vm.$nextTick()
-		await wrapper
-			.find('textarea[aria-label="Edit note"]')
-			.trigger('keydown', { key: 'k', ctrlKey: true })
-		await settle()
 		expect(sections.switcherOpen.value).toBe(false)
+		expect(palette.isOpen.value).toBe(true)
 	})
 
 	it('activates a section and gives the composer back its text and its caret', async () => {
@@ -1668,7 +1694,7 @@ describe('the section switcher', () => {
 		composer.focus()
 		composer.setSelectionRange(4, 4)
 
-		await openWithChord(wrapper)
+		await showSwitcher(wrapper)
 		const inbox = [...(content()?.querySelectorAll('[role="menuitem"]') ?? [])].find((item) =>
 			item.textContent?.includes('Inbox'),
 		)
@@ -1687,7 +1713,7 @@ describe('the section switcher', () => {
 
 	it('filters, and offers to create what nothing matches', async () => {
 		const wrapper = await mountPanel()
-		await openWithChord(wrapper)
+		await showSwitcher(wrapper)
 
 		const filter = content()!.querySelector<HTMLInputElement>('#section-filter')!
 		filter.value = 'inb'
@@ -1718,7 +1744,7 @@ describe('the section switcher', () => {
 
 	it('matches on the name the store will keep, not the one that was typed', async () => {
 		const wrapper = await mountPanel()
-		await openWithChord(wrapper)
+		await showSwitcher(wrapper)
 
 		const filter = content()!.querySelector<HTMLInputElement>('#section-filter')!
 		// Two spaces. The store collapses them, so this *is* the existing section —
@@ -1754,7 +1780,7 @@ describe('the section switcher', () => {
 
 	it('activates the row reka has highlighted, not always the first', async () => {
 		const wrapper = await mountPanel()
-		await openWithChord(wrapper)
+		await showSwitcher(wrapper)
 
 		// Reka highlights on hover while the filter keeps focus, so Enter has to
 		// resolve that row rather than the top of the list.
@@ -1771,7 +1797,7 @@ describe('the section switcher', () => {
 
 	it('gives ArrowLeft to the caret unless the caret is already at the start', async () => {
 		const wrapper = await mountPanel()
-		await openWithChord(wrapper)
+		await showSwitcher(wrapper)
 
 		const filter = content()!.querySelector<HTMLInputElement>('#section-filter')!
 		filter.value = 'res'
@@ -1830,7 +1856,7 @@ describe('the section switcher', () => {
 		selection.select('nte_1')
 		await wrapper.find('#panel-search').setValue('first')
 		await settle()
-		await openWithChord(wrapper)
+		await showSwitcher(wrapper)
 		expect(sections.switcherOpen.value).toBe(true)
 
 		content()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
@@ -1856,7 +1882,7 @@ describe('the section switcher', () => {
 
 	it('reports no axe violations while open', async () => {
 		const wrapper = await mountPanel()
-		await openWithChord(wrapper)
+		await showSwitcher(wrapper)
 		expect(content(), 'the switcher did not open').not.toBeNull()
 
 		// Scoped to the switcher, which is what the criterion asks about. A
