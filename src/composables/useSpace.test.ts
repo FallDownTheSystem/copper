@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 import type { Space, StoreStatus, SubmitResult } from './useSpace'
+import { noteRow, sectionRow } from './useSelection'
 import { deferred } from '@/testing/deferred'
 
 /**
@@ -16,6 +17,24 @@ const mocks = vi.hoisted(() => ({
 	 *  assumed: the first invoke must happen with both handlers already in. */
 	handlersAtFirstInvoke: -1,
 }))
+
+/**
+ * A reveal is a *request* — `useSelection` decides when and whether it can be
+ * scrolled to, and `useSelection.test.ts` covers that half. What belongs here is
+ * the half this module owns: which row it asks for, and, more sharply, when it
+ * must not ask at all. The rest of `useSelection` is the real thing, because the
+ * coordinator drives its selection and focus reconciliation on every document.
+ */
+const reveal = vi.hoisted(() => ({ revealRow: vi.fn() }))
+vi.mock('./useSelection', async (importOriginal) => ({
+	...(await importOriginal<typeof import('./useSelection')>()),
+	revealRow: reveal.revealRow,
+}))
+
+/** The engine rather than the sound points: `useSounds.test.ts` covers which
+ *  recipe each point plays, and this file only asks whether one sounded. */
+const engine = vi.hoisted(() => ({ play: vi.fn(), setEnabled: vi.fn() }))
+vi.mock('@/lib/sounds', () => engine)
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 vi.mock('@tauri-apps/api/event', () => ({
@@ -101,6 +120,9 @@ beforeEach(() => {
 	mocks.handlers.clear()
 	mocks.listenCount = 0
 	mocks.handlersAtFirstInvoke = -1
+	reveal.revealRow.mockReset()
+	engine.play.mockReset()
+	engine.setEnabled.mockReset()
 	responders.clear()
 
 	// Tauri's `invoke` is declared `async`, so it always returns a promise and
@@ -626,5 +648,160 @@ describe('space identity', () => {
 		// document's flattened index.
 		expect(selection.selectedIds.value).toEqual([])
 		expect(selection.focusedId.value).toBe('n:other')
+	})
+})
+
+/**
+ * The reveal is what makes a capture trustworthy — a note the reader cannot see
+ * is one they have to go looking for — so it has to fire for the note they added
+ * and for nothing else. The request names its note wherever it can, which is what
+ * keeps a mutation that never produced a document from spending it on one that
+ * arrived for an entirely different reason.
+ */
+describe('the reveal a newly added note is owed', () => {
+	it('scrolls to the note the command named', async () => {
+		const space = await freshModule()
+		await space.initialize()
+		await flush()
+
+		respond('submit_entry', () => noteResult(makeSpace('spc_1', ['n1', 'n2']), 'n2'))
+		await space.submitEntry('second')
+		await flush()
+
+		expect(reveal.revealRow).toHaveBeenCalledWith(noteRow('n2'))
+	})
+
+	/** A capture arrives as an event carrying identity only, so the note it wrote
+	 *  is knowable solely by diffing the document the refresh returns. */
+	it('scrolls to the note a capture brought in, having been told no id', async () => {
+		const space = await freshModule()
+		await space.initialize()
+		await flush()
+
+		respond('get_active_space', () => makeSpace('spc_1', ['n1', 'captured']))
+		emit('space-changed', { id: 'spc_1', path: 'p', reason: 'capture' })
+		await flush()
+
+		expect(reveal.revealRow).toHaveBeenCalledWith(noteRow('captured'))
+	})
+
+	it('leaves nothing armed when the command threw', async () => {
+		const space = await freshModule()
+		await space.initialize()
+		await flush()
+
+		respond('submit_entry', () => {
+			throw { kind: 'unavailable', message: 'the space is unreadable' }
+		})
+		await space.submitEntry('nope')
+		await flush()
+
+		// Someone editing the `.copper` file in another program. The reader did not
+		// ask for this note, and a request the failed submit left behind would jump
+		// the list to it — the one thing the anchoring in `useSelection` exists to
+		// prevent.
+		respond('get_active_space', () => makeSpace('spc_1', ['n1', 'external']))
+		emit('space-changed', { id: 'spc_1', path: 'p', reason: 'external' })
+		await flush()
+
+		expect(reveal.revealRow).not.toHaveBeenCalled()
+	})
+
+	it('drops the request when the document that would have carried it was superseded', async () => {
+		const space = await freshModule()
+		await space.initialize()
+		await flush()
+
+		const add = deferred<SubmitResult>()
+		respond('submit_entry', () => add.promise)
+		const pending = space.submitEntry('mine')
+		await flush()
+
+		respond('get_active_space', () => makeSpace('spc_1', ['n1', 'external']))
+		emit('space-changed', { id: 'spc_1', path: 'p', reason: 'external' })
+		await flush()
+
+		// The store carried the submit out, so the refresh scheduled behind the
+		// discarded response brings the note in regardless.
+		respond('get_active_space', () => makeSpace('spc_1', ['n1', 'external', 'mine']))
+		add.resolve(noteResult(makeSpace('spc_1', ['n1', 'mine']), 'mine'))
+		await pending
+		await flush()
+
+		// It arrives without a scroll. A request that outlived its own document is a
+		// request some later document spends, and the next one along is as likely to
+		// be an external edit as the refresh this happens to be.
+		expect(space.space.value?.notes.map((note) => note.id)).toEqual(['n1', 'external', 'mine'])
+		expect(reveal.revealRow).not.toHaveBeenCalled()
+	})
+})
+
+/**
+ * `mutate` resolves with a truthy `{ value, applied }` even when the document was
+ * discarded — the store did carry the command out — so a truthiness test on the
+ * result confirms a move into a document nobody is looking at.
+ */
+describe('a section is confirmed only when its own document is on screen', () => {
+	it('sounds and scrolls when the switch is the document now displayed', async () => {
+		const space = await freshModule()
+		await space.initialize()
+		await flush()
+
+		respond('set_active_section', () => makeSpace('spc_1', ['n1']))
+		await space.setActiveSection('sec_a')
+		await flush()
+
+		expect(engine.play).toHaveBeenCalled()
+		expect(reveal.revealRow).toHaveBeenCalledWith(sectionRow('sec_a'), 'start')
+	})
+
+	it('does neither when the switch was superseded', async () => {
+		const space = await freshModule()
+		await space.initialize()
+		await flush()
+
+		const switched = deferred<Space>()
+		respond('set_active_section', () => switched.promise)
+		const pending = space.setActiveSection('sec_a')
+		await flush()
+
+		respond('get_active_space', () => makeSpace('spc_1', ['n1', 'external']))
+		emit('space-changed', { id: 'spc_1', path: 'p', reason: 'external' })
+		await flush()
+
+		switched.resolve(makeSpace('spc_1', ['n1']))
+		await pending
+		await flush()
+
+		// The scroll is queued behind `applyDocument`'s own restoration tick, which a
+		// superseded response returns before ever scheduling — so the ordering the
+		// reveal depends on is not merely unlucky here, it does not happen at all.
+		expect(engine.play).not.toHaveBeenCalled()
+		expect(reveal.revealRow).not.toHaveBeenCalled()
+	})
+
+	it('does not scroll to a section read out of a discarded document', async () => {
+		const space = await freshModule()
+		await space.initialize()
+		await flush()
+
+		const added = deferred<Space>()
+		respond('add_section', () => added.promise)
+		const pending = space.addSection('Later')
+		await flush()
+
+		respond('get_active_space', () => makeSpace('spc_1', ['n1', 'external']))
+		emit('space-changed', { id: 'spc_1', path: 'p', reason: 'external' })
+		await flush()
+
+		const created = makeSpace('spc_1', ['n1'])
+		added.resolve({
+			...created,
+			sections: [...created.sections, { id: 'sec_b', name: 'Later', order: 1 }],
+		})
+		await pending
+		await flush()
+
+		expect(reveal.revealRow).not.toHaveBeenCalled()
 	})
 })

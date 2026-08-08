@@ -245,20 +245,25 @@ const attachmentState = useAttachments()
 export { errorMessage }
 
 /**
- * The single assignment point.
+ * The scroll the next document owes a just-added note, and which note it is.
  *
- * Returns false when the response was superseded, in which case the caller must
- * discard it — not apply it late, and not reorder it.
- */
-/**
  * Armed by the three paths that mean *the user just put a note here* — a composer
- * submit, a zero-focus paste, and a global capture — and consumed by the next
- * document that lands.
+ * submit, a zero-focus paste, and a global capture — and consumed by the document
+ * that carries the note in.
  *
- * A flag rather than a `reveal` option threaded through `applyDocument`'s callers,
- * because the capture path cannot pass one: it arrives as an event, and the
- * document is fetched by the shared `refresh()`, which knows nothing about why it
- * was called and coalesces several reasons into one pull.
+ * **The request names its note wherever the path can name one**, because a bare
+ * "scroll to whatever arrives next" outlives the mutation that asked for it: a
+ * command that throws never produces a document, so the arming would be spent on
+ * whatever landed afterwards — an external edit or a reload, the two things the
+ * paragraph below promises never move the list. `submit_entry` and `add_note` both
+ * answer with the id they created, and `mutate` arms this only once that answer is
+ * in hand, so a failed command arms nothing at all and a document without that id
+ * cannot consume the request.
+ *
+ * A capture can name nothing: it arrives as an event, and the document is fetched
+ * by the shared `refresh()`, which knows nothing about why it was called and
+ * coalesces several reasons into one pull. That is what `newest` is for, and the
+ * diff below resolves it against the document that actually lands.
  *
  * **Deliberately not armed by an external change or a reload.** Someone editing
  * the `.copper` file in another program adds notes the reader did not ask for, and
@@ -267,7 +272,8 @@ export { errorMessage }
  * note is the reader taking something back, and the row they are looking at is
  * already the one that matters.
  */
-let revealAddedNote = false
+type AddedNoteReveal = { kind: 'note'; id: string } | { kind: 'newest' }
+let revealAddedNote: AddedNoteReveal | null = null
 
 /**
  * The note in `next` that `previous` did not have, newest first when there are
@@ -296,12 +302,31 @@ function addedNoteId(previous: Space | null, next: Space): string | null {
 	return landed?.id ?? null
 }
 
+/** Null when the named note is not in this document: a request only ever fires
+ *  for a document that actually carries the note it was made for. */
+function landedNoteId(wanted: AddedNoteReveal, previous: Space | null, next: Space): string | null {
+	if (wanted.kind === 'newest') return addedNoteId(previous, next)
+	return next.notes.some((note) => note.id === wanted.id) ? wanted.id : null
+}
+
+/**
+ * The single assignment point.
+ *
+ * Returns false when the response was superseded, in which case the caller must
+ * discard it — not apply it late, and not reorder it.
+ */
 function applyDocument(
 	next: Space,
 	issued: { generation: number; epoch: number },
 	options: { animate: boolean },
 ): boolean {
-	if (generation !== issued.generation || epoch.value !== issued.epoch) return false
+	if (generation !== issued.generation || epoch.value !== issued.epoch) {
+		// The request belonged to the mutation that issued this document, and this
+		// document is not going on screen. Left armed it would wait for the next one
+		// instead, which is how a reveal reaches a reader who never asked for it.
+		revealAddedNote = null
+		return false
+	}
 
 	// Must be taken *before* the assignment: afterwards `visibleNoteIds` holds
 	// only the new order and the focused note's former index is gone, so the
@@ -311,11 +336,12 @@ function applyDocument(
 
 	// Read before the assignment, like the snapshot above and for the same reason:
 	// afterwards there is no previous document to diff against. Cleared whether or
-	// not it produced a row — an arming that found nothing was a submit that made a
-	// section, or a capture whose note a later refresh had already carried in, and
-	// leaving it set would fire on whatever landed next.
-	const landedNote = revealAddedNote && !identityChanged ? addedNoteId(space.value, next) : null
-	revealAddedNote = false
+	// not it produced a row — a capture whose note a later refresh had already
+	// carried in resolves to nothing, and leaving it set would fire on whatever
+	// landed next.
+	const wanted = revealAddedNote
+	revealAddedNote = null
+	const landedNote = wanted && !identityChanged ? landedNoteId(wanted, space.value, next) : null
 
 	if (identityChanged) {
 		epoch.value++
@@ -496,8 +522,10 @@ async function onSpaceChanged(payload: SpaceChangedPayload) {
 		useSounds().captureSucceeded()
 		// The panel is almost never on screen for this one — that is what a global
 		// capture is — so the reveal it arms is a request the list flushes whenever
-		// it next has somewhere to scroll.
-		revealAddedNote = true
+		// it next has somewhere to scroll. `newest` rather than a named note because
+		// the payload carries identity only: which note was written is knowable here
+		// solely by diffing the document the pull below returns.
+		revealAddedNote = { kind: 'newest' }
 	}
 	await Promise.all([refresh(), pullStatus()])
 }
@@ -613,10 +641,18 @@ const { initialize, dispose } = createStartup(
 async function mutate<T>(
 	run: () => Promise<T>,
 	toSpace: (result: T) => Space,
-	// A predicate rather than a flag, because `submit_entry` cannot answer the
-	// question until it has run: creating a section is deterministically undoable,
-	// activating one takes no snapshot at all, and the outcome says which happened.
-	options: { scope: ActionErrorScope; repullStatus?: (result: T) => boolean },
+	options: {
+		scope: ActionErrorScope
+		// A predicate rather than a flag, because `submit_entry` cannot answer the
+		// question until it has run: creating a section is deterministically undoable,
+		// activating one takes no snapshot at all, and the outcome says which happened.
+		repullStatus?: (result: T) => boolean
+		/** The note this command created, or null when it created none. Read here
+		 *  rather than armed by the caller before the invoke, because a command that
+		 *  throws must leave nothing armed — a request made before the answer is in
+		 *  hand is a request some later, unrelated document would spend. */
+		revealNote?: (result: T) => string | null
+	},
 ): Promise<MutationResult<T> | null> {
 	// Only this surface's own error is cleared: a failure belongs to the text it
 	// left in place, and another surface's message is still explaining itself.
@@ -631,6 +667,9 @@ async function mutate<T>(
 		useSounds().actionFailed()
 		return null
 	}
+
+	const revealId = options.revealNote?.(result) ?? null
+	if (revealId) revealAddedNote = { kind: 'note', id: revealId }
 
 	const applied = applyDocument(toSpace(result), issued, { animate: true })
 
@@ -681,10 +720,6 @@ async function mutate<T>(
  * stale.
  */
 async function submitEntry(body: string, attachments: Attachment[] = []) {
-	// A submit that turns out to be a section directive arms nothing in practice:
-	// no note is added, so the diff finds none and the flag is cleared unused.
-	revealAddedNote = true
-
 	// No `section` argument: the store already defaults to `activeSection`, and
 	// sending our own view of it would race an external change to it.
 	//
@@ -699,6 +734,9 @@ async function submitEntry(body: string, attachments: Attachment[] = []) {
 			// the stacks is not knowable from here.
 			scope: 'composer',
 			repullStatus: (value) => value.outcome === 'section-activated',
+			// Null on both section outcomes: a submit that turned out to be a section
+			// directive added no note, so there is nothing to scroll to.
+			revealNote: (value) => value.noteId,
 		},
 	)
 
@@ -731,11 +769,10 @@ async function submitEntry(body: string, attachments: Attachment[] = []) {
  * and a note the reader cannot see is not a capture they can trust.
  */
 async function addNote(body: string) {
-	revealAddedNote = true
 	return mutate(
 		() => invoke<AddNoteResult>('add_note', { body, section: null }),
 		(value) => value.space,
-		{ scope: 'composer' },
+		{ scope: 'composer', revealNote: (value) => value.noteId },
 	)
 }
 
@@ -785,6 +822,11 @@ async function setNotesDone(ids: string[], done: boolean) {
  * choosing a place to be, so the list lands *at* its heading with the section
  * below it — where `nearest` would scroll a heading just off the bottom edge into
  * the bottom edge and leave the section itself still out of sight.
+ *
+ * Callers must gate this on the mutation having been **applied**. A superseded
+ * response returns before scheduling the restoration tick this queues behind, so
+ * both halves of the ordering above are false for it — and the section it names
+ * belongs to a document that was discarded.
  */
 function revealSectionSoon(id: string) {
 	void nextTick(() => revealRow(sectionRow(id), 'start'))
@@ -800,7 +842,13 @@ async function setActiveSection(id: string) {
 	// watcher on it would also fire for an external edit, a reload, an undo and
 	// every refresh — none of which is a user action. The scroll goes with the
 	// sound for exactly that reason: both mark a choice somebody made.
-	if (result) {
+	//
+	// `applied` rather than a truthiness test on the result, because a superseded
+	// mutation resolves with one: the store did carry the switch out, but the
+	// document on screen is a fresher one this side of the boundary has not read
+	// yet, and confirming a move to a section it may not even have is worse than
+	// staying quiet until the refresh behind it lands.
+	if (result?.applied) {
 		useSounds().sectionSwitched()
 		revealSectionSoon(id)
 	}
@@ -843,7 +891,12 @@ async function reorderNote(id: string, section: string, index: number) {
 async function addSection(name: string) {
 	const before = new Set(sections.value.map((section) => section.id))
 	const result = await listCommand('add_section', { name })
-	const created = result?.value.sections.find((section) => !before.has(section.id))
+	// `applied`, for the reason `setActiveSection` gives: a superseded response
+	// names a section out of a document that was discarded, and scrolling to it
+	// would jump the list on the strength of a view nobody is looking at.
+	const created = result?.applied
+		? result.value.sections.find((section) => !before.has(section.id))
+		: null
 	if (created) revealSectionSoon(created.id)
 	return result
 }
