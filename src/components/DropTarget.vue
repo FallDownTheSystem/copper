@@ -2,6 +2,13 @@
 /**
  * The panel-wide drop treatment, and the only listener for Tauri's drag events.
  *
+ * **Mounted by both views, not once above them.** A file is droppable wherever
+ * the panel is — the settings view included — and mounting an instance per view
+ * still leaves at most one live subscription, because `AnimatePresence` with
+ * `mode="wait"` mounts exactly one view at a time. The brief gap between the
+ * views during a transition is a moment nothing can be dropped in, which costs
+ * nothing a user can aim at.
+ *
  * **Why an OS-level drop rather than HTML5 drag-and-drop.** `dragDropEnabled`
  * is on — it is Tauri's default — and while it is on, the WebView receives no
  * HTML5 drag events at all. That would have been a blocking hazard for
@@ -18,6 +25,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event'
 
 const { attachPaths } = useAttachments()
 const { clearActionError, reportActionError } = useSpace()
+const { showList } = useView()
 
 const over = ref(false)
 let unlisten: UnlistenFn | null = null
@@ -47,6 +55,12 @@ onMounted(async () => {
 			// succeeds has to retire the message the last refusal left, or it lands
 			// in the tray underneath a failure that is no longer about anything.
 			clearActionError('composer')
+			// The tray this drop is about to fill lives in the composer, so the panel
+			// returns to the view that shows it — before the ingest, so the switch
+			// animates while the files are read. From the list it is a no-op; from
+			// the settings view it is what makes the drop land somewhere visible
+			// rather than mutate a tray the user cannot see.
+			showList()
 			const message = await attachPaths(event.payload.paths)
 			// The composer's surface, because the tray it concerns lives there — a
 			// drop is a way of filling the composer, however far from it the pointer

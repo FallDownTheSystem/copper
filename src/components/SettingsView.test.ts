@@ -1,8 +1,10 @@
 import { mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vite-plus/test'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 import SettingsSlider from './SettingsSlider.vue'
 import SettingsView from './SettingsView.vue'
+import { useAttachments } from '@/composables/useAttachments'
+import { useView } from '@/composables/useView'
 import type { Settings } from '@/composables/useSpace'
 
 /**
@@ -15,12 +17,29 @@ import type { Settings } from '@/composables/useSpace'
 
 const mocks = vi.hoisted(() => ({
 	invoke: vi.fn<(command: string, args?: Record<string, unknown>) => Promise<unknown>>(),
+	/** `DropTarget`'s listener — the settings view mounts one too, so a test can
+	 *  hand it an OS drag event. Boxed for the reason `PanelShell.test` gives: the
+	 *  `vi.mock` factory closes over this object. */
+	dragDrop: { deliver: null as ((payload: unknown) => unknown) | null },
 }))
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 vi.mock('@tauri-apps/api/event', () => ({
 	emit: vi.fn(),
 	listen: async () => () => {},
+}))
+// `DropTarget` subscribes on mount, and `getCurrentWebview` reaches into
+// `window.__TAURI_INTERNALS__`, which does not exist outside the real webview —
+// the same stub `PanelShell.test` carries, for the same reason.
+vi.mock('@tauri-apps/api/webview', () => ({
+	getCurrentWebview: () => ({
+		onDragDropEvent: async (handler: (payload: unknown) => unknown) => {
+			mocks.dragDrop.deliver = handler
+			return () => {
+				mocks.dragDrop.deliver = null
+			}
+		},
+	}),
 }))
 
 function makeSettings(over: Partial<Settings> = {}): Settings {
@@ -65,7 +84,22 @@ async function flush(times = 4) {
 	for (let i = 0; i < times; i++) await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
+/** The last mount, retired by the next one. The view now owns a `document`-level
+ *  paste listener, so leaving every test's mount attached — which was merely
+ *  untidy before — would make one dispatched paste fan out to every stale
+ *  instance and ingest a file per leak. */
+let mounted: ReturnType<typeof mount<typeof SettingsView>> | null = null
+
+afterEach(() => {
+	mounted?.unmount()
+	mounted = null
+})
+
 async function openSettings(stored: Partial<Settings> = {}) {
+	// Before the mock is touched, so anything an unmount hook happens to invoke
+	// lands in the outgoing test's call log rather than the new one's.
+	mounted?.unmount()
+
 	// No module reset here, unlike the suites that use one: `SettingsView` and the
 	// composables behind it are static imports, and `vi.resetModules()` cannot
 	// re-evaluate a module that has already been imported. What separates the cases
@@ -98,6 +132,7 @@ async function openSettings(stored: Partial<Settings> = {}) {
 	})
 
 	const wrapper = mount(SettingsView, { attachTo: document.body })
+	mounted = wrapper
 	await flush()
 	return wrapper
 }
@@ -675,5 +710,86 @@ describe('the vibrancy, resizable and size rows', () => {
 		expect(mocks.invoke).toHaveBeenCalledWith('set_panel_size', { width: 1200, height: 760 })
 		expect((width.element as HTMLInputElement).value).toBe('1200')
 		expect(patchesSent()).toEqual([])
+	})
+})
+
+/**
+ * A file arriving while the settings are open. Both ingest surfaces the list
+ * view carries reach into this view too — the OS drop through the `DropTarget`
+ * it now mounts, the paste through its own file-only listener — and both hand
+ * the user back to the list, because the tray they filled lives in the
+ * composer.
+ */
+describe('attaching from the settings view', () => {
+	const PDF = {
+		id: 'att_1',
+		file: 'abcdef0123456789.pdf',
+		name: 'report.pdf',
+		mime: 'application/pdf',
+		bytes: 1000,
+	}
+
+	/** Adds attachment responders on top of whatever `openSettings` installed. */
+	function answerAttach(command: string, result: unknown) {
+		const prior = mocks.invoke.getMockImplementation()
+		mocks.invoke.mockImplementation(async (name, args) => {
+			if (name === command) return result
+			return prior?.(name, args)
+		})
+	}
+
+	beforeEach(() => {
+		useView().showSettings()
+	})
+
+	afterEach(() => {
+		// Both are module-scope and would otherwise leak into the next test: the
+		// view ref stays wherever the last test drove it, and the pending tray
+		// keeps what these ingests added.
+		useView().showList()
+		useAttachments().clearPending()
+	})
+
+	it('accepts an OS file drop and returns to the list', async () => {
+		await openSettings()
+		answerAttach('attach_paths', [PDF])
+		expect(mocks.dragDrop.deliver, 'DropTarget registered no drag listener').not.toBeNull()
+
+		await mocks.dragDrop.deliver?.({
+			payload: { type: 'drop', paths: ['C:\\reports\\report.pdf'] },
+		})
+		await flush()
+
+		expect(mocks.invoke).toHaveBeenCalledWith('attach_paths', {
+			paths: ['C:\\reports\\report.pdf'],
+		})
+		expect(useView().view.value).toBe('list')
+		expect(useAttachments().pending.value).toHaveLength(1)
+	})
+
+	it('accepts a pasted file and returns to the list', async () => {
+		await openSettings()
+		answerAttach('attach_paste', [PDF])
+
+		document.dispatchEvent(new Event('paste', { bubbles: true }))
+		await flush()
+
+		expect(mocks.invoke).toHaveBeenCalledWith('attach_paste')
+		expect(useView().view.value).toBe('list')
+		expect(useAttachments().pending.value).toHaveLength(1)
+	})
+
+	/** Rust answers an empty list for a clipboard carrying text or nothing, and
+	 *  that is the paste this view must leave alone — there is no composer here
+	 *  for a capture to land in, so nothing may change. */
+	it('leaves a text paste alone and stays put', async () => {
+		await openSettings()
+		answerAttach('attach_paste', [])
+
+		document.dispatchEvent(new Event('paste', { bubbles: true }))
+		await flush()
+
+		expect(useView().view.value).toBe('settings')
+		expect(useAttachments().pending.value).toHaveLength(0)
 	})
 })

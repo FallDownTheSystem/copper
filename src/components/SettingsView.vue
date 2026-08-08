@@ -28,6 +28,7 @@ import {
 	type DoubleClickAction,
 	type InsertionPoint,
 } from '@/composables/useSettings'
+import { inOverlay, inTextSurface } from '@/lib/chords'
 import { ACCENT_COLORS, NEUTRAL_TONES, type AccentColor, type NeutralTone } from '@/lib/palette'
 
 const {
@@ -71,6 +72,8 @@ const {
 } = useSettings()
 const { isRecording, cancel } = useShortcutRecorder()
 const { showList } = useView()
+const { pasteAttachment } = useAttachments()
+const { clearActionError, reportActionError } = useSpace()
 const {
 	status: updateStatus,
 	currentVersion,
@@ -170,6 +173,34 @@ function onEscape(event: KeyboardEvent) {
 	}
 	showList()
 }
+
+/**
+ * `Ctrl+V` of a file, from the settings view.
+ *
+ * The list view's zero-focus paste captures text as a note and files as
+ * attachments; this view has no composer, so only the file half applies here.
+ * Text is deliberately left alone — capturing a note from a view that does not
+ * show notes would be an invisible mutation — and Rust already embodies the
+ * split: `attach_paste` answers with nothing whenever the clipboard carries
+ * text, so the two halves cannot both claim one paste.
+ *
+ * A handled paste returns to the list, success and refusal alike: the tray it
+ * filled and the error line that reports it both live in the composer, so
+ * staying here would leave the outcome somewhere the user cannot see it.
+ */
+function onPaste(event: ClipboardEvent) {
+	if (inTextSurface(event.target) || inOverlay(event.target)) return
+	// Cleared before the attempt and reported after it — every ingest path's
+	// rule; see `Composer`'s `beginAttach`.
+	clearActionError('composer')
+	void pasteAttachment().then((outcome) => {
+		if (!outcome.handled) return
+		if (outcome.message) reportActionError('composer', outcome.message)
+		showList()
+	})
+}
+
+useEventListener(document, 'paste', onPaste)
 
 /** The switch is the presence of animation, but the *setting* is a two-value
  *  preference rather than a boolean, because "auto" means "defer to Windows" and
@@ -781,5 +812,10 @@ const summonNote = computed(() => {
 				</SettingsRow>
 			</SettingsSection>
 		</div>
+
+		<!-- The same treatment the list mounts, so a file is droppable while the
+		     settings are open too. Its overlay is absolute against the panel
+		     surface, so it costs this column no layout. -->
+		<DropTarget />
 	</div>
 </template>

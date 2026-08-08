@@ -303,7 +303,9 @@ function onShellKeydown(event: KeyboardEvent) {
  * On `document`, not on the panel root: `document.body` is an *ancestor* of that
  * root, so a press delivered there — which is where focus sits after the tray
  * shows the panel — would never bubble down to it. The listener goes with this
- * component, so the settings view has none.
+ * component; the settings view carries its own file-only counterpart, which
+ * takes the attachment branch and leaves text alone — it has no composer to
+ * show a capture in.
  *
  * **Text wins, and the rule is still Rust's.** A clipboard carrying text takes
  * the note branch here; one that does not falls through to `attach_paste`, which
