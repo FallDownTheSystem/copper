@@ -709,8 +709,21 @@ pub async fn hide_panel(app: AppHandle) {
 }
 
 /// Hides the panel if it is visible and reveals it otherwise, or logs why it
-/// could not be reached. This is the tray's left-click behaviour, kept here so
-/// that the window lookup stays in the module that owns the window.
+/// could not be reached. The tray's left-click **and** the summon chord, kept
+/// here so that the window lookup stays in the module that owns the window.
+///
+/// **Two states, deliberately — visible means hide, whatever holds focus.** The
+/// chord spent a while as a three-state toggle that raised a
+/// visible-but-unfocused panel instead of hiding it, reasoning that the user
+/// was reaching for a panel buried under other windows. That reading loses to
+/// the panel's actual life: it ships always-on-top, so it is never buried —
+/// visible-but-unfocused is its *resting* state while the user types elsewhere,
+/// and the raise turned "go away" into a chord that had to be pressed twice. A
+/// user who can see the panel and presses the chord is dismissing it.
+///
+/// The hidden case is also where placement is checked, so a panel left on a
+/// monitor that has since been unplugged comes back somewhere reachable instead
+/// of being summoned into nowhere.
 pub fn toggle_or_log<M: Manager<tauri::Wry>>(app: &M) {
 	with_panel(app, "toggle", |window| {
 		if is_visible(window) {
@@ -722,32 +735,6 @@ pub fn toggle_or_log<M: Manager<tauri::Wry>>(app: &M) {
 			crate::capture::panel_revealed_by_user(app);
 			reveal_reachable(window)
 		}
-	});
-}
-
-/// The summon chord's behaviour: **three** states, not two.
-///
-/// A two-state toggle reads the middle case wrong. With the panel visible but
-/// behind whatever the user is typing in, "toggle" hides a window they can see
-/// and were reaching for — so they press again, and the second press finally
-/// shows what the first should have. Visible-but-unfocused therefore raises
-/// rather than hides, and only a panel that already has focus is hidden.
-///
-/// The hidden case is also where placement is checked, so a panel left on a
-/// monitor that has since been unplugged comes back somewhere reachable instead
-/// of being summoned into nowhere.
-pub fn summon_or_log(app: &AppHandle) {
-	with_panel(app, "summon", |window| {
-		if is_visible(window) {
-			if window.is_focused().unwrap_or(false) {
-				return hide(window);
-			}
-			crate::capture::panel_revealed_by_user(app);
-			return reveal(window);
-		}
-
-		crate::capture::panel_revealed_by_user(app);
-		reveal_reachable(window)
 	});
 }
 

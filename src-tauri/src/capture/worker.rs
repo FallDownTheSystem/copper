@@ -61,7 +61,7 @@ pub fn spawn(
 
 			while let Ok(trigger) = triggers.recv() {
 				// The summon binding rides the same hook and the same channel, but
-				// nothing else on this thread: no in-flight gate, because revealing a
+				// nothing else on this thread: no in-flight gate, because toggling a
 				// window is not a capture and the two must not be able to swallow each
 				// other; no cascade, no store, no notice.
 				//
@@ -72,7 +72,7 @@ pub fn spawn(
 				// a second sender to the shutdown protocol the worker's join depends
 				// on — a real hang risk traded for a rare and bounded delay.
 				if trigger.role == TriggerRole::Summon {
-					panel::summon_or_log(&app);
+					panel::toggle_or_log(&app);
 					continue;
 				}
 

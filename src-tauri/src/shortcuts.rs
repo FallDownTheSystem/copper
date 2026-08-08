@@ -685,7 +685,7 @@ fn summon_handler(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
 	if shortcut.id() != CANONICAL_SUMMON.load(Ordering::Relaxed) {
 		return;
 	}
-	panel::summon_or_log(app);
+	panel::toggle_or_log(app);
 }
 
 fn capture_handler(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
