@@ -150,7 +150,17 @@ function onDoubleClick(event: MouseEvent) {
 			     row* rather than as an indicator over it, and at the dark theme's
 			     lightness it read as an almost white one. The soft outer band is the
 			     half both treatments share, so a focused row and a focused field still
-			     look like the same event. -->
+			     look like the same event.
+
+			     **The selected branch still needs `focus-visible:outline-hidden`.**
+			     Withholding `focus-halo` by swapping the class out also withheld its
+			     `outline: transparent` — and an element that matches `:focus-visible`
+			     with no author outline gets the browser's own default ring, which on
+			     the dark panel is the crisp white outline this suppression exists to
+			     prevent. `outline-hidden` rather than `outline-none` for the same
+			     reason `focus-halo` declares a transparent outline: in forced colors
+			     the transparent ring is forced visible and is the row's only
+			     indicator there. -->
 			<div
 				role="row"
 				:data-row-id="rowId"
@@ -159,7 +169,9 @@ function onDoubleClick(event: MouseEvent) {
 				:tabindex="focused ? 0 : -1"
 				class="note-row group/row rounded-lg"
 				:class="[
-					selected ? 'row-selected ring-accent-ring ring-2 ring-inset' : 'focus-halo',
+					selected
+						? 'row-selected ring-accent-ring ring-2 ring-inset focus-visible:outline-hidden'
+						: 'focus-halo',
 					'hover:bg-surface-hover transition-colors duration-fast',
 				]"
 				@click="emit('pointerSelect', $event)"
