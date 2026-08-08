@@ -47,6 +47,7 @@ declare module 'vue' {
     DropdownMenuTrigger: typeof import('./components/ui/dropdown-menu/DropdownMenuTrigger.vue')['default']
     DropTarget: typeof import('./components/DropTarget.vue')['default']
     EditorRecoveryRow: typeof import('./components/EditorRecoveryRow.vue')['default']
+    EmptyState: typeof import('./components/EmptyState.vue')['default']
     IconLucideAlertCircle: typeof import('~icons/lucide/alert-circle')['default']
     IconLucideArrowDownUp: typeof import('~icons/lucide/arrow-down-up')['default']
     IconLucideChevronDown: typeof import('~icons/lucide/chevron-down')['default']

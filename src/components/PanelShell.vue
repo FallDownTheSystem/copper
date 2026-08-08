@@ -3,15 +3,9 @@ import { invoke } from '@tauri-apps/api/core'
 
 import { CHORDS, inOverlay, inTextSurface } from '@/lib/chords'
 
-const {
-	loadState,
-	refreshing,
-	actionError,
-	noteCount,
-	spaceName,
-	activeSectionObject,
-	initialize,
-} = useSpace()
+// `activeSectionObject` left with `EmptyState`, which is the only thing that
+// named the destination and now asks for it itself.
+const { loadState, refreshing, actionError, noteCount, spaceName, initialize } = useSpace()
 const { setClampHeight } = useNoteDisclosure()
 const { ensureHighlighter } = useMarkdown()
 // `setOverlayHost` below is what fills the two refs every menu reads; each menu
@@ -456,13 +450,22 @@ function onContextMenu(event: MouseEvent) {
 					<!-- Additive, not a replacement: a zero-note space still renders its
 					     section headers and the active section's own empty line, because
 					     hiding where a capture will land is worst exactly when the list
-					     is empty. -->
-					<div v-if="empty" class="px-3 pt-4">
-						<p class="text-text-primary text-body font-semibold">No notes yet.</p>
-						<p class="text-text-secondary mt-1 text-meta">
-							Add one below. It lands in {{ activeSectionObject?.name ?? 'this space' }}.
-						</p>
-					</div>
+					     is empty.
+
+					     A sibling of the grid rather than a child of it, which is the same
+					     rule the drop indicator and the two narrowing states above follow:
+					     a `role="grid"` may own only rows and rowgroups, so anything that
+					     is not a row belongs outside it.
+
+					     **`!hasQuery` is the half that was missing.** `empty` is a property
+					     of the *document* — zero notes across every section — and says
+					     nothing about the query, so a search typed into an empty space used
+					     to render this and `SearchEmptyState` at once: two answers to one
+					     emptiness, one of which blamed a query that is not the reason. The
+					     query is the narrower explanation and clearing it is the shorter way
+					     back, exactly as `NoteList` decides between its own two states, so
+					     it wins and this stands down. -->
+					<EmptyState v-if="empty && !hasQuery" />
 
 					<EditorRecoveryRow />
 				</div>

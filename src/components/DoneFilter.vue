@@ -13,7 +13,8 @@
  * there is something to delete — a button that explains it has nothing to do is
  * worse than one that is not there.
  */
-const { doneFilter, doneOnly, doneTotal, nextDoneFilter, cycleDoneFilter } = useNoteList()
+const { doneFilter, doneOnly, doneTotal, todoTotal, allTotal, nextDoneFilter, cycleDoneFilter } =
+	useNoteList()
 const { doneCount, doneTargets, deleteDoneInActiveSection } = useNoteActions()
 const { activeSectionObject } = useSpace()
 
@@ -152,17 +153,29 @@ const label = computed(() =>
  * is better spent on where the press goes, which is the one thing the list
  * cannot show.
  *
- * The count rides on the `done` offer alone, because that is the only one of the
- * three where a number changes the decision: `Done 0` is a view worth not opening.
+ * **All three offers carry their own total**, because the number is what makes a
+ * destination worth choosing: "Todo 2" and "Todo 41" are different offers behind
+ * the same word, and the word alone leaves the reader to press and find out. A
+ * zero is the sharpest case of it — `Done 0` warns that the press leads somewhere
+ * empty, which is the one thing the current list cannot show about a view it is
+ * not displaying.
+ *
+ * All three are document-wide, matching the view the press produces. The delete
+ * button beside this one counts the active section instead, and they can
+ * legitimately disagree; that one names its scope in its own accessible name.
  */
-const cycleLabel = computed(() => {
-	const next = nextDoneFilter.value
-	if (next === 'done') return `Done ${doneTotal.value}`
-	return next === 'all' ? 'All' : 'Todo'
-})
+const cycleLabel = computed(
+	() =>
+		({
+			all: `All ${allTotal.value}`,
+			todo: `Todo ${todoTotal.value}`,
+			done: `Done ${doneTotal.value}`,
+		})[nextDoneFilter.value],
+)
 
 /** The state, then what the press does with it — `SortControl`'s sentence, and
- *  it has to end with the visible label so the accessible name contains it. */
+ *  it has to end with the visible label so the accessible name contains it. A
+ *  voice-input user says the words on the button, and a count is one of them. */
 const CYCLE_STATES = {
 	todo: 'Unfinished notes only',
 	done: 'Done notes only',
@@ -230,22 +243,27 @@ const cycleTitle = computed(
 		     be stating something false. The accessible name carries all of it instead
 		     — the view in effect, then the one a press produces.
 
-		     The accent marks *any* departure from the default rather than "something
-		     is hidden". Hiding done notes is what the panel now does at rest, so
-		     tinting that would leave the control permanently lit and say nothing; what
-		     is worth a colour is that the user has taken the view somewhere else and
-		     can press back to where it was. -->
+		     The accent marks *any* departure from the resting view rather than
+		     "something is hidden". The panel rests on `all`, and both of the other two
+		     hide half the document in opposite directions, so a colour that meant
+		     "done notes are hidden" would leave the review view unmarked while it is
+		     hiding just as much. What is worth a colour is that the list on screen is
+		     not the whole document and a press leads back. -->
 		<button
 			type="button"
 			data-done-filter
 			class="panel-button inline-flex min-h-6 shrink-0 items-center gap-1 px-1.5"
-			:class="doneFilter === 'todo' ? 'text-text-secondary' : 'text-accent-text'"
+			:class="doneFilter === 'all' ? 'text-text-secondary' : 'text-accent-text'"
 			:title="cycleTitle"
 			:aria-label="cycleTitle"
 			@click="cycleDoneFilter"
 		>
 			<IconLucideCircleCheck class="size-3.5 shrink-0" aria-hidden="true" focusable="false" />
-			<span class="text-label uppercase">{{ cycleLabel }}</span>
+			<!-- `tabular-nums` because every one of the three labels now ends in a
+			     number, and marking a note done moves two of those counts at once. The
+			     button sits in a row it shares with the chip, so proportional digits
+			     would let a tick nudge the strip sideways. -->
+			<span class="text-label tabular-nums uppercase">{{ cycleLabel }}</span>
 		</button>
 	</div>
 </template>

@@ -37,29 +37,31 @@ import type { SpaceView } from './useSpace'
 export type { SortMode }
 
 /**
- * Three views of one document, and the default is now the narrowest of them.
+ * Three views of one document, and the default is the whole of it.
  *
- * **`todo` hides done notes entirely, and that is a deliberate change to what the
- * panel shows out of the box.** The two-state form assumed the unfinished notes
- * lead the list and the done ones merely sit below them, which stops being true
- * the moment a section has been worked through: the list a capture tool opens on
- * should be the things still to do. `all` is the old default and is still one
- * press away; `done` is the review scope the bulk delete acts in.
+ * **`all` is what the panel opens on**, because the resting view of a capture
+ * tool should be the document as it stands rather than an edited version of it. A
+ * note that disappears the moment it is ticked is a note the user has to work out
+ * a control to get back, and the panel would be answering a question about tidying
+ * up that nobody asked on the way in. `todo` drops the finished notes and `done`
+ * is the review scope the bulk delete acts in; both are one press away.
  *
- * The order is the cycle the button walks, and it is narrowest → other-half →
- * everything. Each press widens or re-aims the view rather than jumping between
- * two unrelated scopes, and three presses come back where they started.
+ * The order is the cycle the button walks, and it is everything → unfinished →
+ * finished. The resting view leads, so the first press is the one a reader
+ * arriving at a worked-through list actually wants, and every press from there
+ * narrows rather than jumping between two unrelated scopes. Three presses come
+ * back where they started.
  */
 export type DoneFilter = 'todo' | 'done' | 'all'
 
-const doneFilter = ref<DoneFilter>('todo')
+const doneFilter = ref<DoneFilter>('all')
 
 /** The cycle, in one place: the button, its label and the empty state all have to
  *  agree about where a press goes. */
 const NEXT_FILTER = {
+	all: 'todo',
 	todo: 'done',
 	done: 'all',
-	all: 'todo',
 } as const satisfies Record<DoneFilter, DoneFilter>
 
 /**
@@ -106,6 +108,19 @@ const filtersByDone = computed(() => doneFilter.value !== 'all')
  *  active section's and belongs to the bulk delete. The button offers a view of
  *  every done note there is, so the number beside it has to be that one. */
 const doneTotal = computed(() => doneIds.value.size)
+
+/**
+ * The other two views' sizes, on the same document-wide scale and for the same
+ * reason: the button offers all three, so one of them counted differently would
+ * be a number the press does not deliver.
+ *
+ * `createdAt` is the note census. `rebuild` writes one entry per note in the
+ * applied document — every note, not only the ones carrying a parseable date —
+ * so its size is the document's note count without a second walk, and the
+ * unfinished notes are what is left once the done ones come out.
+ */
+const allTotal = computed(() => createdAt.value.size)
+const todoTotal = computed(() => allTotal.value - doneTotal.value)
 
 const nextDoneFilter = computed(() => NEXT_FILTER[doneFilter.value])
 
@@ -184,7 +199,7 @@ function rebuild(space: SpaceView | null) {
  * drops collapse.
  */
 function reset() {
-	doneFilter.value = 'todo'
+	doneFilter.value = 'all'
 	sortMode.value = 'manual'
 }
 
@@ -194,6 +209,8 @@ export function useNoteList() {
 		doneOnly,
 		filtersByDone,
 		doneTotal,
+		todoTotal,
+		allTotal,
 		nextDoneFilter,
 		setDoneFilter,
 		cycleDoneFilter,

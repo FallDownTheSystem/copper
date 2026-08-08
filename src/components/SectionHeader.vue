@@ -126,21 +126,35 @@ function onKeydown(event: KeyboardEvent) {
 			     same stacking context — the panel's `isolate` root — and both live at
 			     the far end of the list.
 
-			     **The band is `--surface-solid`, and the alpha it used to carry was a
-			     misreading of what is behind it.** `bg-surface`'s 90% was argued as
-			     leaving 1% of the desktop showing, which is true of the *panel* and
-			     beside the point: the panel is under the band, and the note rows are
-			     *between* them. A tenth of a row of text is legible text, and it was —
-			     the heading had a note running through it. Opaque is the only value that
-			     erases what it covers, and the band is 32px deep — 24 of heading
-			     and the 4px of breathing room above and below it that keeps the
-			     pinned row from sitting flush against the text sliding under. -->
+			     **The band paints `--surface` — the panel's own value — because a
+			     heading in a different colour from the list it heads reads as a bar
+			     laid across the panel rather than as part of it.** An opaque
+			     `--surface-solid` cannot match that colour: the list is `--surface`
+			     composited over the desktop at 90%, and the desktop is darker than the
+			     light surface and lighter than the dark one, so a fully opaque band
+			     sits visibly off the list in both themes — worst in dark, where it
+			     reads as a shadow across the top of every section.
+
+			     **Two costs come with the alpha, and both are the price of that
+			     match.** Against the panel it composites a second time, to 99% where
+			     the ground is 90% — a tenth of the remaining tenth of the desktop, and
+			     below noticing. Against the rows it covers it is a real 10%: the note
+			     rows sit *between* the band and the panel, so text sliding under the
+			     heading leaves a faint ghost rather than vanishing outright.
+
+			     **The gradient is what keeps that ghost from also being an edge.** The
+			     colour holds for the full height of the heading and dissolves over the
+			     8px below it, so a line of text passing under fades out instead of
+			     meeting a hard boundary. `pt-1 pb-2` is asymmetric for exactly that
+			     reason: the extra bottom padding *is* the tail, room the heading never
+			     sits on, and the 4px above it is still the breathing room that keeps
+			     the pinned row off the text scrolling past. -->
 			<div
 				role="row"
 				:data-row-id="rowId"
 				data-section-row
 				:tabindex="focused ? 0 : -1"
-				class="focus-halo bg-surface-solid sticky top-0 z-1 min-w-0 py-1"
+				class="focus-halo section-band sticky top-0 z-1 min-w-0 pt-1 pb-2"
 			>
 				<div
 					role="gridcell"
@@ -173,23 +187,25 @@ function onKeydown(event: KeyboardEvent) {
 						     The name shrinks rather than holding its width — with the
 						     chevron at the end of the row, an unshrinkable one would push it
 						     out. The inner `truncate` is what makes that safe. -->
-						<!-- **`-ml-3 pl-3` is one alignment expressed twice, and it replaces a
-						     text-to-text one.** The heading used to be pushed a further 12px in
-						     so its *name* began where a note's *text* does, past the completion
-						     box — which put the section label further right than anything else
-						     in the panel and made the list look indented under its own heading.
-						     What lines up now is the leading mark of each row: the negative
-						     margin takes the button back out to the row's own left edge, so its
-						     hover surface starts where a note row's does, and the `pl-3` it
-						     keeps puts the marker dot at 12px — the note's completion box to
-						     the pixel. Anything that changes the note row's `px-3` has to come
+						<!-- **`-ml-1.5 pl-1.5` holds the dot at 12px while leaving the pill
+						     symmetric.** What lines up across rows is the leading mark: the
+						     marker dot has to land at 12px from the row edge, the note's
+						     completion box to the pixel — so the gridcell's `px-3` and the
+						     button's own inset have to add up to 12 no matter how they are
+						     split. Every split lands the dot; only this one leaves the hover
+						     surface even. Carrying all 12 on the button would put twice the
+						     room beside the dot on its left as `pr-1.5` leaves on its right,
+						     and a dot with a lopsided pill around it reads as misplaced even
+						     when it is exactly where it belongs. Six each side puts the
+						     remaining six on the gridcell, where every other row already
+						     shares it. Anything that changes the note row's `px-3` has to come
 						     back here. -->
 						<h2 :id="headingId" class="min-w-0">
 							<button
 								type="button"
 								tabindex="-1"
 								:aria-current="active ? 'true' : undefined"
-								class="hover:bg-surface-hover active:bg-surface-active focus-ring -ml-3 flex min-w-0 items-center gap-1.5 rounded-inset py-1 pr-1.5 pl-3 transition-colors duration-fast"
+								class="hover:bg-surface-hover active:bg-surface-active focus-ring -ml-1.5 flex min-w-0 items-center gap-1.5 rounded-inset py-1 pr-1.5 pl-1.5 transition-colors duration-fast"
 								:class="active ? 'text-accent-text' : 'text-text-secondary'"
 								@click="emit('activate')"
 							>
@@ -255,3 +271,36 @@ function onKeydown(event: KeyboardEvent) {
 		<SectionContextMenu :section="section" />
 	</ContextMenu>
 </template>
+
+<style scoped>
+/* The band's fill can only be written here: a `bg-*` utility emits a
+   `background-color`, and a colour that has to stop being itself over the last
+   8px is a `background-image`.
+
+   Four stops rather than two, because a straight ramp changes slope abruptly at
+   both ends of the tail and the eye reads either corner as a faint line — which
+   is the thing the tail exists to remove. The interior stops round them off.
+   `color-mix` with `transparent` premultiplies, so each one is `--surface` at a
+   fraction of its own alpha rather than a step toward grey. */
+.section-band {
+	background: linear-gradient(
+		to bottom,
+		var(--surface) calc(100% - 8px),
+		color-mix(in oklab, var(--surface) 74%, transparent) calc(100% - 5.5px),
+		color-mix(in oklab, var(--surface) 26%, transparent) calc(100% - 2.5px),
+		transparent
+	);
+}
+
+/* The one appearance that needs the band stated twice. Forced colours rewrite
+   `background-color` to `Canvas` but leave `background-image` alone, so the
+   gradient would survive as an author-coloured strip across a system-coloured
+   panel — the only band in the app that ignores the user's palette. Nothing of
+   the fade is worth that: up there the band's whole job is to erase, and an
+   opaque `Canvas` does it. */
+@media (forced-colors: active) {
+	.section-band {
+		background: Canvas;
+	}
+}
+</style>

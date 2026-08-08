@@ -50,12 +50,13 @@ afterEach(() => {
 })
 
 describe('the done filter', () => {
-	/** The default is the narrow one, which is the behaviour change: a capture
-	 *  tool opens on the things still to do. */
-	it('hides the done notes until asked for them', () => {
-		expect(list.doneFilter.value).toBe('todo')
-		expect(list.filtersByDone.value).toBe(true)
-		expect(selection.visibleNoteIds.value).toEqual(['n1', 'n3', 'n4'])
+	/** The default is the whole document — a ruling that reversed the short-lived
+	 *  todo default: a note that vanishes the moment it is ticked is a note the
+	 *  user has to work out a control to get back. */
+	it('shows the whole document until asked to narrow it', () => {
+		expect(list.doneFilter.value).toBe('all')
+		expect(list.filtersByDone.value).toBe(false)
+		expect(selection.visibleNoteIds.value).toEqual(['n1', 'n2', 'n3', 'n4', 'n5'])
 	})
 
 	/** AC2. */
@@ -64,45 +65,55 @@ describe('the done filter', () => {
 		expect(selection.visibleNoteIds.value).toEqual(['n2', 'n5'])
 	})
 
-	/** The third state is the old default, and the only one that narrows nothing. */
-	it('shows the whole document on all', () => {
-		list.setDoneFilter('all')
-		expect(list.filtersByDone.value).toBe(false)
-		expect(selection.visibleNoteIds.value).toEqual(['n1', 'n2', 'n3', 'n4', 'n5'])
+	/** The narrowing state that is not `done`: the unfinished half on its own. */
+	it('leaves only the unfinished notes on screen in the todo view', () => {
+		list.setDoneFilter('todo')
+		expect(list.filtersByDone.value).toBe(true)
+		expect(selection.visibleNoteIds.value).toEqual(['n1', 'n3', 'n4'])
 	})
 
 	/** Three presses come back where they started, so every state is reachable
-	 *  from every other without a menu. */
-	it('cycles todo → done → all → todo', () => {
-		expect(list.nextDoneFilter.value).toBe('done')
+	 *  from every other without a menu. The resting view leads and every press
+	 *  from it narrows. */
+	it('cycles all → todo → done → all', () => {
+		expect(list.nextDoneFilter.value).toBe('todo')
+		list.cycleDoneFilter()
+		expect(list.doneFilter.value).toBe('todo')
+
 		list.cycleDoneFilter()
 		expect(list.doneFilter.value).toBe('done')
 
 		list.cycleDoneFilter()
 		expect(list.doneFilter.value).toBe('all')
-
-		list.cycleDoneFilter()
-		expect(list.doneFilter.value).toBe('todo')
 	})
 
 	/** Document-wide, unlike `useNoteActions.doneCount`, which is the bulk
-	 *  delete's active-section scope. The button's count is this one. */
+	 *  delete's active-section scope. The button's counts are these three. */
 	it('counts every done note in the document', () => {
 		expect(list.doneTotal.value).toBe(2)
 	})
 
-	/** The default view narrows the same way the done view does, so the same rule
-	 *  applies to it: `Ctrl+A` on an ordinary list selects the unfinished notes. */
-	it('narrows what an action targets in the default view too', () => {
+	/** The other two totals the cycle button offers, on the same document-wide
+	 *  scale — one of them counted differently would be a number the press does
+	 *  not deliver. */
+	it('sizes all three views from the same census', () => {
+		expect(list.allTotal.value).toBe(5)
+		expect(list.todoTotal.value).toBe(3)
+	})
+
+	/** The todo view narrows the same way the done view does, so the same rule
+	 *  applies to it: `Ctrl+A` under it selects the unfinished notes. */
+	it('narrows what an action targets in the todo view too', () => {
+		list.setDoneFilter('todo')
 		expect(selection.actionableNoteIds.value).toEqual(['n1', 'n3', 'n4'])
 
 		selection.selectAll()
 		expect(selection.selectedIds.value).toEqual(['n1', 'n3', 'n4'])
 	})
 
-	/** A section whose notes are all finished drops out of the default view
-	 *  header and all — the treatment a search miss gets, applied to the other
-	 *  half of the filter. */
+	/** A section whose notes are all finished drops out of the todo view header
+	 *  and all — the treatment a search miss gets, applied to the other half of
+	 *  the filter. */
 	it('drops a section with nothing left to do', () => {
 		const doc = document2()
 		for (const entry of doc.notes) {
@@ -111,6 +122,7 @@ describe('the done filter', () => {
 		list.rebuild(doc)
 		selection.syncDocument(doc)
 
+		list.setDoneFilter('todo')
 		expect(selection.rowIds.value).toEqual([sectionRow('sec_a'), noteRow('n1'), noteRow('n3')])
 	})
 
@@ -154,11 +166,11 @@ describe('the done filter', () => {
 
 	/** AC3, restated against the event that actually exists: the panel renders
 	 *  every section at once, so a space switch — not a section change — is what
-	 *  drops the filter. It drops back to the default, which is no longer `all`. */
+	 *  drops the filter. */
 	it('drops back to the default view when the space is replaced', () => {
-		list.setDoneFilter('all')
+		list.setDoneFilter('done')
 		list.reset()
-		expect(list.doneFilter.value).toBe('todo')
+		expect(list.doneFilter.value).toBe('all')
 	})
 
 	/** A capture landing while the user reviews done notes is not a change of
@@ -172,8 +184,9 @@ describe('the done filter', () => {
 
 describe('sort', () => {
 	/** These are about the order, and the fixture's two done notes have to be in
-	 *  the list for a reordering of it to be observable — the default view hides
-	 *  them. Each case that is about the filter as well says so by setting it. */
+	 *  the list for a reordering of it to be observable — so the filter is pinned
+	 *  wide open rather than trusted to a default that has changed once already.
+	 *  Each case that is about the filter as well says so by setting it. */
 	beforeEach(() => {
 		list.setDoneFilter('all')
 	})

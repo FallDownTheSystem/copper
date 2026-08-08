@@ -260,11 +260,11 @@ beforeEach(() => {
 	mocks.openUrl.mockClear()
 	settingsPayload = defaultSettings()
 	mocks.invoke.mockImplementation(baseInvoke)
-	// **`all`, not the panel's default.** `SPACE`'s second note is done, and the
-	// default view hides done notes — so every case in this file that is about
-	// something else (the grid, the menus, copy, drag, the editor) would be
-	// asserting against a one-note list for a reason it never mentions. The done
-	// filter's own block puts the default back and is where the three states are
+	// Pinned wide open rather than trusted to the default, which has changed once
+	// already: `SPACE`'s second note is done, and under a narrowing default every
+	// case in this file that is about something else (the grid, the menus, copy,
+	// drag, the editor) would be asserting against a one-note list for a reason it
+	// never mentions. The done filter's own block is where the three states are
 	// exercised.
 	list.setDoneFilter('all')
 })
@@ -1545,10 +1545,11 @@ describe('a pinned section heading', () => {
 	 * raised past `NoteList`'s indicator or `NoteCard`'s carried row hides the two
 	 * things a drag needs visible.
 	 *
-	 * **`bg-surface-solid`, and the token is the assertion.** The band erases the
-	 * rows passing underneath it, which the panel's translucent `--surface` cannot
-	 * do: its 90% left a tenth of every covered note legible *through* the heading,
-	 * because the rows sit between the band and the panel rather than behind both.
+	 * **`section-band`, and the class is the assertion.** The band paints the
+	 * panel's own `--surface` as a gradient that dissolves over its last 8px, so a
+	 * heading reads as part of the list it heads rather than as an opaque bar laid
+	 * across it — the ruling that replaced `bg-surface-solid`, accepting a faint
+	 * ghost of covered text in exchange for the colour match and the soft edge.
 	 * Nothing about that is visible to a layout-free DOM, so the class is where it
 	 * has to be caught.
 	 */
@@ -1557,7 +1558,7 @@ describe('a pinned section heading', () => {
 		const heading = wrapper.get(`[data-row-id="${sectionRow('sec_a')}"]`)
 
 		expect(heading.classes()).toEqual(
-			expect.arrayContaining(['sticky', 'top-0', 'z-1', 'bg-surface-solid']),
+			expect.arrayContaining(['sticky', 'top-0', 'z-1', 'section-band']),
 		)
 	})
 
@@ -4204,29 +4205,30 @@ describe('the done filter', () => {
 	}
 
 	/**
-	 * AC1 / AC2, and the behaviour change: the panel opens on what is left to do.
+	 * AC1 / AC2, under the ruling that reversed the short-lived todo default: the
+	 * panel opens on the whole document, and each press narrows.
 	 *
 	 * `nte_2` is `SPACE`'s only done note, so each of the three states is a
 	 * different list and the walk through them is observable in one case.
 	 */
-	it('cycles through hiding done, done only, and everything', async () => {
+	it('cycles through everything, hiding done, and done only', async () => {
 		const wrapper = await mountPanel()
 		const button = wrapper.get('[data-done-filter]')
 
+		expect(renderedRows(wrapper)).toEqual([noteRow('nte_1'), noteRow('nte_2')])
+
+		await button.trigger('click')
+		await settle(3)
 		expect(renderedRows(wrapper)).toEqual([noteRow('nte_1')])
 
 		await button.trigger('click')
 		await settle(3)
 		expect(renderedRows(wrapper)).toEqual([noteRow('nte_2')])
 
-		await button.trigger('click')
-		await settle(3)
-		expect(renderedRows(wrapper)).toEqual([noteRow('nte_1'), noteRow('nte_2')])
-
 		// Round to where it started, so every view is one press from every other.
 		await button.trigger('click')
 		await settle(3)
-		expect(renderedRows(wrapper)).toEqual([noteRow('nte_1')])
+		expect(renderedRows(wrapper)).toEqual([noteRow('nte_1'), noteRow('nte_2')])
 	})
 
 	/**
@@ -4239,19 +4241,20 @@ describe('the done filter', () => {
 		const wrapper = await mountPanel()
 		const button = wrapper.get('[data-done-filter]')
 
-		// One done note in `SPACE`, and the count rides on this offer alone.
+		// Two notes in `SPACE`, one of them done — every offer carries its own
+		// document-wide total, so all three labels here end in a count.
+		expect(button.text()).toContain('Todo 1')
+		expect(button.attributes('aria-label')).toBe('All notes · press for Todo 1')
+
+		await button.trigger('click')
+		await settle(2)
 		expect(button.text()).toContain('Done 1')
 		expect(button.attributes('aria-label')).toBe('Unfinished notes only · press for Done 1')
 
 		await button.trigger('click')
 		await settle(2)
-		expect(button.text()).toContain('All')
-		expect(button.attributes('aria-label')).toBe('Done notes only · press for All')
-
-		await button.trigger('click')
-		await settle(2)
-		expect(button.text()).toContain('Todo')
-		expect(button.attributes('aria-label')).toBe('All notes · press for Todo')
+		expect(button.text()).toContain('All 2')
+		expect(button.attributes('aria-label')).toBe('Done notes only · press for All 2')
 	})
 
 	/** Three states are not a toggle, and `aria-pressed` on one would announce
@@ -4272,9 +4275,14 @@ describe('the done filter', () => {
 		expect(filter.parentElement?.parentElement?.contains(field)).toBe(false)
 	})
 
-	/** AC5. Nothing to purge, nothing to press. */
+	/** AC5. Nothing to purge, nothing to press — through both of the states that
+	 *  are not the done view, since the button now sits two presses in. */
 	it('offers the delete only inside the done view', async () => {
 		const wrapper = await mountPanel()
+		expect(wrapper.find('[data-delete-done]').exists()).toBe(false)
+
+		await wrapper.get('[data-done-filter]').trigger('click')
+		await settle(2)
 		expect(wrapper.find('[data-delete-done]').exists()).toBe(false)
 
 		await wrapper.get('[data-done-filter]').trigger('click')
@@ -4290,6 +4298,7 @@ describe('the done filter', () => {
 	it('rests as an icon whose accessible name names the count and the section', async () => {
 		const { wrapper } = await mountWithDoneInBoth()
 		await wrapper.get('[data-done-filter]').trigger('click')
+		await wrapper.get('[data-done-filter]').trigger('click')
 		await settle(2)
 
 		const button = wrapper.get('[data-delete-done]')
@@ -4301,6 +4310,7 @@ describe('the done filter', () => {
 	 *  anything, which is the whole point of the confirmation. */
 	it('asks before deleting, and the first press deletes nothing', async () => {
 		const { wrapper, calls } = await mountWithDoneInBoth()
+		await wrapper.get('[data-done-filter]').trigger('click')
 		await wrapper.get('[data-done-filter]').trigger('click')
 		await settle(2)
 
@@ -4322,6 +4332,7 @@ describe('the done filter', () => {
 	it('deletes the active section’s done notes and no others', async () => {
 		const { wrapper, calls } = await mountWithDoneInBoth()
 		await wrapper.get('[data-done-filter]').trigger('click')
+		await wrapper.get('[data-done-filter]').trigger('click')
 		await settle(2)
 
 		await wrapper.get('[data-delete-done]').trigger('click')
@@ -4339,6 +4350,7 @@ describe('the done filter', () => {
 	it('says how to undo', async () => {
 		const { wrapper } = await mountWithDoneInBoth()
 		await wrapper.get('[data-done-filter]').trigger('click')
+		await wrapper.get('[data-done-filter]').trigger('click')
 		await settle(2)
 
 		await wrapper.get('[data-delete-done]').trigger('click')
@@ -4352,13 +4364,19 @@ describe('the done filter', () => {
 	})
 
 	/**
-	 * The default view narrows, so it is refused for the reason the done view is:
-	 * an index read off a list missing every finished note is not the index
-	 * `reorder_note` counts. This is the sharpest cost of the new default — manual
-	 * reordering now asks for the `All` view first, and the message says so.
+	 * The todo view narrows, so it is refused for the reason the done view is: an
+	 * index read off a list missing every finished note is not the index
+	 * `reorder_note` counts. With `all` back as the default this is no longer the
+	 * resting state's cost — but either narrowed view still asks for the `All`
+	 * view first, and the message says so.
 	 */
-	it('refuses both reorder paths in the default view as well', async () => {
+	it('refuses both reorder paths in the todo view as well', async () => {
 		const wrapper = await mountPanel()
+		// The resting view is the whole document, so reordering is available.
+		expect(wrapper.find('[data-drag-handle]').exists()).toBe(true)
+
+		list.setDoneFilter('todo')
+		await settle(2)
 		expect(wrapper.find('[data-drag-handle]').exists()).toBe(false)
 
 		takeRow(noteRow('nte_1'))
@@ -4369,7 +4387,7 @@ describe('the done filter', () => {
 		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_note', expect.anything())
 		expect(wrapper.text()).toContain('Show all notes to reorder them.')
 
-		// And it comes back on `All`, which is two presses away.
+		// And it comes back with the view.
 		list.setDoneFilter('all')
 		await settle(2)
 		expect(wrapper.find('[data-drag-handle]').exists()).toBe(true)
@@ -4377,10 +4395,10 @@ describe('the done filter', () => {
 
 	/**
 	 * The other emptiness, and the reason the copy could not stay one sentence:
-	 * the done view is empty when nothing is finished, the default view when
+	 * the done view is empty when nothing is finished, the todo view when
 	 * everything is. Saying the wrong one states the exact opposite of the truth.
 	 */
-	it('explains a default view with nothing left to do', async () => {
+	it('explains a todo view with nothing left to do', async () => {
 		mocks.invoke.mockImplementation(async (command: string) => {
 			if (command === 'get_active_space') {
 				return { ...SPACE, notes: SPACE.notes.map((entry) => ({ ...entry, done: true })) }
@@ -4389,6 +4407,13 @@ describe('the done filter', () => {
 		})
 		const wrapper = await mountPanel()
 		await space.refresh()
+		await settle(3)
+
+		// At rest the done notes are simply on screen — the emptiness only exists
+		// once the todo view drops them.
+		expect(wrapper.text()).not.toContain('Everything here is done.')
+
+		list.setDoneFilter('todo')
 		await settle(3)
 
 		expect(wrapper.text()).toContain('Everything here is done.')
@@ -4410,6 +4435,7 @@ describe('the done filter', () => {
 		await settle(3)
 
 		await wrapper.get('[data-done-filter]').trigger('click')
+		await wrapper.get('[data-done-filter]').trigger('click')
 		await settle(3)
 
 		expect(wrapper.text()).toContain('Nothing is done yet.')
@@ -4424,6 +4450,7 @@ describe('the done filter', () => {
 	 */
 	it('names the section it would delete from, not just the count', async () => {
 		const { wrapper } = await mountWithDoneInBoth()
+		await wrapper.get('[data-done-filter]').trigger('click')
 		await wrapper.get('[data-done-filter]').trigger('click')
 		await settle(2)
 
@@ -4448,6 +4475,7 @@ describe('the done filter', () => {
 	 */
 	it('disarms when an equal-count set swaps underneath it', async () => {
 		const { wrapper, calls } = await mountWithDoneInBoth()
+		await wrapper.get('[data-done-filter]').trigger('click')
 		await wrapper.get('[data-done-filter]').trigger('click')
 		await settle(2)
 
@@ -4494,6 +4522,7 @@ describe('the done filter', () => {
 	it('refuses the repeat of a held activation key', async () => {
 		const { wrapper, calls } = await mountWithDoneInBoth()
 		await wrapper.get('[data-done-filter]').trigger('click')
+		await wrapper.get('[data-done-filter]').trigger('click')
 		await settle(2)
 
 		const button = wrapper.get('[data-delete-done]')
@@ -4522,6 +4551,7 @@ describe('the done filter', () => {
 	 *  at a label that changed halfway through it. */
 	it('does not let a double-click arm and confirm in one gesture', async () => {
 		const { wrapper, calls } = await mountWithDoneInBoth()
+		await wrapper.get('[data-done-filter]').trigger('click')
 		await wrapper.get('[data-done-filter]').trigger('click')
 		await settle(2)
 
@@ -4874,10 +4904,10 @@ describe('the status toast', () => {
 	})
 
 	/**
-	 * Marking a note done in the default view is an action whose only visible
-	 * result is a row leaving the list, which is exactly why the toast carries the
-	 * way back. One press of `Undo` is one store step — the same one `Ctrl+Z`
-	 * takes — and a batch is already one step, so it restores all of it.
+	 * Marking a note done in the todo view is an action whose only visible result
+	 * is a row leaving the list, which is exactly why the toast carries the way
+	 * back. One press of `Undo` is one store step — the same one `Ctrl+Z` takes —
+	 * and a batch is already one step, so it restores all of it.
 	 */
 	it('reports a note moved to Done and offers one undo step', async () => {
 		mocks.invoke.mockImplementation(async (command: string) => {
@@ -4886,8 +4916,9 @@ describe('the status toast', () => {
 			}
 			return baseInvoke(command)
 		})
-		// The panel's real default, which the file's outer hook trades for `all`.
-		list.reset()
+		// The narrowed view, where marking done is what removes a row. The resting
+		// `all` view keeps the row on screen and hands nothing on.
+		list.setDoneFilter('todo')
 		const wrapper = await mountPanel()
 		// The fixture's done note is already hidden here.
 		expect(wrapper.findAll('[data-note-row]')).toHaveLength(1)
@@ -4966,7 +4997,7 @@ describe('the status toast', () => {
 	 * delete hands it on — through the row reconciliation already chose, rather
 	 * than through a second rule about where focus goes.
 	 */
-	it('hands focus on when the marked note leaves the default view', async () => {
+	it('hands focus on when the marked note leaves the todo view', async () => {
 		const THREE: Space = {
 			...SPACE,
 			notes: ['nte_1', 'nte_2', 'nte_3'].map((id, order) => ({
@@ -4991,8 +5022,9 @@ describe('the status toast', () => {
 			}
 			return baseInvoke(command)
 		})
-		// The panel's real default, which the file's outer hook trades for `all`.
-		list.reset()
+		// The narrowed view, where marking done is what removes a row. The resting
+		// `all` view keeps the row on screen and hands nothing on.
+		list.setDoneFilter('todo')
 		const wrapper = await mountPanel()
 		await space.refresh()
 		await settle(3)
@@ -5055,8 +5087,9 @@ describe('the status toast', () => {
 				}
 				return baseInvoke(command)
 			})
-			// The panel's real default, in which a note marked done leaves the list.
-			list.reset()
+			// The narrowed view, in which a note marked done leaves the list — the
+			// resting `all` view keeps it on screen and hands nothing on.
+			list.setDoneFilter('todo')
 			const wrapper = await mountPanel()
 			await space.refresh()
 			await settle(3)
