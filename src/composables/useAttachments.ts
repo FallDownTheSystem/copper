@@ -383,6 +383,25 @@ async function openAttachment(file: string): Promise<string | null> {
 	}
 }
 
+/**
+ * Always reveals, never launches — which is what makes it worth having beside
+ * `openAttachment`. That one sends an image to the OS viewer, so an image is
+ * the one kind of attachment with no way to reach its own file, and this is the
+ * answer to "where did my copy actually go?" for every type.
+ *
+ * The argument is the content-addressed `file`, not the attachment id: Rust
+ * rebuilds the path from it inside the space's sidecar and accepts no path from
+ * here.
+ */
+async function revealAttachment(file: string): Promise<string | null> {
+	try {
+		await invoke('attachment_reveal', { file })
+		return null
+	} catch (error) {
+		return errorMessage(error)
+	}
+}
+
 // --- formatting --------------------------------------------------------------
 
 /** Sizes in the units a person reading a file list expects. */
@@ -412,5 +431,6 @@ export function useAttachments() {
 		removePending,
 		clearPending,
 		openAttachment,
+		revealAttachment,
 	}
 }

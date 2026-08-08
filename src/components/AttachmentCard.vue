@@ -11,8 +11,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{ message: [string] }>()
 
-const { previewFor, requestPreview, previewEpoch, openAttachment } = useAttachments()
+const { previewFor, requestPreview, previewEpoch, openAttachment, revealAttachment } =
+	useAttachments()
 const { open: openViewer } = useImageViewer()
+const { boundary, portalTo } = useOverlayHost()
 
 const button = useTemplateRef<HTMLButtonElement>('button')
 
@@ -106,67 +108,110 @@ async function openInSystem() {
 	const failure = await openAttachment(props.attachment.file)
 	if (failure) emit('message', failure)
 }
+
+/**
+ * The stored copy, selected in Explorer.
+ *
+ * Ingest *copies* the bytes into the space's sidecar and never links the
+ * original, so this shows the only file there is to show — and for an image it
+ * is the only route to it at all, since every other gesture on this card ends at
+ * the OS viewer.
+ */
+async function revealInExplorer() {
+	const failure = await revealAttachment(props.attachment.file)
+	if (failure) emit('message', failure)
+}
 </script>
 
 <template>
-	<!-- A button so the keyboard path is the platform's rather than a hand-rolled
-	     one. `@click.prevent` neutralises the button's own activation without
-	     stopping propagation, so a single click still reaches the row and selects
-	     the note — opening is deliberately the *double*-click, matching how a file
-	     behaves everywhere else.
+	<!-- **A menu of its own, nested inside the row's.** An attachment is a file, and
+	     right-clicking a file asks about that file rather than about what contains
+	     it — so this card answers for itself and the note menu keeps the rest of the
+	     row. Reka arbitrates the nesting without help: its trigger defers to a
+	     `nextTick` and then declines an already-defaulted event, so the innermost
+	     trigger opens and `NoteCard`'s outer one stands down. The row's own
+	     `contextmenu` handler still runs, so right-clicking here selects the note
+	     exactly as it did before.
 
-	     The label names the primary gesture's destination rather than listing both:
-	     a screen reader reading "View or open" on every thumbnail would be reading
-	     the implementation. -->
-	<button
-		ref="button"
-		type="button"
-		:tabindex="tabIndex"
-		:disabled="unavailable"
-		:aria-label="
-			unavailable
-				? `${attachment.name} — unavailable`
-				: `${viewable ? 'View' : 'Open'} ${attachment.name}, ${formatBytes(attachment.bytes)}`
-		"
-		class="squircle border-separator hover:bg-surface-hover focus-ring flex min-h-16 w-full min-w-0 items-center gap-2 rounded-lg border p-1.5 text-left transition-colors duration-fast disabled:cursor-default disabled:hover:bg-transparent"
-		@click.prevent
-		@dblclick.stop.prevent="activate"
-		@keydown.enter.prevent="activate"
-		@keydown.space.prevent="openInSystem"
-	>
-		<span
-			class="bg-surface-hover text-text-disabled grid shrink-0 place-items-center overflow-hidden rounded-sm"
-			:style="boxStyle"
+	     Portalled into the panel's in-clip host for the reason the other two menus
+	     are: teleported to `document.body` it would escape the rounded rect. -->
+	<ContextMenu>
+		<ContextMenuTrigger as-child>
+			<!-- A button so the keyboard path is the platform's rather than a hand-rolled
+			     one. `@click.prevent` neutralises the button's own activation without
+			     stopping propagation, so a single click still reaches the row and selects
+			     the note — opening is deliberately the *double*-click, matching how a file
+			     behaves everywhere else.
+
+			     The label names the primary gesture's destination rather than listing both:
+			     a screen reader reading "View or open" on every thumbnail would be reading
+			     the implementation. -->
+			<button
+				ref="button"
+				type="button"
+				:tabindex="tabIndex"
+				:disabled="unavailable"
+				:aria-label="
+					unavailable
+						? `${attachment.name} — unavailable`
+						: `${viewable ? 'View' : 'Open'} ${attachment.name}, ${formatBytes(attachment.bytes)}`
+				"
+				class="squircle border-separator hover:bg-surface-hover focus-ring flex min-h-16 w-full min-w-0 items-center gap-2 rounded-lg border p-1.5 text-left transition-colors duration-fast disabled:cursor-default disabled:hover:bg-transparent"
+				@click.prevent
+				@dblclick.stop.prevent="activate"
+				@keydown.enter.prevent="activate"
+				@keydown.space.prevent="openInSystem"
+			>
+				<span
+					class="bg-surface-hover text-text-disabled grid shrink-0 place-items-center overflow-hidden rounded-sm"
+					:style="boxStyle"
+				>
+					<!-- No `alt` text of its own: the button already carries the filename, and
+					     a second announcement of the same name is noise. -->
+					<img
+						v-if="thumbUrl"
+						:src="thumbUrl"
+						alt=""
+						class="size-full object-cover"
+						:class="arrivedBeforeMount ? '' : 'animate-in fade-in'"
+						draggable="false"
+					/>
+					<IconLucideTriangleAlert
+						v-else-if="unavailable"
+						class="text-destructive size-5"
+						aria-hidden="true"
+						focusable="false"
+					/>
+					<IconLucideFile v-else class="size-5" aria-hidden="true" focusable="false" />
+				</span>
+
+				<span class="min-w-0 flex-1">
+					<!-- The **original** filename, which is metadata. The stored name is a
+					     content hash and means nothing to anyone. -->
+					<span class="text-text-primary block truncate text-meta">{{ attachment.name }}</span>
+					<span v-if="unavailable" class="text-destructive mt-0.5 block text-meta line-clamp-2">
+						{{ preview.state === 'missing' ? preview.reason : '' }}
+					</span>
+					<span v-else class="text-text-secondary mt-0.5 block text-meta">
+						{{ formatBytes(attachment.bytes) }}
+					</span>
+				</span>
+			</button>
+		</ContextMenuTrigger>
+
+		<ContextMenuContent
+			v-if="portalTo"
+			:to="portalTo"
+			:collision-boundary="boundary ?? undefined"
+			:collision-padding="8"
+			class="text-text-secondary w-56 text-meta"
 		>
-			<!-- No `alt` text of its own: the button already carries the filename, and
-			     a second announcement of the same name is noise. -->
-			<img
-				v-if="thumbUrl"
-				:src="thumbUrl"
-				alt=""
-				class="size-full object-cover"
-				:class="arrivedBeforeMount ? '' : 'animate-in fade-in'"
-				draggable="false"
-			/>
-			<IconLucideTriangleAlert
-				v-else-if="unavailable"
-				class="text-destructive size-5"
-				aria-hidden="true"
-				focusable="false"
-			/>
-			<IconLucideFile v-else class="size-5" aria-hidden="true" focusable="false" />
-		</span>
-
-		<span class="min-w-0 flex-1">
-			<!-- The **original** filename, which is metadata. The stored name is a
-			     content hash and means nothing to anyone. -->
-			<span class="text-text-primary block truncate text-meta">{{ attachment.name }}</span>
-			<span v-if="unavailable" class="text-destructive mt-0.5 block text-meta line-clamp-2">
-				{{ preview.state === 'missing' ? preview.reason : '' }}
-			</span>
-			<span v-else class="text-text-secondary mt-0.5 block text-meta">
-				{{ formatBytes(attachment.bytes) }}
-			</span>
-		</span>
-	</button>
+			<!-- "Location" rather than "folder": what the user is being shown is where
+			     Copper put its copy, and the sidecar directory is not somewhere they
+			     chose. -->
+			<ContextMenuItem class="min-h-6" @select="revealInExplorer">
+				Open attachment location
+			</ContextMenuItem>
+		</ContextMenuContent>
+	</ContextMenu>
 </template>

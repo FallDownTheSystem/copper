@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { invoke } from '@tauri-apps/api/core'
+
 import { isComposing } from '@/lib/chords'
 import { normaliseSectionName } from '@/lib/sectionName'
 
@@ -363,10 +365,25 @@ function onSectionInput(event: Event) {
 			<DropdownMenuSeparator />
 
 			<!-- Its own group at the bottom, below the space and section actions:
-			     everything above operates on the open document, and this leaves it. -->
+			     everything above operates on the open document, and these two leave it.
+			     Settings leads because it goes somewhere; hiding is last because it is
+			     the one entry that ends the session at the panel. -->
 			<DropdownMenuItem class="min-h-6" @select="showSettings()">
 				<IconLucideSettings class="size-4" aria-hidden="true" focusable="false" />
 				Settings
+			</DropdownMenuItem>
+
+			<!-- The discoverable twin of the toggle hotkey, for the people who have
+			     forgotten it — and of the last rung of the Escape ladder, which is the
+			     same command from the other end of the panel.
+
+			     `hide_panel` rather than `getCurrentWindow().hide()`, for the reason
+			     `PanelShell` gives: hiding also ends an open recording session, and the
+			     window operations live in Rust so that a second path cannot end up doing
+			     half of one. -->
+			<DropdownMenuItem class="min-h-6" @select="invoke('hide_panel')">
+				<IconLucideEyeOff class="size-4" aria-hidden="true" focusable="false" />
+				Hide to tray
 			</DropdownMenuItem>
 		</DropdownMenuContent>
 	</DropdownMenu>
