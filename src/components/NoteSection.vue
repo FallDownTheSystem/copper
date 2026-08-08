@@ -137,6 +137,31 @@ onMounted(() => {
 	margin-top: 24px;
 }
 
+/**
+ * Where a scroll landing has to stop, now that the heading pins itself across
+ * the top of the region.
+ *
+ * Both numbers are landing margins rather than spacing: nothing moves, and they
+ * are read only by `scrollIntoView` — the reveal of a captured note, and the
+ * `block: 'nearest'` every arrow keypress performs. Without them a row scrolled
+ * to the top edge lands *under* the pinned heading, which is the one place the
+ * feature could hide the thing it was asked to show.
+ *
+ * The row's own margin is the heading's height plus the 4px the rows already sit
+ * apart by, so a landing clears the band by the same gap as the row above it. The
+ * group's is 4px flat, and that 4px is the focus ring's halo: the group is where
+ * a *pinned* heading is scrolled to (see `scrollRowIntoView`), and landing its
+ * top flush against the region would clip the outer ring of a heading that
+ * arrived there by keyboard.
+ */
+.section-group {
+	scroll-margin-top: 4px;
+}
+
+.section-group > :deep([data-note-row]) {
+	scroll-margin-top: calc(var(--section-heading-height) + 4px);
+}
+
 .section-group > :deep([role='row'] + [role='row']) {
 	margin-top: 4px;
 }

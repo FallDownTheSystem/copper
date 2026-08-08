@@ -41,6 +41,13 @@
 	   double-radius reported against the provisional 12px this replaces. */
 	--panel-radius: 8px;
 
+	/* The section heading row's height, and therefore the depth of the band it
+	   pins across the top of the list. Named rather than left as a `min-h-6` at
+	   one call site because two files have to agree about it: `SectionHeader`
+	   sizes the row from it, and `NoteSection` measures its rows'
+	   `scroll-margin-top` against it so a scroll landing clears the pinned copy. */
+	--section-heading-height: 1.5rem;
+
 	/* A multiple of the body line-height, so the mask fade always lands on a
 	   line boundary rather than bisecting a row of text. */
 	--note-clamp-lines: 8;
@@ -491,6 +498,20 @@
 	}
 
 	.dark .panel-surface {
+		background: oklch(0.18 0.004 60);
+	}
+
+	/* The pinned section heading is the one row that paints the panel's own
+	   surface *over* the list, so it takes the same opaque value the panel does
+	   here. Left at `bg-surface`'s 90% tint it would composite a second time over
+	   an already-opaque panel and leave a faintly lighter band standing where
+	   every heading is. Unlayered, so it wins the utility on equal specificity —
+	   the same cascade `.toast-pill` above relies on. */
+	[data-section-row] {
+		background: oklch(1 0 0);
+	}
+
+	.dark [data-section-row] {
 		background: oklch(0.18 0.004 60);
 	}
 }

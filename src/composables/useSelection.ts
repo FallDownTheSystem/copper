@@ -573,6 +573,51 @@ export function rowElement(key: string): HTMLElement | null {
 	return null
 }
 
+/** A pixel of slack on the pinned test below, for the same reason
+ *  `BOTTOM_SLACK` has some: an unpinned heading and its group share one top
+ *  edge exactly, but the two rects are rounded independently at a fractional
+ *  device pixel ratio. */
+const PINNED_SLACK = 1
+
+/**
+ * Scrolls a row into view, with the one exception a pinned heading creates.
+ *
+ * **A pinned heading is already at the top of the region, so asking the row to
+ * scroll there is asking for nothing.** `position: sticky` moves the painted box
+ * without moving the layout, and `scrollIntoView` reads the painted one — so a
+ * heading riding the top edge reports itself fully visible, and both landings
+ * that matter become silent no-ops: `Make active section` on the section already
+ * being read would not go to its start, and an arrow key onto the heading would
+ * leave it hard against the region's edge with the outer half of its focus ring
+ * clipped away.
+ *
+ * The section's own rowgroup is the fix and not a workaround: it is the heading's
+ * layout position, un-pinned, because the heading is its first child. Scrolling
+ * *it* is what un-pins the heading, and `start` rather than the caller's
+ * alignment because there is only one landing a pinned heading can mean — the
+ * top of the section it belongs to.
+ *
+ * Displacement is the test rather than a comparison against the region: a
+ * heading is pinned exactly when it has been pushed down inside its own group,
+ * which needs no second element and is false everywhere sticky is not in play.
+ */
+export function scrollRowIntoView(element: HTMLElement, block: ScrollLogicalPosition) {
+	const group = element.hasAttribute('data-section-row')
+		? element.closest<HTMLElement>('[data-section-id]')
+		: null
+
+	if (group) {
+		const displaced =
+			element.getBoundingClientRect().top - group.getBoundingClientRect().top > PINNED_SLACK
+		if (displaced) {
+			group.scrollIntoView({ block: 'start' })
+			return
+		}
+	}
+
+	element.scrollIntoView({ block })
+}
+
 /**
  * Focus a row once Vue has patched the DOM. Focusing before the patch lands on
  * an element that is about to be replaced.
@@ -924,7 +969,7 @@ export function flushReveal() {
 	// the bottom over the next frames and undo this. Clearing the flag stops its
 	// settle loop at the next frame rather than racing it.
 	pinning = false
-	element.scrollIntoView({ block: wanted.block })
+	scrollRowIntoView(element, wanted.block)
 }
 
 /** Space identity changed: ids mean something else now, so nothing carries. */

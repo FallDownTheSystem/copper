@@ -98,21 +98,48 @@ function onKeydown(event: KeyboardEvent) {
 	     only and this one carries its own content. -->
 	<ContextMenu>
 		<ContextMenuTrigger as-child>
-			<!-- The radius is here for the focus ring alone: this row paints no
-			     background and no border, so nothing else in it can show a corner. A
-			     square ring around a row sitting among `rounded-lg` note rows is the
-			     one shape it should not be — and a capsule is the other. The row is
-			     `min-h-6`, so `--radius-md` at 14px sits past half its height; the
-			     small-control tier's 10px is the most it can take and still ring a
-			     rectangle. -->
+			<!-- The radius rounds the focus ring and the pinned band both. A square
+			     ring around a row sitting among `rounded-lg` note rows is the one shape
+			     it should not be — and a capsule is the other. The row is
+			     `--section-heading-height` tall, so `--radius-md` at 14px sits past half
+			     its height; the small-control tier's 10px is the most it can take and
+			     still ring a rectangle.
+
+			     **The row pins itself to the top of the region while its own section is
+			     being read**, which is what keeps the answer to "which section am I in"
+			     on screen through a long one. `position: sticky` rather than a second
+			     rendered copy: the row that rides the top edge *is* this one, so the
+			     roving `tabindex`, the context menu, the collapse control and the active
+			     marker all keep working up there with no duplicate to keep in step. The
+			     containing block is the section's own rowgroup, so a heading is pushed
+			     back out by the end of its section instead of stacking with the next
+			     one — and a collapsed or search-dropped section renders no rows at all,
+			     which leaves nothing to pin and no rule to withdraw.
+
+			     **`z-1` is measured against three things rather than picked as "on
+			     top".** Above the rows it covers; below the carried row's `z-10`
+			     (NoteCard), so a note being dragged passes over the heading rather than
+			     behind it; and below the drop indicator's `z-20` (NoteList), so the line
+			     saying where that note would land is never what the heading hides. The
+			     status band and the portal host sit above again at `z-20`/`z-30` in this
+			     same stacking context — the panel's `isolate` root — and both live at
+			     the far end of the list.
+
+			     The band is the panel's own surface token, not a new material: the row
+			     has to erase whatever scrolls under it, and `--surface` composited over
+			     the panel it is already sitting on leaves 1% of that row showing. Which
+			     is also why nothing looks different until something is under it. -->
 			<div
 				role="row"
 				:data-row-id="rowId"
 				data-section-row
 				:tabindex="focused ? 0 : -1"
-				class="focus-ring min-w-0 rounded-compact"
+				class="focus-ring bg-surface sticky top-0 z-1 min-w-0 rounded-compact"
 			>
-				<div role="gridcell" class="flex min-h-6 min-w-0 items-center gap-2 px-3">
+				<div
+					role="gridcell"
+					class="flex min-h-(--section-heading-height) min-w-0 items-center gap-2 px-3"
+				>
 					<template v-if="editing">
 						<label :for="`section-rename-${section.id}`" class="sr-only">Section name</label>
 						<input

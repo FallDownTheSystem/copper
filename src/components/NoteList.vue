@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { CHORDS } from '@/lib/chords'
 import { focusableIn } from '@/composables/useInteractionMode'
-import { flushReveal, rowElement, rowSectionId } from '@/composables/useSelection'
+import {
+	flushReveal,
+	rowElement,
+	rowSectionId,
+	scrollRowIntoView,
+} from '@/composables/useSelection'
 
 const { space, sections, activeSection, noteCount, noteById, setActiveSection } = useSpace()
 const {
@@ -118,8 +123,11 @@ function syncDomFocus() {
 		const element = rowElement(key)
 		if (!element) return
 		element.focus()
-		// No `behavior: 'smooth'` — this fires on every arrow keypress.
-		element.scrollIntoView({ block: 'nearest' })
+		// No `behavior: 'smooth'` — this fires on every arrow keypress. Shared with
+		// the reveal path rather than calling `scrollIntoView` here: a pinned section
+		// heading is the one row for which "nearest" is already true and still wrong,
+		// and both paths have to answer that the same way.
+		scrollRowIntoView(element, 'nearest')
 	})
 }
 

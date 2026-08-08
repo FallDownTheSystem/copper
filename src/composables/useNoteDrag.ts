@@ -41,7 +41,19 @@ import { useNoteActions } from './useNoteActions'
 import { rowNoteId } from './useSelection'
 import { useSpace } from './useSpace'
 
-/** Distance from a scroll edge at which the list starts following the pointer. */
+/**
+ * Distance from a scroll edge at which the list starts following the pointer.
+ *
+ * **It is also what keeps the pinned section heading from swallowing a drop.** A
+ * heading pinned across the top of the region overlays the rows under it, so a
+ * pointer held there resolves against rows the user cannot see — the one place
+ * sticky positioning can lie to a hit test, since it moves what is painted and
+ * not what is measured. It cannot be held there: the heading is 24px deep and
+ * this band is twice that, so every position that could resolve to a hidden row
+ * is already scrolling the list toward the top, where nothing is hidden at all.
+ * The drop indicator meanwhile paints at `z-20` against the heading's `z-1`, so
+ * the line stays visible across it for the moment that takes.
+ */
 const EDGE_PX = 48
 /**
  * Fastest the edge scroll runs, in pixels **per second** at the very edge.
@@ -118,12 +130,20 @@ function measure(root: HTMLElement): DragLayout {
 		// Below the header row, which is where an empty section's first note lands.
 		// A section always renders one, so the fallback is only for a shape that
 		// does not currently exist.
+		//
+		// **The group's top plus the header's *height*, not the header's own
+		// bottom.** The header is `position: sticky`: while it is pinned its rect
+		// says where it is being painted rather than where it sits in the section,
+		// and reading `bottom` off it would put an empty section's insertion line
+		// wherever the heading had ridden to. A height is immune — sticky translates
+		// a box, it does not resize one — and the two are the same number in every
+		// other case, the header being the group's first child.
 		const header = group.querySelector<HTMLElement>('[data-section-row]')
 		sections.push({
 			sectionId,
 			top: box.top - origin,
 			bottom: box.bottom - origin,
-			contentTop: (header?.getBoundingClientRect().bottom ?? box.top) - origin,
+			contentTop: box.top - origin + (header?.getBoundingClientRect().height ?? 0),
 		})
 
 		for (const row of group.querySelectorAll<HTMLElement>('[data-note-row]')) {

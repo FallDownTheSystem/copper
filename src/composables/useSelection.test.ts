@@ -663,6 +663,46 @@ describe('revealing a row', () => {
 	})
 
 	/**
+	 * A pinned heading is the one row for which its own landing means nothing.
+	 *
+	 * `position: sticky` moves what is painted and not what is laid out, so a
+	 * heading riding the top of the region reports itself already there and
+	 * `scrollIntoView` finds nothing to do — which would make "go to this section"
+	 * a no-op for the section the reader is already inside, the exact case they
+	 * would use it in. The rowgroup is the heading's layout position, so scrolling
+	 * that is what un-pins it.
+	 */
+	it('lands the section itself when its heading is pinned', () => {
+		const list = mountList(120, [])
+
+		const group = document.createElement('div')
+		group.dataset.sectionId = 'sec_a'
+		// Scrolled 80px into the section, which is how far its heading has been
+		// pushed down inside its own group to stay on screen.
+		group.getBoundingClientRect = (() => ({ top: -80, bottom: 200, height: 280 })) as () => DOMRect
+		const groupCalls: (ScrollIntoViewOptions | undefined)[] = []
+		group.scrollIntoView = (options?: boolean | ScrollIntoViewOptions) => {
+			groupCalls.push(options as ScrollIntoViewOptions | undefined)
+		}
+		list.region.append(group)
+
+		const heading = document.createElement('div')
+		heading.dataset.rowId = sectionRow('sec_a')
+		heading.setAttribute('data-section-row', '')
+		heading.getBoundingClientRect = (() => ({ top: 0, bottom: 24, height: 24 })) as () => DOMRect
+		const headingCalls: (ScrollIntoViewOptions | undefined)[] = []
+		heading.scrollIntoView = (options?: boolean | ScrollIntoViewOptions) => {
+			headingCalls.push(options as ScrollIntoViewOptions | undefined)
+		}
+		group.append(heading)
+
+		revealRow(sectionRow('sec_a'), 'start')
+
+		expect(groupCalls).toEqual([{ block: 'start' }])
+		expect(headingCalls).toEqual([])
+	})
+
+	/**
 	 * The case the whole mechanism exists for: a global capture lands while the
 	 * panel is hidden, and a hidden panel's region can have no layout to scroll.
 	 * Scrolling it then would report success and do nothing, so the request is kept
