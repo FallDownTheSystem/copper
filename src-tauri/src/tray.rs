@@ -20,7 +20,7 @@ const MENU_AUTOSTART: &str = "autostart";
 const MENU_QUIT: &str = "quit";
 
 const TOOLTIP: &str = "Copper";
-const TOOLTIP_NO_SUMMON: &str = "Copper — summon shortcut unavailable";
+const TOOLTIP_NO_SUMMON: &str = "Copper: summon shortcut unavailable";
 
 /// The tray's Settings item reveals the panel *and* puts it on the settings view.
 pub const OPEN_SETTINGS: &str = "open-settings";
@@ -44,7 +44,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
 	let launch = CheckMenuItem::with_id(
 		app,
 		MENU_AUTOSTART,
-		"Start with Windows",
+		"Launch Copper at login",
 		true,
 		autostart::initial_state(app),
 		None::<&str>,

@@ -485,7 +485,7 @@ fn register(app: &AppHandle, chord: Shortcut, role: Role) -> Result<(), String> 
 /// established would send the user hunting for an app that may not exist.
 fn registration_failed_message(text: &str) -> String {
 	format!(
-		"Windows wouldn't accept {text} — another app is probably using it. Choose a different \
+		"Windows wouldn't accept {text}. Another app is probably using it. Choose a different \
 		 shortcut."
 	)
 }

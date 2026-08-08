@@ -112,8 +112,12 @@ const UIA_TIMEOUT: Duration = Duration::from_millis(800);
 /// visible-only-on-failure decision exists to prevent.
 const MAX_CAPTURE_CHARS: usize = 100_000;
 
-/// How long a failure notice stays on screen.
-const FAILURE_NOTICE_DURATION: Duration = Duration::from_millis(1500);
+/// How long a failure notice stays on screen. Five seconds is the floor for a
+/// timed message the reader is not already looking at: every notice here reports
+/// a failure, several give an instruction to act on ("Let go of the modifier
+/// keys and try again."), and by construction the user's attention was in
+/// another window when the capture was attempted.
+const FAILURE_NOTICE_DURATION: Duration = Duration::from_millis(5000);
 
 // --- outcomes ----------------------------------------------------------------
 
@@ -225,11 +229,11 @@ impl CaptureFailure {
 			// its interface narrow. `unavailable` is already one of task-003's error
 			// kinds, so the case was reachable before it had wording of its own.
 			Self::NotSaved { kind } => match *kind {
-				"conflict" => "Couldn't save — the space file kept changing.".to_owned(),
+				"conflict" => "Couldn't save. The space file kept changing.".to_owned(),
 				"parse" => {
-					"Couldn't save — Copper won't overwrite a space file it can't read.".to_owned()
+					"Couldn't save. Copper won't overwrite a space file it can't read.".to_owned()
 				}
-				"unavailable" => "Couldn't save — the active space isn't available.".to_owned(),
+				"unavailable" => "Couldn't save. The active space isn't available.".to_owned(),
 				_ => "Captured, but couldn't save it.".to_owned(),
 			},
 			// Two outcomes, two sentences. Telling the user their trigger is broken

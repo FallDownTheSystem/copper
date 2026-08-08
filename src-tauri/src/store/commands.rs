@@ -222,7 +222,7 @@ pub fn submit(shared: &SharedStore, body: &str, attachments: &[Attachment]) -> R
 	// tray survives and either fix is one keystroke away.
 	if !attachments.is_empty() {
 		return Err(StoreError::Invalid(
-			"a section heading cannot carry attachments — remove them, or add the files to a note \
+			"a section heading cannot carry attachments. Remove them, or add the files to a note \
 			 instead"
 				.into(),
 		));

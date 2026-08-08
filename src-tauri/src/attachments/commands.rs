@@ -51,7 +51,7 @@ pub fn require_present(space: &Path, attachments: &[Attachment]) -> Result<()> {
 	for attachment in attachments {
 		resolve_existing(space, &attachment.file).map_err(|_| {
 			StoreError::Invalid(format!(
-				"{} is not in this space's attachments — it may have been attached before you \
+				"{} is not in this space's attachments. It may have been attached before you \
 				 switched space",
 				attachment.name
 			))

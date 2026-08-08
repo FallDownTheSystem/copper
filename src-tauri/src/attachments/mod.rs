@@ -249,7 +249,7 @@ pub fn sniff_mime(bytes: &[u8]) -> &'static str {
 /// applied.
 fn too_large(name: &str, len: u64, limit: u64) -> StoreError {
 	StoreError::Invalid(format!(
-		"{name} is {} and the limit is {} — it was not attached",
+		"{name} is {} and the limit is {}, so it was not attached",
 		human_bytes(len),
 		human_bytes(limit)
 	))

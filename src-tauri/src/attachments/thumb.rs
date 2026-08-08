@@ -231,7 +231,7 @@ fn bmp_from_dib(dib: &[u8]) -> Result<Vec<u8>> {
 	// nothing a person can act on.
 	if matches!(compression, BI_JPEG | BI_PNG) {
 		return Err(StoreError::Invalid(
-			"that clipboard image is in a form Copper cannot read — save it to a file and attach it"
+			"that clipboard image is in a form Copper cannot read. Save it to a file and attach it"
 				.into(),
 		));
 	}
@@ -504,7 +504,7 @@ mod tests {
 			dib[16..20].copy_from_slice(&compression.to_le_bytes());
 			let err = bmp_from_dib(&dib).unwrap_err();
 			assert_eq!(err.kind(), "invalid");
-			assert!(err.message().contains("save it to a file"), "{}", err.message());
+			assert!(err.message().contains("Save it to a file"), "{}", err.message());
 		}
 	}
 
