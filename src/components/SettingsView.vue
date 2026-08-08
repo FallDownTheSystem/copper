@@ -435,11 +435,30 @@ const summonNote = computed(() => {
 				</SettingsRow>
 			</SettingsSection>
 
-			<!-- The section is now about the window's geometry and nothing else: how
-			     big it opens, and whether the user may drag that. Its two former rows
-			     went to the headings that describe what they are *for* — translucency to
-			     Appearance, the pin to Behavior. -->
+			<!-- The window's own properties: whether it floats, whether its edges
+			     drag, and how big it opens. Translucency left for Appearance — it is
+			     the most visible appearance change in the view — but the pin stayed,
+			     because "keep this panel where it is" is a statement about the window
+			     and this is the heading that says window. -->
 			<SettingsSection title="Panel">
+				<!-- The description says what turning it *off* costs, because that is the
+				     half nobody expects: the summon chord and the tray still work, and
+				     the panel simply stops floating over whatever is in front. -->
+				<SettingsRow
+					v-slot="{ errorId }"
+					label="Keep on top"
+					description="Float the panel above other windows. Off, the summon shortcut and the tray still bring it back."
+					label-for="always-on-top"
+					:error="alwaysOnTopError"
+				>
+					<SettingsSwitch
+						id="always-on-top"
+						:model-value="alwaysOnTop"
+						:error-id="errorId"
+						@update:model-value="setAlwaysOnTop"
+					/>
+				</SettingsRow>
+
 				<!-- Off by default, and the description says what that buys rather than
 				     only what it costs: a fixed panel is one you cannot start dragging by
 				     clicking a few pixels too close to its edge. -->
@@ -568,36 +587,55 @@ const summonNote = computed(() => {
 						@update:model-value="setShowCreated"
 					/>
 				</SettingsRow>
-			</SettingsSection>
 
-			<!-- "Behavior" rather than "Sound and motion" (2026-08-08): the section had
-			     outgrown a title that named its two rows, and the name it needed was the
-			     one thing all three have in common — how the panel conducts itself while
-			     you are using it, as against how it looks or where it sits. -->
-			<SettingsSection title="Behavior">
-				<!-- Moved here from "Panel", which grouped it by the fact that it is a
-				     window property. That is not what a user looks it up by: staying in
-				     front is something the panel *does*, and it is the row here with the
-				     largest effect on how the app behaves, so it leads.
-
-				     The description says what turning it *off* costs, because that is the
-				     half nobody expects: the summon chord and the tray still work, and
-				     the panel simply stops floating over whatever is in front. -->
+				<!-- Here rather than in a section of its own: what the notification
+				     carries is a captured note, so this is a fact about notes even though
+				     it fires while the panel is hidden. The description names the
+				     condition — with the panel on screen this switch reads "on" and
+				     nothing appears, which looks broken unless the row says why. -->
 				<SettingsRow
 					v-slot="{ errorId }"
-					label="Keep on top"
-					description="Float the panel above other windows. Off, the summon shortcut and the tray still bring it back."
-					label-for="always-on-top"
-					:error="alwaysOnTopError"
+					label="Capture notifications"
+					description="When the panel is hidden, show a Windows notification with the capture and buttons to file it in another section."
+					label-for="capture-notifications"
+					:error="captureNotificationsError"
 				>
 					<SettingsSwitch
-						id="always-on-top"
-						:model-value="alwaysOnTop"
+						id="capture-notifications"
+						:model-value="captureNotifications"
 						:error-id="errorId"
-						@update:model-value="setAlwaysOnTop"
+						@update:model-value="setCaptureNotifications"
 					/>
 				</SettingsRow>
 
+				<!-- The one row in the view that decides whether Copper talks to anyone
+				     at all, so the *description* carries the privacy weight the old
+				     section heading used to: it says what turning it on sends, in the
+				     words a person would use — the address, the IP, and the moment of
+				     reading are exactly what a fetch discloses. Filed under Notes because
+				     the preview is a thing a note shows, and a reader deciding whether to
+				     enable it reads the sentence either way. -->
+				<SettingsRow
+					v-slot="{ errorId }"
+					label="Link previews"
+					description="Show a page's title, description and picture below links in a note. Copper has to fetch each linked page to do it, which tells whoever runs that site the address, your IP address, and when you read the note. Off, no page is ever fetched."
+					label-for="link-previews"
+					:error="linkPreviewsError"
+				>
+					<SettingsSwitch
+						id="link-previews"
+						:model-value="linkPreviews"
+						:error-id="errorId"
+						@update:model-value="setLinkPreviews"
+					/>
+				</SettingsRow>
+			</SettingsSection>
+
+			<!-- "Behavior" rather than "Sound and motion" (2026-08-08): a title that
+			     names the rows has to be rewritten every time one arrives, and what
+			     these have in common is how the panel conducts itself while you are
+			     using it, as against how it looks or where it sits. -->
+			<SettingsSection title="Behavior">
 				<SettingsRow
 					v-slot="{ errorId }"
 					label="Sound"
@@ -630,58 +668,6 @@ const summonNote = computed(() => {
 						:model-value="motionPreference === 'auto'"
 						:error-id="errorId"
 						@update:model-value="setAnimations"
-					/>
-				</SettingsRow>
-			</SettingsSection>
-
-			<!-- Its own section rather than a fourth row under "Behavior": that
-			     section is about how the panel behaves while you are looking at
-			     it, and this is the only setting in the view that describes what
-			     Copper does while you are not. The description names the condition
-			     rather than leaving it to be discovered — with the panel on screen
-			     this switch reads "on" and nothing appears, which looks broken unless
-			     the row says why. -->
-			<SettingsSection title="Notifications">
-				<SettingsRow
-					v-slot="{ errorId }"
-					label="Capture notifications"
-					description="When the panel is hidden, show a Windows notification with the capture and buttons to file it in another section."
-					label-for="capture-notifications"
-					:error="captureNotificationsError"
-				>
-					<SettingsSwitch
-						id="capture-notifications"
-						:model-value="captureNotifications"
-						:error-id="errorId"
-						@update:model-value="setCaptureNotifications"
-					/>
-				</SettingsRow>
-			</SettingsSection>
-
-			<!-- Its own section, and the only one in this view that is not about how
-			     Copper behaves. Every other row here changes something local; this is
-			     the one switch that decides whether the app talks to anyone at all,
-			     and burying it under "Notes" would make it look like a display
-			     preference.
-
-			     The description says what turning it *on* sends, in the words a
-			     person would use, rather than the spec's "Show cached page details
-			     below links" — which describes the visible half and leaves the half
-			     that matters to be discovered. The three things named are exactly what
-			     a fetch discloses: the address, the IP, and the moment of reading. -->
-			<SettingsSection title="Privacy">
-				<SettingsRow
-					v-slot="{ errorId }"
-					label="Link previews"
-					description="Show a page's title, description and picture below links in a note. Copper has to fetch each linked page to do it, which tells whoever runs that site the address, your IP address, and when you read the note. Off, no page is ever fetched."
-					label-for="link-previews"
-					:error="linkPreviewsError"
-				>
-					<SettingsSwitch
-						id="link-previews"
-						:model-value="linkPreviews"
-						:error-id="errorId"
-						@update:model-value="setLinkPreviews"
 					/>
 				</SettingsRow>
 			</SettingsSection>

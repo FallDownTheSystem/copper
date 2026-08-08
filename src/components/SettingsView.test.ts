@@ -488,11 +488,16 @@ describe('the link-previews switch', () => {
 		}
 	})
 
-	/** Its own section, and not a row under one of the behavioural ones: it is
-	 *  the only setting here that is not about how the panel behaves. */
-	it('lives in a section of its own called Privacy', async () => {
+	/** The dedicated Privacy section is gone (2026-08-08, by request): the row
+	 *  lives under Notes now, and the description carries the disclosure weight
+	 *  the heading used to — which the test above already pins. What must not
+	 *  come back is a heading with one row under it. */
+	it('lives under Notes, with no Privacy section left behind', async () => {
 		const wrapper = await openSettings()
-		expect(wrapper.text()).toContain('Privacy')
+		expect(wrapper.text()).not.toContain('Privacy')
+		expect(wrapper.text()).not.toContain('Notifications')
+		expect(wrapper.find('#link-previews').exists()).toBe(true)
+		expect(wrapper.find('#capture-notifications').exists()).toBe(true)
 	})
 })
 
