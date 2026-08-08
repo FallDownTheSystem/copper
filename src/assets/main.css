@@ -736,6 +736,18 @@
    The same fact killed the section heading's frost: over a translucent page the
    filter's smear repaints additively and the text under it stays legible, which
    is why the heading clips the rows instead (see `.section-band` below). */
+/* The page's own ground, outside the panel's rounded corners. The window is
+   transparent and DWM rounds it natively; `--panel-radius` matches that arc,
+   but "matches" is measured in antialiased pixels, and the sliver between the
+   CSS arc and the window arc shows whatever the page paints there. Opaque
+   mode paints the surface's own colour, so the seam is surface-on-surface and
+   invisible — reported as a pale halo hugging the corners when it was
+   transparent Mica instead. Translucent mode must stay transparent: Acrylic
+   is composited behind the page, and an opaque ground would blank it. */
+html:not(.translucent) {
+	background: var(--surface-solid);
+}
+
 .panel-surface {
 	background: var(--surface);
 	border-radius: var(--panel-radius);

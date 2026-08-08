@@ -483,7 +483,7 @@ describe('the link-previews switch', () => {
 		const row = wrapper.get('#link-previews').element.closest('div')?.parentElement
 		const text = (row?.textContent ?? '') + wrapper.text()
 
-		for (const promised of ['fetch', 'IP address', 'when you read']) {
+		for (const promised of ['Fetching', 'IP address', 'when you read']) {
 			expect(text).toContain(promised)
 		}
 	})
@@ -613,26 +613,37 @@ describe('the vibrancy, resizable and size rows', () => {
 	 *  through a preview and writes nothing, and only the released value becomes a
 	 *  patch — thirty `settings.json` rewrites per drag is the failure the split
 	 *  exists to prevent. Driven through the component's own events because reka's
-	 *  pointer machinery needs real geometry happy-dom does not lay out. */
-	it('previews a vibrancy drag without writing, and patches one key on commit', async () => {
+	 *  pointer machinery needs real geometry happy-dom does not lay out.
+	 *
+	 *  The emitted values are *dial* units — the slider speaks 0–100 — and the
+	 *  patch is the stored multiplier: dial 50 of a 0–3 scale is 1.5, and that
+	 *  conversion happening at the slider's edge is exactly what this asserts. */
+	it('previews a vibrancy drag without writing, and patches the multiplier on commit', async () => {
 		const wrapper = await openSettings()
 		const slider = wrapper.findComponent(SettingsSlider)
 
-		slider.vm.$emit('update:modelValue', 1.5)
+		slider.vm.$emit('update:modelValue', 50)
 		await flush()
 		expect(patchesSent()).toEqual([])
 
-		slider.vm.$emit('commit', 1.5)
+		slider.vm.$emit('commit', 50)
 		await flush()
 		expect(patchesSent()).toEqual([{ vibrancy: 1.5 }])
 	})
 
 	/** `aria-valuetext` because a chroma multiplier is not a number a person has
-	 *  words for: the thumb announces the same percentage the readout shows. */
-	it('announces the vibrancy value as a percentage', async () => {
-		const wrapper = await openSettings({ vibrancy: 1.35 })
+	 *  words for: the thumb announces the dial's percentage — a stored 1.5 on the
+	 *  0–3 scale is half the dial — and the shipped 1 must land on 33, not on a
+	 *  "100%" that would misread the scale as percent-of-default. */
+	it('announces the vibrancy value as the dial percentage', async () => {
+		const wrapper = await openSettings({ vibrancy: 1.5 })
 		const thumb = wrapper.get('[role="slider"][aria-label="Vibrancy"]')
-		expect(thumb.attributes('aria-valuetext')).toBe('135%')
+		expect(thumb.attributes('aria-valuetext')).toBe('50%')
+
+		const shipped = await openSettings()
+		const defaultThumb = shipped.get('[role="slider"][aria-label="Vibrancy"]')
+		expect(defaultThumb.attributes('aria-valuetext')).toBe('33%')
+		expect(defaultThumb.attributes('aria-valuenow')).toBe('33')
 	})
 
 	it('ships the resizable switch off and writes through its own command', async () => {

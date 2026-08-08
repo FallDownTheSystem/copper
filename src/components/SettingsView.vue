@@ -19,10 +19,12 @@ import {
 	PANEL_HEIGHT_MIN,
 	PANEL_WIDTH_MAX,
 	PANEL_WIDTH_MIN,
-	VIBRANCY_MAX,
-	VIBRANCY_MIN,
-	VIBRANCY_STEP,
+	VIBRANCY_DIAL_MAX,
+	VIBRANCY_DIAL_MIN,
+	VIBRANCY_DIAL_STEP,
+	dialToVibrancy,
 	formatVibrancy,
+	vibrancyToDial,
 	type DoubleClickAction,
 	type InsertionPoint,
 } from '@/composables/useSettings'
@@ -387,7 +389,7 @@ const summonNote = computed(() => {
 				     sixty-pixel track cannot be dragged with any precision. -->
 				<SettingsRow
 					label="Vibrancy"
-					description="How strong the accent is. Copper's palette is deliberately muted, which can leave the brighter colours looking washed out — turn this up to give them back their strength."
+					description="How colourful the accent is, from grey to as vivid as your screen can show."
 					:error="vibrancyError"
 				>
 					<!-- `#below="{ errorId }"`, not `v-slot` on the row: the control lives
@@ -395,16 +397,20 @@ const summonNote = computed(() => {
 					     the default slot from the tag alongside a named template is the one
 					     slot shape Vue refuses to compile. -->
 					<template #below="{ errorId }">
+						<!-- The slider speaks dial units — 0 to 100 — and the two converters
+						     at its edges are the only place the stored multiplier and the
+						     dial meet. The store keeps the multiplier so a 0.1.1 file still
+						     means what it meant. -->
 						<SettingsSlider
-							:model-value="vibrancy"
-							:min="VIBRANCY_MIN"
-							:max="VIBRANCY_MAX"
-							:step="VIBRANCY_STEP"
+							:model-value="vibrancyToDial(vibrancy)"
+							:min="VIBRANCY_DIAL_MIN"
+							:max="VIBRANCY_DIAL_MAX"
+							:step="VIBRANCY_DIAL_STEP"
 							label="Vibrancy"
 							:value-text="formatVibrancy(vibrancy)"
 							:error-id="errorId"
-							@update:model-value="previewVibrancy"
-							@commit="setVibrancy"
+							@update:model-value="(dial) => previewVibrancy(dialToVibrancy(dial))"
+							@commit="(dial) => setVibrancy(dialToVibrancy(dial))"
 						/>
 					</template>
 				</SettingsRow>
@@ -596,7 +602,7 @@ const summonNote = computed(() => {
 				<SettingsRow
 					v-slot="{ errorId }"
 					label="Capture notifications"
-					description="When the panel is hidden, show a Windows notification with the capture and buttons to file it in another section."
+					description="Show a notification for captures made while the panel is hidden, with buttons to file them."
 					label-for="capture-notifications"
 					:error="captureNotificationsError"
 				>
@@ -611,14 +617,14 @@ const summonNote = computed(() => {
 				<!-- The one row in the view that decides whether Copper talks to anyone
 				     at all, so the *description* carries the privacy weight the old
 				     section heading used to: it says what turning it on sends, in the
-				     words a person would use — the address, the IP, and the moment of
-				     reading are exactly what a fetch discloses. Filed under Notes because
+				     words a person would use — the IP and the moment of reading are
+				     exactly what a fetch discloses. Filed under Notes because
 				     the preview is a thing a note shows, and a reader deciding whether to
 				     enable it reads the sentence either way. -->
 				<SettingsRow
 					v-slot="{ errorId }"
 					label="Link previews"
-					description="Show a page's title, description and picture below links in a note. Copper has to fetch each linked page to do it, which tells whoever runs that site the address, your IP address, and when you read the note. Off, no page is ever fetched."
+					description="Show a page's title and picture below links in a note. Fetching one tells that site your IP address and when you read the note."
 					label-for="link-previews"
 					:error="linkPreviewsError"
 				>
@@ -670,9 +676,11 @@ const summonNote = computed(() => {
 						@update:model-value="setAnimations"
 					/>
 				</SettingsRow>
-			</SettingsSection>
 
-			<SettingsSection title="Startup">
+				<!-- Moved out of a one-row "Startup" section (2026-08-08): launching at
+				     login is the panel conducting itself, the thing this section is
+				     named for, and a section of one row was the same shape the Privacy
+				     and Notifications folds had already retired. -->
 				<SettingsRow
 					v-slot="{ errorId }"
 					label="Launch Copper at login"

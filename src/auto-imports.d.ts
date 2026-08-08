@@ -18,6 +18,9 @@ declare global {
   const PANEL_WIDTH_MAX: typeof import('./composables/useSettings').PANEL_WIDTH_MAX
   const PANEL_WIDTH_MIN: typeof import('./composables/useSettings').PANEL_WIDTH_MIN
   const UNDO_ACTION: typeof import('./composables/useNoteActions').UNDO_ACTION
+  const VIBRANCY_DIAL_MAX: typeof import('./composables/useSettings').VIBRANCY_DIAL_MAX
+  const VIBRANCY_DIAL_MIN: typeof import('./composables/useSettings').VIBRANCY_DIAL_MIN
+  const VIBRANCY_DIAL_STEP: typeof import('./composables/useSettings').VIBRANCY_DIAL_STEP
   const VIBRANCY_MAX: typeof import('./composables/useSettings').VIBRANCY_MAX
   const VIBRANCY_MIN: typeof import('./composables/useSettings').VIBRANCY_MIN
   const VIBRANCY_STEP: typeof import('./composables/useSettings').VIBRANCY_STEP
@@ -49,6 +52,7 @@ declare global {
   const debouncedWatch: typeof import('@vueuse/core').debouncedWatch
   const defineAsyncComponent: typeof import('vue').defineAsyncComponent
   const defineComponent: typeof import('vue').defineComponent
+  const dialToVibrancy: typeof import('./composables/useSettings').dialToVibrancy
   const eagerComputed: typeof import('@vueuse/core').eagerComputed
   const effectScope: typeof import('vue').effectScope
   const emptySnapshot: typeof import('./composables/useSelection').emptySnapshot
@@ -341,6 +345,7 @@ declare global {
   const useWindowFocus: typeof import('@vueuse/core').useWindowFocus
   const useWindowScroll: typeof import('@vueuse/core').useWindowScroll
   const useWindowSize: typeof import('@vueuse/core').useWindowSize
+  const vibrancyToDial: typeof import('./composables/useSettings').vibrancyToDial
   const watch: typeof import('vue').watch
   const watchArray: typeof import('@vueuse/core').watchArray
   const watchAtMost: typeof import('@vueuse/core').watchAtMost
@@ -428,9 +433,11 @@ declare module 'vue' {
     readonly PANEL_WIDTH_MAX: UnwrapRef<typeof import('./composables/useSettings')['PANEL_WIDTH_MAX']>
     readonly PANEL_WIDTH_MIN: UnwrapRef<typeof import('./composables/useSettings')['PANEL_WIDTH_MIN']>
     readonly UNDO_ACTION: UnwrapRef<typeof import('./composables/useNoteActions')['UNDO_ACTION']>
+    readonly VIBRANCY_DIAL_MAX: UnwrapRef<typeof import('./composables/useSettings')['VIBRANCY_DIAL_MAX']>
+    readonly VIBRANCY_DIAL_MIN: UnwrapRef<typeof import('./composables/useSettings')['VIBRANCY_DIAL_MIN']>
+    readonly VIBRANCY_DIAL_STEP: UnwrapRef<typeof import('./composables/useSettings')['VIBRANCY_DIAL_STEP']>
     readonly VIBRANCY_MAX: UnwrapRef<typeof import('./composables/useSettings')['VIBRANCY_MAX']>
     readonly VIBRANCY_MIN: UnwrapRef<typeof import('./composables/useSettings')['VIBRANCY_MIN']>
-    readonly VIBRANCY_STEP: UnwrapRef<typeof import('./composables/useSettings')['VIBRANCY_STEP']>
     readonly applied: UnwrapRef<typeof import('./composables/useSpace')['applied']>
     readonly asyncComputed: UnwrapRef<typeof import('@vueuse/core')['asyncComputed']>
     readonly autoResetRef: UnwrapRef<typeof import('@vueuse/core')['autoResetRef']>
@@ -459,6 +466,7 @@ declare module 'vue' {
     readonly debouncedWatch: UnwrapRef<typeof import('@vueuse/core')['debouncedWatch']>
     readonly defineAsyncComponent: UnwrapRef<typeof import('vue')['defineAsyncComponent']>
     readonly defineComponent: UnwrapRef<typeof import('vue')['defineComponent']>
+    readonly dialToVibrancy: UnwrapRef<typeof import('./composables/useSettings')['dialToVibrancy']>
     readonly eagerComputed: UnwrapRef<typeof import('@vueuse/core')['eagerComputed']>
     readonly effectScope: UnwrapRef<typeof import('vue')['effectScope']>
     readonly emptySnapshot: UnwrapRef<typeof import('./composables/useSelection')['emptySnapshot']>
@@ -751,6 +759,7 @@ declare module 'vue' {
     readonly useWindowFocus: UnwrapRef<typeof import('@vueuse/core')['useWindowFocus']>
     readonly useWindowScroll: UnwrapRef<typeof import('@vueuse/core')['useWindowScroll']>
     readonly useWindowSize: UnwrapRef<typeof import('@vueuse/core')['useWindowSize']>
+    readonly vibrancyToDial: UnwrapRef<typeof import('./composables/useSettings')['vibrancyToDial']>
     readonly watch: UnwrapRef<typeof import('vue')['watch']>
     readonly watchArray: UnwrapRef<typeof import('@vueuse/core')['watchArray']>
     readonly watchAtMost: UnwrapRef<typeof import('@vueuse/core')['watchAtMost']>

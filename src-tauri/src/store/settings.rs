@@ -44,11 +44,14 @@ const DEFAULT_PANEL_HEIGHT: f64 = 760.0;
 /// [`clamp_panel_size`], so a hand-edited file and a command cannot disagree
 /// about what a legal size is.
 ///
-/// The vibrancy floor is 0.5 rather than 0 because zero chroma is not a duller
-/// palette, it is a greyscale app — a state the picker has no way to describe as
-/// deliberate and the user has no obvious way out of. The ceiling is where the
-/// accent stops reading as copper.
-const VIBRANCY_BOUNDS: (f64, f64) = (0.5, 2.0);
+/// The vibrancy floor is a true 0: the dial the frontend shows runs 0–100 with
+/// zero meaning an achromatic accent, and that is a choice the dial offers
+/// rather than a state to repair away. The stored value stays a chroma
+/// *multiplier* — every number a 0.1.1 file wrote keeps its meaning — and the
+/// ceiling of 3 is where the dial's 100 lands: past every hue's P3 ceiling at
+/// the tokens' lightnesses, so the top of the scale is bounded by the display's
+/// gamut mapping rather than by an arbitrary cap here.
+const VIBRANCY_BOUNDS: (f64, f64) = (0.0, 3.0);
 /// Narrow enough that the composer's line length stays sane, wide enough for a
 /// panel used as a primary window. The floor is also the drag floor
 /// `panel::apply_resizable` installs, by construction rather than by coincidence.

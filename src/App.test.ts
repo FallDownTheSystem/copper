@@ -250,7 +250,7 @@ describe('the settings view', () => {
 	it('renders every group and pulls their state on open', async () => {
 		const wrapper = await mountSettings()
 
-		for (const heading of ['Theme', 'Shortcuts', 'Startup']) {
+		for (const heading of ['Theme', 'Shortcuts', 'Behavior']) {
 			expect(wrapper.text()).toContain(heading)
 		}
 		// Re-read on open, not only at startup: a summon chord that failed during

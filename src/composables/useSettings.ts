@@ -111,12 +111,40 @@ export type PreferenceScope =
  * caller clamps before it invokes, and the command's own repair stays the
  * backstop for a hand-edited file.
  */
-export const VIBRANCY_MIN = 0.5
-export const VIBRANCY_MAX = 2
-/** Fine enough that dragging reads as continuous, coarse enough that the
- *  percentage lands on round numbers a keyboard user can count in. */
-export const VIBRANCY_STEP = 0.05
+/**
+ * Stored as a chroma *multiplier*, shown as a 0–100 dial — two unit systems on
+ * purpose. The file keeps the multiplier so every value a 0.1.1 install wrote
+ * still means exactly what it meant; the dial keeps 0–100 because "how vivid,
+ * out of what the screen can do" is a scale a person has intuitions about and
+ * "200%" was reported as not being one.
+ *
+ * The floor is a true 0 — an achromatic accent is a choice the dial offers,
+ * not a repair case. The ceiling of 3 is where the dial's 100 lands: past
+ * every hue's P3 ceiling at the tokens' contrast-tuned lightnesses, so the
+ * top of the scale is limited by what the display can actually show — the
+ * browser's gamut mapping, per hue — rather than by an arbitrary cap of ours.
+ */
+export const VIBRANCY_MIN = 0
+export const VIBRANCY_MAX = 3
 export const DEFAULT_VIBRANCY = 1
+
+/** The dial's own units. Integer steps: sliding reads as continuous at a
+ *  hundred stops, and a keyboard user counts in whole numbers. */
+export const VIBRANCY_DIAL_MIN = 0
+export const VIBRANCY_DIAL_MAX = 100
+export const VIBRANCY_DIAL_STEP = 1
+
+/** The two unit systems, converted in exactly one place each way. Round-trip
+ *  stable: a dial position converts to the multiplier that converts back to
+ *  the same position. The shipped multiplier of 1 shows as 33 — the dial's
+ *  default is a *position*, and nothing says the design center must be 50. */
+export function vibrancyToDial(value: number): number {
+	return Math.round((value / VIBRANCY_MAX) * VIBRANCY_DIAL_MAX)
+}
+
+export function dialToVibrancy(dial: number): number {
+	return (dial / VIBRANCY_DIAL_MAX) * VIBRANCY_MAX
+}
 
 export const PANEL_WIDTH_MIN = 360
 export const PANEL_WIDTH_MAX = 1200
@@ -129,11 +157,12 @@ export const DEFAULT_PANEL_HEIGHT = 760
  * The one place the dial's wording is decided.
  *
  * A chroma multiplier is not a thing a person reads, so nothing shows `1.35`:
- * the settings row, the slider's `aria-valuetext` and the palette row all say
- * the percentage, and they say it through here so they cannot drift.
+ * the slider's `aria-valuetext` and the command palette row both say the dial's
+ * percentage — of the scale's top, not of the shipped value — and they say it
+ * through here so they cannot drift.
  */
 export function formatVibrancy(value: number): string {
-	return `${Math.round(value * 100)}%`
+	return `${vibrancyToDial(value)}%`
 }
 
 /** The numeric counterpart to `lib/palette`'s narrowings: the store repairs a
