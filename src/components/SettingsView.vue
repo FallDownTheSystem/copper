@@ -254,12 +254,16 @@ const captureNote = computed(() => {
 
 		<div class="thin-scrollbar min-h-0 min-w-0 flex-1 space-y-6 overflow-y-auto px-4 py-4">
 			<SettingsSection title="Theme">
+				<!-- `v-slot="{ errorId }"` on every row that can fail: the row owns the
+				     message and its live region, and hands the id down so the control
+				     can point at it. -->
 				<SettingsRow
+					v-slot="{ errorId }"
 					label="Theme"
 					description="Match your system, or set it manually."
 					:error="themeError"
 				>
-					<ThemeToggle :model-value="theme" @update:model-value="setTheme" />
+					<ThemeToggle :model-value="theme" :error-id="errorId" @update:model-value="setTheme" />
 				</SettingsRow>
 			</SettingsSection>
 
@@ -271,6 +275,7 @@ const captureNote = computed(() => {
 				     half nobody expects: the summon chord and the tray still work, and
 				     the panel simply stops floating over whatever is in front. -->
 				<SettingsRow
+					v-slot="{ errorId }"
 					label="Keep on top"
 					description="Float the panel above other windows. Off, the summon shortcut and the tray still bring it back."
 					label-for="always-on-top"
@@ -279,6 +284,7 @@ const captureNote = computed(() => {
 					<SettingsSwitch
 						id="always-on-top"
 						:model-value="alwaysOnTop"
+						:error-id="errorId"
 						@update:model-value="setAlwaysOnTop"
 					/>
 				</SettingsRow>
@@ -316,6 +322,7 @@ const captureNote = computed(() => {
 			     lands. -->
 			<SettingsSection title="Notes">
 				<SettingsRow
+					v-slot="{ errorId }"
 					label="New notes go"
 					description="Where a capture, a paste or a composed note lands in its section."
 					:error="insertionError"
@@ -324,11 +331,13 @@ const captureNote = computed(() => {
 						:model-value="insertionPoint"
 						:options="INSERTION_OPTIONS"
 						label="Where new notes go"
+						:error-id="errorId"
 						@update:model-value="setInsertionPoint"
 					/>
 				</SettingsRow>
 
 				<SettingsRow
+					v-slot="{ errorId }"
 					label="Double-click a note"
 					description="Copy runs the same Copy the context menu does; Edit opens the inline editor."
 					:error="doubleClickError"
@@ -337,6 +346,7 @@ const captureNote = computed(() => {
 						:model-value="doubleClickAction"
 						:options="DOUBLE_CLICK_OPTIONS"
 						label="What double-clicking a note does"
+						:error-id="errorId"
 						@update:model-value="setDoubleClick"
 					/>
 				</SettingsRow>
@@ -347,6 +357,7 @@ const captureNote = computed(() => {
 				     at once instead of starting a new one. Without that sentence the
 				     switch looks like it begins collecting something. -->
 				<SettingsRow
+					v-slot="{ errorId }"
 					label="Date added"
 					description="Show when each note was created. Every note already carries its date; this only shows it."
 					label-for="show-created"
@@ -355,6 +366,7 @@ const captureNote = computed(() => {
 					<SettingsSwitch
 						id="show-created"
 						:model-value="showCreated"
+						:error-id="errorId"
 						@update:model-value="setShowCreated"
 					/>
 				</SettingsRow>
@@ -362,6 +374,7 @@ const captureNote = computed(() => {
 
 			<SettingsSection title="Sound and motion">
 				<SettingsRow
+					v-slot="{ errorId }"
 					label="Sound"
 					description="A short sound when you complete a note, add one, or a capture fails."
 					label-for="sounds"
@@ -370,6 +383,7 @@ const captureNote = computed(() => {
 					<SettingsSwitch
 						id="sounds"
 						:model-value="soundsEnabled"
+						:error-id="errorId"
 						@update:model-value="setSounds"
 					/>
 				</SettingsRow>
@@ -380,6 +394,7 @@ const captureNote = computed(() => {
 				     the row says why. Turning it off is the only assertion available —
 				     there is deliberately no value that animates against the OS. -->
 				<SettingsRow
+					v-slot="{ errorId }"
 					label="Animate controls"
 					description="Windows' own animation setting always wins; this can only turn animation off."
 					label-for="motion"
@@ -388,6 +403,7 @@ const captureNote = computed(() => {
 					<SettingsSwitch
 						id="motion"
 						:model-value="motionPreference === 'auto'"
+						:error-id="errorId"
 						@update:model-value="setAnimations"
 					/>
 				</SettingsRow>
@@ -402,6 +418,7 @@ const captureNote = computed(() => {
 			     the row says why. -->
 			<SettingsSection title="Notifications">
 				<SettingsRow
+					v-slot="{ errorId }"
 					label="Capture notifications"
 					description="When the panel is hidden, show a Windows notification with the capture and buttons to file it in another section."
 					label-for="capture-notifications"
@@ -410,6 +427,7 @@ const captureNote = computed(() => {
 					<SettingsSwitch
 						id="capture-notifications"
 						:model-value="captureNotifications"
+						:error-id="errorId"
 						@update:model-value="setCaptureNotifications"
 					/>
 				</SettingsRow>
@@ -428,6 +446,7 @@ const captureNote = computed(() => {
 			     a fetch discloses: the address, the IP, and the moment of reading. -->
 			<SettingsSection title="Privacy">
 				<SettingsRow
+					v-slot="{ errorId }"
 					label="Link previews"
 					description="Show a page's title, description and picture below links in a note. Copper has to fetch each linked page to do it, which tells whoever runs that site the address, your IP address, and when you read the note. Off, no page is ever fetched."
 					label-for="link-previews"
@@ -436,6 +455,7 @@ const captureNote = computed(() => {
 					<SettingsSwitch
 						id="link-previews"
 						:model-value="linkPreviews"
+						:error-id="errorId"
 						@update:model-value="setLinkPreviews"
 					/>
 				</SettingsRow>
@@ -443,6 +463,7 @@ const captureNote = computed(() => {
 
 			<SettingsSection title="Startup">
 				<SettingsRow
+					v-slot="{ errorId }"
 					label="Launch Copper at login"
 					description="Start automatically when you sign in to Windows."
 					label-for="autostart"
@@ -451,6 +472,7 @@ const captureNote = computed(() => {
 					<SettingsSwitch
 						id="autostart"
 						:model-value="autostartEnabled"
+						:error-id="errorId"
 						@update:model-value="setAutostart"
 					/>
 				</SettingsRow>
@@ -490,10 +512,14 @@ const captureNote = computed(() => {
 							{{ availableUpdate.notes }}
 						</p>
 
+						<!-- The failure is split the same way, and for the sharper version of
+						     the same reason: an alert injected together with its text is the
+						     announcement most likely to be dropped, and it is the one message
+						     here that has to arrive. -->
 						<p
 							v-if="updateError"
+							aria-hidden="true"
 							class="text-text-primary mt-1.5 flex items-start gap-1.5 text-meta"
-							role="alert"
 						>
 							<IconLucideAlertCircle
 								class="mt-0.5 size-3.5 shrink-0"
@@ -502,6 +528,7 @@ const captureNote = computed(() => {
 							/>
 							<span>{{ updateError }}</span>
 						</p>
+						<span class="sr-only" role="alert">{{ updateError ?? '' }}</span>
 
 						<!-- The way out of an update that will never install. The retained
 						     update is reused on retry precisely so a second manifest request

@@ -161,7 +161,7 @@ function runAction(action: PaletteAction) {
 		role="dialog"
 		aria-modal="true"
 		aria-label="Command palette"
-		class="bg-surface/75 animate-in fade-in duration-fast absolute inset-0 z-35 flex items-start justify-center px-3 pt-10"
+		class="bg-surface/75 absolute inset-0 z-35 flex items-start justify-center px-3 pt-10"
 		@click.self="close"
 		@keydown.escape="close"
 	>
@@ -174,7 +174,7 @@ function runAction(action: PaletteAction) {
 			<Command
 				ref="list"
 				highlight-on-hover
-				class="bg-popover text-popover-foreground squircle ring-foreground/10 animate-in fade-in-0 zoom-in-95 duration-fast h-fit max-h-full w-full max-w-96 rounded-lg p-1 shadow-md ring-1 dark:shadow-black/40"
+				class="bg-popover text-popover-foreground squircle ring-foreground/10 h-fit max-h-full w-full max-w-96 rounded-lg p-1 shadow-md ring-1 dark:shadow-black/40"
 			>
 				<div class="p-1">
 					<label for="command-filter" class="sr-only">Search spaces, sections and actions</label>

@@ -46,7 +46,7 @@ function returnFocusToRow() {
 	focusRowSoon(props.rowId)
 }
 
-/** The one write path. Both the ordinary commit and `Keep my version` report
+/** The one write path. Both the ordinary commit and `Keep your version` report
  *  back through `finishCommit`, which is what closes the editor only when the
  *  field is unchanged since the request went out. */
 async function write(submission: { body: string; revision: number } | null) {
@@ -164,9 +164,9 @@ async function keepMine() {
 				>{{ conflict }}</pre>
 
 			<div class="mt-2 flex flex-wrap gap-2">
-				<button type="button" class="panel-button" @click="keepMine">Keep my version</button>
+				<button type="button" class="panel-button" @click="keepMine">Keep your version</button>
 				<button type="button" class="panel-button" @click="useExternal">
-					Use the external version
+					Use the version on disk
 				</button>
 			</div>
 		</div>

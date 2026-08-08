@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { UNDO_ACTION } from '@/composables/useNoteActions'
 import type { Section } from '@/composables/useSpace'
 
 const props = defineProps<{ section: Section }>()
@@ -22,14 +23,17 @@ async function remove() {
 	const result = await deleteSection(props.section.id)
 	if (!result) return
 	// No confirmation dialog: the whole operation is one undo, and an undoable
-	// action reads better as a reversible one than as a question.
+	// action reads better as a reversible one than as a question. The chord is not
+	// spelled out in the sentence, for the reason the note deletions stopped
+	// spelling it out: the pill carries a button that takes that same one step.
 	setMessage(
 		count === 0
-			? `Deleted “${props.section.name}” · Ctrl+Z to undo`
+			? `Deleted “${props.section.name}”`
 			: countMessage(count, {
-					one: `Deleted “${props.section.name}” and 1 note · Ctrl+Z to undo`,
-					many: (n) => `Deleted “${props.section.name}” and ${n} notes · Ctrl+Z to undo`,
+					one: `Deleted “${props.section.name}” and 1 note`,
+					many: (n) => `Deleted “${props.section.name}” and ${n} notes`,
 				}),
+		UNDO_ACTION,
 	)
 }
 

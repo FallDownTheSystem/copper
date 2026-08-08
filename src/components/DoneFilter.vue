@@ -119,18 +119,22 @@ function onKeydown(event: KeyboardEvent) {
 }
 
 /** What the confirming press would take, in the words the armed button shows. */
-const confirmLabel = computed(() => `Delete ${doneCount.value} in ${sectionName.value}?`)
+const confirmLabel = computed(() => `Delete ${doneCount.value} done?`)
 
 /**
  * The accessible name, which at rest is the *only* name this button has: it is an
- * icon and nothing else until it is armed. It says the count and the section for
- * the same reason the armed label does — the view is document-wide and this is
- * not, so a screen reader landing on "Delete done notes" would be told a scope
- * the button does not have.
+ * icon and nothing else until it is armed. It names the section in both states —
+ * the view is document-wide and this is not, so a screen reader landing on
+ * "Delete done notes" would be told a scope the button does not have.
+ *
+ * Armed, it leads with the visible label verbatim and adds the scope after it.
+ * That order is the one requirement the two halves cannot negotiate: a voice-input
+ * user says the words they can see, and a name that merely *contains* them
+ * somewhere is a name "click Delete 2 done" can miss.
  */
 const label = computed(() =>
 	confirming.value
-		? confirmLabel.value
+		? `${confirmLabel.value} In ${sectionName.value}.`
 		: countMessage(doneCount.value, {
 				one: `Delete 1 done note in ${sectionName.value}`,
 				many: (count) => `Delete ${count} done notes in ${sectionName.value}`,
@@ -171,7 +175,10 @@ const cycleTitle = computed(
 </script>
 
 <template>
-	<div class="flex shrink-0 items-center gap-1">
+	<!-- `gap-3` for the same reason the header cluster wearing these two uses it:
+	     both children carry their own border, and two bordered controls a pixel
+	     apart read as one control with a seam. -->
+	<div class="flex shrink-0 items-center gap-3">
 		<!-- **Icon-only at rest, and it grows a label only while it is armed.** The
 		     resting button is one of three controls in a strip a panel wide, and
 		     "Delete done" beside a trash icon told the pointer nothing the icon had
@@ -181,10 +188,16 @@ const cycleTitle = computed(
 		     *active* section's done notes and leaves every other section alone (AC9),
 		     while the view behind it is document-wide — so the two can legitimately
 		     disagree, and a user looking at nine done notes across three sections can
-		     be offered two. A bare red icon confirms nothing at all, and a bare
-		     "Delete 2?" over a list of nine reads as a bug or, worse, is taken at
-		     face value. It is also the state that lasts seconds, so the width it
-		     borrows from the chip is borrowed and given back.
+		     be offered two. A bare red icon confirms nothing at all, and "Delete 2?"
+		     names neither what is being counted nor that the count is the point, so
+		     the noun stays: the number is what makes the discrepancy visible.
+
+		     The *scope* rides on the accessible name and the tooltip rather than on
+		     the strip. A section is user text of any length, and the armed label
+		     borrows its width from the chip beside it — a label that could grow to
+		     any width is one that can push the chip out of a header sized to hold
+		     both. Three words are a width the strip can promise, and it is a state
+		     that lasts seconds, so what it borrows it gives back.
 
 		     It leads the strip rather than following the filter it belongs to: the
 		     destructive control is the one that must not sit where a mis-aimed press
@@ -194,7 +207,7 @@ const cycleTitle = computed(
 			type="button"
 			data-delete-done
 			class="panel-button inline-flex min-h-6 shrink-0 items-center gap-1 px-1.5"
-			:class="confirming ? 'text-destructive' : 'text-text-secondary'"
+			:class="confirming ? 'text-destructive-text' : 'text-text-secondary'"
 			:title="label"
 			:aria-label="label"
 			@click="press"
@@ -202,9 +215,13 @@ const cycleTitle = computed(
 			@blur="confirming = false"
 		>
 			<IconLucideTrash2 class="size-3.5 shrink-0" aria-hidden="true" focusable="false" />
-			<!-- `min-w-0` and `truncate`: the section name is user text of any length,
-			     and this button shares its row with the chip. -->
-			<span v-if="confirming" class="min-w-0 truncate text-label">{{ confirmLabel }}</span>
+			<!-- `min-w-0` and `truncate`: this button shares its row with the chip, and
+			     a count has no upper bound. `uppercase` because `text-label` carries
+			     0.06em of tracking, which is spacing cut for capitals — every other
+			     label in this strip is set the same way. -->
+			<span v-if="confirming" class="min-w-0 truncate text-label uppercase">{{
+				confirmLabel
+			}}</span>
 		</button>
 
 		<!-- **A three-state cycle, not a toggle**, and `aria-pressed` went with the

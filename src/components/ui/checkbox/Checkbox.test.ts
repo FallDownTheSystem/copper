@@ -163,27 +163,25 @@ describe('the completion control', () => {
 	})
 
 	/**
-	 * Task-012 AC7, the press-dip half, and the bug this port fixes: the reference
-	 * app gates only its *radio* on the preference. `willChange` is set exactly
-	 * when the control is going to dip, so its absence is the observable form of
-	 * "this one is not going to animate".
+	 * Task-012 AC7's press dip survives, but its old observable is deliberately
+	 * gone: `will-change` used to ride on every enabled box, which at the list's
+	 * design size was hundreds of permanent compositor layers against a ~10-layer
+	 * budget, promoted for a 150ms dip motion-v's WAAPI animation promotes on its
+	 * own. The invariant worth pinning is the absence — in every state, since a
+	 * "some states may hold a layer" rule is how the leak comes back one branch
+	 * at a time. (The dip's own gating lives in `pressState`, whose reduced-motion
+	 * half `CheckboxIcon.test.ts` covers through the same composable.)
 	 */
-	it('takes no compositor layer and no press dip under reduced motion', () => {
-		setReducedMotion(true)
-		const wrapper = mount(Checkbox, { props: { modelValue: false } })
+	it('never holds a permanent compositor layer, whatever its state', () => {
+		for (const [props, reduced] of [
+			[{ modelValue: false }, false],
+			[{ modelValue: false }, true],
+			[{ modelValue: false, disabled: true }, false],
+		] as const) {
+			setReducedMotion(reduced)
+			const wrapper = mount(Checkbox, { props })
 
-		expect(wrapper.find('button').attributes('style') ?? '').not.toContain('will-change')
-	})
-
-	it('takes a compositor layer when it is going to dip', () => {
-		const wrapper = mount(Checkbox, { props: { modelValue: false } })
-
-		expect(wrapper.find('button').attributes('style') ?? '').toContain('will-change')
-	})
-
-	it('never dips while disabled, preference or not', () => {
-		const wrapper = mount(Checkbox, { props: { modelValue: false, disabled: true } })
-
-		expect(wrapper.find('button').attributes('style') ?? '').not.toContain('will-change')
+			expect(wrapper.find('button').attributes('style') ?? '').not.toContain('will-change')
+		}
 	})
 })

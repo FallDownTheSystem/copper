@@ -9,6 +9,11 @@ defineProps<{
 	 *  text — a shortcut row's icon and its live regions — use `below` instead. */
 	error?: string | null
 }>()
+
+/** Named whether or not there is anything to say, because the region below is
+ *  permanently mounted and the rows that carry no `for`-able control — the two
+ *  segmented choices — still have to point their group at it. */
+const errorId = useId()
 </script>
 
 <template>
@@ -27,14 +32,37 @@ defineProps<{
 
 			<slot name="below" />
 
-			<p v-if="error" class="text-text-primary mt-1.5 text-meta" role="alert">{{ error }}</p>
+			<!-- Two copies, and only one of them is in the accessibility tree.
+			     Injecting an element and its text together does not announce — only a
+			     text change inside a region already registered does — so the spoken
+			     copy is permanently mounted and empty until there is something to say,
+			     and the visible paragraph is hidden from assistive tech to stop the
+			     message being read twice. `ShortcutRecorder` and the Updates row use
+			     the same arrangement. The id is on the mounted copy rather than the
+			     visible one so a control's `aria-describedby` always resolves.
+
+			     Keyed on whether the row was *given* an error prop rather than on
+			     whether it currently holds a message — the rows that can never fail
+			     from here, and the shortcut rows that run their own pair of regions in
+			     `below`, would otherwise each contribute a second empty alert. -->
+			<p v-if="error" aria-hidden="true" class="text-text-primary mt-1.5 text-meta">{{ error }}</p>
+			<span v-if="error !== undefined" :id="errorId" class="sr-only" role="alert">{{
+				error ?? ''
+			}}</span>
 		</div>
 
 		<!-- Absent rather than empty when there is no trailing control: a shortcut
 		     row puts its control in `below`, and an empty box here would still take
 		     the row's `gap-3`. -->
 		<div v-if="$slots.default" class="shrink-0 self-center">
-			<slot />
+			<!-- Handed down rather than pushed in from the parent: the row owns the
+			     message and the id, and the control only has to point at it. Withheld
+			     while there is no error, so nothing is described by an empty region.
+
+			     camelCase, unlike every other attribute here: a slot's props arrive
+			     under the name as written rather than camelised the way a component's
+			     are, so `:error-id` would be a key no destructuring reads. -->
+			<slot :errorId="error ? errorId : undefined" />
 		</div>
 	</div>
 </template>

@@ -485,12 +485,10 @@ describe('Ctrl+Arrow', () => {
 })
 
 describe('the composer', () => {
-	it('reads its placeholder from the active space name', async () => {
+	it('keeps its placeholder static, leaving the space name to the section chip', async () => {
 		const wrapper = await mountPanel()
 
-		expect(wrapper.find('#composer').attributes('placeholder')).toBe(
-			'Add a note or a prompt (development)',
-		)
+		expect(wrapper.find('#composer').attributes('placeholder')).toBe('Add a note or a prompt…')
 	})
 
 	it('is labelled, and spends no panel height on a key-binding hint', async () => {
@@ -538,8 +536,8 @@ describe('the conflict state', () => {
 		// and leaving the conflict with no exit at all.
 		expect(wrapper.find('textarea[aria-label="Edit note"]').exists()).toBe(true)
 		const labels = wrapper.findAll('button').map((button) => button.text())
-		expect(labels).toContain('Keep my version')
-		expect(labels).toContain('Use the external version')
+		expect(labels).toContain('Keep your version')
+		expect(labels).toContain('Use the version on disk')
 
 		editor.cancel()
 	})
@@ -726,10 +724,9 @@ describe('search', () => {
 		const wrapper = await mountPanel()
 		await typeQuery(wrapper, 'first')
 
-		// A capture arriving mid-search still has to land where the composer says
-		// it will.
+		// A capture arriving mid-search still has to land in the section the chip
+		// names — the chip, not the placeholder, is where that promise lives now.
 		expect(mocks.invoke).not.toHaveBeenCalledWith('set_active_section', expect.anything())
-		expect(wrapper.find('#composer').attributes('placeholder')).toContain('development')
 	})
 
 	/** Task-014. The query is a character sequence now, so a match no longer has
@@ -1334,10 +1331,10 @@ describe('the active-section chip', () => {
 		const wrapper = await mountPanel()
 
 		expect(heading(wrapper).text()).toContain('Research')
-		// Task-004 acceptance criterion 3 stands: the placeholder names the *space*.
-		expect(wrapper.find('#composer').attributes('placeholder')).toBe(
-			'Add a note or a prompt (development)',
-		)
+		// Task-004's criterion 3 put the space name here; the 2026-08-08 review
+		// moved it wholly into the chip, so the placeholder stays static however
+		// the section or space changes.
+		expect(wrapper.find('#composer').attributes('placeholder')).toBe('Add a note or a prompt…')
 	})
 
 	it('sits under the search field, and nowhere else', async () => {
@@ -2456,7 +2453,7 @@ describe('attachments', () => {
 		expect(cards[1]?.getAttribute('aria-label')).toContain(`Open ${PDF.name}`)
 		expect(cards[1]?.textContent).toContain(PDF.name)
 		expect(cards[1]?.querySelector('img')).toBeNull()
-		expect(cards[1]?.hasAttribute('disabled')).toBe(false)
+		expect(cards[1]?.getAttribute('aria-disabled')).toBeNull()
 	})
 
 	/** AC8. A missing blob says so, and the rest of the note still renders. */
@@ -2474,7 +2471,9 @@ describe('attachments', () => {
 		)
 		expect(card).not.toBeNull()
 		expect(card?.textContent).toContain('could not read 3f9a1c0e7b2d5481.png')
-		expect(card?.hasAttribute('disabled')).toBe(true)
+		// `aria-disabled`, not `disabled`: the card must stay reachable so the
+		// keyboard can hear the cause and the context menu can reach the folder.
+		expect(card?.getAttribute('aria-disabled')).toBe('true')
 		// The note itself is untouched.
 		expect(document.body.textContent).toContain('first note')
 	})
@@ -2567,23 +2566,26 @@ describe('attachments', () => {
 		await openViewer()
 
 		expect(mocks.invoke).toHaveBeenCalledWith('attachment_full', { file: PNG.file })
-		// The OS route is still there — it moved to `Space` — but a double-click must
-		// not take both.
+		// The OS route is still there — it moved to the card's context menu — but a
+		// double-click must not take both.
 		expect(mocks.invoke).not.toHaveBeenCalledWith('attachment_open', expect.anything())
 		expect(viewer()?.querySelector('img')).not.toBeNull()
 	})
 
-	it('keeps the OS viewer on Space, so task-011 does not lose its route', async () => {
+	it('activates identically on Space and Enter, as a button must', async () => {
 		withImagePreview()
 		await mountPanel()
 		await installWithAttachments(documentWith([PNG]))
 
+		// Task-011's OS route lives on the card's context menu now — Space keeping a
+		// second meaning broke the one promise every button makes.
 		const card = document.querySelector<HTMLElement>('button[aria-label^="View"]')
 		card?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }))
 		await settle(2)
 
-		expect(mocks.invoke).toHaveBeenCalledWith('attachment_open', { file: PNG.file })
-		expect(viewer()).toBeNull()
+		expect(mocks.invoke).toHaveBeenCalledWith('attachment_full', { file: PNG.file })
+		expect(mocks.invoke).not.toHaveBeenCalledWith('attachment_open', expect.anything())
+		expect(viewer()).not.toBeNull()
 	})
 
 	/** The viewer is hand-rolled, so `inOverlay` does not see it and it needs a
@@ -2812,7 +2814,7 @@ describe('attachments', () => {
 		selection.select('nte_1')
 		takeRow(noteRow('nte_1'))
 		await settle(1)
-		expect(actions.attachmentActionLabel.value).toBe('Open Attachment')
+		expect(actions.attachmentActionLabel.value).toBe('Open attachment')
 	})
 
 	// --- switching space ---
@@ -3380,6 +3382,14 @@ describe('reordering', () => {
 
 			expect(draggingRow()).toBeNull()
 			expect(drag.isDragging.value).toBe(false)
+			// The abandoned row is mid-settle — animating home rather than teleporting
+			// — so its styles clear on `transitionend`, synthesised here because
+			// happy-dom has no TransitionEvent and fires none of its own.
+			const settling = document.querySelector<HTMLElement>('[data-note-row][data-settling]')
+			const done = new Event('transitionend') as TransitionEvent
+			Object.defineProperty(done, 'propertyName', { value: 'transform' })
+			settling?.dispatchEvent(done)
+			await settle(1)
 			expect(
 				wrapper
 					.findAll('[data-note-row]')
@@ -4301,7 +4311,7 @@ describe('the done filter', () => {
 		expect(calls).toEqual([])
 		// The label names the scope as well as the count — see the section-naming
 		// case below for why the two cannot be left to be inferred from each other.
-		expect(button.text()).toContain('Delete 2 in Research?')
+		expect(button.text()).toContain('Delete 2 done?')
 
 		await button.trigger('click')
 		await settle(3)
@@ -4406,10 +4416,11 @@ describe('the done filter', () => {
 	})
 
 	/**
-	 * The confirming label names the **section**, because the count and the view
-	 * can legitimately disagree: the filter shows done notes document-wide, the
-	 * delete takes the active section's alone (AC9). A bare "Delete 2?" over a list
-	 * of three done notes reads as a bug, or is believed.
+	 * The scope names the **section**, because the count and the view can
+	 * legitimately disagree: the filter shows done notes document-wide, the delete
+	 * takes the active section's alone (AC9). The strip carries the count and the
+	 * noun; the section rides on the accessible name and tooltip, where user text
+	 * of any length cannot push the chip out of the header.
 	 */
 	it('names the section it would delete from, not just the count', async () => {
 		const { wrapper } = await mountWithDoneInBoth()
@@ -4422,7 +4433,10 @@ describe('the done filter', () => {
 		await wrapper.get('[data-delete-done]').trigger('click')
 		await settle(2)
 
-		expect(wrapper.get('[data-delete-done]').text()).toContain('Delete 2 in Research?')
+		expect(wrapper.get('[data-delete-done]').text()).toContain('Delete 2 done?')
+		expect(wrapper.get('[data-delete-done]').attributes('aria-label')).toBe(
+			'Delete 2 done? In Research.',
+		)
 	})
 
 	/**
@@ -4439,7 +4453,7 @@ describe('the done filter', () => {
 
 		await wrapper.get('[data-delete-done]').trigger('click')
 		await settle(2)
-		expect(wrapper.get('[data-delete-done]').text()).toContain('Delete 2 in Research?')
+		expect(wrapper.get('[data-delete-done]').text()).toContain('Delete 2 done?')
 
 		// Still two done notes in `sec_a`, but a different two: `nte_1` is no longer
 		// done and `nte_3` now is.
@@ -4486,7 +4500,7 @@ describe('the done filter', () => {
 		// The first press arms, as an ordinary one does.
 		await button.trigger('click')
 		await settle(2)
-		expect(button.text()).toContain('Delete 2 in Research?')
+		expect(button.text()).toContain('Delete 2 done?')
 
 		// The key is still down. The repeat is declined at the source, so no click is
 		// generated from it and nothing is confirmed.
@@ -4501,7 +4515,7 @@ describe('the done filter', () => {
 
 		expect(repeat.defaultPrevented).toBe(true)
 		expect(calls).toEqual([])
-		expect(button.text()).toContain('Delete 2 in Research?')
+		expect(button.text()).toContain('Delete 2 done?')
 	})
 
 	/** The second click of a double-click is the same gesture as the first, aimed
@@ -4518,7 +4532,7 @@ describe('the done filter', () => {
 		await settle(3)
 
 		expect(calls).toEqual([])
-		expect(button.text()).toContain('Delete 2 in Research?')
+		expect(button.text()).toContain('Delete 2 done?')
 
 		// A deliberate separate press still works.
 		await button.trigger('click', { detail: 1 })
@@ -4770,9 +4784,13 @@ describe('the status toast', () => {
 		expect(root.classes()).toContain('grid-cols-1')
 
 		// Out-of-flow children are not grid items and place themselves: the portal
-		// host, the clamp probe and the two live regions.
+		// host, the clamp probe and the two live regions. `transition-stub` is VTU's
+		// stand-in for the image viewer's `<Transition>`, which at runtime renders
+		// no element of its own.
 		const flow = [...root.element.children].filter(
-			(child) => !/(^|\s)(absolute|sr-only)(\s|$)/.test(child.className),
+			(child) =>
+				child.tagName !== 'TRANSITION-STUB' &&
+				!/(^|\s)(absolute|sr-only)(\s|$)/.test(child.className),
 		)
 		expect(flow.length).toBeGreaterThanOrEqual(4)
 		for (const child of flow) {
@@ -4812,7 +4830,9 @@ describe('the status toast', () => {
 
 		const pill = wrapper.get('[data-status-toast]')
 		expect(pill.classes()).not.toContain('pointer-events-auto')
-		expect(pill.element.parentElement?.className).toContain('pointer-events-none')
+		// `closest`, not `parentElement`: VTU's Transition stub inserts an element
+		// between the pill and the click-through wrapper that runtime Vue does not.
+		expect(pill.element.closest('.pointer-events-none')).not.toBeNull()
 		expect(wrapper.get('[data-toast-action]').classes()).toContain('pointer-events-auto')
 	})
 

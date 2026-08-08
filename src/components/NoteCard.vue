@@ -253,7 +253,7 @@ function onDoubleClick(event: MouseEvent) {
 						>
 							<IconLucideSquarePen class="size-3.5 shrink-0" aria-hidden="true" focusable="false" />
 							<span>{{
-								conflicted ? 'Editing externally — save refused' : 'Editing externally'
+								conflicted ? 'Editing externally, save refused' : 'Editing externally'
 							}}</span>
 							<button
 								type="button"
@@ -368,16 +368,30 @@ function onDoubleClick(event: MouseEvent) {
 	}
 }
 
-/* Lifted while it is carried. The row is translated under the pointer with
-   nothing else moving, so it needs a surface of its own — over a bare row the two
-   texts would simply overlap — and a stacking order above the rows it passes.
-   Nothing here animates over time: the transform tracks the pointer 1:1, so there
-   is no duration for reduced motion to have an opinion about. */
-.note-row[data-dragging] {
+/* Lifted while it is carried, and still lifted on the way back. The row is
+   translated with nothing else moving, so it needs a surface of its own — over a
+   bare row the two texts would simply overlap — and a stacking order above the
+   rows it passes. `data-settling` is `useNoteDrag`'s second attribute and exists
+   only for this rule: an abandoned row animates home over 150ms, and dropping the
+   surface at the start of that trip would send it back underneath its neighbours.
+
+   `will-change` because this is the one element in the panel written to on every
+   frame, and it carries a 14px blur while it moves — without the promotion the
+   compositor re-rasterises that shadow against the rows underneath each time the
+   transform changes. Scoped to the attributes, so the layer exists for the length
+   of the gesture rather than standing permanently on 200 rows. */
+.note-row[data-dragging],
+.note-row[data-settling] {
 	position: relative;
 	z-index: 10;
 	background: var(--surface);
 	box-shadow: 0 4px 14px oklch(0 0 0 / 0.18);
+	will-change: transform;
+}
+
+/* The carry only. A row returning home is not being held, and the pointer that
+   was holding it has usually been released by then. */
+.note-row[data-dragging] {
 	cursor: grabbing;
 }
 

@@ -13,13 +13,23 @@ const { recovery, dismissRecovery } = useNoteEditor()
 
 const copied = ref(false)
 
+/** The acknowledgement retires itself: it reports one press, and a "Copied" that
+ *  outlives it stops being about anything the user just did — including on the
+ *  next press, where a notice already on screen confirms nothing. */
+const COPIED_MS = 2000
+let copiedTimer: ReturnType<typeof setTimeout> | undefined
+
+onBeforeUnmount(() => clearTimeout(copiedTimer))
+
 async function copyDraft() {
 	const draft = recovery.value?.draft
 	if (!draft) return
 
 	try {
 		await navigator.clipboard.writeText(draft)
+		clearTimeout(copiedTimer)
 		copied.value = true
+		copiedTimer = setTimeout(() => (copied.value = false), COPIED_MS)
 	} catch (error) {
 		console.error('[copper] could not copy the draft', error)
 	}

@@ -50,8 +50,8 @@ const session = ref<EditSession | null>(null)
  * A conflicted session is still an editing session, deliberately.
  *
  * Requiring `conflict === null` here unmounted the editor the instant a conflict
- * was raised — which took the draft off screen and made `Keep my version` and
- * `Use the external version` unreachable, so the conflict state had no exit at
+ * was raised — which took the draft off screen and made `Keep your version` and
+ * `Use the version on disk` unreachable, so the conflict state had no exit at
  * all. The write is blocked by `canCommit`, which is where that belongs.
  */
 const isEditing = (noteId: string) => session.value?.noteId === noteId && !session.value.deleted

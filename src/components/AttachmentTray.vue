@@ -10,7 +10,7 @@
  */
 import autoAnimate, { type AnimationController } from '@formkit/auto-animate'
 
-import { EASE_OUT_QUINT_CSS } from '@/lib/motion'
+import { listMotion } from '@/lib/listMotion'
 
 const { pending, pendingLabel, removePending } = useAttachments()
 
@@ -44,7 +44,7 @@ watch([list, reduced], ([element]) => {
 		controller = null
 		return
 	}
-	controller ??= autoAnimate(element, { duration: 150, easing: EASE_OUT_QUINT_CSS })
+	controller ??= autoAnimate(element, listMotion)
 	syncAnimation()
 })
 </script>

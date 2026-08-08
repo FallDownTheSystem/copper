@@ -10,7 +10,14 @@
 @theme {
 	--font-sans: 'Inter Variable', system-ui, sans-serif;
 
-	/* Three roles, not a size ramp. Emphasis within a role is a weight step. */
+	/* Three roles, not a size ramp. Emphasis within a role is a weight step.
+
+	   The sizes sit under the usual 16px body floor on purpose, and the bend is
+	   recorded here so it reads as a decision rather than an accident: 14px is
+	   the size Windows' own shell UI runs at, the panel is a fixed 441px column
+	   that cannot grow into a larger scale, and note bodies compete with the
+	   list's density for the same pixels. Anyone revisiting this weighs those
+	   against the floor, not against a blank. */
 	--text-label: 0.75rem;
 	--text-label--line-height: 1.3;
 	--text-label--letter-spacing: 0.06em;
@@ -28,6 +35,18 @@
 	   `@apply` — which is how this was found. */
 	--transition-duration-fast: 100ms;
 	--transition-duration-base: 150ms;
+
+	/* The same curve as `EASE_OUT_QUINT` in `lib/motion.ts`, which explains why
+	   there are two copies: motion-v and WAAPI take control points as numbers, so
+	   a CSS token cannot serve them and the two declarations are kept in step by
+	   hand. This one exists because the CSS side had silently fallen off the
+	   curve entirely: `animate-in` resolves its easing from `--tw-ease`, which
+	   only an `ease-*` utility sets, and no component set one — so every CSS
+	   entrance ran on the browser's weak `ease` while the JS consumers ran on
+	   the quint. Declaring it in `@theme` makes `ease-out-quint` a real utility;
+	   the default below puts every bare `transition-*` on the same curve. */
+	--ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+	--default-transition-timing-function: var(--ease-out-quint);
 
 	/* Not a design value — it is DWM's own corner, and it has to stay equal to
 	   it. `DWMWCP_ROUND` (panel.rs) rounds the window at Windows 11's default
@@ -70,6 +89,13 @@
 	--text-primary: oklch(0.24 0.008 60);
 	--text-secondary: oklch(0.46 0.012 60);
 	--text-disabled: oklch(0.63 0.008 60);
+	/* The 1px edge of a control whose edge is the whole control — an unchecked
+	   checkbox paints nothing inside its box, so its border alone has to clear
+	   the 3:1 floor for UI components. `--text-disabled` used to be borrowed
+	   here and composited at 2.7:1 on the panel; a *text* role is allowed to be
+	   that quiet, a lone boundary is not. Measured 3.77:1 light / 3.98:1 dark
+	   against the composited worst-case surfaces. */
+	--control-border: oklch(0.55 0.008 60);
 	--surface: oklch(0.99 0.002 80 / 0.9);
 	/* The same colour with the alpha taken off, for the two surfaces that have to
 	   erase what is behind them rather than tint it: the pinned section heading,
@@ -119,19 +145,32 @@
 	   is this halo alone and no row draws a 1px edge, so the edge is free to *be*
 	   the accent — see the `focus-ring` and `focus-halo` utilities.
 
-	   50% is the shadcn ratio and it survives both themes because each value sits
-	   apart from its own surface: composited the band reads around L 0.72 on the
-	   light panel and L 0.55 on the dark one. Written as an alpha rather than a
-	   `color-mix` off a second token, now that there is no second token to mix. */
-	--focus-halo: oklch(0.46 0.15 55 / 0.5);
+	   Written as an alpha rather than a `color-mix` off a second token, now that
+	   there is no second token to mix. 70% rather than the shadcn 50%: on a row
+	   the halo is the *entire* focus indicator, and at 50% it composited to
+	   2.27:1 against the panel — under the 3:1 floor for a UI state. The same
+	   hue and lightness at 70% measures 3.31:1, so the fix is density, not a new
+	   colour. (The dark value below keeps 50% by ruling — 2026-08-08, chroma at
+	   the accent's own lightness so the glow reads copper, not white — and that
+	   ruling outranks the floor there.) */
+	--focus-halo: oklch(0.46 0.15 55 / 0.7);
 	/* Copper carries exactly one meaning: selection and active state. Split in
 	   two because oklch(0.62 0.11 55) is 3.77:1 on white — a pass for a UI
 	   component at 3:1 and a failure for text at 4.5:1. */
 	--accent-ring: oklch(0.62 0.11 55);
 	--accent-text: oklch(0.53 0.11 55);
-	/* What reads on top of `--accent-ring` when it is a filled surface. Not
-	   re-declared under `.dark`: the copper fill is light-on-copper in both
-	   themes, so the inherited value is the correct one. */
+	/* Destructive as *text*, split from `--destructive` for the same reason
+	   `--accent-text` split from `--accent-ring`: the fill red measures 3.69:1
+	   as 12px text on the composited light panel — a pass for a filled surface,
+	   a failure for text at 4.5:1. This value measures 5.17:1. Fills and borders
+	   keep `--destructive`. */
+	--destructive-text: oklch(0.5 0.2 27);
+	/* What reads on top of `--accent-ring` when it is a filled surface. White
+	   here, but re-declared under `.dark`: the dark theme's copper fill is a
+	   *lighter* copper (L 0.7 against this theme's 0.62), and white on it
+	   measures 2.77:1 — under the 3:1 floor for the checkmark, which is the one
+	   glyph this token draws. The parity the first version of this comment
+	   claimed was never measured. */
 	--accent-contrast: oklch(1 0 0);
 	--scrollbar-thumb: oklch(0.24 0.008 60 / 0.25);
 	/* The one surface role the list view has no equivalent for: a key cap and the
@@ -171,8 +210,16 @@
 
 .dark {
 	--text-primary: oklch(0.96 0.004 60);
-	--text-secondary: oklch(0.73 0.012 60);
-	--text-disabled: oklch(0.55 0.008 60);
+	/* L 0.80 rather than the 0.73 that mirrored light's step: WCAG rated the
+	   0.73 *higher* than light's value while APCA — the perceptual measure —
+	   rated it fourteen points worse (Lc 51 against light's 68). This token
+	   carries dates, sizes, settings descriptions and blockquotes, so it gets
+	   the value that restores parity where it is read, Lc 63. */
+	--text-secondary: oklch(0.80 0.012 60);
+	/* L 0.63, up from 0.55: at 0.55 the placeholder role composited to Lc 24,
+	   under even APCA's Lc 30 floor for disabled and placeholder text. */
+	--text-disabled: oklch(0.63 0.008 60);
+	--control-border: oklch(0.62 0.008 60);
 	--surface: oklch(0.18 0.004 60 / 0.9);
 	--surface-solid: oklch(0.18 0.004 60);
 	--surface-hover: oklch(1 0 0 / 0.07);
@@ -195,6 +242,13 @@
 	--focus-halo: oklch(0.7 0.12 55 / 0.5);
 	--accent-ring: oklch(0.7 0.12 55);
 	--accent-text: oklch(0.78 0.1 60);
+	/* The dark fill red already passes as text (5.02:1), so the text role and
+	   the fill role share one value here; only light needs the split. */
+	--destructive-text: oklch(0.704 0.191 22.216);
+	/* A dark tick on the lighter copper: white measured 2.77:1 on this theme's
+	   L 0.7 fill; this measures 5.96:1. Same value as light's `--text-primary`,
+	   which is what a "dark glyph on a warm surface" already is elsewhere. */
+	--accent-contrast: oklch(0.24 0.008 60);
 	--scrollbar-thumb: oklch(1 0 0 / 0.22);
 	--kbd-surface: oklch(1 0 0 / 0.1);
 	--kbd-ring: oklch(1 0 0 / 0.18);
@@ -231,6 +285,8 @@
 	--color-surface-danger: var(--surface-danger);
 	--color-toast-surface: var(--toast-surface);
 	--color-separator: var(--separator);
+	--color-control-border: var(--control-border);
+	--color-destructive-text: var(--destructive-text);
 	--color-link: var(--link);
 	/* Named `accent-ring` rather than the plan's bare `accent`: `shadcn-vue init`
 	   (planning ruling Q21) generates an `--accent` of its own meaning "subtle
@@ -436,6 +492,15 @@
 		outline-offset: 0;
 		border-color: var(--accent-ring);
 		box-shadow: 0 0 0 4px var(--focus-halo);
+
+		/* Forced colors is the mode where the outline is the *only* layer that
+		   survives — box-shadows are not painted — and 1px is under the 2px
+		   minimum for a focus indicator. Scoped here rather than widened
+		   everywhere because in the ordinary themes the 4px halo carries the
+		   weight and a 2px edge would visibly thicken every control's focus. */
+		@media (forced-colors: active) {
+			outline-width: 2px;
+		}
 	}
 }
 
@@ -851,9 +916,12 @@
 	color: oklch(0.2 0.02 95);
 }
 
+/* The same dark foreground as the light rule, not a light one: near-white on
+   this amber measured 3.47:1 — the span the reader is actively hunting was the
+   least legible text on the dark panel. Dark-on-amber measures 4.92:1. */
 .dark ::highlight(copper-search-match) {
 	background-color: oklch(0.62 0.13 85);
-	color: oklch(0.98 0.005 95);
+	color: oklch(0.2 0.02 95);
 }
 
 /* Shiki's dual-theme output carries the light colour inline and the dark one as

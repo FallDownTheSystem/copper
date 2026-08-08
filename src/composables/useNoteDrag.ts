@@ -36,6 +36,7 @@ import {
 	type DragSection,
 	type DropTarget,
 } from '@/lib/dragGeometry'
+import { EASE_OUT_QUINT_CSS } from '@/lib/motion'
 
 import { useNoteActions } from './useNoteActions'
 import { rowNoteId } from './useSelection'
@@ -261,7 +262,12 @@ function onUp(event: PointerEvent) {
 	const target = draggingNoteId.value === null ? null : dropTarget.value
 	// `end` arms the click swallow itself whenever a drag was actually running, so
 	// the drop and every abort below are covered by one rule.
-	end()
+	//
+	// A release with nowhere to land is an abandonment like any other and the row
+	// travels back. A release that commits does not: the reorder the next line
+	// requests is what moves the row, through auto-animate, and animating it home
+	// first would be the same row travelling twice for one gesture.
+	end(target === null)
 
 	if (!target) return
 	void actions.finishDrag(noteId, target.sectionId, target.index)
@@ -269,7 +275,7 @@ function onUp(event: PointerEvent) {
 
 function onCancel(event: PointerEvent) {
 	if (!gesture || event.pointerId !== gesture.pointerId) return
-	end()
+	end(true)
 }
 
 /**
@@ -280,7 +286,7 @@ function onCancel(event: PointerEvent) {
  */
 function onLostCapture(event: PointerEvent) {
 	if (!gesture || event.pointerId !== gesture.pointerId) return
-	end()
+	end(true)
 }
 
 /** Escape abandons the drag and is consumed here rather than left to the shell's
@@ -291,7 +297,73 @@ function onKeydown(event: KeyboardEvent) {
 	if (event.key !== 'Escape' || draggingNoteId.value === null) return
 	event.preventDefault()
 	event.stopPropagation()
-	end()
+	end(true)
+}
+
+/**
+ * How long an abandoned row takes to travel home, matching `--duration-base`.
+ */
+const SETTLE_MS = 150
+/** Beyond the transition's own length, after which the cleanup runs regardless.
+ *  `transitionend` does not fire for a row that was unmounted or re-rendered
+ *  mid-flight, and the styles must not outlive the gesture either way. */
+const SETTLE_FALLBACK_MS = 250
+
+/** Completes an in-flight settle early, or null when none is running. Held at
+ *  module scope because the thing that interrupts one is the *next* drag, and it
+ *  may well be on the same row: without this its transform would be wiped by the
+ *  previous gesture's timer. */
+let cancelSettle: (() => void) | null = null
+
+function clearDragStyles(row: HTMLElement) {
+	row.style.transition = ''
+	row.style.transform = ''
+	delete row.dataset.dragging
+	delete row.dataset.settling
+}
+
+/**
+ * Walks an abandoned row back to where it started instead of teleporting it.
+ *
+ * The row was under the pointer a moment ago and is about to be somewhere else
+ * entirely; cutting between the two in one frame gives the eye nothing to follow,
+ * and the note reads as having been *replaced* rather than as having gone back.
+ * Only abandonment gets this. A drop that lands is followed by auto-animate's own
+ * FLIP, and two motions arguing over one row is worse than either alone.
+ *
+ * **`data-settling` rather than holding `data-dragging` through the return.** The
+ * row does need to keep its surface and its raised stacking order for the trip,
+ * or it travels home underneath the rows it passes — but `data-dragging` is not a
+ * style hook, it is the document's answer to "is a gesture running", and
+ * `useSelection` reads it to decide whether a captured note may scroll itself into
+ * view. Left standing for the length of the animation it would swallow a capture
+ * that landed in that window. The gesture is over the moment this is called; only
+ * the picture is still catching up, so only the picture keeps an attribute.
+ */
+function settleHome(row: HTMLElement) {
+	delete row.dataset.dragging
+	row.dataset.settling = ''
+	row.style.transition = `transform ${SETTLE_MS}ms ${EASE_OUT_QUINT_CSS}`
+	row.style.transform = 'translateY(0)'
+
+	let timer = 0
+	const finish = () => {
+		if (cancelSettle !== finish) return
+		cancelSettle = null
+		clearTimeout(timer)
+		row.removeEventListener('transitionend', onTransitionEnd)
+		clearDragStyles(row)
+	}
+	// The row's own transform and nothing else: colour transitions on the row and
+	// on everything inside it bubble through here too, and any one of them would
+	// otherwise cut the return short.
+	function onTransitionEnd(event: TransitionEvent) {
+		if (event.target === row && event.propertyName === 'transform') finish()
+	}
+
+	cancelSettle = finish
+	row.addEventListener('transitionend', onTransitionEnd)
+	timer = window.setTimeout(finish, SETTLE_FALLBACK_MS)
 }
 
 /**
@@ -304,8 +376,20 @@ function onKeydown(event: KeyboardEvent) {
  * the row keeps its transform and its raised z-index, `isDragging` stays true and
  * auto-animate stays switched off, and the auto-scroll loop keeps requesting
  * frames for a gesture nobody is performing.
+ *
+ * `settle` asks for the row's *visual* return to be animated, and is the one
+ * thing here that outlives the call. Everything else — the click swallow, the
+ * listeners, the pending frame, the pointer capture, the state the rest of the
+ * app reads — is undone immediately whatever it is set to, because a gesture that
+ * has ended has ended.
  */
-function end() {
+function end(settle = false) {
+	// Whatever the reason for this call, a settle still running belongs to a
+	// gesture that is over. Finished here rather than left alone so that a drag
+	// starting on the same row does not inherit a timer that will clear its
+	// transform 150ms in.
+	cancelSettle?.()
+
 	// A drag that got as far as moving a row is always followed by a synthesised
 	// `click` on the grip, whether it ended in a drop or was abandoned. Arming the
 	// swallow here rather than only on the drop path is what stops Escape from
@@ -321,8 +405,8 @@ function end() {
 	}
 
 	if (draggedRow) {
-		draggedRow.style.transform = ''
-		delete draggedRow.dataset.dragging
+		if (settle) settleHome(draggedRow)
+		else clearDragStyles(draggedRow)
 		draggedRow = null
 	}
 
@@ -351,6 +435,10 @@ function end() {
 watch(
 	() => space.space.value,
 	() => {
+		// The one abandonment that does not animate the row home. Everything in the
+		// list is about to move — auto-animate comes back on as `isDragging` falls,
+		// and the new document is what it FLIPs to — so a settle here would be a
+		// second transform on a row already being carried by the first.
 		if (draggingNoteId.value !== null) end()
 	},
 )
@@ -376,7 +464,8 @@ function beginDrag(noteId: string, event: PointerEvent) {
 	if (!root || !region) return
 
 	// Any gesture still standing is stale — a second pointer, or a `pointerup`
-	// that never arrived.
+	// that never arrived. Cleared instantly rather than settled: nobody is watching
+	// a row go home at the moment they pick one up.
 	end()
 	dragClickPending = false
 
@@ -403,7 +492,10 @@ function beginDrag(noteId: string, event: PointerEvent) {
 	// an alt-tab, or a click that raises another window, delivers the release
 	// somewhere else entirely. Without this the row stays stuck to the cursor and
 	// auto-animate stays switched off for the rest of the session.
-	window.addEventListener('blur', end, { signal })
+	//
+	// Wrapped rather than passed straight in: `end`'s first parameter would
+	// otherwise be the `Event`, and every blur would ask for a settle by accident.
+	window.addEventListener('blur', () => end(true), { signal })
 	// The list can also move underneath a pointer that is holding still — a wheel,
 	// a trackpad, a scrollbar drag. The drop target is a function of where the
 	// pointer is *in the content*, so it has to be recomputed when the content

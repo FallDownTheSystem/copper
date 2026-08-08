@@ -189,7 +189,7 @@ function onKeydown(event: KeyboardEvent) {
 								type="button"
 								tabindex="-1"
 								:aria-current="active ? 'true' : undefined"
-								class="hover:bg-surface-hover active:bg-surface-active -ml-3 flex min-w-0 items-center gap-1.5 rounded-inset py-1 pr-1.5 pl-3 transition-colors duration-fast"
+								class="hover:bg-surface-hover active:bg-surface-active focus-ring -ml-3 flex min-w-0 items-center gap-1.5 rounded-inset py-1 pr-1.5 pl-3 transition-colors duration-fast"
 								:class="active ? 'text-accent-text' : 'text-text-secondary'"
 								@click="emit('activate')"
 							>
@@ -222,14 +222,21 @@ function onKeydown(event: KeyboardEvent) {
 
 						     `rounded-inset` because the box is `size-5`: at 12px a 20px
 						     square is a circle, and a round hover surface says radio button
-						     rather than disclosure. -->
+						     rather than disclosure.
+
+						     `hit-44` because the painted box is 20px and a pointer target is
+						     not: the expander reaches past the visible square without moving
+						     anything or covering anything. The rule against it — adjacent
+						     controls whose expanded areas would make each other unhittable —
+						     does not reach here, since the only thing beside it is an
+						     `aria-hidden` rule. -->
 						<button
 							v-if="collapseEnabled"
 							type="button"
 							tabindex="-1"
 							:aria-expanded="!collapsed"
 							:aria-label="`${collapsed ? 'Expand' : 'Collapse'} ${section.name}`"
-							class="text-text-disabled hover:bg-surface-hover hover:text-text-secondary focus-ring grid size-5 shrink-0 place-items-center rounded-inset transition-colors duration-fast"
+							class="text-text-disabled hover:bg-surface-hover hover:text-text-secondary focus-ring hit-44 relative grid size-5 shrink-0 place-items-center rounded-inset transition-colors duration-fast"
 							@click="toggle"
 						>
 							<IconLucideChevronRight

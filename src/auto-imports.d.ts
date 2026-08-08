@@ -10,6 +10,7 @@ export {}
 declare global {
   const EffectScope: typeof import('vue').EffectScope
   const MAX_PER_NOTE: typeof import('./composables/useAttachments').MAX_PER_NOTE
+  const UNDO_ACTION: typeof import('./composables/useNoteActions').UNDO_ACTION
   const applied: typeof import('./composables/useSpace').applied
   const asyncComputed: typeof import('@vueuse/core').asyncComputed
   const autoResetRef: typeof import('@vueuse/core').autoResetRef
@@ -391,7 +392,7 @@ declare global {
   export type { UnavailableReason, Availability, RecentEntry, ActivateOutcome } from './composables/useSpaces'
   import('./composables/useSpaces')
   // @ts-ignore
-  export type { StatusAction, StatusToast } from './composables/useStatusMessage'
+  export type { StatusAction, StatusSeverity, StatusToast } from './composables/useStatusMessage'
   import('./composables/useStatusMessage')
   // @ts-ignore
   export type { UpdateStatus, UpdateInfo, UpdateProgress } from './composables/useUpdater'
@@ -408,6 +409,7 @@ declare module 'vue' {
   interface ComponentCustomProperties {
     readonly EffectScope: UnwrapRef<typeof import('vue')['EffectScope']>
     readonly MAX_PER_NOTE: UnwrapRef<typeof import('./composables/useAttachments')['MAX_PER_NOTE']>
+    readonly UNDO_ACTION: UnwrapRef<typeof import('./composables/useNoteActions')['UNDO_ACTION']>
     readonly applied: UnwrapRef<typeof import('./composables/useSpace')['applied']>
     readonly asyncComputed: UnwrapRef<typeof import('@vueuse/core')['asyncComputed']>
     readonly autoResetRef: UnwrapRef<typeof import('@vueuse/core')['autoResetRef']>

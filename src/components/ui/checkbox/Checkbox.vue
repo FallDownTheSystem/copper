@@ -43,9 +43,6 @@ const scalesOnPress = computed(() => !props.disabled && !reducedMotion.value)
 // change at all.
 const pressState = computed(() => (scalesOnPress.value ? { scale: 0.9 } : undefined))
 
-// Only the boxes that actually dip earn a permanent compositor layer.
-const pressStyle = computed(() => (scalesOnPress.value ? { willChange: 'transform' } : undefined))
-
 const pressTransition = { duration: 0.15, ease: EASE_OUT_QUINT }
 
 /**
@@ -68,7 +65,7 @@ const pressTransition = { duration: 0.15, ease: EASE_OUT_QUINT }
  */
 const rootClass = computed(() =>
 	cn(
-		'squircle-round border-text-disabled focus-ring data-[state=checked]:bg-accent-ring data-[state=checked]:border-accent-ring text-accent-contrast size-4 shrink-0 rounded-[7px] supports-[corner-shape:squircle]:rounded-[8px] border transition-colors duration-base disabled:cursor-not-allowed disabled:opacity-50',
+		'squircle-round border-control-border focus-ring data-[state=checked]:bg-accent-ring data-[state=checked]:border-accent-ring text-accent-contrast size-4 shrink-0 rounded-[7px] supports-[corner-shape:squircle]:rounded-[8px] border transition-colors duration-base disabled:cursor-not-allowed disabled:opacity-50',
 		props.class,
 	),
 )
@@ -79,9 +76,14 @@ const rootClass = computed(() =>
 	     on `data-[state=checked]`, so a retracting stroke never swaps colour
 	     mid-draw. Only the box's own fill transitions. -->
 	<CheckboxRoot v-slot="slotProps" as-child v-bind="forwarded">
+		<!-- No `will-change` here on purpose: this control mounts on every row, so
+		     the hint would hold a permanent GPU layer per note — hundreds at the
+		     list's design size, against the ~10-layer budget — to pre-promote a
+		     150ms dip. motion-v's WAAPI animation promotes the layer for the
+		     press itself; if first-frame stutter ever shows, the hint belongs
+		     inside the `whilePress` variant, scoped to the gesture. -->
 		<motion.button
 			data-slot="checkbox"
-			:style="pressStyle"
 			:whilePress="pressState"
 			:transition="pressTransition"
 			:class="rootClass"

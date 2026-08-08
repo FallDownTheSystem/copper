@@ -215,6 +215,72 @@ describe('the always-on-top row', () => {
 	})
 })
 
+/**
+ * A row's failure has to be *announced* and it has to be *reachable from the
+ * control*, and those are two different mechanisms with two different failure
+ * modes. A `v-if`'d `role="alert"` satisfies neither reliably: the region is
+ * injected together with its text, which screen readers generally do not read,
+ * and it is tied to nothing, so a user who tabs back to the switch is told
+ * nothing about why it did not move.
+ */
+describe('a row that fails', () => {
+	/** The row element around a trailing control: the control's wrapper is the
+	 *  `shrink-0` box, and the row is its parent. Scoped rather than looked up by
+	 *  id in the document, because every mount here stays attached and `useId`
+	 *  restarts its counter per app. */
+	function rowOf(control: Element) {
+		return control.closest('div')?.parentElement ?? null
+	}
+
+	async function refuseAlwaysOnTop() {
+		const wrapper = await openSettings()
+		mocks.invoke.mockImplementation(async (command: string) => {
+			if (command === 'set_always_on_top') {
+				throw { kind: 'persist', message: "Copper couldn't save the always-on-top setting" }
+			}
+			throw { kind: 'invalid', message: `no responder: ${command}` }
+		})
+		await wrapper.get('#always-on-top').trigger('click')
+		await flush()
+		return wrapper
+	}
+
+	/** Mounted from the start and empty, so the announcement is a text change
+	 *  inside a region already in the accessibility tree. Asserted on a row this
+	 *  suite never fails — the settings errors are module-scoped and outlive a
+	 *  remount, so a row another case has broken is not a clean "before". */
+	it('keeps its alert region mounted before anything goes wrong', async () => {
+		const wrapper = await openSettings()
+		const control = wrapper.get('#sounds')
+
+		const region = rowOf(control.element)?.querySelector('[role="alert"]')
+		expect(region).not.toBeNull()
+		expect(region?.textContent).toBe('')
+		// Described by nothing while there is nothing to describe.
+		expect(control.attributes('aria-describedby')).toBeUndefined()
+		expect(control.attributes('aria-invalid')).toBeUndefined()
+	})
+
+	it('fills that same region rather than injecting a second one', async () => {
+		const wrapper = await refuseAlwaysOnTop()
+
+		const regions = rowOf(wrapper.get('#always-on-top').element)?.querySelectorAll('[role="alert"]')
+		expect(regions).toHaveLength(1)
+		expect(regions?.[0]?.textContent).toContain("Copper couldn't save the always-on-top setting")
+	})
+
+	it('points the control at the message that explains why it did not move', async () => {
+		const wrapper = await refuseAlwaysOnTop()
+		const control = wrapper.get('#always-on-top')
+		expect(control.attributes('aria-invalid')).toBe('true')
+
+		const described = control.attributes('aria-describedby')
+		expect(described).toBeDefined()
+		const target = rowOf(control.element)?.querySelector(`#${described}`)
+		expect(target?.textContent).toContain("Copper couldn't save the always-on-top setting")
+	})
+})
+
 describe('the notes rows', () => {
 	function group(wrapper: ReturnType<typeof mount>, label: string) {
 		return wrapper.get(`[role="radiogroup"][aria-label="${label}"]`)
@@ -268,6 +334,23 @@ describe('the notes rows', () => {
 		await segment(wrapper, 'What double-clicking a note does', 'Edit').trigger('click')
 		await flush()
 		expect(patchesSent()).toEqual([{ insertionPoint: 'top' }, { doubleClick: 'edit' }])
+	})
+
+	/** The moving pill is one element handed between segments, not a fill each
+	 *  segment paints on itself — so exactly one exists per group, it sits on the
+	 *  checked one, and it says nothing to a screen reader that `aria-checked` has
+	 *  not already said. */
+	it('marks the chosen segment with a single decorative pill', async () => {
+		const wrapper = await openSettings({ insertionPoint: 'top' })
+
+		const pills = group(wrapper, 'Where new notes go').findAll('[aria-hidden="true"]')
+		expect(pills).toHaveLength(1)
+		expect(segment(wrapper, 'Where new notes go', 'Top').find('[aria-hidden="true"]').exists()).toBe(
+			true,
+		)
+		expect(
+			segment(wrapper, 'Where new notes go', 'Bottom').find('[aria-hidden="true"]').exists(),
+		).toBe(false)
 	})
 
 	/** A hand-edited value nothing recognises collapses to the default on read

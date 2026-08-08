@@ -3,7 +3,7 @@ import { useAutoSize } from '@/composables/useAutoSize'
 import { noteRow, takeRow } from '@/composables/useSelection'
 import { isComposing } from '@/lib/chords'
 
-const { spaceName, submitEntry, errorFor, clearActionError, reportActionError } = useSpace()
+const { submitEntry, errorFor, clearActionError, reportActionError } = useSpace()
 
 const composerError = errorFor('composer')
 const { visibleNoteIds } = useSelection()
@@ -22,8 +22,6 @@ const composing = ref(false)
 /** Bumped on every keystroke and captured at submit, so a result that lands
  *  after the user typed more cannot clear newer input. */
 let revision = 0
-
-const placeholder = computed(() => `Add a note or a prompt (${spaceName.value})`)
 
 /** Capped at five lines, tracking the `max-h-[5lh]` on the field itself. */
 const { supportsFieldSizing, scheduleAutoSize } = useAutoSize(textarea, { maxLines: 5 })
@@ -246,7 +244,7 @@ function onKeydown(event: KeyboardEvent) {
 				rows="1"
 				autocomplete="off"
 				:value="value"
-				:placeholder="placeholder"
+				placeholder="Add a note or a prompt…"
 				:aria-busy="submitting"
 				class="panel-field max-h-[5lh] min-h-8 w-full min-w-0 flex-1 resize-none px-2 py-1.5"
 				:class="supportsFieldSizing ? 'field-sizing-content' : ''"

@@ -88,8 +88,15 @@ const viewable = computed(() => preview.value.state === 'ready' && preview.value
  * Double-click and `Enter` were task-011's route to the OS viewer; they are the
  * two gestures a file has everywhere, so they belong to the thing the user is
  * most likely to want — and for a screenshot pasted into a note, that is looking
- * at it, not launching Photos over the top of Copper. The OS route keeps `Space`,
- * which was already bound here and did the same thing as `Enter`.
+ * at it, not launching Photos over the top of Copper.
+ *
+ * **`Space` no longer keeps the OS route.** It was a second gesture with a second
+ * meaning on a control that is a `<button>`, and a button activates identically on
+ * `Enter` and on `Space` everywhere the user has ever met one — a promise that
+ * outranks the convenience of a spare key, because the cost of breaking it is
+ * launching an external application the user did not ask for. The OS route moved
+ * to the context menu, where it can carry a name instead of being something you
+ * have to already know.
  *
  * Anything with no picture keeps the old behaviour on every gesture: the viewer
  * has nothing to show it, and `attachment_open` reveals it in Explorer.
@@ -145,25 +152,34 @@ async function revealInExplorer() {
 
 			     The label names the primary gesture's destination rather than listing both:
 			     a screen reader reading "View or open" on every thumbnail would be reading
-			     the implementation. -->
+			     the implementation.
+
+			     **`aria-disabled`, never the native `disabled`.** A disabled button is
+			     removed from the tab order and from the accessibility tree's reach, so
+			     the one card that has something to explain — the file is missing, and
+			     here is why — becomes the one card a keyboard cannot land on to hear it.
+			     It also stops `contextmenu` from firing, which would take the wrapping
+			     trigger with it and close the only route left to the folder the file
+			     should be in. `activate` and `openInSystem` return early on their own, so
+			     nothing here depends on the attribute to refuse. -->
 			<button
 				ref="button"
 				type="button"
 				:tabindex="tabIndex"
-				:disabled="unavailable"
+				:aria-disabled="unavailable ? 'true' : undefined"
 				:aria-label="
 					unavailable
-						? `${attachment.name} — unavailable`
+						? `${attachment.name} (unavailable)`
 						: `${viewable ? 'View' : 'Open'} ${attachment.name}, ${formatBytes(attachment.bytes)}`
 				"
-				class="squircle border-separator hover:bg-surface-hover focus-ring flex min-h-16 w-full min-w-0 items-center gap-2 rounded-lg border p-1.5 text-left transition-colors duration-fast disabled:cursor-default disabled:hover:bg-transparent"
+				class="squircle border-separator hover:bg-surface-hover focus-ring flex min-h-16 w-full min-w-0 items-center gap-2 rounded-lg border p-1.5 text-left transition-colors duration-fast aria-disabled:cursor-default aria-disabled:hover:bg-transparent"
 				@click.prevent
 				@dblclick.stop.prevent="activate"
 				@keydown.enter.prevent="activate"
-				@keydown.space.prevent="openInSystem"
+				@keydown.space.prevent="activate"
 			>
 				<span
-					class="bg-surface-hover text-text-disabled grid shrink-0 place-items-center overflow-hidden rounded-sm"
+					class="bg-surface-hover text-text-disabled grid shrink-0 place-items-center overflow-hidden rounded-md"
 					:style="boxStyle"
 				>
 					<!-- No `alt` text of its own: the button already carries the filename, and
@@ -173,7 +189,7 @@ async function revealInExplorer() {
 						:src="thumbUrl"
 						alt=""
 						class="size-full object-cover"
-						:class="arrivedBeforeMount ? '' : 'animate-in fade-in'"
+						:class="arrivedBeforeMount ? '' : 'animate-in fade-in duration-fast ease-out-quint'"
 						draggable="false"
 					/>
 					<IconLucideTriangleAlert
@@ -189,7 +205,10 @@ async function revealInExplorer() {
 					<!-- The **original** filename, which is metadata. The stored name is a
 					     content hash and means nothing to anyone. -->
 					<span class="text-text-primary block truncate text-meta">{{ attachment.name }}</span>
-					<span v-if="unavailable" class="text-destructive mt-0.5 block text-meta line-clamp-2">
+					<span
+						v-if="unavailable"
+						class="text-destructive-text mt-0.5 block text-meta line-clamp-2"
+					>
 						{{ preview.state === 'missing' ? preview.reason : '' }}
 					</span>
 					<span v-else class="text-text-secondary mt-0.5 block text-meta">
@@ -206,9 +225,20 @@ async function revealInExplorer() {
 			:collision-padding="8"
 			class="text-text-secondary w-56 text-meta"
 		>
+			<!-- Where `Space` used to go. A gesture nobody can see is not a feature, and
+			     the OS route is the one thing this card does that leaves Copper entirely
+			     — so it belongs somewhere it can say so before it happens.
+			     Disabled rather than hidden when the file is missing: the entry is what
+			     tells the user this card *has* an OS route, and a menu that changes shape
+			     is a menu they have to re-read. -->
+			<ContextMenuItem class="min-h-6" :disabled="unavailable" @select="openInSystem">
+				Open in default app
+			</ContextMenuItem>
+
 			<!-- "Location" rather than "folder": what the user is being shown is where
 			     Copper put its copy, and the sidecar directory is not somewhere they
-			     chose. -->
+			     chose. Never disabled, unlike the entry above: a missing file is exactly
+			     when someone wants to be shown where it should have been. -->
 			<ContextMenuItem class="min-h-6" @select="revealInExplorer">
 				Open attachment location
 			</ContextMenuItem>

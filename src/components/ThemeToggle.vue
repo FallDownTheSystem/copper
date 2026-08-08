@@ -17,12 +17,28 @@
  * Tab stop and the same arrow-key selection, so nothing visual or keyboard-facing
  * changes.
  */
+import { motion } from 'motion-v'
 import { RadioGroupItem, RadioGroupRoot } from 'reka-ui'
 
 import type { ThemePreference } from '@/composables/useSettings'
+import { EASE_OUT_QUINT } from '@/lib/motion'
 
-defineProps<{ modelValue: ThemePreference }>()
+defineProps<{
+	modelValue: ThemePreference
+	/** The row's error region, when the row has one. Present only while the error
+	 *  is, so the group is not described by an empty node the rest of the time. */
+	errorId?: string
+}>()
 defineEmits<{ 'update:modelValue': [value: ThemePreference] }>()
+
+const reducedMotion = useReducedMotion()
+
+/** motion-v drives the Web Animations API, which `main.css`'s
+ *  `prefers-reduced-motion` block cannot reach — the preference has to be read
+ *  here, exactly as `CheckboxIcon` reads it. */
+const pillTransition = computed(() =>
+	reducedMotion.value ? { duration: 0 } : { duration: 0.15, ease: EASE_OUT_QUINT },
+)
 
 const OPTIONS = [
 	{ value: 'system', label: 'System theme' },
@@ -35,6 +51,8 @@ const OPTIONS = [
 	<RadioGroupRoot
 		:model-value="modelValue"
 		aria-label="Theme"
+		:aria-invalid="errorId ? 'true' : undefined"
+		:aria-describedby="errorId"
 		class="border-separator bg-surface-hover inline-flex items-center gap-0.5 rounded-md border p-0.5"
 		@update:model-value="(value) => $emit('update:modelValue', value as ThemePreference)"
 	>
@@ -48,10 +66,26 @@ const OPTIONS = [
 		<RadioGroupItem
 			v-for="option in OPTIONS"
 			:key="option.value"
+			v-slot="{ checked }"
 			:value="option.value"
 			:aria-label="option.label"
-			class="text-text-secondary hover:bg-surface-hover data-[state=checked]:bg-surface data-[state=checked]:text-text-primary focus-ring grid size-8 place-items-center rounded-sm transition-colors duration-fast"
+			class="text-text-secondary hover:bg-surface-hover data-[state=checked]:text-text-primary focus-ring relative grid size-8 place-items-center rounded-sm transition-colors duration-fast"
 		>
+			<!-- One pill that moves rather than a fill each segment paints on itself:
+			     motion-v matches the leaving and arriving spans by `layout-id` and
+			     animates the box between them, so the selection slides instead of
+			     teleporting. Decorative only — `aria-checked` on the button is what a
+			     screen reader hears, and the pill must not add a second cue. The icons
+			     below carry `relative` so they paint above it: both are `z-index:
+			     auto`, and document order is what decides between them. -->
+			<motion.span
+				v-if="checked"
+				layout-id="theme-toggle-pill"
+				:transition="pillTransition"
+				aria-hidden="true"
+				class="bg-surface absolute inset-0 rounded-sm"
+			/>
+
 			<!-- The focus ring above names a colour, which is safe in High Contrast for
 			     a reason worth stating: under `forced-colors: active` the UA
 			     force-adjusts `outline-color` to the system palette whatever the author
@@ -61,17 +95,17 @@ const OPTIONS = [
 			     segment's own state, and does not match the panel's other rings. -->
 			<IconLucideMonitor
 				v-if="option.value === 'system'"
-				class="size-4"
+				class="relative size-4"
 				aria-hidden="true"
 				focusable="false"
 			/>
 			<IconLucideSun
 				v-else-if="option.value === 'light'"
-				class="size-4"
+				class="relative size-4"
 				aria-hidden="true"
 				focusable="false"
 			/>
-			<IconLucideMoon v-else class="size-4" aria-hidden="true" focusable="false" />
+			<IconLucideMoon v-else class="relative size-4" aria-hidden="true" focusable="false" />
 		</RadioGroupItem>
 	</RadioGroupRoot>
 </template>

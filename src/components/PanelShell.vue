@@ -458,7 +458,7 @@ function onContextMenu(event: MouseEvent) {
 					     hiding where a capture will land is worst exactly when the list
 					     is empty. -->
 					<div v-if="empty" class="px-3 pt-4">
-						<p class="text-text-primary text-body font-semibold">No notes yet</p>
+						<p class="text-text-primary text-body font-semibold">No notes yet.</p>
 						<p class="text-text-secondary mt-1 text-meta">
 							Add one below. It lands in {{ activeSectionObject?.name ?? 'this space' }}.
 						</p>

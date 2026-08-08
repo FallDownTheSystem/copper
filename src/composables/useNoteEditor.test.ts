@@ -53,7 +53,7 @@ describe('an external change to the edited note', () => {
 
 		// Regression: `isEditing` used to require `conflict === null`, which
 		// unmounted NoteEditor the instant a conflict was raised — taking the draft
-		// off screen and leaving `Keep my version` / `Use the external version`
+		// off screen and leaving `Keep your version` / `Use the version on disk`
 		// unreachable, so the conflict state had no exit at all.
 		expect(editor.isEditing('n1')).toBe(true)
 		expect(editor.editingNoteId.value).toBe('n1')

@@ -649,17 +649,54 @@ describe('selecting', () => {
 
 describe('presentation', () => {
 	/**
-	 * AC-7 needs no code of its own, and this is the assertion that says why: the
-	 * open animation is a `tw-animate-css` utility, so `main.css`'s `.reduce-motion`
-	 * block — which `useTheme` mirrors the composable's OR of both preferences onto
-	 * — zeroes its duration with no gate at this call site. A JS-driven animation
-	 * would have had to consult `useReducedMotion` by hand.
+	 * AC-7 needs no code of its own, and this is the assertion that says why — but
+	 * the answer changed. The palette had an `animate-in` fade, which was reachable
+	 * by `main.css`'s `.reduce-motion` block and therefore correct as far as it
+	 * went; it should not have been there at all.
+	 *
+	 * **A command palette has no entrance.** It is reached by a chord and by nothing
+	 * else, which means it is only ever opened by someone who already knew they
+	 * wanted it and is already typing. Every millisecond of fade is time the field
+	 * is on screen and not yet worth looking at, and it lands squarely on the one
+	 * path in the app where the user is fastest. Nothing here to reduce, for anyone.
 	 */
-	it('animates in CSS, which is what the reduce-motion class can reach', async () => {
+	it('opens with no animation at all, because a chord is not an arrival', async () => {
 		const wrapper = await mountPanel()
 		await openWithChord(wrapper)
 
-		expect(overlay()?.className).toContain('animate-in')
+		expect(overlay()?.className).not.toContain('animate-in')
+		expect(overlay()?.querySelector('[data-slot="command"]')?.className ?? '').not.toContain(
+			'animate-in',
+		)
+	})
+
+	/**
+	 * The hairline between two groups is drawn by `CommandGroup`'s own
+	 * `[data-slot='command-group'] + [data-slot='command-group']` rule, so the
+	 * groups being *adjacent siblings* is not an implementation detail — it is the
+	 * whole mechanism. A wrapper around one of them, or any node slipped between
+	 * two, would take every divider away and nothing would look broken enough to
+	 * notice. This is the half a test can hold; the drawing itself is CSS.
+	 *
+	 * The second half is why it is CSS at all: which group renders first changes
+	 * with every keystroke, and a lone group must never carry a rule above it.
+	 */
+	it('leaves the groups adjacent, and never gives a lone group a rule above it', async () => {
+		const wrapper = await mountPanel()
+		await openWithChord(wrapper)
+
+		const list = overlay()?.querySelector('[data-slot="command-list"]')
+		const groups = [...(list?.querySelectorAll('[data-slot="command-group"]') ?? [])]
+		expect(groups).toHaveLength(3)
+		expect(groups[1]?.previousElementSibling).toBe(groups[0])
+		expect(groups[2]?.previousElementSibling).toBe(groups[1])
+
+		// Whichever group survives the filter is the first one, and the rule is a
+		// question about what precedes it rather than about which group it is.
+		await type('theme')
+		const alone = [...(list?.querySelectorAll('[data-slot="command-group"]') ?? [])]
+		expect(alone).toHaveLength(1)
+		expect(alone[0]?.previousElementSibling).toBeNull()
 	})
 
 	/**

@@ -5,8 +5,8 @@
  * **Fit to the panel, with no zoom or pan.** The specification offers that as an
  * explicit first pass and it is the one taken: at 440 × 760 a zoom control is a
  * lot of surface for a viewer whose job is "let me see the screenshot I pasted",
- * and task-011's OS-viewer path — still one keystroke away on `Space` — is where
- * a genuine close look belongs.
+ * and task-011's OS-viewer path — an entry on the card's own context menu — is
+ * where a genuine close look belongs.
  *
  * **Layered between the list and the menus.** `z-25` sits above the status band
  * at `z-20` and below the portal host at `z-30`, so a menu opened over it would
@@ -46,69 +46,83 @@ watch(
 </script>
 
 <template>
-	<div
-		v-if="isOpen"
-		role="dialog"
-		aria-modal="true"
-		:aria-label="attachment ? `${attachment.name}, full size` : 'Image'"
-		class="bg-surface animate-in fade-in duration-fast absolute inset-0 z-25 flex flex-col backdrop-blur-md"
-		@click.self="close"
-		@keydown.tab.prevent
+	<!-- Opacity in both directions and nothing else. The sheet does not arrive from
+	     a direction — it covers the panel where it stands — so it must not leave in
+	     one either, and it must not leave in a single frame: a full-panel surface
+	     vanishing between frames reads as a glitch rather than as a dismissal.
+	     `pointer-events-none` on the way out because the overlay still spans the
+	     panel while it fades, and a press landing on a sheet that is already gone as
+	     far as the user is concerned would hit nothing at all. -->
+	<Transition
+		enter-active-class="transition-opacity duration-fast ease-out-quint"
+		enter-from-class="opacity-0"
+		leave-active-class="transition-opacity duration-fast ease-out-quint pointer-events-none"
+		leave-to-class="opacity-0"
 	>
-		<!-- The one focusable control in here, which is what makes the `Tab` above a
-		     complete focus trap rather than a cycle that has to be written out. -->
-		<div class="border-separator flex min-h-10 shrink-0 items-center gap-2 border-b px-2">
-			<span class="text-text-primary min-w-0 flex-1 truncate text-meta">
-				{{ attachment?.name }}
-			</span>
-			<button
-				ref="closeButton"
-				type="button"
-				aria-label="Close image"
-				class="icon-button shrink-0"
-				@click="close"
-			>
-				<IconLucideX class="size-4" aria-hidden="true" focusable="false" />
-			</button>
-		</div>
+		<div
+			v-if="isOpen"
+			role="dialog"
+			aria-modal="true"
+			:aria-label="attachment ? `${attachment.name}, full size` : 'Image'"
+			class="bg-surface absolute inset-0 z-25 flex flex-col backdrop-blur-md"
+			@click.self="close"
+			@keydown.tab.prevent
+		>
+			<!-- The one focusable control in here, which is what makes the `Tab` above a
+			     complete focus trap rather than a cycle that has to be written out. -->
+			<div class="border-separator flex min-h-10 shrink-0 items-center gap-2 border-b px-2">
+				<span class="text-text-primary min-w-0 flex-1 truncate text-meta">
+					{{ attachment?.name }}
+				</span>
+				<button
+					ref="closeButton"
+					type="button"
+					aria-label="Close image"
+					class="icon-button shrink-0"
+					@click="close"
+				>
+					<IconLucideX class="size-4" aria-hidden="true" focusable="false" />
+				</button>
+			</div>
 
-		<!-- `min-h-0` so the image is bounded by the panel rather than growing the
-		     column past it, which is what would make the document scroll. -->
-		<div class="grid min-h-0 flex-1 place-items-center p-2" @click.self="close">
-			<!-- No `alt` of its own beyond the filename: the dialog is already labelled
-			     with it, and `object-contain` is what keeps a wide screenshot inside the
-			     panel's width instead of cropping it. -->
-			<!-- `@error` because Rust gating the bytes as an image is not the same
-			     claim as the WebView being able to decode them: a truncated or
-			     malformed file passes the magic-number check and then renders as a
-			     broken glyph with nothing saying why. It reports through the same
-			     refusal state a failed read does, so there is one place that explains
-			     an image that will not appear. -->
-			<img
-				v-if="image.state === 'ready'"
-				:src="image.url"
-				:alt="attachment?.name ?? ''"
-				class="max-h-full max-w-full object-contain"
-				draggable="false"
-				@error="reportBrokenImage"
-			/>
-
-			<p
-				v-else-if="image.state === 'failed'"
-				class="text-text-secondary px-4 text-center text-meta"
-			>
-				<IconLucideTriangleAlert
-					class="text-destructive mx-auto mb-2 size-5"
-					aria-hidden="true"
-					focusable="false"
+			<!-- `min-h-0` so the image is bounded by the panel rather than growing the
+			     column past it, which is what would make the document scroll. -->
+			<div class="grid min-h-0 flex-1 place-items-center p-2" @click.self="close">
+				<!-- No `alt` of its own beyond the filename: the dialog is already labelled
+				     with it, and `object-contain` is what keeps a wide screenshot inside the
+				     panel's width instead of cropping it. -->
+				<!-- `@error` because Rust gating the bytes as an image is not the same
+				     claim as the WebView being able to decode them: a truncated or
+				     malformed file passes the magic-number check and then renders as a
+				     broken glyph with nothing saying why. It reports through the same
+				     refusal state a failed read does, so there is one place that explains
+				     an image that will not appear. -->
+				<img
+					v-if="image.state === 'ready'"
+					:src="image.url"
+					:alt="attachment?.name ?? ''"
+					class="max-h-full max-w-full object-contain"
+					draggable="false"
+					@error="reportBrokenImage"
 				/>
-				{{ image.reason }}
-			</p>
 
-			<!-- Deliberately wordless. A ten-megabyte read off a local disk is over
-			     before a spinner would finish its first turn, and the one case that is
-			     slow — a disconnected network drive — ends in the message above. -->
-			<span v-else class="sr-only" role="status">Loading image</span>
+				<p
+					v-else-if="image.state === 'failed'"
+					class="text-text-secondary px-4 text-center text-meta"
+				>
+					<IconLucideTriangleAlert
+						class="text-destructive mx-auto mb-2 size-5"
+						aria-hidden="true"
+						focusable="false"
+					/>
+					{{ image.reason }}
+				</p>
+
+				<!-- Deliberately wordless. A ten-megabyte read off a local disk is over
+				     before a spinner would finish its first turn, and the one case that is
+				     slow — a disconnected network drive — ends in the message above. -->
+				<span v-else class="sr-only" role="status">Loading image</span>
+			</div>
 		</div>
-	</div>
+	</Transition>
 </template>

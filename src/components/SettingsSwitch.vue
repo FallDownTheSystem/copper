@@ -11,7 +11,13 @@
  */
 import { SwitchRoot, SwitchThumb } from 'reka-ui'
 
-defineProps<{ id: string; modelValue: boolean }>()
+defineProps<{
+	id: string
+	modelValue: boolean
+	/** The row's error region, when the row has one. Present only while the error
+	 *  is, so the switch is not described by an empty node the rest of the time. */
+	errorId?: string
+}>()
 defineEmits<{ 'update:modelValue': [value: boolean] }>()
 </script>
 
@@ -19,6 +25,8 @@ defineEmits<{ 'update:modelValue': [value: boolean] }>()
 	<SwitchRoot
 		:id="id"
 		:model-value="modelValue"
+		:aria-invalid="errorId ? 'true' : undefined"
+		:aria-describedby="errorId"
 		class="bg-surface-hover data-[state=checked]:bg-accent-ring focus-ring inset-ring inset-ring-separator hit-44 relative inline-flex h-6 w-10 shrink-0 items-center rounded-full p-0.5 transition-colors duration-fast"
 		@update:model-value="(value) => $emit('update:modelValue', value)"
 	>

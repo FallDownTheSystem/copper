@@ -42,14 +42,17 @@ const erroredMessage = computed(() =>
 	<div>
 		<p
 			v-if="storeStatus.startupNotice"
-			class="text-text-secondary border-separator bg-surface-hover mx-3 mt-2 rounded-md border px-2 py-1.5 text-meta whitespace-pre-line"
+			class="text-text-secondary border-separator bg-surface-hover mx-3 mt-2 rounded-md border px-2 py-1.5 text-meta break-words whitespace-pre-line"
 		>
 			{{ storeStatus.startupNotice }}
 		</p>
 
+		<!-- `break-words`: these carry messages from Rust, and a Windows path is a
+		     long run with no break opportunity in it — the panel must never scroll
+		     horizontally. -->
 		<p
 			v-if="erroredMessage"
-			class="text-text-primary border-destructive/40 bg-destructive/10 mx-3 mt-2 rounded-md border px-2 py-1.5 text-meta"
+			class="text-text-primary border-destructive/40 bg-destructive/10 mx-3 mt-2 rounded-md border px-2 py-1.5 text-meta break-words"
 		>
 			<span class="font-semibold">This space is out of sync.</span>
 			{{ erroredMessage }} Changes cannot be saved until it can be read again.
@@ -87,7 +90,7 @@ const erroredMessage = computed(() =>
 		<div v-else-if="loadState === 'error'" class="px-3 pt-3">
 			<p class="text-text-primary text-body font-semibold">Couldn't open this space.</p>
 			<p class="text-text-secondary mt-1 text-meta">Check the file still exists, then try again.</p>
-			<p v-if="loadError" class="text-text-secondary mt-1 text-meta">{{ loadError }}</p>
+			<p v-if="loadError" class="text-text-secondary mt-1 text-meta break-words">{{ loadError }}</p>
 			<button type="button" class="panel-button mt-2" @click="retry">Try again</button>
 		</div>
 

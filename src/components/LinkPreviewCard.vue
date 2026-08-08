@@ -72,7 +72,7 @@ function open() {
 	>
 		<span
 			v-if="preview.image"
-			class="bg-surface-hover text-text-disabled grid shrink-0 place-items-center overflow-hidden rounded-sm"
+			class="bg-surface-hover text-text-disabled grid shrink-0 place-items-center overflow-hidden rounded-md"
 			:style="{ width: `${THUMB_WIDTH}px`, height: `${THUMB_HEIGHT}px` }"
 		>
 			<!-- No `alt` of its own: the button already names the destination, and an
@@ -92,7 +92,7 @@ function open() {
 		     would widen the note and the panel would scroll horizontally, which it
 		     must never do. -->
 		<span class="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
-			<span v-if="preview.siteName" class="text-text-disabled block truncate text-meta">
+			<span v-if="preview.siteName" class="text-text-secondary block truncate text-meta">
 				{{ preview.siteName }}
 			</span>
 			<span v-if="preview.title" class="text-text-primary block truncate text-meta font-medium">

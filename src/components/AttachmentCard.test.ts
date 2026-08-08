@@ -6,14 +6,16 @@ import { useAttachments, type Attachment } from '@/composables/useAttachments'
 import { useOverlayHost } from '@/composables/useOverlayHost'
 
 /**
- * The card's own context menu, and the one entry on it.
+ * The card's own context menu, and the two entries on it.
  *
- * Two things here are worth pinning and the rest is not. The entry has to reach
- * `attachment_reveal` rather than `attachment_open`, because the two differ
- * exactly in that the second one may *launch* what it is given. And it has to
- * carry the content-addressed `file` — the argument Rust rebuilds the path
+ * Three things here are worth pinning and the rest is not. The reveal entry has
+ * to reach `attachment_reveal` rather than `attachment_open`, because the two
+ * differ exactly in that the second one may *launch* what it is given. Each has
+ * to carry the content-addressed `file` — the argument Rust rebuilds the path
  * from — where the attachment's `id` would be the plausible mistake: both fields
- * are strings, so nothing but a test can tell them apart.
+ * are strings, so nothing but a test can tell them apart. And the OS route has to
+ * be *here*: it used to be a bare `Space` on the card, which is the key a button
+ * must use to do what `Enter` does, so the menu is now the only place it exists.
  *
  * Statically imported, like the component: the composables behind it hold
  * module-scoped state by design, and a dynamic import would hand this file a
@@ -87,23 +89,84 @@ async function openCardMenu() {
 	return content!
 }
 
+function itemNamed(content: HTMLElement, label: string) {
+	const item = [...content.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((entry) =>
+		entry.textContent?.includes(label),
+	)
+	expect(item, `no menu entry named ${label}`).not.toBeUndefined()
+	return item!
+}
+
 describe('the attachment context menu', () => {
-	it('offers the one entry, named for the location rather than the file', async () => {
+	it('offers the two routes out of the panel, each named for where it goes', async () => {
 		const content = await openCardMenu()
 
 		const items = [...content.querySelectorAll<HTMLElement>('[role="menuitem"]')]
-		expect(items).toHaveLength(1)
-		expect(items[0]?.textContent).toContain('Open attachment location')
+		expect(items.map((item) => item.textContent?.trim())).toEqual([
+			'Open in default app',
+			'Open attachment location',
+		])
 	})
 
 	it('reveals through attachment_reveal, carrying the stored name and not the id', async () => {
 		const content = await openCardMenu()
 
-		content.querySelector<HTMLElement>('[role="menuitem"]')?.click()
+		itemNamed(content, 'Open attachment location').click()
 		await settle()
 
 		expect(mocks.invoke).toHaveBeenCalledWith('attachment_reveal', { file: PDF.file })
 		// The other half of the pair stays out of it. It is the arm that launches.
 		expect(mocks.invoke).not.toHaveBeenCalledWith('attachment_open', expect.anything())
+	})
+
+	/** The route `Space` used to be. It is the only one left, so if this entry ever
+	 *  stops reaching `attachment_open` the card cannot open its file at all. */
+	it('opens in the OS handler through attachment_open, on the entry that says so', async () => {
+		const content = await openCardMenu()
+
+		itemNamed(content, 'Open in default app').click()
+		await settle()
+
+		expect(mocks.invoke).toHaveBeenCalledWith('attachment_open', { file: PDF.file })
+	})
+})
+
+/**
+ * A button activates on `Enter` and on `Space`, identically, everywhere. This
+ * card broke that: `Space` launched the OS handler while `Enter` opened the
+ * in-panel viewer, so the same control did two different things depending on
+ * which of the two activation keys the user reached for.
+ *
+ * A `.pdf` is the shape that makes the assertion legible — nothing to view, so
+ * both keys end at `attachment_open` and the test is about *sameness* rather than
+ * about which destination won.
+ */
+describe('keyboard activation', () => {
+	async function press(key: string) {
+		wrapper = mount(AttachmentCard, {
+			attachTo: document.body,
+			props: { attachment: PDF, tabIndex: 0 },
+		})
+		await settle()
+		mocks.invoke.mockClear()
+
+		wrapper
+			.get('button')
+			.element.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+		await settle()
+	}
+
+	it('treats Space exactly as Enter', async () => {
+		await press('Enter')
+		const onEnter = mocks.invoke.mock.calls.filter(([command]) => command !== 'attachment_thumb')
+
+		wrapper?.unmount()
+		wrapper = null
+
+		await press(' ')
+		const onSpace = mocks.invoke.mock.calls.filter(([command]) => command !== 'attachment_thumb')
+
+		expect(onEnter).toEqual([['attachment_open', { file: PDF.file }]])
+		expect(onSpace).toEqual(onEnter)
 	})
 })

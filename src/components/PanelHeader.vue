@@ -51,6 +51,15 @@ function focusSearch() {
 	input.value?.select()
 }
 
+/** Focus stays in the field rather than moving to the list, for the reason the
+ *  empty state's own Clear search gives: what follows a cleared query is almost
+ *  always another one. Also the only way the button's own focus survives it
+ *  unmounting itself. */
+function clearAndFocus() {
+	clearQuery()
+	void nextTick(() => input.value?.focus())
+}
+
 /** One rung of the Escape ladder, handled where the focus is. The press is
  *  consumed only when there is a query to clear, so Escape in an empty field
  *  still falls through to the levels below it. */
@@ -105,9 +114,29 @@ defineExpose({ focusSearch, query })
 					name="search"
 					autocomplete="off"
 					placeholder="Search notes…"
-					class="panel-field h-8 w-full min-w-0 pr-2 pl-8"
+					class="panel-field h-8 w-full min-w-0 pr-8 pl-8"
 					@keydown="onKeydown"
 				/>
+
+				<!-- Chromium renders no clear affordance of its own for `type="search"`,
+				     and Escape is a rung of a ladder nobody is told about — so without
+				     this the only way out of a query is selecting it and deleting it.
+
+				     Not the header's `icon-button`, which is a fixed 32px and would fill
+				     the 32px field edge to edge. 24px inset by 4px reads as part of the
+				     field and still clears WCAG 2.5.8's 24px floor; nothing is close
+				     enough to overlap it, and the field itself is not a hit target this
+				     can steal from. -->
+				<button
+					v-if="hasQuery"
+					type="button"
+					aria-label="Clear search"
+					title="Clear search"
+					class="squircle text-text-secondary hover:bg-surface-hover active:bg-surface-active focus-ring absolute top-1/2 right-1 grid size-6 -translate-y-1/2 place-items-center rounded-md transition-colors duration-fast"
+					@click="clearAndFocus"
+				>
+					<IconLucideX class="size-3.5" aria-hidden="true" focusable="false" />
+				</button>
 			</div>
 
 			<!-- Its own control rather than a menu entry: a menu you have to open to
@@ -148,7 +177,12 @@ defineExpose({ focusSearch, query })
 		     see. -->
 		<div class="flex min-w-0 items-center gap-2">
 			<ActiveSectionChip @closed="emit('switcherClosed', $event)" />
-			<div class="ml-auto flex shrink-0 items-center gap-1">
+			<!-- `gap-3`, not `gap-1`: both of these carry their own border, and two
+			     bordered controls a pixel apart read as one segmented control with a
+			     seam. Twelve pixels is what separates them into two. The chip beside
+			     them truncates, so the width comes out of a long section name rather
+			     than off the edge of the panel. -->
+			<div class="ml-auto flex shrink-0 items-center gap-3">
 				<DoneFilter />
 				<SortControl />
 			</div>

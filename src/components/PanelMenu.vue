@@ -199,14 +199,14 @@ function onSectionInput(event: Event) {
 								>
 									{{ entry.name }}
 								</span>
-								<span class="text-text-disabled block truncate text-meta">
+								<span class="text-text-secondary block truncate text-meta">
 									{{ entry.displayPath }}
 								</span>
 								<!-- The non-colour half of the availability cue; the active one's twin
 								     is the marker's own. Dimming alone would carry the distinction. -->
 								<span
 									v-if="entry.availability.state === 'pending'"
-									class="text-text-disabled block text-meta"
+									class="text-text-secondary block text-meta"
 								>
 									Checking…
 								</span>
@@ -323,11 +323,17 @@ function onSectionInput(event: Event) {
 					@input="onSectionInput"
 					@keydown.stop="onSectionKeydown"
 				/>
+				<!-- Two copies, and only one of them is in the accessibility tree. The
+				     region has to be registered before its text changes or the
+				     announcement is dropped, so the spoken copy mounts with the field
+				     and stays empty until a submission fails; the visible paragraph is
+				     hidden from assistive tech to stop the message being read twice. The
+				     id the field describes itself by is on the mounted copy, so the
+				     reference resolves whether or not anything has gone wrong yet. -->
 				<p
 					v-if="sectionError"
-					id="new-section-error"
+					aria-hidden="true"
 					class="text-text-primary mt-1 flex items-start gap-1.5 text-meta"
-					role="alert"
 				>
 					<IconLucideAlertCircle
 						class="mt-0.5 size-3.5 shrink-0"
@@ -336,6 +342,7 @@ function onSectionInput(event: Event) {
 					/>
 					<span>{{ sectionError }}</span>
 				</p>
+				<span id="new-section-error" class="sr-only" role="alert">{{ sectionError ?? '' }}</span>
 				<div class="mt-1.5 flex justify-end gap-1">
 					<!-- `panel-button` is the project's one secondary-control appearance,
 					     focus ring included. Only the tighter padding is local — and

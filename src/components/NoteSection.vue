@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import autoAnimate, { type AnimationController } from '@formkit/auto-animate'
 
-import { EASE_OUT_QUINT_CSS } from '@/lib/motion'
+import { listMotion } from '@/lib/listMotion'
 import { noteRow, sectionRow } from '@/composables/useSelection'
 import type { Section } from '@/composables/useSpace'
 
@@ -78,12 +78,15 @@ watch([listAnimated, isDragging, reduced], syncAnimation)
 onMounted(() => {
 	const element = rowgroup.value
 	if (!element) return
-	// The library default of 250ms ease-in-out is too slow for the app's hottest
-	// path. auto-animate consults `prefers-reduced-motion` itself but knows
-	// nothing of Copper's own "Animate controls" setting, and it drives the Web
-	// Animations API — so main.css's root gate cannot reach it either. `reduced`
-	// above is the half neither of them covers.
-	controller = autoAnimate(element, { duration: 150, easing: EASE_OUT_QUINT_CSS })
+	// A plugin rather than an options object, because the options only reach the
+	// FLIP: `listMotion` records what the library hard-codes for the other two
+	// actions and why an arrival has to be authored to arrive at all.
+	//
+	// auto-animate consults `prefers-reduced-motion` itself but knows nothing of
+	// Copper's own "Animate controls" setting, and it drives the Web Animations
+	// API — so main.css's root gate cannot reach it either. `reduced` above is the
+	// half neither of them covers.
+	controller = autoAnimate(element, listMotion)
 	syncAnimation()
 })
 </script>

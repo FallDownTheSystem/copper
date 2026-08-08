@@ -150,13 +150,15 @@ function serialize<T>(run: () => Promise<T>): Promise<T> {
 async function writeCopy(text: string, count: number) {
 	if (count === 0) return
 	const written = await clipboard.writeText(text)
+	if (!written) {
+		status.setError("Couldn't write to the clipboard.")
+		return
+	}
 	status.setMessage(
-		written
-			? countMessage(count, {
-					one: 'Copied 1 note',
-					many: (n) => `Copied ${n} notes`,
-				})
-			: 'Couldn’t write to the clipboard.',
+		countMessage(count, {
+			one: 'Copied 1 note',
+			many: (n) => `Copied ${n} notes`,
+		}),
 	)
 }
 
@@ -302,8 +304,12 @@ function capturePaste(text: string) {
  *
  * One object rather than one per call: it closes over nothing, and the pill is
  * keyed on the message's generation rather than on this identity.
+ *
+ * Exported because destructive actions live outside this file too — deleting a
+ * section is one store step like any other, and its toast has to offer the same
+ * press rather than spelling the chord out in prose.
  */
-const UNDO_ACTION: StatusAction = { label: 'Undo', run: () => void undo() }
+export const UNDO_ACTION: StatusAction = { label: 'Undo', run: () => void undo() }
 
 /**
  * One `set_notes_done` call whatever the count, so marking five notes is one
@@ -880,17 +886,17 @@ async function openInEditor() {
 			status.setMessage(`Opened. The earlier unsaved version is still at ${outcome.path}`)
 			return
 		case 'no-editor':
-			status.setMessage(
-				'Couldn’t open an editor. Set the EDITOR environment variable to your editor’s path.',
+			status.setError(
+				"Couldn't open an editor. Set the EDITOR environment variable to your editor's path.",
 			)
 			return
 		case 'at-capacity':
-			status.setMessage(
+			status.setError(
 				`Already editing ${outcome.limit} notes externally. Finish one before opening another.`,
 			)
 			return
 		default:
-			status.setMessage(outcome.message)
+			status.setError(outcome.message)
 	}
 }
 
@@ -921,7 +927,7 @@ const canOpenAttachment = computed(() => focusedAttachments().length > 0)
  */
 const attachmentActionLabel = computed(() => {
 	const first = focusedAttachments()[0]
-	return first?.mime.startsWith('image/') ? 'Open Attachment' : 'Reveal in Explorer'
+	return first?.mime.startsWith('image/') ? 'Open attachment' : 'Reveal in Explorer'
 })
 
 /** Opens the first attachment. A note with several is the uncommon case, and
@@ -931,7 +937,7 @@ async function openAttachment() {
 	const first = focusedAttachments()[0]
 	if (!first) return
 	const failure = await attachments.openAttachment(first.file)
-	if (failure) status.setMessage(failure)
+	if (failure) status.setError(failure)
 }
 
 async function stopHandoff(noteId: string) {
