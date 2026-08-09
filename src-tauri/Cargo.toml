@@ -1,12 +1,14 @@
 [package]
 name = "copper"
-version = "0.1.3"
+version.workspace = true
 description = "Copper — a Windows note-capture panel"
 authors = ["FallDownTheSystem"]
 # `version` is the single source of truth for the whole product: tauri.conf.json
 # omits its own `version` key and inherits this one, so the installer filename,
 # the Add/Remove Programs entry and `app.package_info().version` all move
-# together when this line is bumped.
+# together when it is bumped. It is inherited from `[workspace.package]` in the
+# root manifest so that `copper-core` carries the same number rather than a
+# second one free to drift.
 #
 # `license` stays unset rather than being given a value: the repository carries
 # no LICENSE file, and declaring a licence in metadata that nothing in the tree
@@ -18,8 +20,9 @@ publish = false
 edition = "2021"
 # The project's real floor, and it does not come from Tauri: Tauri 2.11.5's own
 # MSRV is 1.77.2, but task-003 brings in notify-debouncer-full 0.7.0, which
-# declares 1.85.0. Declared here so Phase 2 does not discover it.
-rust-version = "1.85"
+# declares 1.85.0. Hoisted to `[workspace.package]`, because `copper-core` needs
+# the same floor for the same dependency and `editor.rs` needs it here.
+rust-version.workspace = true
 
 [lib]
 name = "copper_lib"
@@ -33,6 +36,9 @@ crate-type = ["rlib"]
 tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
+# The whole Tauri-free half of the app: the store, spaces, `entry`, and the
+# attachment path layer. Everything left in this crate is the shell around it.
+copper-core = { path = "../copper-core" }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 # Pinned exactly, not a caret range. The `windows = "=0.61.3"` alignment below is
@@ -127,14 +133,11 @@ tauri-plugin-updater = { version = "=2.10.1", default-features = false, features
 # it is what moved this crate's rust-version to 1.85.
 notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
-# NamedTempFile::new_in + persist/persist_noclobber. The temp file must live in
-# the destination's own directory: persist is a rename and cannot cross volumes.
-tempfile = "3.27"
-# No serde feature on purpose — timestamps are opaque `String` in the model
-# (spec 1.2), so a hand-edited one cannot make a document unloadable.
-chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+# `chrono` and `thiserror` used to sit here and are now `copper-core`'s alone:
+# the only `chrono::` call site in the tree is `format::now_rfc3339` and the only
+# `thiserror` one is `StoreError`, and both moved with the store. `uuid` stays,
+# for an unrelated reason: `editor.rs` mints ids for handoff directories.
 uuid = { version = "1", features = ["v4"] }
-thiserror = "2"
 
 # --- spaces (task-007) ---
 # Driven from Rust only, so there is no npm package and no capability entry: the
@@ -200,8 +203,14 @@ dom_query = "0.27"
 # it pulled in against the `=0.61.3` pin above, and the CoInitializeEx panic it
 # would have taken the process down with.
 
-[profile.release]
-# The no-unwrap()-in-setup() reasoning in lib.rs is about release behaviour, so
-# the release profile has to actually be the one described. Panic hooks still run
-# before the abort, which is what keeps diagnostics::install_panic_dialog useful.
-panic = "abort"
+[dev-dependencies]
+# A real dependency until the extraction: `atomic.rs` used NamedTempFile on the
+# production write path, and `atomic.rs` is `copper-core`'s now. Every remaining
+# `tempfile::` in this crate is inside a `#[cfg(test)]` module or an integration
+# test, so it no longer belongs in the shipped binary's dependency graph.
+tempfile = "3.27"
+
+# `[profile.release]` is not here any more. Cargo honours a profile only in the
+# workspace root and warns on a member that declares one, so `panic = "abort"`
+# and the reasoning behind it moved to the root `Cargo.toml` when the workspace
+# was created. The behaviour is unchanged.

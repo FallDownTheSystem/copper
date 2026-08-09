@@ -1,6 +1,6 @@
-/// Public because the store's ops validate attachment file names through it and
-/// the spaces layer calls its sweep, and both must reach the same one
-/// implementation rather than keeping a second copy of the rule.
+/// Public because `tests/store_fs.rs` drives `ingest` directly: the attachment
+/// assertions are about what ingest and the document do together, and a
+/// hand-built `Attachment` would test neither.
 pub mod attachments;
 mod autostart;
 mod capture;
@@ -10,12 +10,9 @@ mod diagnostics;
 /// Public because `end_all` is the entry point Phase 6 calls on a space switch,
 /// and it must stay the only way another module ends every handoff at once.
 pub mod editor;
-/// Above the store, deliberately: it classifies a submitted string, and the
-/// store's "`body` is opaque" invariant depends on this living outside it.
-pub mod entry;
 mod panel;
 /// Public because `LinkPreview` crosses the IPC boundary and `tests/commands.rs`
-/// asserts the shape it arrives in, the same reason `store` and `entry` are.
+/// asserts the shape it arrives in, the same reason `store` is.
 pub mod previews;
 mod shortcuts;
 pub mod spaces;
@@ -28,6 +25,15 @@ mod win32;
 pub use diagnostics::install_panic_dialog;
 
 use std::sync::{Arc, Mutex};
+
+/// The one file in the tree that needs an alias rather than a plain import.
+///
+/// `crate::store` still exists here — it is the module holding the command
+/// wrappers and `events::AppSink`, both of which `setup()` below reaches by that
+/// name — so the store *core* cannot also be called `store` in this scope. Every
+/// other module in the crate uses one or the other and can simply rebind the
+/// bare name; this one uses both.
+use copper_core::store as core_store;
 
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 use tauri::{DeviceEventFilter, Manager, RunEvent, WindowEvent};
@@ -265,8 +271,8 @@ pub fn run() {
 			// from its mount-time get_status pull.
 			let config_dir = app.path().app_config_dir()?;
 			let sink = Arc::new(store::events::AppSink::new(app.handle().clone()));
-			let shared: store::SharedStore =
-				Arc::new(Mutex::new(store::bootstrap_store(&config_dir, sink)?));
+			let shared: core_store::SharedStore =
+				Arc::new(Mutex::new(core_store::bootstrap_store(&config_dir, sink)?));
 			app.manage(Arc::clone(&shared));
 
 			// A watch that will not register leaves the space open and fully
@@ -277,7 +283,7 @@ pub fn run() {
 			// bootstrap reading it and the watch going live. The events are logged
 			// rather than emitted — nothing is listening — and the state they
 			// describe is already in the store for the mount-time pull to read.
-			for event in store::attach_watcher(&shared) {
+			for event in core_store::attach_watcher(&shared) {
 				diagnostics::log_error(&format!("[copper] store startup: {event:?}"));
 			}
 
@@ -300,7 +306,7 @@ pub fn run() {
 			// rectangle sitting at a corner computed for another — visibly, as a right
 			// edge hanging off the work area on any install that chose a wider panel.
 			panel::install_panel_size(app.handle(), &window);
-			panel::restore_position(&window, store::lock(&shared).settings().panel_position);
+			panel::restore_position(&window, core_store::lock(&shared).settings().panel_position);
 			// Before `theme::install` and not beside the pin below, because it changes
 			// what that call paints rather than being a second thing to paint: it
 			// records the material, and `theme::install` is the one call that applies

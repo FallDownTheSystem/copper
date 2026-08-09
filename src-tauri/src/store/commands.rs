@@ -34,12 +34,16 @@ use std::path::Path;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
-use crate::entry::{classify, Entry};
+use copper_core::entry::{classify, Entry};
 
-use super::error::StoreError;
-use super::model::{Attachment, Space};
-use super::settings::{Settings, SettingsPatch};
-use super::{lock, ops, SharedStore, StoreStatus};
+// `store` no longer means the parent module: the pipeline these wrappers are
+// thin over is `copper_core::store`, and only this file and `events.rs` stayed
+// behind under the old path. Bound by name so every `store::open_space(…)`
+// below reads as it did when `super::` meant the same thing.
+use copper_core::store::error::StoreError;
+use copper_core::store::model::{Attachment, Space};
+use copper_core::store::settings::{Settings, SettingsPatch};
+use copper_core::store::{self, lock, ops, Landed, SharedStore, StoreStatus};
 
 type Reply<T> = std::result::Result<T, StoreError>;
 
@@ -91,7 +95,7 @@ pub async fn get_settings(state: State<'_, SharedStore>) -> Reply<Settings> {
 /// frontend's writer and Phase 7's are literally the same call.
 #[tauri::command]
 pub async fn update_settings(patch: SettingsPatch, state: State<'_, SharedStore>) -> Reply<Settings> {
-	super::patch_settings(&state, patch)
+	store::patch_settings(&state, patch)
 }
 
 #[tauri::command]
@@ -108,12 +112,12 @@ pub async fn get_active_space(state: State<'_, SharedStore>) -> Reply<Space> {
 
 #[tauri::command]
 pub async fn open_space(path: String, state: State<'_, SharedStore>) -> Reply<Space> {
-	super::open_space(&state, Path::new(&path))
+	store::open_space(&state, Path::new(&path))
 }
 
 #[tauri::command]
 pub async fn create_space(path: String, name: String, state: State<'_, SharedStore>) -> Reply<Space> {
-	super::create_space(&state, Path::new(&path), &name)
+	store::create_space(&state, Path::new(&path), &name)
 }
 
 // --- notes -------------------------------------------------------------------
@@ -170,7 +174,7 @@ pub async fn submit_entry(
 
 /// The body of [`submit_entry`], as a plain function over the shared store.
 ///
-/// Split out for the same reason [`super::append_capture`] is a module-level
+/// Split out for the same reason [`store::append_capture`] is a module-level
 /// seam rather than command-only code: `cargo test` has no Tauri runtime and so
 /// cannot construct a `State`, and asserting the snapshot behaviour by
 /// re-implementing the command in the test would prove only that the test agrees
@@ -353,15 +357,15 @@ pub async fn redo(state: State<'_, SharedStore>) -> Reply<Option<Space>> {
 // --- Rust-side entry points --------------------------------------------------
 
 /// Phase 4's capture hook (spec 8.5), taking the handle it already has.
-pub fn append_capture(app: &AppHandle, body: &str) -> Reply<super::Landed> {
+pub fn append_capture(app: &AppHandle, body: &str) -> Reply<Landed> {
 	let state = app.state::<SharedStore>();
-	super::append_capture(&state, body)
+	store::append_capture(&state, body)
 }
 
 /// Phase 7's settings writer, taking the handle it already has.
 pub fn patch_settings(app: &AppHandle, patch: SettingsPatch) -> Reply<Settings> {
 	let state = app.state::<SharedStore>();
-	super::patch_settings(&state, patch)
+	store::patch_settings(&state, patch)
 }
 
 /// The settings as Phase 7's startup steps read them, without a command round

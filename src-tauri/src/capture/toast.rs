@@ -51,7 +51,7 @@ use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 
 use crate::diagnostics;
 use crate::panel;
-use crate::store::{self, Landed, SectionRef, SharedStore};
+use copper_core::store::{self, Landed, SectionRef, SharedStore};
 
 use super::{notice::NoticeController, on_main_thread, CaptureFailure};
 

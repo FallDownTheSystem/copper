@@ -21,7 +21,7 @@ use tauri::{AppHandle, Manager};
 #[cfg(debug_assertions)]
 use crate::diagnostics;
 use crate::panel;
-use crate::store::{self, SharedStore};
+use copper_core::store::{self, SharedStore};
 use crate::win32::foreground::{our_pid, Target};
 use crate::win32::integrity::{target_integrity, uiaccess_active};
 

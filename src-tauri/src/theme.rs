@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use tauri::{AppHandle, Manager, Theme, WebviewWindow};
 
-use crate::store::settings::{Settings, SettingsPatch};
+use copper_core::store::settings::{Settings, SettingsPatch};
 use crate::{diagnostics, panel, store, ShellError};
 
 /// task-003 types `theme` as a bare `String`, deliberately — a hand-edited value

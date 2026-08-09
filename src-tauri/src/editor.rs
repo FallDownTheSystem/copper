@@ -55,10 +55,14 @@ use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, Recom
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
+use copper_core::store::events::{ChangeReason, EventSink, SpaceChanged, StoreEvent};
+use copper_core::store::model::Space;
+use copper_core::store::{self, ops, SharedStore};
+
 use crate::diagnostics;
-use crate::store::events::{AppSink, ChangeReason, EventSink, SpaceChanged, StoreEvent};
-use crate::store::model::Space;
-use crate::store::{self, ops, SharedStore};
+// The one event type still on this side of the crate boundary: the sink that
+// reaches the webview.
+use crate::store::events::AppSink;
 
 /// Reaching it **refuses** the next open rather than ending the oldest handoff:
 /// eviction would delete a temp file the user may have unsaved edits in, which

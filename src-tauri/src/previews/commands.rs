@@ -18,9 +18,9 @@ use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager, State};
 
-use crate::attachments::read_capped;
-use crate::store::error::StoreError;
-use crate::store::{self, SharedStore};
+use copper_core::attachments::read_capped;
+use copper_core::store::error::StoreError;
+use copper_core::store::{self, SharedStore};
 
 use super::{cache, net, LinkPreview};
 

@@ -1,0 +1,53 @@
+[package]
+name = "copper-core"
+description = "The Tauri-free half of Copper: the store, spaces and the attachment path layer"
+authors = ["FallDownTheSystem"]
+repository = "https://github.com/FallDownTheSystem/copper"
+publish = false
+edition = "2021"
+version.workspace = true
+# Inherited rather than restated. The floor is the same 1.85 `src-tauri` has
+# always declared, and it originates *here* now: notify-debouncer-full 0.7.0 is a
+# dependency of `store/watch.rs`, which lives in this crate.
+rust-version.workspace = true
+
+[lib]
+name = "copper_core"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# `format::now_rfc3339` is the only call site in the whole tree, which is why
+# `src-tauri` no longer declares chrono at all. No serde feature on purpose —
+# timestamps are opaque `String` in the model (spec 1.2), so a hand-edited one
+# cannot make a document unloadable.
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+# `ids::new_id`. `src-tauri` keeps its own copy for an unrelated reason:
+# `editor.rs` mints uuids for handoff directories and temp files.
+uuid = { version = "1", features = ["v4"] }
+thiserror = "2"
+# `store/watch.rs`. `src-tauri` also keeps both, because `editor.rs` runs a
+# second, independent debounced watch over the `$EDITOR` handoff temp files.
+# notify 8.2 is the current stable line; 9.x is still an unpromoted release
+# candidate, and notify-debouncer-full 0.7.0 is the release that pairs with it.
+notify = "8.2.0"
+notify-debouncer-full = "0.7.0"
+# `atomic.rs`: NamedTempFile::new_in + persist/persist_noclobber. Production
+# code here, not a test helper — the temp file must live in the destination's
+# own directory, because persist is a rename and cannot cross volumes.
+tempfile = "3.27"
+# `attachments::sniff_mime`. The range is chosen to resolve to the copy already
+# beneath Tauri in `src-tauri`'s half of the lock file rather than to the newest
+# release: a second copy of the crate would be linked into the same binary.
+infer = "0.19"
+# The one GUI-adjacent dependency, and it is one call: `GetLogicalDrives`, in
+# `spaces::availability::RealFs::drive_present`. It is the only way to classify a
+# drive letter as simply absent without touching a path beneath it, which on an
+# unresponsive network share blocks for as long as the redirector wants.
+#
+# Pinned exactly, and to the same version `src-tauri` pins, for the reason
+# `src-tauri`'s own comment gives: the app binary links both crates, and a caret
+# range that drifted onto 0.62 would resolve a second, ABI-incompatible copy of
+# `windows`. The feature list is narrowed to the one thing this call needs;
+# `src-tauri` keeps its own much larger list for everything else.
+windows = { version = "=0.61.3", features = ["Win32_Storage_FileSystem"] }

@@ -148,7 +148,7 @@ pub enum CaptureOutcome {
 		/// What the store made of it: which note, which section, and which other
 		/// sections the notification can offer. Read under the write's own guard,
 		/// so nothing here costs a second lock on the worker thread.
-		landed: crate::store::Landed,
+		landed: copper_core::store::Landed,
 		/// The captured text as the notification carries it. Reduced here, where
 		/// the text still exists, rather than moving a selection of up to
 		/// [`MAX_CAPTURE_CHARS`] through the outcome to be thrown away.

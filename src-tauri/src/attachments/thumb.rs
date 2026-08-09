@@ -25,7 +25,7 @@ use std::io::Cursor;
 
 use image::{DynamicImage, ImageFormat, ImageReader, Limits};
 
-use crate::store::error::{Result, StoreError};
+use copper_core::store::error::{Result, StoreError};
 
 /// Logical pixels on the longest edge, so ≤ 640 physical at 2× scaling. A few
 /// tens of kilobytes of PNG.

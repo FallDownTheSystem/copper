@@ -360,7 +360,7 @@ fn is_public_v6(address: std::net::Ipv6Addr) -> bool {
 pub fn cache_key(url: &Url) -> String {
 	let mut normalised = url.clone();
 	normalised.set_fragment(None);
-	crate::attachments::hex16(&Sha256::digest(normalised.as_str().as_bytes()))
+	copper_core::attachments::hex16(&Sha256::digest(normalised.as_str().as_bytes()))
 }
 
 #[cfg(test)]

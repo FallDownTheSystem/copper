@@ -13,7 +13,7 @@
 //! name is the one identifier a *pending* attachment and a committed one share —
 //! the tray's items are not in the document yet — so an id-keyed command would
 //! need a second path for the tray. It is also exactly the value
-//! [`super::resolve`] validates, which puts the security check on the argument
+//! [`copper_core::attachments::resolve`] validates, which puts the security check on the argument
 //! the caller controls rather than one indirection away from it.
 
 use std::path::{Path, PathBuf};
@@ -21,15 +21,17 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, State};
 
 use crate::spaces;
-use crate::store::error::{Result, StoreError};
-use crate::store::model::Attachment;
-use crate::store::{self, SharedStore};
+use copper_core::store::error::{Result, StoreError};
+use copper_core::store::model::Attachment;
+use copper_core::store::{self, SharedStore};
 use crate::win32::clipboard::{self, ClipboardAttachment};
 
-use super::{
-	ingest, read_blob, read_capped, read_prefix, resolve_existing, sniff_mime, thumb,
-	ATTACHMENT_MAX_BYTES, SNIFF_PREFIX_BYTES,
+use copper_core::attachments::{
+	read_blob, read_capped, read_prefix, resolve_existing, sniff_mime, ATTACHMENT_MAX_BYTES,
+	SNIFF_PREFIX_BYTES,
 };
+
+use super::{ingest, thumb};
 
 type Reply<T> = std::result::Result<T, StoreError>;
 
@@ -355,7 +357,7 @@ pub async fn attachment_full(
 /// asymmetry is justified because images are the overwhelmingly common case and
 /// an image viewer is not an execution vector in that way.
 ///
-/// The path is **reconstructed** through [`super::resolve_existing`] rather than
+/// The path is **reconstructed** through [`resolve_existing`] rather than
 /// taken from the document, and the type is re-sniffed from the bytes rather
 /// than read from `mime` — so neither half of the decision can be steered by
 /// editing the JSON.
@@ -404,7 +406,7 @@ pub async fn attachment_open(
 /// `mime` to steer.
 ///
 /// **The path is reconstructed from `file`, never accepted from the caller.**
-/// [`super::resolve_existing`] is the one door into the assets directory: it
+/// [`resolve_existing`] is the one door into the assets directory: it
 /// refuses anything that is not a bare filename, and refuses a directory or a
 /// symlink wearing one — so a `.copper` that arrived from a git remote cannot
 /// make this select a path outside the space's own sidecar.

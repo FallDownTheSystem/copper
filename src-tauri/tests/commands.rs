@@ -18,11 +18,14 @@
 //! instead, and every result shape is checked through serde, which is the same
 //! code that runs over the real boundary.
 
+use copper_core::store::error::StoreError;
+use copper_core::store::model::{Section, Space};
+use copper_core::store::settings::Settings;
+use copper_core::store::StoreStatus;
+
+// The command wrappers themselves stayed with the app, so this one path is
+// unchanged while its four neighbours moved.
 use copper_lib::store::commands::{AddNoteResult, SubmitOutcome, SubmitResult};
-use copper_lib::store::error::StoreError;
-use copper_lib::store::model::{Section, Space};
-use copper_lib::store::settings::Settings;
-use copper_lib::store::StoreStatus;
 
 /// Spec 8.1's twenty, plus `submit_entry` — the composer's submit, added by
 /// task-010 so that inline `# Name` section creation could be classified above

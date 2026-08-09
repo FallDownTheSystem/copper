@@ -1,0 +1,28 @@
+[workspace]
+members = ["copper-core", "src-tauri"]
+resolver = "2"
+
+# Only what genuinely has to be shared. `version` is one number for the whole
+# product — the installer filename, the Add/Remove Programs entry and
+# `app.package_info().version` all read it through `src-tauri` — and
+# `rust-version` is a floor both crates hit independently: `copper-core` because
+# it owns `store/watch.rs` and its notify-debouncer-full 0.7.0 dependency, and
+# `src-tauri` because `editor.rs` runs a second, unrelated watch over the same
+# crate. Two literals would be two numbers free to drift.
+#
+# `edition`, `authors`, `repository` and `publish` are deliberately *not* hoisted:
+# each crate keeps its own literals, because hoisting them would be a larger diff
+# than this extraction is allowed to be.
+[workspace.package]
+version = "0.1.3"
+rust-version = "1.85"
+
+# Cargo honours `[profile.*]` only in a workspace root and warns on a member that
+# declares one, so this moved up from `src-tauri/Cargo.toml` when the workspace
+# was created. The reasoning is unchanged and still lives with the code it is
+# about: the no-unwrap()-in-setup() rule in `src-tauri/src/lib.rs` is a statement
+# about release behaviour, so the release profile has to be the one it describes.
+# Panic hooks still run before the abort, which is what keeps
+# `diagnostics::install_panic_dialog` useful.
+[profile.release]
+panic = "abort"

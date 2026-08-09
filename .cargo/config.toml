@@ -1,0 +1,13 @@
+# The workspace root moved Cargo's default target directory to `<repo>/target/`,
+# and three things already point at the old one: `.gitignore` excludes
+# `src-tauri/target/`, `backlog/docs/doc-release-process.md` names
+# `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\` literally, and
+# the release procedure runs `cargo clean -p copper` from `src-tauri/`. Pinning
+# the directory back is a one-line change; rewriting all three is not, and each
+# of them would have failed silently rather than loudly.
+#
+# Tauri's CLI shells out to cargo, so it picks this up the same way a bare
+# `cargo build` does — verified by building the NSIS bundle through
+# `pnpm exec tauri build` after the workspace was created, not assumed.
+[build]
+target-dir = "src-tauri/target"

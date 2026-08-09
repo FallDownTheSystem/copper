@@ -28,9 +28,11 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::attachments::{is_bare_filename, thumb};
+use copper_core::attachments::is_bare_filename;
+use copper_core::store::atomic;
+
+use crate::attachments::thumb;
 use crate::diagnostics;
-use crate::store::atomic;
 
 use super::{LinkPreview, CACHE_DIR, CACHE_MAX_BYTES, PREVIEW_TTL};
 
@@ -102,7 +104,7 @@ pub fn write(dir: &Path, key: &str, preview: &LinkPreview) {
 /// The type is **sniffed from the bytes**, never taken from the response's
 /// `Content-Type`: a header is a claim by the same party that chose the image.
 pub fn write_image(dir: &Path, key: &str, bytes: &[u8]) -> Option<String> {
-	let mime = crate::attachments::sniff_mime(bytes);
+	let mime = copper_core::attachments::sniff_mime(bytes);
 	if !thumb::is_thumbnailable(mime) {
 		return None;
 	}
@@ -119,9 +121,9 @@ pub fn write_image(dir: &Path, key: &str, bytes: &[u8]) -> Option<String> {
 	Some(file)
 }
 
-fn ensure(dir: &Path) -> crate::store::error::Result<()> {
+fn ensure(dir: &Path) -> copper_core::store::error::Result<()> {
 	std::fs::create_dir_all(dir)
-		.map_err(|err| crate::store::error::io_err(dir, "create", &err))
+		.map_err(|err| copper_core::store::error::io_err(dir, "create", &err))
 }
 
 /// Deletes expired entries, then the oldest of what is left until the directory

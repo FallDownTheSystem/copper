@@ -564,7 +564,7 @@ pub fn read_attachment() -> Result<Option<ClipboardAttachment>> {
 fn too_large_to_take(what: &str) -> ClipboardError {
 	ClipboardError::Refused(format!(
 		"{what} (over {})",
-		crate::attachments::human_bytes(ATTACHMENT_READ_LIMIT as u64)
+		copper_core::attachments::human_bytes(ATTACHMENT_READ_LIMIT as u64)
 	))
 }
 

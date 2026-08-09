@@ -44,7 +44,7 @@ use tauri_plugin_global_shortcut::{
 };
 
 use crate::capture::{self, KeySide, ModifierFamily, WatchedTrigger};
-use crate::store::settings::{SettingsPatch, Shortcuts};
+use copper_core::store::settings::{SettingsPatch, Shortcuts};
 use crate::{diagnostics, panel, store, tray, ShellError};
 
 /// The shipped defaults. Asserted equal to task-003's `Settings::default()` in a
@@ -1539,7 +1539,7 @@ pub async fn cancel_shortcut_recording(app: AppHandle) -> Reply<ShortcutState> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::store::settings::Settings;
+	use copper_core::store::settings::Settings;
 
 	/// The four sided spellings a test reaches for most.
 	fn double_tap(family: ModifierFamily, side: KeySide) -> BoundTrigger {

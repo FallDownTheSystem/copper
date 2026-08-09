@@ -22,11 +22,6 @@
 //!   handoff would be recreated against the outgoing document and the cross-space
 //!   hazard would return by a different route.
 
-pub mod availability;
-pub mod dispatch;
-pub mod launch;
-pub mod paths;
-
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -34,14 +29,21 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
+// The four pure submodules are `copper_core::spaces::…` now. Imported by module
+// name rather than by symbol so that every `availability::probe(…)`,
+// `dispatch::submit(…)`, `launch::space_path_from_args(…)` and `paths::…` call
+// site below reads exactly as it did when they were siblings of this file.
+use copper_core::spaces::{availability, dispatch, launch, lock, paths};
+use copper_core::store::error::StoreError;
+use copper_core::store::events::{EventSink, StoreEvent};
+use copper_core::store::model::Space;
+use copper_core::store::{self, SharedStore};
+
 use availability::{Availability, Executor, ProbeResult, RealFs, UnavailableReason};
 use dispatch::{LaunchHost, Request};
 use paths::{comparison_key, display_path, same_path};
 
-use crate::store::error::StoreError;
-use crate::store::events::{AppSink, EventSink, StoreEvent};
-use crate::store::model::Space;
-use crate::store::{self, SharedStore};
+use crate::store::events::AppSink;
 use crate::{diagnostics, editor, panel};
 
 type Reply<T> = std::result::Result<T, StoreError>;
@@ -119,16 +121,6 @@ static EXECUTOR: OnceLock<Executor> = OnceLock::new();
 /// end it.
 pub fn activation() -> MutexGuard<'static, ()> {
 	lock(&ACTIVATION)
-}
-
-/// Locking for every mutex in this layer, poison-tolerant.
-///
-/// A panicking worker must not turn every later lock into a second failure: what
-/// these mutexes hold is a queue and a cache, both still coherent after a panic
-/// in whatever was holding them. Same rule as `store::lock`, and the reason it is
-/// stated once rather than in each submodule.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-	mutex.lock().unwrap_or_else(|err| err.into_inner())
 }
 
 /// The availability event goes out through the app directly rather than through

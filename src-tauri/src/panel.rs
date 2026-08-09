@@ -8,11 +8,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use crate::diagnostics;
-use crate::store::settings::{
+use copper_core::store::settings::{
 	clamp_panel_size, PanelPosition, Settings, SettingsPatch, PANEL_HEIGHT_BOUNDS,
 	PANEL_WIDTH_BOUNDS,
 };
+
+use crate::diagnostics;
+// `store` stays bound to the app's own module: every use of it below is
+// `store::commands::…`, and the command wrappers did not move.
 use crate::{store, ShellError};
 use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
 use windows::Win32::Graphics::Dwm::{
@@ -1457,7 +1460,7 @@ mod tests {
 	/// against a material the file does not name.
 	#[test]
 	fn the_shipped_default_is_opaque() {
-		assert!(!crate::store::settings::Settings::default().translucent);
+		assert!(!copper_core::store::settings::Settings::default().translucent);
 	}
 
 	#[test]
@@ -1465,7 +1468,7 @@ mod tests {
 		// The static's initial value, `tauri.conf.json`'s `alwaysOnTop` and the
 		// store's default all have to agree, or the first launch runs with the window
 		// in one band and the file naming the other.
-		assert!(crate::store::settings::Settings::default().always_on_top);
+		assert!(copper_core::store::settings::Settings::default().always_on_top);
 	}
 
 	/// Ties the fixtures in here to the real function, so a resize cannot leave
@@ -1511,7 +1514,7 @@ mod tests {
 	/// silently, and to a size nobody chose.
 	#[test]
 	fn the_shipped_default_size_is_the_declared_one() {
-		let defaults = crate::store::settings::Settings::default();
+		let defaults = copper_core::store::settings::Settings::default();
 		assert_eq!(defaults.panel_width, PANEL_WIDTH);
 		assert_eq!(defaults.panel_height, PANEL_HEIGHT);
 		// And the panel ships fixed, matching `resizable` in the config above.
@@ -1571,7 +1574,7 @@ mod tests {
 	/// second opinion about how small the panel may be.
 	#[test]
 	fn the_drag_floor_is_the_stores_lower_bound() {
-		use crate::store::settings::{clamp_panel_size, PANEL_HEIGHT_BOUNDS, PANEL_WIDTH_BOUNDS};
+		use copper_core::store::settings::{clamp_panel_size, PANEL_HEIGHT_BOUNDS, PANEL_WIDTH_BOUNDS};
 
 		assert_eq!(
 			clamp_panel_size(0.0, 0.0),
