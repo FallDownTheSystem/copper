@@ -1,0 +1,24 @@
+{
+	// No `$schema` key. The usual value points at a path inside `node_modules`,
+	// and this directory deliberately has no `package.json` and no install step —
+	// wrangler runs here as `npx wrangler@4`, and pnpm never sees the directory
+	// because `pnpm-workspace.yaml` declares no `packages:` key.
+	"name": "copper-relay",
+	"main": "src/index.js",
+
+	// Pinned to a date, never left floating. A compatibility date is what decides
+	// which runtime behaviours this script gets; moving it is a deliberate act
+	// with a re-verification behind it, not something a redeploy should do on its
+	// own.
+	"compatibility_date": "2026-08-01",
+
+	// One namespace, one binding. Create it with
+	// `npx wrangler@4 kv namespace create MAILBOX` and paste the id it prints
+	// here — see README.md.
+	"kv_namespaces": [
+		{
+			"binding": "MAILBOX",
+			"id": "<paste the id from `wrangler kv namespace create MAILBOX`>",
+		},
+	],
+}
