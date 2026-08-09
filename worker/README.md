@@ -17,23 +17,28 @@ days, whether or not anybody collects it.
 ## What you need
 
 - A free Cloudflare account.
-- Node.js, so that `npx` works. There is nothing to install into this
-  directory — no `package.json`, no `node_modules`, no build step.
+- Node.js and pnpm. There is nothing to install into this directory — no
+  `package.json`, no `node_modules`, no build step.
 
 ## Deploy
 
 Run all five commands from inside this `worker/` directory.
 
+The commands use `pnpm dlx` rather than `npx` because the repository's root
+`package.json` pins pnpm through `devEngines`, and npm refuses to run under
+that pin from anywhere inside the repository (`EBADDEVENGINES`). Plain
+`pnpm dlx wrangler@4` works fine from a directory outside this checkout.
+
 1. Sign in. This opens a browser window.
 
    ```
-   npx wrangler@4 login
+   pnpm dlx wrangler@4 login
    ```
 
 2. Create the KV namespace. This prints an `id`.
 
    ```
-   npx wrangler@4 kv namespace create MAILBOX
+   pnpm dlx wrangler@4 kv namespace create MAILBOX
    ```
 
    Note the space in `kv namespace`. The older `kv:namespace` spelling with a
@@ -46,7 +51,7 @@ Run all five commands from inside this `worker/` directory.
    encrypted secret — it is never written into `wrangler.jsonc`.
 
    ```
-   npx wrangler@4 secret put RELAY_TOKEN
+   pnpm dlx wrangler@4 secret put RELAY_TOKEN
    ```
 
    Invent a long random string. It is not a password you have to remember, so
@@ -56,7 +61,7 @@ Run all five commands from inside this `worker/` directory.
 5. Deploy.
 
    ```
-   npx wrangler@4 deploy
+   pnpm dlx wrangler@4 deploy
    ```
 
    Deploy prints the URL it published to, of the form
@@ -127,8 +132,8 @@ sequence is past JavaScript's safe integer range.
 
 ## Updating or removing it
 
-Re-deploy with `npx wrangler@4 deploy` after any edit to `src/index.js`.
+Re-deploy with `pnpm dlx wrangler@4 deploy` after any edit to `src/index.js`.
 
-To remove the relay entirely, run `npx wrangler@4 delete` and then delete the
+To remove the relay entirely, run `pnpm dlx wrangler@4 delete` and then delete the
 KV namespace from the Cloudflare dashboard. Turn Share off in Copper on both
 machines first, or they will report an unreachable relay every minute.
