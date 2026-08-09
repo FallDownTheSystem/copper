@@ -13,6 +13,9 @@ import SettingsSecretRow from './SettingsSecretRow.vue'
  * is empty by construction and a blur-clears rule would wipe a stored credential
  * every time somebody tabbed past it. And **Clear** must emit `null` rather than
  * `''`, because Rust reads the two differently: absent leaves, `null` clears.
+ *
+ * The two states are mutually exclusive: a stored value renders mask dots and
+ * **Clear** with no input at all, an absent one renders the input and **Set**.
  */
 
 function row(set = false) {
@@ -22,16 +25,21 @@ function row(set = false) {
 }
 
 describe('SettingsSecretRow', () => {
-	it('renders whether a value is stored and never the value', () => {
-		expect(row(true).text()).toContain('Set')
-
-		const empty = row(false)
-		expect(empty.text()).toContain('Not set')
-		expect(empty.get('input').element.value).toBe('')
+	it('renders mask dots and no input while a value is stored', () => {
+		const stored = row(true)
+		expect(stored.find('input').exists()).toBe(false)
+		expect(stored.text()).toContain('••••')
+		expect(stored.text()).toContain('Relay token is set')
 	})
 
-	/** The input starts empty on every mount, so there is no state in which a
-	 *  stored secret could be shown. There is no prop that could supply one. */
+	it('renders an empty input and no mask while nothing is stored', () => {
+		const empty = row(false)
+		expect(empty.get('input').element.value).toBe('')
+		expect(empty.text()).not.toContain('••••')
+	})
+
+	/** The mask is a literal with a fixed length, so it cannot echo the stored
+	 *  value's length — the one thing a mask could still leak. */
 	it('has no prop that could carry a value', () => {
 		const wrapper = row(true)
 		expect(Object.keys(wrapper.props())).not.toContain('value')
@@ -65,10 +73,23 @@ describe('SettingsSecretRow', () => {
 		expect(wrapper.emitted('commit')).toEqual([['typed']])
 	})
 
+	it('emits the typed value when Set is pressed', async () => {
+		const wrapper = row()
+		const set = wrapper.get('button')
+		expect(set.text()).toBe('Set')
+		expect(set.attributes('disabled')).toBeDefined()
+
+		await wrapper.get('input').setValue('a-token')
+		expect(set.attributes('disabled')).toBeUndefined()
+
+		await set.trigger('click')
+		expect(wrapper.emitted('commit')).toEqual([['a-token']])
+	})
+
 	/** The dirty flag's whole job. Without it, tabbing through the settings view
 	 *  would clear a stored token nobody meant to touch. */
 	it('emits nothing when blurred without an edit', async () => {
-		const wrapper = row(true)
+		const wrapper = row(false)
 		await wrapper.get('input').trigger('blur')
 		expect(wrapper.emitted('commit')).toBeUndefined()
 	})
@@ -76,7 +97,7 @@ describe('SettingsSecretRow', () => {
 	/** An edit that ends up empty is an abandoned edit, not a request to clear.
 	 *  Clearing has its own button. */
 	it('emits nothing when an edit is erased before the blur', async () => {
-		const wrapper = row(true)
+		const wrapper = row(false)
 		const input = wrapper.get('input')
 
 		await input.setValue('half a token')
@@ -96,7 +117,9 @@ describe('SettingsSecretRow', () => {
 	})
 
 	it('offers no Clear when there is nothing stored', () => {
-		expect(row(false).find('button').exists()).toBe(false)
+		const buttons = row(false).findAll('button')
+		expect(buttons).toHaveLength(1)
+		expect(buttons[0]!.text()).toBe('Set')
 	})
 
 	/** A second blur after a commit must not re-send the value: the field is empty
