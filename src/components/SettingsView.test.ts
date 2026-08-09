@@ -5,6 +5,7 @@ import SettingsSlider from './SettingsSlider.vue'
 import SettingsView from './SettingsView.vue'
 import { useAttachments } from '@/composables/useAttachments'
 import { useView } from '@/composables/useView'
+import { SHARE_SETUP_PROMPT } from '@/lib/shareSetupPrompt'
 import type { Settings } from '@/composables/useSpace'
 
 /**
@@ -17,6 +18,7 @@ import type { Settings } from '@/composables/useSpace'
 
 const mocks = vi.hoisted(() => ({
 	invoke: vi.fn<(command: string, args?: Record<string, unknown>) => Promise<unknown>>(),
+	openUrl: vi.fn<(url: string) => Promise<void>>(),
 	/** `DropTarget`'s listener — the settings view mounts one too, so a test can
 	 *  hand it an OS drag event. Boxed for the reason `PanelShell.test` gives: the
 	 *  `vi.mock` factory closes over this object. */
@@ -24,6 +26,9 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
+// The Share setup guide's two links leave for the user's browser rather than
+// navigating the WebView. The plugin reaches Rust, which does not exist here.
+vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: mocks.openUrl }))
 vi.mock('@tauri-apps/api/event', () => ({
 	emit: vi.fn(),
 	listen: async () => () => {},
@@ -136,6 +141,11 @@ async function openSettings(stored: Partial<Settings> = {}) {
 			// enable switch are not, because the switch ships off.
 			case 'get_share_config':
 				return SHARE_CONFIG
+			// The setup guide's **Copy prompt** button, which goes through
+			// `useSystemClipboard` and so through Rust, like every other clipboard
+			// write in the app.
+			case 'clipboard_write_text':
+				return null
 			case 'update_settings':
 				return makeSettings({ ...stored, ...(args?.patch as Partial<Settings>) })
 			// Its own command rather than a patch, because it has a native side to
@@ -162,6 +172,7 @@ function patchesSent() {
 
 beforeEach(() => {
 	mocks.invoke.mockReset()
+	mocks.openUrl.mockReset()
 })
 
 describe('the sound and motion rows', () => {
@@ -808,5 +819,145 @@ describe('attaching from the settings view', () => {
 
 		expect(useView().view.value).toBe('settings')
 		expect(useAttachments().pending.value).toHaveLength(0)
+	})
+})
+
+/**
+ * The Share setup guide: a disclosure under the enable switch, and the one
+ * clipboard write in this view.
+ *
+ * The load-bearing facts are that it is reachable **before** Share is turned on —
+ * it explains the values the switch reveals rows for — and that the prompt it
+ * copies still carries the four things an assistant cannot be allowed to guess:
+ * where the Worker lives, which runner to use, that the token is a quota guard,
+ * and that the two machines take different roles.
+ */
+describe('the share setup guide', () => {
+	/** The last text written through `clipboard_write_text`, or null. */
+	function copiedText() {
+		const written = mocks.invoke.mock.calls.filter((call) => call[0] === 'clipboard_write_text')
+		const last = written.at(-1)
+		return last ? (last[1] as { text: string }).text : null
+	}
+
+	/** Available with Share switched off, which is where a reader who has not set
+	 *  anything up yet actually stands. Everything else in the section is behind
+	 *  the switch. */
+	it('offers the guide while share is off, and opens and closes it', async () => {
+		const wrapper = await openSettings()
+		const toggle = wrapper.get('[data-testid="share-guide-toggle"]')
+
+		expect(wrapper.get('#share-enabled').attributes('aria-checked')).toBe('false')
+		expect(toggle.element.tagName).toBe('BUTTON')
+		expect(toggle.attributes('aria-expanded')).toBe('false')
+		expect(wrapper.find('[data-testid="share-setup-guide"]').exists()).toBe(false)
+
+		await toggle.trigger('click')
+		expect(wrapper.get('[data-testid="share-guide-toggle"]').attributes('aria-expanded')).toBe(
+			'true',
+		)
+		expect(wrapper.find('[data-testid="share-setup-guide"]').exists()).toBe(true)
+
+		await wrapper.get('[data-testid="share-guide-toggle"]').trigger('click')
+		expect(wrapper.get('[data-testid="share-guide-toggle"]').attributes('aria-expanded')).toBe(
+			'false',
+		)
+		expect(wrapper.find('[data-testid="share-setup-guide"]').exists()).toBe(false)
+	})
+
+	/** The guide's own copy, not the prompt's: a reader who never presses **Copy
+	 *  prompt** still has to be told which runner to use inside a checkout, and
+	 *  that the two machines differ. */
+	it('names the wrangler commands, the npx caveat and the two roles', async () => {
+		const wrapper = await openSettings()
+		await wrapper.get('[data-testid="share-guide-toggle"]').trigger('click')
+
+		const guide = wrapper.get('[data-testid="share-setup-guide"]').text()
+		expect(guide).toContain('pnpm dlx wrangler@4 login')
+		expect(guide).toContain('pnpm dlx wrangler@4 kv namespace create MAILBOX')
+		expect(guide).toContain('pnpm dlx wrangler@4 secret put RELAY_TOKEN')
+		expect(guide).toContain('pnpm dlx wrangler@4 deploy')
+		expect(guide).toContain('npx')
+		expect(guide).toContain('First')
+		expect(guide).toContain('Second')
+		// The generic form, never a real subdomain: the guide is read by people who
+		// would otherwise paste someone else's relay address into their own panel.
+		expect(guide).toContain('https://copper-relay.<your-subdomain>.workers.dev')
+	})
+
+	/** Both links leave for the user's browser. A real anchor would navigate the
+	 *  WebView and take the panel with it. */
+	it('opens the sign-up page and the repository in the browser', async () => {
+		const wrapper = await openSettings()
+		await wrapper.get('[data-testid="share-guide-toggle"]').trigger('click')
+
+		const links = wrapper.get('[data-testid="share-setup-guide"]').findAll('button')
+		const signUp = links.find((link) => link.text().includes('Cloudflare sign-up'))
+		const repository = links.find((link) => link.text().includes('Copper repository'))
+
+		await signUp?.trigger('click')
+		await repository?.trigger('click')
+
+		expect(mocks.openUrl).toHaveBeenCalledWith('https://dash.cloudflare.com/sign-up')
+		expect(mocks.openUrl).toHaveBeenCalledWith('https://github.com/FallDownTheSystem/copper')
+	})
+
+	it('puts the hand-off prompt on the clipboard and says so', async () => {
+		const wrapper = await openSettings()
+		await wrapper.get('[data-testid="share-guide-toggle"]').trigger('click')
+
+		await wrapper.get('[data-testid="share-copy-prompt"]').trigger('click')
+		await flush()
+
+		// The real constant reached the real clipboard adapter, unaltered.
+		expect(copiedText()).toBe(SHARE_SETUP_PROMPT)
+
+		const guide = wrapper.get('[data-testid="share-setup-guide"]').text()
+		expect(guide).toContain('The prompt is on your clipboard.')
+	})
+
+	/**
+	 * The prompt's own content, asserted against the constant rather than against
+	 * the rendered guide: it is the half that leaves the app, and an assistant
+	 * reading it has none of the surrounding UI to fall back on.
+	 */
+	it('carries the facts the assistant cannot infer', () => {
+		expect(SHARE_SETUP_PROMPT).toContain('https://github.com/FallDownTheSystem/copper')
+		expect(SHARE_SETUP_PROMPT).toContain('pnpm dlx wrangler@4 login')
+		expect(SHARE_SETUP_PROMPT).toContain('pnpm dlx wrangler@4 kv namespace create MAILBOX')
+		expect(SHARE_SETUP_PROMPT).toContain('pnpm dlx wrangler@4 secret put RELAY_TOKEN')
+		expect(SHARE_SETUP_PROMPT).toContain('pnpm dlx wrangler@4 deploy')
+		// The runner caveat, both halves: pnpm dlx inside a checkout, npx outside.
+		expect(SHARE_SETUP_PROMPT).toContain('EBADDEVENGINES')
+		expect(SHARE_SETUP_PROMPT).toContain('npx wrangler@4 works too')
+		// What the token is and is not.
+		expect(SHARE_SETUP_PROMPT).toContain('quota guard, not a confidentiality control')
+		// The boundary the assistant must not cross, and the field it must warn about.
+		expect(SHARE_SETUP_PROMPT).toContain('Never invent one')
+		expect(SHARE_SETUP_PROMPT).toContain('First on one machine and Second on the other')
+	})
+
+	/** A refused clipboard write is the one message here that must not be
+	 *  mistaken for a success: the reader is about to paste nothing into an
+	 *  assistant. */
+	it('reports a refused clipboard write instead of claiming a copy', async () => {
+		const wrapper = await openSettings()
+		await wrapper.get('[data-testid="share-guide-toggle"]').trigger('click')
+
+		// `useSystemClipboard` logs the rejection it swallows; the suite's output is
+		// not the place to read it.
+		vi.spyOn(console, 'error').mockImplementation(() => {})
+		const prior = mocks.invoke.getMockImplementation()
+		mocks.invoke.mockImplementation(async (name: string, args?: Record<string, unknown>) => {
+			if (name === 'clipboard_write_text') throw { kind: 'invalid', message: 'refused' }
+			return prior?.(name, args)
+		})
+
+		await wrapper.get('[data-testid="share-copy-prompt"]').trigger('click')
+		await flush()
+
+		const guide = wrapper.get('[data-testid="share-setup-guide"]').text()
+		expect(guide).toContain("Couldn't write to the clipboard.")
+		expect(guide).not.toContain('The prompt is on your clipboard.')
 	})
 })

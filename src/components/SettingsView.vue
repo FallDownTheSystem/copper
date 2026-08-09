@@ -28,8 +28,10 @@ import {
 	type DoubleClickAction,
 	type InsertionPoint,
 } from '@/composables/useSettings'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import { inOverlay, inTextSurface } from '@/lib/chords'
 import { ACCENT_COLORS, NEUTRAL_TONES, type AccentColor, type NeutralTone } from '@/lib/palette'
+import { SHARE_SETUP_PROMPT } from '@/lib/shareSetupPrompt'
 
 const {
 	shortcuts,
@@ -158,6 +160,98 @@ const shareRowError = computed(() => shareError.value ?? shareConfig.value.lastE
 /** One appearance for the two buttons in this section, on `updateButtonClass`'s
  *  precedent: a copy each is what lets them drift apart. */
 const shareButtonClass = 'panel-button hit-44 relative h-8 px-2 text-meta'
+
+// --- the share setup guide ---------------------------------------------------
+
+/**
+ * **An inline disclosure, not an overlay, and the panel is why.**
+ *
+ * The one dialog precedent in the app is `ImageViewer`, and it lives inside
+ * `PanelShell` — the *other* view. This view replaces that whole frame, so it
+ * hosts no overlay layer, no portal target and no Escape ladder to join: an
+ * overlay here would be a second modal system rather than a reuse of the first,
+ * and it would cover the very rows the guide tells the reader to fill in.
+ *
+ * A disclosure also gets the two things this content needs for free. It scrolls
+ * in the view's one scroll region rather than needing a scroll region of its own
+ * at 440 × 760, and it sits directly above the Relay URL, Relay token and
+ * Pairing secret rows, so the guide and the fields it describes are readable
+ * together.
+ *
+ * **Unanimated, matching the section it is in.** The rows below the enable switch
+ * already appear and disappear with no transition, and a height animation over a
+ * block this tall is the one motion.md singles out as expensive. A guide that
+ * faded in beside rows that snap would read as two different kinds of change.
+ */
+const guideOpen = ref(false)
+const guide = useTemplateRef<HTMLElement>('guide')
+
+/**
+ * Focus deliberately **stays on the toggle**. That is the disclosure pattern —
+ * the revealed content follows the button in the DOM, so the next Tab and a
+ * screen reader's next line both land in the guide already, and moving focus
+ * would be dialog behaviour on something that is not a dialog.
+ *
+ * What does move is the scroll position, because the row can sit near the bottom
+ * of the panel: expanding there would otherwise add several hundred pixels below
+ * the fold and change nothing the reader can see. `block: 'nearest'` scrolls the
+ * least amount that brings the guide into view, and nothing at all when it is
+ * already there.
+ */
+function toggleGuide() {
+	guideOpen.value = !guideOpen.value
+	if (!guideOpen.value) return
+	void nextTick(() => guide.value?.scrollIntoView({ block: 'nearest' }))
+}
+
+const { writeText } = useSystemClipboard()
+
+/** What the last **Copy prompt** press did, or null before the first one. */
+const promptCopyMessage = ref<string | null>(null)
+
+/**
+ * The one clipboard write in the settings view.
+ *
+ * Reported in place rather than through `useStatusMessage`: that toast is
+ * rendered by `StatusLine`, which `PanelShell` mounts and this view does not, so
+ * a message sent there would be written to a pill nobody can see.
+ *
+ * The confirmation carries no timer, unlike the toast's five seconds. It is a
+ * statement that stays true — the prompt really is still on the clipboard — and
+ * the failure half must not expire at all, since the reader is about to paste
+ * nothing into an assistant.
+ */
+async function copyPrompt() {
+	const written = await writeText(SHARE_SETUP_PROMPT)
+	promptCopyMessage.value = written
+		? 'The prompt is on your clipboard. Paste it into an assistant.'
+		: "Couldn't write to the clipboard."
+}
+
+/** Opened in the user's browser rather than navigated to: a real anchor would
+ *  replace the WebView with a web page and take the panel with it. `NoteBody` and
+ *  `LinkPreviewCard` reach the same `openUrl` for the same reason. */
+function openGuideLink(url: string) {
+	void openUrl(url)
+}
+
+const CLOUDFLARE_SIGNUP_URL = 'https://dash.cloudflare.com/sign-up'
+const REPOSITORY_URL = 'https://github.com/FallDownTheSystem/copper'
+
+/** Three appearances used across a dozen elements in the guide's markup, on the
+ *  same rule as `shareButtonClass`: written once so they cannot drift. */
+const guideHeadingClass = 'text-text-primary text-meta font-semibold'
+/** `break-words` is load-bearing rather than defensive. The longest span wearing
+ *  this is the relay URL's generic form, which is one 48-character unbreakable
+ *  word — wider than the guide's text column, so without a break rule it would
+ *  push the panel into a horizontal scroll the app must never have. */
+const guideCodeClass =
+	'bg-code-surface text-text-primary rounded px-1 font-mono text-[0.9em] break-words'
+const guideCommandClass =
+	'bg-code-surface border-code-border text-text-primary mt-1 block break-words rounded-md border px-2 py-1 font-mono text-meta select-all'
+/** The link treatment, since these are `<button>`s and inherit none of an
+ *  anchor's. */
+const guideLinkClass = 'text-link focus-ring rounded underline underline-offset-2'
 
 const back = useTemplateRef<HTMLButtonElement>('back')
 
@@ -729,7 +823,7 @@ const summonNote = computed(() => {
 			<SettingsSection title="Share">
 				<SettingsRow
 					label="Send notes to my other device"
-					description="Sends a note to your other machine through a relay you deploy to your own free Cloudflare account. Notes are encrypted before they leave; the relay only ever holds ciphertext. See worker/README.md for the five commands that set it up."
+					description="Sends a note to your other machine through a relay you deploy to your own free Cloudflare account. Notes are encrypted before they leave; the relay only ever holds ciphertext. Setting it up takes five commands, and the setup guide below has them."
 					label-for="share-enabled"
 					:error="shareRowError"
 				>
@@ -738,6 +832,188 @@ const summonNote = computed(() => {
 						:model-value="shareConfig.enabled"
 						@update:model-value="(value) => patchConfig({ enabled: value })"
 					/>
+				</SettingsRow>
+
+				<!-- **Outside the `v-if` below, and that is the point of it.** Every
+				     other row here is hidden until Share is switched on; the guide is
+				     the one thing a reader needs *before* they have anything to
+				     configure, so hiding it behind the switch would put the
+				     instructions on the far side of the step they explain. -->
+				<SettingsRow
+					label="Setup guide"
+					description="Everything you do outside Copper, in order. There is a prompt at the end that hands the job to an AI assistant."
+				>
+					<!-- The control is in `#below` rather than the trailing column, as the
+					     Test connection row's is: the guide it opens has to span the row's
+					     full width, and a trailing button would take a column out of it. -->
+					<template #below>
+						<div class="mt-2 flex items-center gap-2">
+							<!-- `aria-expanded` and no `aria-controls`: the guide is rendered
+							     only while open, and an `aria-controls` pointing at an id that
+							     does not exist yet is worse than none. The label says the state
+							     as well, so the button reads correctly with the attribute
+							     unsupported. -->
+							<button
+								type="button"
+								:class="shareButtonClass"
+								:aria-expanded="guideOpen"
+								data-testid="share-guide-toggle"
+								@click="toggleGuide"
+							>
+								{{ guideOpen ? 'Hide setup guide' : 'Show setup guide' }}
+							</button>
+						</div>
+
+						<!-- `select-text` because the view's root sets `select-none`: the
+						     whole point of a command block is that it can be selected. -->
+						<div
+							v-if="guideOpen"
+							ref="guide"
+							data-testid="share-setup-guide"
+							class="border-separator mt-2 space-y-3 rounded-md border p-3 select-text"
+						>
+							<!-- `h3` under `SettingsSection`'s `h2` and the view's `h1`, so the
+							     guide extends the outline rather than skipping a level in it. -->
+							<section>
+								<h3 :class="guideHeadingClass">Before you start</h3>
+								<ul class="text-text-secondary mt-1 list-disc space-y-1 pl-4 text-meta">
+									<li>
+										Create a free Cloudflare account. No card is needed.
+										<button
+											type="button"
+											:class="guideLinkClass"
+											@click="openGuideLink(CLOUDFLARE_SIGNUP_URL)"
+										>
+											Open the Cloudflare sign-up page
+										</button>
+									</li>
+									<li>
+										Download or clone Copper's repository, then open the
+										<code :class="guideCodeClass">worker</code> folder inside it. Every command
+										below runs from there.
+										<button
+											type="button"
+											:class="guideLinkClass"
+											@click="openGuideLink(REPOSITORY_URL)"
+										>
+											Open the Copper repository
+										</button>
+									</li>
+								</ul>
+							</section>
+
+							<section>
+								<h3 :class="guideHeadingClass">Deploy the relay</h3>
+								<ol class="text-text-secondary mt-1 list-decimal space-y-2 pl-4 text-meta">
+									<li>
+										Sign in. This opens a browser window.
+										<code :class="guideCommandClass">pnpm dlx wrangler@4 login</code>
+									</li>
+									<li>
+										Create the mailbox store. This prints an
+										<code :class="guideCodeClass">id</code>.
+										<code :class="guideCommandClass"
+											>pnpm dlx wrangler@4 kv namespace create MAILBOX</code
+										>
+									</li>
+									<li>
+										Open <code :class="guideCodeClass">wrangler.jsonc</code> and paste that
+										<code :class="guideCodeClass">id</code> over the placeholder in
+										<code :class="guideCodeClass">kv_namespaces</code>.
+									</li>
+									<li>
+										Set the relay token. Wrangler asks for the value. Invent a long random string
+										and keep a copy, because you type it into both machines.
+										<code :class="guideCommandClass"
+											>pnpm dlx wrangler@4 secret put RELAY_TOKEN</code
+										>
+									</li>
+									<li>
+										Deploy. This prints your relay URL, of the form
+										<code :class="guideCodeClass"
+											>https://copper-relay.&lt;your-subdomain&gt;.workers.dev</code
+										>.
+										<code :class="guideCommandClass">pnpm dlx wrangler@4 deploy</code>
+									</li>
+								</ol>
+								<!-- The one thing that fails silently for a reader who is inside a
+								     checkout, which is the likeliest place to be after cloning. -->
+								<p class="text-text-secondary mt-2 text-meta text-pretty">
+									Inside a clone of the repository, plain
+									<code :class="guideCodeClass">npx</code> fails, because Copper's root
+									<code :class="guideCodeClass">package.json</code> pins pnpm. Use
+									<code :class="guideCodeClass">pnpm dlx</code> there, as written above. If you
+									downloaded only the <code :class="guideCodeClass">worker</code> folder,
+									<code :class="guideCodeClass">npx wrangler@4</code> works too.
+								</p>
+							</section>
+
+							<section>
+								<h3 :class="guideHeadingClass">Put the values into Copper</h3>
+								<p class="text-text-secondary mt-1 text-meta text-pretty">
+									Turn Share on above, on <strong class="font-medium">both</strong> machines, and
+									fill in the rows that appear.
+								</p>
+								<ul class="text-text-secondary mt-1 list-disc space-y-1 pl-4 text-meta">
+									<li>Relay URL: the address deploy printed.</li>
+									<li>
+										Relay token: the <code :class="guideCodeClass">RELAY_TOKEN</code> value you set.
+									</li>
+									<li>
+										Pairing secret: press Generate on one machine, then paste the value into the
+										other.
+									</li>
+									<!-- The warning comes before the instruction, because this is the
+									     one field a reader can fill in twice without anything ever
+									     telling them it is wrong. -->
+									<li>
+										This device is: set the two machines differently, or nothing is ever delivered
+										in either direction and nothing detects it. Use
+										<strong class="font-medium">First</strong> on one machine and
+										<strong class="font-medium">Second</strong> on the other.
+									</li>
+								</ul>
+								<p class="text-text-secondary mt-1 text-meta text-pretty">
+									Then press Test connection on both machines.
+								</p>
+							</section>
+
+							<section>
+								<h3 :class="guideHeadingClass">Hand it to an AI instead</h3>
+								<p class="text-text-secondary mt-1 text-meta text-pretty">
+									The prompt below carries every step above. Paste it into Claude or another
+									assistant, and it hands your relay URL and relay token back at the end. It never
+									generates the pairing secret. You do that here, with Generate.
+								</p>
+
+								<div class="mt-2 flex items-center gap-2">
+									<button
+										type="button"
+										:class="shareButtonClass"
+										data-testid="share-copy-prompt"
+										@click="copyPrompt()"
+									>
+										Copy prompt
+									</button>
+								</div>
+
+								<!-- The same split every other outcome in this view uses: a visible
+								     paragraph hidden from assistive tech, and a permanently mounted
+								     live region beside it. A region injected together with its text
+								     is the announcement most likely to be dropped. -->
+								<p
+									v-if="promptCopyMessage"
+									aria-hidden="true"
+									class="text-text-secondary mt-1.5 text-meta text-pretty"
+								>
+									{{ promptCopyMessage }}
+								</p>
+								<div class="sr-only" role="status" aria-live="polite">
+									{{ promptCopyMessage ?? '' }}
+								</div>
+							</section>
+						</div>
+					</template>
 				</SettingsRow>
 
 				<!-- Everything below is hidden while the feature is off. Six controls

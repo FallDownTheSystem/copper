@@ -10,6 +10,15 @@
 @theme {
 	--font-sans: 'Inter Variable', system-ui, sans-serif;
 
+	/* The panel's one monospace stack, and the same one `.note-prose pre` and
+	   `.note-prose code` write out by hand further down this file. Those two style
+	   `v-html` output that Tailwind's source scanner never sees, so they cannot use
+	   the `font-mono` utility and the stack is stated twice on purpose. Declaring
+	   it here is what stops a `font-mono` class elsewhere in the app — the Share
+	   setup guide's commands — from rendering in Tailwind's default stack and
+	   reading as a different kind of code from a note's. */
+	--font-mono: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+
 	/* Three roles, not a size ramp. Emphasis within a role is a weight step.
 
 	   The sizes sit under the usual 16px body floor on purpose, and the bend is
@@ -148,7 +157,9 @@
 	   rather than the number it happens to produce for this one. At chroma 0.002 it
 	   is a relationship nobody can see directly — which is exactly why it must be
 	   carried rather than re-derived by eye. */
-	--surface: oklch(0.99 calc(0.002 * var(--neutral-c)) calc(var(--neutral-h) + 20) / var(--surface-alpha));
+	--surface: oklch(
+		0.99 calc(0.002 * var(--neutral-c)) calc(var(--neutral-h) + 20) / var(--surface-alpha)
+	);
 	/* The same colour with the alpha taken off, for the two surfaces that have to
 	   erase what is behind them rather than tint it: the stuck section heading's
 	   plate, which paints *over* the rows it scrolls past, and the panel itself
@@ -378,6 +389,13 @@
 	--color-surface-danger: var(--surface-danger);
 	--color-toast-surface: var(--toast-surface);
 	--color-separator: var(--separator);
+	/* The code fence's fill and edge, as utilities. The pair already existed for
+	   `.note-prose pre`, which reads the custom properties directly because it
+	   styles `v-html`; the Share setup guide renders its commands in ordinary
+	   markup, and a command block that borrowed `--surface-hover` instead would be
+	   a second, slightly different code surface in the same panel. */
+	--color-code-surface: var(--code-surface);
+	--color-code-border: var(--code-border);
 	--color-control-border: var(--control-border);
 	--color-destructive-text: var(--destructive-text);
 	--color-link: var(--link);
