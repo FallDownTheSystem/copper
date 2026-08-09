@@ -100,6 +100,23 @@ pub const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
 /// For the two requests that can carry 20 MiB.
 pub const TRANSFER_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// The next sequence after `seq`, refusing rather than saturating.
+///
+/// `checked_add`, not `saturating_add`: saturating at `u64::MAX` would leave a
+/// cursor pointing at the slot it had just used. For the reader that means
+/// fetching, delivering and acknowledging the same message on every tick for
+/// ever; for the sender it means handing the next send a slot whose message the
+/// reader has not consumed. The number is unreachable in practice — it is a
+/// hundred thousand years of sending one note a nanosecond — which is exactly
+/// why it must fail loudly rather than quietly do the wrong thing.
+pub fn advance(seq: u64) -> Result<u64> {
+	seq.checked_add(1).ok_or_else(|| {
+		StoreError::Invalid(
+			"this pairing has run out of message numbers; generate a new pairing secret".into(),
+		)
+	})
+}
+
 // --- the process-wide state --------------------------------------------------
 
 /// The one [`ShareState`] this process has.

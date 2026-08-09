@@ -100,7 +100,10 @@ struct Counter {
 }
 
 pub struct HttpRelay {
-	agent: Agent,
+	/// For the two requests that can carry 20 MiB.
+	transfer: Agent,
+	/// For the requests that carry a counter and nothing else.
+	counters: Agent,
 	base: String,
 	token: String,
 }
@@ -109,10 +112,11 @@ impl HttpRelay {
 	/// `base` is the validated relay URL, without its trailing slash.
 	pub fn new(base: &str, token: &str) -> Self {
 		Self {
-			// One agent per relay rather than a process-wide one, because the token and
-			// the base URL are part of what it is for and both can change under the
+			// One pair per relay rather than process-wide ones, because the token and
+			// the base URL are part of what they are for and both can change under the
 			// user. Building one costs no connection; the pool fills on first use.
-			agent: Self::agent(TRANSFER_TIMEOUT),
+			transfer: Self::agent(TRANSFER_TIMEOUT),
+			counters: Self::agent(HEAD_TIMEOUT),
 			base: base.to_string(),
 			token: token.to_string(),
 		}
@@ -151,7 +155,8 @@ impl HttpRelay {
 			url.push_str(which);
 		}
 
-		let mut response = Self::agent(HEAD_TIMEOUT)
+		let mut response = self
+			.counters
 			.get(url)
 			.header("Authorization", self.bearer())
 			.call()
@@ -189,7 +194,7 @@ impl Relay for HttpRelay {
 
 	fn fetch(&self, mailbox: &str, seq: u64) -> Result<Option<Vec<u8>>> {
 		let mut response = self
-			.agent
+			.transfer
 			.get(self.url("/msg", mailbox, Some(seq)))
 			.header("Authorization", self.bearer())
 			.call()
@@ -239,7 +244,7 @@ impl Relay for HttpRelay {
 
 	fn send(&self, mailbox: &str, seq: u64, body: &[u8]) -> Result<SendAck> {
 		let response = self
-			.agent
+			.transfer
 			.post(self.url("/send", mailbox, Some(seq)))
 			.header("Authorization", self.bearer())
 			.header("Content-Type", "application/octet-stream")
@@ -263,8 +268,9 @@ impl Relay for HttpRelay {
 
 	fn ack(&self, mailbox: &str, seq: u64) -> Result<()> {
 		// The short timeout, not the transfer one: this carries a sequence number
-		// and nothing else. `self.agent` is for the two requests that can be 20 MiB.
-		let response = Self::agent(HEAD_TIMEOUT)
+		// and nothing else. `self.transfer` is for the two requests that can be 20 MiB.
+		let response = self
+			.counters
 			.delete(self.url("/msg", mailbox, Some(seq)))
 			.header("Authorization", self.bearer())
 			.call()

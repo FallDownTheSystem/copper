@@ -27,7 +27,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use copper_core::store::atomic;
-use copper_core::store::error::{Result, StoreError};
+use copper_core::store::error::Result;
+use copper_core::store::format::to_git_json;
 use serde::{Deserialize, Serialize};
 
 use super::crypto::{self, Keys};
@@ -233,9 +234,11 @@ pub fn load(dir: &Path) -> StoredConfig {
 pub fn save(dir: &Path, config: &StoredConfig) -> Result<()> {
 	std::fs::create_dir_all(dir)
 		.map_err(|err| copper_core::store::error::io_err(dir, "create", &err))?;
-	let text = serde_json::to_string_pretty(config)
-		.map_err(|err| StoreError::Io(format!("could not serialise {FILE_NAME}: {err}")))?;
-	atomic::write_atomic(&path(dir), &text)
+	// `to_git_json` rather than a `to_string_pretty` of its own: that function is
+	// the workspace's one declaration of what a JSON file Copper writes looks
+	// like, and `copper-cli`'s `cli-state.json` — the precedent this module cites —
+	// is written through it too.
+	atomic::write_atomic(&path(dir), &to_git_json(config)?)
 }
 
 // --- patching ----------------------------------------------------------------

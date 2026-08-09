@@ -53,7 +53,7 @@ use super::config::{self, Pending, StoredConfig};
 use super::protocol::Payload;
 use super::relay::{HttpRelay, Relay};
 use super::state::ShareState;
-use super::{crypto, DRAIN_LIMIT, HOLE_GRACE, POISON_LIMIT, POLL_INTERVAL};
+use super::{advance, crypto, DRAIN_LIMIT, HOLE_GRACE, POISON_LIMIT, POLL_INTERVAL};
 
 /// Emitted when `lastError` changes, so an already-open Settings view learns
 /// that a poll failed without having to be re-opened.
@@ -477,22 +477,6 @@ pub fn tick_from<R: Relay, D: Deliver>(
 	}
 
 	Ok(())
-}
-
-/// The next sequence after `seq`.
-///
-/// `checked_add`, not `saturating_add`: saturating at `u64::MAX` would leave the
-/// cursor pointing at the slot it had just consumed, and the reader would fetch,
-/// deliver and acknowledge the same message on every tick for ever. The number
-/// is unreachable in practice — it is a hundred thousand years of sending one
-/// note a nanosecond — which is exactly why it must fail loudly rather than
-/// quietly do the wrong thing.
-fn advance(seq: u64) -> Result<u64> {
-	seq.checked_add(1).ok_or_else(|| {
-		StoreError::Invalid(
-			"this pairing has run out of message numbers; generate a new pairing secret".into(),
-		)
-	})
 }
 
 /// Writes through the generation check and keeps the generation current.

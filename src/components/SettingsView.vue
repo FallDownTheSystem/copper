@@ -155,6 +155,10 @@ const testMessage = computed(() => {
  *  about the same section and only one can usefully be read at a time. */
 const shareRowError = computed(() => shareError.value ?? shareConfig.value.lastError)
 
+/** One appearance for the two buttons in this section, on `updateButtonClass`'s
+ *  precedent: a copy each is what lets them drift apart. */
+const shareButtonClass = 'panel-button hit-44 relative h-8 px-2 text-meta'
+
 const back = useTemplateRef<HTMLButtonElement>('back')
 
 /**
@@ -791,7 +795,7 @@ const summonNote = computed(() => {
 								     value the user is about to carry to the other machine. -->
 								<button
 									type="button"
-									class="panel-button hit-44 relative h-8 px-2 text-meta"
+									:class="shareButtonClass"
 									:disabled="shareGenerating"
 									@click="generateSecret()"
 								>
@@ -841,7 +845,7 @@ const summonNote = computed(() => {
 							<div class="mt-2 flex items-center gap-2">
 								<button
 									type="button"
-									class="panel-button hit-44 relative h-8 px-2 text-meta"
+									:class="shareButtonClass"
 									:disabled="shareTesting"
 									@click="testRelay()"
 								>

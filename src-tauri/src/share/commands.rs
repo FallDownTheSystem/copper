@@ -29,19 +29,6 @@ use super::relay::{self, HttpRelay, Relay, SendAck};
 
 type Reply<T> = std::result::Result<T, StoreError>;
 
-/// The next sequence after `seq`, refusing rather than saturating.
-///
-/// `checked_add`, per the protocol's rule that counters advance checked: at
-/// `u64::MAX` a saturating add would hand the next send the slot it had just
-/// used, overwriting a message the reader had not consumed.
-fn advance(seq: u64) -> Reply<u64> {
-	seq.checked_add(1).ok_or_else(|| {
-		StoreError::Invalid(
-			"this pairing has run out of message numbers; generate a new pairing secret".into(),
-		)
-	})
-}
-
 /// What **Test connection** found.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -281,6 +268,10 @@ pub fn share_send_notes(ids: Vec<String>, state: State<'_, SharedStore>) -> Repl
 
 	let count = notes.len();
 	let plaintext = protocol::build_payload(&notes)?;
+	// The blob bytes are in `plaintext` now, base64 and all. Holding the originals
+	// as well would keep a second copy of a 20 MiB message alive across the seal
+	// and the upload, for nothing.
+	drop(notes);
 
 	// **The exact finished size, before any network call at all.** XChaCha20-
 	// Poly1305 is a stream cipher with a tag: the sealed message is the plaintext
@@ -315,15 +306,18 @@ pub fn share_send_notes(ids: Vec<String>, state: State<'_, SharedStore>) -> Repl
 			.head(&ready.peer)
 			.map_err(|err| StoreError::Unavailable(err.message()))?
 		{
-			Some(head) => advance(head)?,
+			Some(head) => super::advance(head)?,
 			None => 0,
 		},
 	};
 	// Sealed against the slot it will occupy, because `crypto::aad` binds the
 	// sequence: a message moved to another slot does not open.
 	let sealed = super::crypto::seal(&ready.keys, &ready.peer, seq, &plaintext)?;
+	// Sealed, so the cleartext has no further reader. The upload below is the
+	// longest stretch of the send, and the worst one to hold 20 MiB through.
+	drop(plaintext);
 
-	let next = advance(seq)?;
+	let next = super::advance(seq)?;
 	// **Before the request leaves, and fenced.** The send guard keeps other sends
 	// out of the window between the peek above and here, but it says nothing about
 	// a *configuration* change: the user can replace the pairing secret or the

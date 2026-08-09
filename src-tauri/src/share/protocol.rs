@@ -84,17 +84,6 @@ pub struct PayloadNote {
 	pub attachments: Vec<(String, Vec<u8>)>,
 }
 
-/// A payload that will not fit through the relay.
-///
-/// A plain struct owned by this module rather than a command type, so nothing on
-/// the protocol side has to import the IPC surface. `commands.rs` is what turns
-/// it into a `ShareSendOutcome`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TooLarge {
-	pub bytes: usize,
-	pub limit: usize,
-}
-
 /// Serialises a message, base64-encoding attachment bytes on the way out.
 pub fn build_payload(notes: &[PayloadNote]) -> Result<Vec<u8>> {
 	let wire = WirePayload {
@@ -117,20 +106,6 @@ pub fn build_payload(notes: &[PayloadNote]) -> Result<Vec<u8>> {
 
 	serde_json::to_vec(&wire)
 		.map_err(|err| StoreError::Io(format!("this note could not be prepared for sending: {err}")))
-}
-
-/// Whether a finished ciphertext fits through the relay.
-///
-/// Checked on the **sealed** bytes rather than on the plaintext, because that is
-/// what the Worker's `Content-Length` guard measures and what KV stores.
-pub fn check_size(sealed: &[u8]) -> std::result::Result<(), TooLarge> {
-	if sealed.len() > SHARE_MAX_PAYLOAD_BYTES {
-		return Err(TooLarge {
-			bytes: sealed.len(),
-			limit: SHARE_MAX_PAYLOAD_BYTES,
-		});
-	}
-	Ok(())
 }
 
 /// Parses a decrypted message, refusing anything the local paths would refuse.
@@ -315,21 +290,6 @@ mod tests {
 		let err = parse_payload(plaintext).unwrap_err();
 		assert_eq!(err.kind(), "invalid");
 		assert!(err.message().contains("a.png"));
-	}
-
-	#[test]
-	fn check_size_passes_at_the_cap_and_fails_one_byte_over() {
-		let exact = vec![0u8; SHARE_MAX_PAYLOAD_BYTES];
-		assert_eq!(check_size(&exact), Ok(()));
-
-		let over = vec![0u8; SHARE_MAX_PAYLOAD_BYTES + 1];
-		assert_eq!(
-			check_size(&over),
-			Err(TooLarge {
-				bytes: SHARE_MAX_PAYLOAD_BYTES + 1,
-				limit: SHARE_MAX_PAYLOAD_BYTES,
-			})
-		);
 	}
 
 	/// The Worker refuses anything shorter than this before it reaches KV, so the

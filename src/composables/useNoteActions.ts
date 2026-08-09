@@ -8,7 +8,7 @@
  * duplicates it.
  */
 
-import { useAttachments } from './useAttachments'
+import { formatBytes, useAttachments } from './useAttachments'
 import { useSystemClipboard } from './useSystemClipboard'
 import { useEditorHandoff } from './useEditorHandoff'
 import { useNoteDisclosure } from './useNoteDisclosure'
@@ -942,7 +942,7 @@ function sendToOtherDevice() {
 				return
 			case 'too-large':
 				status.setError(
-					`This selection is ${megabytes(outcome.bytes)} MB once encrypted, over the ${megabytes(outcome.limit)} MB a shared note can be. Attachments cost about a third more than their file size.`,
+					`This selection is ${formatBytes(outcome.bytes)} once encrypted, over the ${formatBytes(outcome.limit)} a shared note can be. Attachments cost about a third more than their file size.`,
 				)
 				return
 			case 'unconfigured':
@@ -952,11 +952,6 @@ function sendToOtherDevice() {
 				status.setError(outcome.message)
 		}
 	})
-}
-
-/** One decimal place, which is the precision a size limit is worth stating to. */
-function megabytes(bytes: number) {
-	return (bytes / (1024 * 1024)).toFixed(1)
 }
 
 // --- attachments -------------------------------------------------------------
