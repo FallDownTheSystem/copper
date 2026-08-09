@@ -29,6 +29,32 @@ const MAX_RECENTS: usize = 20;
 
 pub const FILE_NAME: &str = "settings.json";
 
+/// The application identifier, and therefore the name of the directory holding
+/// [`FILE_NAME`].
+///
+/// The same string as `identifier` in `src-tauri/tauri.conf.json`, because that
+/// is what Tauri derives `app_config_dir()` from. It is declared here rather than
+/// in the crate that has a Tauri context, because the crate that *lacks* one —
+/// `copper-cli` — is the one that has to reconstruct the path by hand, and two
+/// literals in two crates is how the app and the CLI would come to disagree about
+/// where a user's settings live.
+pub const APP_IDENTIFIER: &str = "io.github.falldownthesystem.copper";
+
+/// `%APPDATA%\io.github.falldownthesystem.copper`, or `None` when the variable is
+/// not set.
+///
+/// What Tauri's `app_config_dir()` answers for the app, spelled out for a process
+/// with no Tauri runtime to ask. `None` rather than a guess: a missing `APPDATA`
+/// means there is no roaming profile to write into, and inventing one would put
+/// the CLI's view of the settings somewhere the app will never look.
+pub fn default_config_dir() -> Option<PathBuf> {
+	let roaming = std::env::var_os("APPDATA")?;
+	if roaming.is_empty() {
+		return None;
+	}
+	Some(PathBuf::from(roaming).join(APP_IDENTIFIER))
+}
+
 /// The panel's shipped size, and the same fact `panel::PANEL_WIDTH` and
 /// `tauri.conf.json` each declare. `panel`'s unit tests tie the three together;
 /// the numbers live here as well because a *stored* default has to be readable
@@ -812,22 +838,66 @@ impl LoadedSettings {
 ///
 /// It never emits: this runs during startup, where nothing is listening yet
 /// (spec 8A.2), so the reason has to be *recorded* to reach the user at all.
+///
+/// **This is not a pure read.** An unusable file is renamed out of the way, which
+/// is the right answer for the app — it is what lets the next save succeed — and
+/// the wrong answer for anything merely *listing* what is in there. That caller
+/// wants [`load_read_only`].
 pub fn load(path: &Path) -> LoadedSettings {
+	match decode(path) {
+		Ok(loaded) => loaded,
+		Err(why) => set_aside(path, &why),
+	}
+}
+
+/// [`load`] with the quarantine step removed: reads and decodes, and touches
+/// nothing.
+///
+/// The CLI's whole read surface goes through this. `copper space list` is a
+/// listing command, and a listing command that renames the user's `settings.json`
+/// because it happens to hold a stray comma would be destroying data it was only
+/// asked to print — while the app, which never ran, is the only thing that could
+/// have told them.
+///
+/// An unusable file therefore reports [`Origin::Retained`], which already means
+/// exactly this: the file is still there and writing over it would destroy it.
+/// The caller gets defaults and a notice naming the reason, and the file keeps
+/// both its name and its bytes.
+pub fn load_read_only(path: &Path) -> LoadedSettings {
+	match decode(path) {
+		Ok(loaded) => loaded,
+		Err(why) => LoadedSettings::defaults(
+			Origin::Retained,
+			Some(format!(
+				"{} could not be used because {why}. It has been left untouched.",
+				path.display()
+			)),
+		),
+	}
+}
+
+/// The read-and-decode half both loaders share.
+///
+/// `Err(why)` is the one outcome they answer differently — a file that is present
+/// and readable and still not settings — so it is the only thing this returns as
+/// an error. Everything else (absent, held open by something else, present and
+/// repairable) has one answer, and it is side-effect free in both.
+fn decode(path: &Path) -> std::result::Result<LoadedSettings, String> {
 	let bytes = match read_with_retry(path) {
 		Ok(Some(bytes)) => bytes,
-		Ok(None) => return LoadedSettings::defaults(Origin::Absent, None),
+		Ok(None) => return Ok(LoadedSettings::defaults(Origin::Absent, None)),
 		Err(err) => {
 			// Present but unreadable. Defaults let Copper start; leaving the file
 			// alone lets the user get their recents list back once whatever is
 			// holding it lets go.
-			return LoadedSettings::defaults(
+			return Ok(LoadedSettings::defaults(
 				Origin::Retained,
 				Some(format!(
 					"{} could not be read ({err}). Copper started from default settings and left \
 					 the file untouched.",
 					path.display()
 				)),
-			);
+			));
 		}
 	};
 
@@ -836,7 +906,7 @@ pub fn load(path: &Path) -> LoadedSettings {
 	// instead of being mistaken for an I/O failure.
 	let text = match String::from_utf8(bytes) {
 		Ok(text) => text,
-		Err(err) => return set_aside(path, &format!("it is not valid UTF-8 ({err})")),
+		Err(err) => return Err(format!("it is not valid UTF-8 ({err})")),
 	};
 
 	match serde_json::from_str::<RawSettings>(&text) {
@@ -849,13 +919,13 @@ pub fn load(path: &Path) -> LoadedSettings {
 					notices.join("\n")
 				)
 			});
-			LoadedSettings {
+			Ok(LoadedSettings {
 				settings,
 				notice,
 				origin: Origin::Loaded,
-			}
+			})
 		}
-		Err(err) => set_aside(path, &format!("it is not valid JSON ({err})")),
+		Err(err) => Err(format!("it is not valid JSON ({err})")),
 	}
 }
 
@@ -1820,5 +1890,155 @@ mod tests {
 		assert_eq!(settings.recents, ["C:\\a.copper"]);
 		assert_eq!(settings.active_space, 0);
 		assert_eq!(settings.theme, "light");
+	}
+
+	// --- the read-only loader -------------------------------------------------
+
+	/// The pair of assertions every `load_read_only` case below makes, because the
+	/// point of the function is what it does *not* do: the file is still named what
+	/// it was named, and still holds what it held.
+	fn untouched(dir: &Path, path: &Path, before: &[u8]) {
+		assert_eq!(siblings(dir), [FILE_NAME], "a file was created or renamed");
+		assert_eq!(std::fs::read(path).unwrap(), before, "the file's bytes changed");
+	}
+
+	#[test]
+	fn the_read_only_loader_reports_an_absent_file_without_creating_one() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join(FILE_NAME);
+
+		let loaded = load_read_only(&path);
+
+		assert_eq!(loaded.origin, Origin::Absent);
+		assert!(loaded.notice.is_none());
+		assert_eq!(loaded.settings, Settings::default());
+		assert!(siblings(dir.path()).is_empty(), "a listing wrote a file");
+	}
+
+	#[test]
+	fn the_read_only_loader_reads_a_valid_file_exactly_as_load_does() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"theme":"dark","recents":["C:\\a.copper"]}"#);
+		let before = std::fs::read(&path).unwrap();
+
+		let loaded = load_read_only(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(loaded.notice.is_none());
+		assert_eq!(loaded.settings.theme, "dark");
+		assert_eq!(loaded.settings.recents, ["C:\\a.copper"]);
+		untouched(dir.path(), &path, &before);
+	}
+
+	/// A field-level repair is in-memory in both loaders — `load` only ever writes
+	/// through its *caller* — so the read-only one has to produce the same repaired
+	/// settings and the same notice, and still leave the file alone.
+	#[test]
+	fn the_read_only_loader_repairs_fields_in_memory_only() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"theme":7,"recents":["C:\\a.copper"]}"#);
+		let before = std::fs::read(&path).unwrap();
+
+		let loaded = load_read_only(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert_eq!(loaded.settings.theme, "system");
+		assert_eq!(loaded.settings.recents, ["C:\\a.copper"], "a repair cost the recents list");
+		assert!(loaded.notice.expect("repairs are reported").contains("theme"));
+		untouched(dir.path(), &path, &before);
+	}
+
+	/// The case the function exists for. `load` renames this file; a listing
+	/// command must not.
+	#[test]
+	fn the_read_only_loader_leaves_invalid_json_where_it_is() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), "{not json at all");
+		let before = std::fs::read(&path).unwrap();
+
+		let loaded = load_read_only(&path);
+
+		assert_eq!(loaded.origin, Origin::Retained, "saving over this would destroy it");
+		assert_eq!(loaded.settings, Settings::default());
+		assert!(loaded.notice.expect("the reason is reported").contains("JSON"));
+		untouched(dir.path(), &path, &before);
+	}
+
+	#[test]
+	fn the_read_only_loader_leaves_invalid_utf8_where_it_is() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join(FILE_NAME);
+		// A lone continuation byte: valid JSON shape, not valid UTF-8.
+		let before = b"{\"theme\":\"\xff\"}".to_vec();
+		std::fs::write(&path, &before).unwrap();
+
+		let loaded = load_read_only(&path);
+
+		assert_eq!(loaded.origin, Origin::Retained);
+		assert!(loaded.notice.expect("the reason is reported").contains("UTF-8"));
+		untouched(dir.path(), &path, &before);
+	}
+
+	/// The contrast, stated once: `load` on the same bytes *does* rename. Without
+	/// this the pair above would still pass if `load_read_only` were simply what
+	/// `load` had always been.
+	#[test]
+	fn the_ordinary_loader_still_sets_an_invalid_file_aside() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), "{not json at all");
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Quarantined);
+		assert!(!path.exists(), "the file kept its name");
+		assert_eq!(siblings(dir.path()).len(), 1, "the file was not kept at all");
+	}
+
+	// --- where the config directory is ----------------------------------------
+
+	/// Restores `APPDATA` however the test ends.
+	///
+	/// Tests in one binary share a process and its environment, so this must put
+	/// the variable back rather than leaving a value behind for whatever runs next
+	/// on another thread. Nothing else in this crate reads `APPDATA`, which is what
+	/// keeps the window this opens harmless.
+	struct ScopedAppData(Option<std::ffi::OsString>);
+
+	impl ScopedAppData {
+		fn set(value: &str) -> Self {
+			let previous = std::env::var_os("APPDATA");
+			std::env::set_var("APPDATA", value);
+			Self(previous)
+		}
+	}
+
+	impl Drop for ScopedAppData {
+		fn drop(&mut self) {
+			match self.0.take() {
+				Some(previous) => std::env::set_var("APPDATA", previous),
+				None => std::env::remove_var("APPDATA"),
+			}
+		}
+	}
+
+	#[test]
+	fn the_config_dir_is_appdata_joined_with_the_identifier() {
+		let _guard = ScopedAppData::set(r"C:\Users\test\AppData\Roaming");
+
+		assert_eq!(
+			default_config_dir(),
+			Some(PathBuf::from(
+				r"C:\Users\test\AppData\Roaming\io.github.falldownthesystem.copper"
+			))
+		);
+	}
+
+	/// The identifier is `tauri.conf.json`'s, and this is the assertion that says
+	/// so out loud. A change on either side that does not change the other moves
+	/// the CLI's idea of the config directory away from the app's, and the symptom
+	/// would be an empty recents list rather than an error.
+	#[test]
+	fn the_identifier_matches_the_bundle_identifier() {
+		assert_eq!(APP_IDENTIFIER, "io.github.falldownthesystem.copper");
 	}
 }

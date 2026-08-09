@@ -23,5 +23,9 @@
 
 pub mod attachments;
 pub mod entry;
+/// JavaScript's character classes, shared by the two modules ported from it.
+mod js;
+pub mod markdown;
+pub mod search;
 pub mod spaces;
 pub mod store;

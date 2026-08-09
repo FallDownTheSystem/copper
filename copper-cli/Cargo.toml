@@ -1,0 +1,49 @@
+[package]
+name = "copper-cli"
+description = "The headless Copper CLI: read and edit .copper spaces from a terminal"
+authors = ["FallDownTheSystem"]
+repository = "https://github.com/FallDownTheSystem/copper"
+publish = false
+edition = "2021"
+version.workspace = true
+rust-version.workspace = true
+
+# `copper-cli`, and it **must not** be `copper`: `src-tauri`'s package is named
+# `copper` and auto-discovers a binary of that name from its own `src/main.rs`,
+# so two `[[bin]] name = "copper"` targets in one workspace would both write
+# `target/debug/copper.exe`. They overwrite each other, and a `cargo test
+# --workspace` then runs whichever finished last.
+#
+# The name the *user* types is still `copper`. Two separate things carry it:
+# clap's `#[command(name = "copper")]`, which is what `--help` and every usage
+# error print, and task-025's installer, which ships this file as
+# `$INSTDIR\cli\copper.exe`. `copper-cli` is also the name spec 10 pins for the
+# bundled `externalBin`, so this matches what the installer will look for.
+[[bin]]
+name = "copper-cli"
+path = "src/main.rs"
+
+[dependencies]
+# `default-features = false` is the whole dependency boundary in one line: it
+# drops the `watch` feature, and with it `notify` and `notify-debouncer-full`. A
+# CLI process writes once and exits, so it has nothing to watch — and
+# `cargo tree -p copper-cli` is an acceptance criterion that names both crates.
+copper-core = { path = "../copper-core", default-features = false }
+clap = { version = "4", features = ["derive"] }
+# The `--json` envelope and every documented output shape. `copper-core` already
+# depends on it, so this adds nothing to the tree.
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+# `--clipboard`, and only that: one `set_text` call.
+#
+# `default-features = false` is required rather than tidy. The default
+# `image-data` feature pulls in the `image` crate, which the acceptance criterion
+# names explicitly — and a CLI that places one plain-text payload has no use for
+# a bitmap encoder.
+arboard = { version = "3", default-features = false }
+
+[dev-dependencies]
+# The end-to-end tests give every child process its own `%APPDATA%`, so none of
+# them can read — or, for `space use`, write — the developer's own Copper
+# configuration.
+tempfile = "3.27"

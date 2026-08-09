@@ -1,5 +1,5 @@
 [workspace]
-members = ["copper-core", "src-tauri"]
+members = ["copper-cli", "copper-core", "src-tauri"]
 resolver = "2"
 
 # Only what genuinely has to be shared. `version` is one number for the whole

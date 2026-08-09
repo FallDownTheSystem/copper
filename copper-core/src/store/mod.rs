@@ -50,6 +50,11 @@ pub mod model;
 pub mod ops;
 pub mod settings;
 pub mod undo;
+/// Behind the default-on `watch` feature: the module's whole body is `notify`,
+/// so an unconditional `pub mod` would pull both watch crates into every
+/// dependent regardless of whether anything called into it. `copper-cli` is the
+/// dependent that must not have them.
+#[cfg(feature = "watch")]
 pub mod watch;
 
 use std::path::{Path, PathBuf};
@@ -63,6 +68,7 @@ use events::{ChangeReason, EventSink, SpaceChanged, StoreEvent};
 use model::{Section, Space, DEFAULT_SECTION_NAME};
 use settings::{Settings, SettingsPatch};
 use undo::UndoStack;
+#[cfg(feature = "watch")]
 use watch::SpaceWatcher;
 
 /// Spec 2.3. Three re-applies is enough for a human-paced external editor and
@@ -100,6 +106,7 @@ pub struct OpenSpace {
 	undo: UndoStack,
 	/// Held here so it is not dropped early; dropping a debouncer silently stops
 	/// the watch.
+	#[cfg(feature = "watch")]
 	watcher: Option<SpaceWatcher>,
 	/// The document on disk is unreadable or unparseable. Blocks mutations.
 	///
@@ -124,6 +131,7 @@ impl OpenSpace {
 			// 7.4 forbids rewriting a file merely because loading it tidied it.
 			on_disk_text: text,
 			undo: UndoStack::default(),
+			#[cfg(feature = "watch")]
 			watcher: None,
 			doc_error: None,
 		})
@@ -137,6 +145,17 @@ pub struct Store {
 	open: Option<OpenSpace>,
 	startup_notice: Option<String>,
 	sink: Arc<dyn EventSink>,
+	/// Built by [`open_headless`], and so holding no settings at all.
+	///
+	/// Every method that would write `settings.json` checks this first and
+	/// refuses. That is a policy the *caller* could have enforced — `copper-cli`
+	/// simply never calls those four methods — but a rule enforced by not calling
+	/// something is one broken by the next person who calls it, and what breaks is
+	/// the user's recents list being silently replaced by a CLI invocation's empty
+	/// defaults. The empty `settings_path` below is the second line: a write that
+	/// somehow got past the flag fails loudly on `""` rather than landing
+	/// somewhere.
+	headless: bool,
 }
 
 /// Persistent state that no `Space` payload carries (spec 8.1a).
@@ -229,7 +248,13 @@ impl Store {
 			// This reflects the *registration outcome* only. A watch broken later —
 			// by deleting the watched directory, say — is not detectable, and spec
 			// 3.9 accepts that rather than reporting a `watching: true` that lies.
+			//
+			// With the `watch` feature off there is no watcher to read, and `false` is
+			// the honest answer rather than a degraded one: nothing is watching.
+			#[cfg(feature = "watch")]
 			watching: open.is_some_and(|open| open.watcher.is_some()),
+			#[cfg(not(feature = "watch"))]
+			watching: false,
 			can_undo: open.is_some_and(|open| open.undo.can_undo()),
 			can_redo: open.is_some_and(|open| open.undo.can_redo()),
 			startup_notice: self.startup_notice.clone(),
@@ -459,6 +484,7 @@ impl Store {
 	/// `set_position` at startup and a drag that ends where it began would
 	/// otherwise rewrite `settings.json` for no change at all.
 	pub fn update_settings(&mut self, patch: SettingsPatch) -> Result<Settings> {
+		self.refuse_if_headless("change settings")?;
 		let mut next = self.settings.clone();
 		next.apply_patch(patch);
 		if next != self.settings {
@@ -475,6 +501,7 @@ impl Store {
 	/// it open. Returns its `settings-changed` payload rather than emitting, so
 	/// the caller emits after dropping the guard.
 	pub fn remove_recent(&mut self, path: &Path) -> Result<StoreEvent> {
+		self.refuse_if_headless("change the recent spaces")?;
 		let target = canonical_or_raw(path);
 		let mut next = self.settings.clone();
 		next.forget_recent(&target);
@@ -502,6 +529,10 @@ impl Store {
 		path: &Path,
 		weak: Weak<Mutex<Store>>,
 	) -> Result<(Space, Vec<StoreEvent>)> {
+		// Before `canonical`, so a headless store refuses without having touched the
+		// filesystem at all — the refusal is about this store's shape, not about
+		// anything the path might turn out to be.
+		self.refuse_if_headless("open another space")?;
 		let path = canonical(path)?;
 		if path.is_dir() {
 			return Err(StoreError::Invalid(format!(
@@ -533,6 +564,10 @@ impl Store {
 		name: &str,
 		weak: Weak<Mutex<Store>>,
 	) -> Result<(Space, Vec<StoreEvent>)> {
+		// First, so no file is created for a call that was always going to be
+		// refused when it reached `open_space_locked` below. `create_headless` is the
+		// headless caller's route to the same write.
+		self.refuse_if_headless("create a space")?;
 		let name = name.trim();
 		if name.is_empty() {
 			return Err(StoreError::Invalid("a space needs a name".into()));
@@ -566,8 +601,19 @@ impl Store {
 	/// touches again is forever. One re-read after registration reconciles it,
 	/// and costs nothing in the ordinary case: `reload_from_disk` compares against
 	/// `on_disk_text` and returns no events when they match.
+	///
+	/// Only the registration half is feature-gated. The reconciliation is a plain
+	/// re-read-and-compare with no `notify` in it, and it is *more* valuable
+	/// without a watcher rather than less: it is then the only way the store ever
+	/// notices someone else's write.
 	fn attach_and_reconcile(&mut self, weak: Weak<Mutex<Store>>) -> Vec<StoreEvent> {
+		#[cfg(feature = "watch")]
 		let mut produced: Vec<StoreEvent> = self.attach_watcher_locked(weak).into_iter().collect();
+		#[cfg(not(feature = "watch"))]
+		let mut produced: Vec<StoreEvent> = {
+			let _ = weak;
+			Vec::new()
+		};
 		produced.extend(self.reload_from_disk());
 		produced
 	}
@@ -578,6 +624,7 @@ impl Store {
 	/// startup caller discards it (nothing is listening yet, spec 8A.2) while
 	/// `open_space` passes it on. The space stays open and fully writable either
 	/// way (spec 3.7).
+	#[cfg(feature = "watch")]
 	fn attach_watcher_locked(&mut self, weak: Weak<Mutex<Store>>) -> Option<StoreEvent> {
 		let open = self.open.as_mut()?;
 		open.watcher = None;
@@ -593,6 +640,22 @@ impl Store {
 	/// Drops the open space and its watch.
 	pub fn close_space(&mut self) {
 		self.open = None;
+	}
+
+	/// The guard on every method that would write `settings.json`.
+	///
+	/// `Invalid` rather than `Unavailable`: nothing is missing or temporarily out
+	/// of reach — the call is simply not one this store can be asked to make, which
+	/// is what `Invalid` means everywhere else in the store. It also maps to the
+	/// CLI's exit code 2, alongside its other "you asked for the wrong thing"
+	/// failures.
+	fn refuse_if_headless(&self, what: &str) -> Result<()> {
+		if self.headless {
+			return Err(StoreError::Invalid(format!(
+				"cannot {what}: this store was opened against a single file and has no settings"
+			)));
+		}
+		Ok(())
 	}
 
 	// --- watcher support -----------------------------------------------------
@@ -684,7 +747,96 @@ pub fn bootstrap_store(config_dir: &Path, sink: Arc<dyn EventSink>) -> Result<St
 		open: built.open,
 		startup_notice: built.startup_notice,
 		sink,
+		headless: false,
 	})
+}
+
+/// Opens one named space and nothing else — no settings, no recents, no watch.
+///
+/// The constructor a second process uses. [`bootstrap_store`] is the app's, and
+/// every one of its side effects is wrong here: it creates the config directory,
+/// repairs or quarantines `settings.json`, invents `personal.copper` when it can
+/// find no space to open, promotes whatever it opened to the front of `recents`,
+/// and saves. A `copper note list` that did all that would reorder the user's
+/// switcher for asking a question.
+///
+/// What it keeps is the part that matters: [`OpenSpace::load`] is the same read,
+/// parse, validate and normalise the app performs, and the returned `Store`'s
+/// [`Store::mutate`] is the same compare-and-swap write. A CLI write is therefore
+/// byte-indistinguishable from an app write, and races the app safely, because it
+/// is not a second implementation of anything.
+///
+/// What it drops:
+///
+/// - **`settings.json`, entirely.** `settings` is `Settings::default()` and
+///   `settings_path` is empty. Nothing reads either — the CLI passes its own
+///   [`settings::InsertionPoint`] to `ops::add_note` rather than asking the
+///   settings for one — and the `headless` flag refuses every method that would
+///   write.
+/// - **The watch.** `OpenSpace::load` leaves `watcher: None` and this never calls
+///   `attach_and_reconcile`, so there is no debouncer and no `Weak` back to a
+///   store that is about to be dropped anyway.
+/// - **Emission during construction.** Only `mutate` and its siblings emit, and
+///   the caller chooses the sink — [`events::NullSink`] for a process with nobody
+///   listening.
+///
+/// Undo works within the returned store and dies with it. The stack is in memory
+/// and a CLI process is one command long, so a CLI `delete` is permanent from the
+/// CLI's side — and clears the *running app's* undo history too, as any external
+/// write does.
+pub fn open_headless(space_path: &Path, sink: Arc<dyn EventSink>) -> Result<Store> {
+	let path = canonical(space_path)?;
+	if path.is_dir() {
+		return Err(StoreError::Invalid(format!(
+			"{} is a folder, not a space",
+			path.display()
+		)));
+	}
+	let open = OpenSpace::load(&path)?;
+	Ok(Store {
+		settings: Settings::default(),
+		// Deliberately empty rather than the real path. Nothing may write settings
+		// from here, and an empty path fails loudly if something ever tries.
+		settings_path: PathBuf::new(),
+		spaces_dir: PathBuf::new(),
+		open: Some(open),
+		startup_notice: None,
+		sink,
+		headless: true,
+	})
+}
+
+/// Writes a brand-new space document, and does nothing else.
+///
+/// The write half of `create_space_locked` on its own. That method cannot be
+/// reused headless because it finishes by opening the file it created, which
+/// calls `touch_recent` and saves `settings.json` — the recents reordering a CLI
+/// must not do. Selecting the new space is a separate, explicit step here
+/// (`copper space use`), which is why nothing about this function knows what
+/// "current" means.
+///
+/// Refuses an existing file through `commit_new` rather than an `exists()` check,
+/// for the reason `create_space_locked` gives: the filesystem is what refuses, so
+/// a file that appears between a check and a write has no window in which to be
+/// destroyed.
+pub fn create_headless(path: &Path, name: &str) -> Result<()> {
+	let name = name.trim();
+	if name.is_empty() {
+		return Err(StoreError::Invalid("a space needs a name".into()));
+	}
+	let dir = atomic::parent_dir(path)?;
+	std::fs::create_dir_all(dir).map_err(|err| io_err(dir, "create", &err))?;
+
+	let text = format::to_git_json(&new_space(name))?;
+	atomic::prepare(dir, &text)?
+		.commit_new(path)
+		.map_err(|failure| {
+			if failure.error.kind() == std::io::ErrorKind::AlreadyExists {
+				StoreError::Invalid(format!("{} already exists", path.display()))
+			} else {
+				io_err(path, "create", &failure.error)
+			}
+		})
 }
 
 /// The second startup stage, run after `app.manage` (spec 7.5).
@@ -697,6 +849,7 @@ pub fn bootstrap_store(config_dir: &Path, sink: Arc<dyn EventSink>) -> Result<St
 /// discards it — nothing is listening yet (spec 8A.2), and the reconciliation's
 /// value there is the *state* it fixes, which the frontend's mount-time pull
 /// then reads.
+#[cfg(feature = "watch")]
 pub fn attach_watcher(shared: &SharedStore) -> Vec<StoreEvent> {
 	let weak = Arc::downgrade(shared);
 	lock(shared).attach_and_reconcile(weak)

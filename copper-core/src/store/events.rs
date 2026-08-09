@@ -171,6 +171,19 @@ impl EventSink for RecordingSink {
 	}
 }
 
+/// Discards every event.
+///
+/// For a process with nobody to tell: `copper-cli` runs one command and exits, so
+/// there is no panel to refresh and no listener to deadlock against. The sink
+/// still has to exist, because `Store` takes one — and a discarding sink is a
+/// better answer than making the field optional, which would put a branch on the
+/// emit path of the app that does have listeners.
+pub struct NullSink;
+
+impl EventSink for NullSink {
+	fn emit(&self, _event: &StoreEvent) {}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

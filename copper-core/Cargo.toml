@@ -30,8 +30,13 @@ thiserror = "2"
 # second, independent debounced watch over the `$EDITOR` handoff temp files.
 # notify 8.2 is the current stable line; 9.x is still an unpromoted release
 # candidate, and notify-debouncer-full 0.7.0 is the release that pairs with it.
-notify = "8.2.0"
-notify-debouncer-full = "0.7.0"
+#
+# Optional, behind the default-on `watch` feature below. Optional rather than
+# unconditional because `copper-cli` has an acceptance criterion naming these two
+# crates specifically: a CLI process writes once and exits, so it has nothing to
+# watch, and `cargo tree -p copper-cli` has to be able to prove it.
+notify = { version = "8.2.0", optional = true }
+notify-debouncer-full = { version = "0.7.0", optional = true }
 # `atomic.rs`: NamedTempFile::new_in + persist/persist_noclobber. Production
 # code here, not a test helper — the temp file must live in the destination's
 # own directory, because persist is a rename and cannot cross volumes.
@@ -51,3 +56,16 @@ infer = "0.19"
 # `windows`. The feature list is narrowed to the one thing this call needs;
 # `src-tauri` keeps its own much larger list for everything else.
 windows = { version = "=0.61.3", features = ["Win32_Storage_FileSystem"] }
+
+# Default-*on*, so `src-tauri` — which depends on this crate without naming any
+# feature at all — is unaffected and keeps the directory watch it has always had.
+# `copper-cli` is the one edge that opts out, with `default-features = false`.
+#
+# The gate covers `store/watch.rs` and the four places in `store/mod.rs` that
+# reach into it. Nothing else in the crate changes shape: a store built with the
+# feature off simply never registers a watcher, which is already a state the
+# store handles (`OpenSpace.watcher` is an `Option` and a failed registration
+# leaves it empty).
+[features]
+default = ["watch"]
+watch = ["dep:notify", "dep:notify-debouncer-full"]
