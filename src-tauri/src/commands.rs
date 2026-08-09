@@ -13,8 +13,8 @@
 //! which this project does not do.
 
 use crate::{
-	attachments, autostart, clipboard, editor, markdown, panel, previews, shortcuts, spaces, store,
-	theme, updater,
+	attachments, autostart, clipboard, editor, markdown, panel, previews, share, shortcuts, spaces,
+	store, theme, updater,
 };
 
 pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
@@ -77,6 +77,11 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
 		panel::set_always_on_top,
 		panel::set_translucency,
 		panel::set_resizable,
-		panel::set_panel_size
+		panel::set_panel_size,
+		share::commands::get_share_config,
+		share::commands::set_share_config,
+		share::commands::generate_share_secret,
+		share::commands::share_test_relay,
+		share::commands::share_send_notes
 	]
 }

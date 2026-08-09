@@ -82,7 +82,9 @@ const sectionResults = computed(() => filtered(sections.value, (section) => sect
  * state: `Keep on top` has to say `On` or `Off` as it is now, and a list built
  * once at import time would have captured a `settings.value` of `null`.
  */
-const actionResults = computed(() => filtered(settingsActions(), (action) => action.label))
+const actionResults = computed(() =>
+	filtered([...settingsActions(), ...shareActions()], (action) => action.label),
+)
 
 const empty = computed(
 	() =>

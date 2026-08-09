@@ -55,7 +55,7 @@ const COMMANDS: [&str; 21] = [
 ];
 
 /// The commands later phases added beside the store's twenty.
-const EXTRA_COMMANDS: [&str; 38] = [
+const EXTRA_COMMANDS: [&str; 43] = [
 	"clipboard_write_text",
 	// Task-024. Beside the clipboard write rather than inside it: the app asks
 	// `copper_core::markdown` for the text and then writes it through the same one
@@ -141,6 +141,20 @@ const EXTRA_COMMANDS: [&str; 38] = [
 	"get_app_version",
 	"check_for_update",
 	"install_update",
+	// Task-026. Note what is *not* here: nothing that reads a stored secret back.
+	// `get_share_config` answers with `tokenSet` and `secretSet` booleans, and
+	// `generate_share_secret` is the single deliberate exception — it returns the
+	// value it has just created, once, because the user has to copy it to their
+	// other machine and there is no second chance to show it.
+	"get_share_config",
+	"set_share_config",
+	"generate_share_secret",
+	// All five are `#[tauri::command(async)]` over plain `fn` bodies — the one
+	// place in the tree that does not use `pub async fn`. That is what keeps a
+	// 20 MiB upload off the main thread without introducing an `async fn` or a
+	// `.await` anywhere in project code, which this feature requires.
+	"share_test_relay",
+	"share_send_notes",
 ];
 
 /// Spec 8.1c. Every argument name in the whole surface.
@@ -172,7 +186,7 @@ const SOURCE: &str = include_str!("../src/store/commands.rs");
 /// Command *wrappers* live next to the module they serve; only the registration
 /// is central, because Tauri accepts one `invoke_handler` and the closure
 /// `generate_handler!` builds consumes the `Invoke` it is handed.
-const OTHER_SOURCES: [&str; 11] = [
+const OTHER_SOURCES: [&str; 12] = [
 	include_str!("../src/clipboard.rs"),
 	include_str!("../src/markdown.rs"),
 	include_str!("../src/editor.rs"),
@@ -184,6 +198,7 @@ const OTHER_SOURCES: [&str; 11] = [
 	include_str!("../src/attachments/commands.rs"),
 	include_str!("../src/previews/commands.rs"),
 	include_str!("../src/updater.rs"),
+	include_str!("../src/share/commands.rs"),
 ];
 
 const REGISTRY: &str = include_str!("../src/commands.rs");
@@ -205,14 +220,42 @@ fn all_defined_commands() -> Vec<(String, Vec<String>)> {
 	commands
 }
 
+/// Both attribute spellings, each on a line of its own.
+///
+/// The bare token is deliberately not matched: prose mentioning
+/// `#[tauri::command]` in a module doc is not a command definition, and matching
+/// it would turn the guard below into a failure about a comment.
+///
+/// `#[tauri::command(async)]` is task-026's form, and it is not cosmetic. It is
+/// Tauri's documented way to run a **synchronous** body off the main thread,
+/// which is what `share_send_notes` and `share_test_relay` need: they block on
+/// `ureq`, and the Rust side of this project has no async runtime of its own to
+/// hand the work to. Written that way the function is `pub fn`, not
+/// `pub async fn`, so this parser has to accept both.
+const ATTRIBUTES: [&str; 2] = ["\n#[tauri::command]\n", "\n#[tauri::command(async)]\n"];
+
 fn commands_in(source: &str) -> Vec<(String, Vec<String>)> {
 	let mut commands = Vec::new();
-	// The attribute on a line of its own, not the bare token: prose mentioning
-	// `#[tauri::command]` in a module doc is not a command definition, and
-	// matching it would turn the guard below into a failure about a comment.
-	for block in source.split("\n#[tauri::command]\n").skip(1) {
-		let Some(signature) = block.split_once("pub async fn ") else {
-			panic!("a #[tauri::command] is not followed by `pub async fn`");
+	let mut blocks: Vec<&str> = Vec::new();
+	for attribute in ATTRIBUTES {
+		blocks.extend(source.split(attribute).skip(1));
+	}
+
+	for block in blocks {
+		// Both orders tried, and the *earlier* match wins: `pub fn ` is a prefix of
+		// nothing here, but a body mentioning `pub async fn` further down must not
+		// be mistaken for the signature of a `pub fn` command.
+		let signature = match (block.split_once("pub async fn "), block.split_once("pub fn ")) {
+			(Some(asynchronous), None) => asynchronous,
+			(None, Some(synchronous)) => synchronous,
+			(Some(asynchronous), Some(synchronous)) => {
+				if asynchronous.0.len() <= synchronous.0.len() {
+					asynchronous
+				} else {
+					synchronous
+				}
+			}
+			(None, None) => panic!("a #[tauri::command] is not followed by `pub fn` or `pub async fn`"),
 		};
 		let (name, rest) = signature
 			.1
@@ -594,6 +637,103 @@ fn every_shell_error_kind_crosses_the_boundary_as_kind_and_message() {
 			"{kind} is not lowercase kebab"
 		);
 	}
+}
+
+/// Task-026's four shapes.
+///
+/// The one that matters most is the first assertion: `ShareConfig` is the only
+/// way a share configuration crosses IPC, and the whole confidentiality argument
+/// for the feature rests on it carrying booleans rather than values.
+#[test]
+fn a_share_config_crosses_the_boundary_as_booleans_and_never_as_secrets() {
+	use copper_lib::share::config::{ShareConfig, ShareRole};
+
+	let payload = serde_json::to_value(ShareConfig {
+		enabled: true,
+		relay_url: "https://copper-relay.example.workers.dev".into(),
+		role: ShareRole::Second,
+		token_set: true,
+		secret_set: true,
+		// Rust's own verdict on whether this configuration is usable, so the
+		// frontend does not have to write a second, weaker copy of `resolve`.
+		configured: false,
+		last_error: None,
+	})
+	.unwrap();
+
+	for key in ["enabled", "relayUrl", "role", "tokenSet", "secretSet", "configured", "lastError"] {
+		assert!(payload.get(key).is_some(), "get_share_config is missing {key}: {payload}");
+	}
+	assert_eq!(payload.as_object().unwrap().len(), 7, "get_share_config grew a field");
+	assert!(payload.get("token").is_none(), "a token field reached the WebView");
+	assert!(payload.get("secret").is_none(), "a secret field reached the WebView");
+	assert!(payload.get("relay_url").is_none(), "the snake_case spelling leaked over IPC");
+	// Present and null rather than absent, for the same reason `UpdateInfo`'s
+	// optional fields are: the frontend reads the field, it does not test for it.
+	assert!(payload["lastError"].is_null());
+	assert_eq!(payload["role"], "second");
+	// The counters, the pending message and `lastError`'s neighbours in
+	// `share.json` are deliberately not here. This shape is what the Settings view
+	// needs and nothing else.
+	assert!(payload.get("nextSeq").is_none());
+	assert!(payload.get("pending").is_none());
+}
+
+/// The three-state secret fields. serde collapses an absent key and a `null`
+/// into the same `None` for a plain `Option<String>`, and here they mean
+/// opposite things — leave the stored secret alone, versus clear it.
+#[test]
+fn a_share_config_patch_tells_an_absent_key_from_a_null_one() {
+	use copper_lib::share::config::ShareConfigPatch;
+
+	let absent: ShareConfigPatch = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+	assert_eq!(absent.enabled, Some(true));
+	assert_eq!(absent.token, None, "an absent token read as a clear");
+	assert_eq!(absent.secret, None);
+
+	let cleared: ShareConfigPatch =
+		serde_json::from_str(r#"{"token":null,"secret":null}"#).unwrap();
+	assert_eq!(cleared.token, Some(None), "a null token did not read as a clear");
+	assert_eq!(cleared.secret, Some(None));
+
+	let set: ShareConfigPatch = serde_json::from_str(r#"{"relayUrl":"https://x.dev"}"#).unwrap();
+	assert_eq!(set.relay_url.as_deref(), Some("https://x.dev"));
+}
+
+#[test]
+fn the_share_outcomes_cross_the_boundary_as_a_flat_kebab_case_kind() {
+	use copper_lib::share::commands::{ShareSendOutcome, ShareTestOutcome};
+
+	let test = serde_json::to_value(ShareTestOutcome::Unconfigured {
+		missing: "relay token".into(),
+	})
+	.unwrap();
+	assert_eq!(test["kind"], "unconfigured");
+	assert_eq!(test["missing"], "relay token");
+	assert_eq!(serde_json::to_value(ShareTestOutcome::Ok).unwrap()["kind"], "ok");
+	assert_eq!(
+		serde_json::to_value(ShareTestOutcome::Unauthorised).unwrap()["kind"],
+		"unauthorised"
+	);
+
+	let send = serde_json::to_value(ShareSendOutcome::TooLarge {
+		bytes: 21_000_000,
+		limit: 20 * 1024 * 1024,
+	})
+	.unwrap();
+	assert_eq!(send["kind"], "too-large");
+	assert_eq!(send["bytes"], 21_000_000);
+	assert_eq!(send["limit"], 20 * 1024 * 1024);
+
+	// Every kind is lowercase kebab, matching `StoreError` and `ShellError`, so
+	// the frontend branches the same way on all three.
+	for kind in ["sent", "delayed", "unknown", "too-large", "unconfigured", "failed"] {
+		assert!(kind.chars().all(|c| c.is_ascii_lowercase() || c == '-'));
+	}
+	assert_eq!(
+		serde_json::to_value(ShareSendOutcome::Sent { notes: 3 }).unwrap()["notes"],
+		3
+	);
 }
 
 /// `undo` and `redo` return `Space | null`, not an absent value.

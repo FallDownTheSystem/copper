@@ -18,6 +18,8 @@ const {
 	edit,
 	merge,
 	openInEditor,
+	canSendToOtherDevice,
+	sendToOtherDevice,
 	deleteNotes,
 } = useNoteActions()
 </script>
@@ -98,6 +100,17 @@ const {
 		<ContextMenuItem class="min-h-6" @select="openInEditor">
 			Edit in editor
 			<ContextMenuShortcut>{{ CHORDS.openInEditor.display }}</ContextMenuShortcut>
+		</ContextMenuItem>
+
+		<!-- Task-026. Disabled rather than hidden, following `canMerge` and
+		     `canOpenAttachment`: the menu keeps its shape whether or not sharing is
+		     set up, and someone who has configured it on their other machine can see
+		     that the item exists here too. `canSendToOtherDevice` is false until
+		     `useDeviceShare`'s first pull resolves, so it starts disabled and is never
+		     wrongly enabled — the item is a network write, and the one direction it
+		     must not fail in is "looked available and was not". -->
+		<ContextMenuItem :disabled="!canSendToOtherDevice" class="min-h-6" @select="sendToOtherDevice">
+			Send to my other device
 		</ContextMenuItem>
 
 		<!-- Rendered even with nothing to open, like Expand and Merge notes, so the

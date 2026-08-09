@@ -19,6 +19,19 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen, emit: mocks.emit }))
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }))
 
+/** Task-026's shipped default: off, unconfigured, nothing to report. The Share
+ *  section renders from this, and the note context menu's **Send to my other
+ *  device** stays disabled under it. */
+const SHARE_CONFIG = {
+	enabled: false,
+	relayUrl: '',
+	role: 'first',
+	tokenSet: false,
+	secretSet: false,
+	configured: false,
+	lastError: null,
+}
+
 // happy-dom implements no Web Animations API; auto-animate calls `el.animate`
 // from a MutationObserver callback and throws out of band without this.
 //
@@ -86,6 +99,9 @@ function respond(
 		if (command === 'get_settings') return settings
 		if (command === 'get_shortcut_state') return shortcuts
 		if (command === 'get_autostart_enabled') return false
+		// Task-026. `useDeviceShare` is initialised from App.vue, so the whole app
+		// pulls this on mount whether or not Settings is ever opened.
+		if (command === 'get_share_config') return SHARE_CONFIG
 		if (command === 'get_status') {
 			return {
 				path: 'C:\\notes.copper',

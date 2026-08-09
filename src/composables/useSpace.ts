@@ -154,7 +154,18 @@ export type Settings = {
 export type SpaceView = DeepReadonly<Space>
 export type NoteView = DeepReadonly<Note>
 
-export type ChangeReason = 'external' | 'capture' | 'reload' | 'editor' | 'reroute' | 'attach'
+export type ChangeReason =
+	| 'external'
+	| 'capture'
+	| 'reload'
+	| 'editor'
+	| 'reroute'
+	| 'attach'
+	/** Task-026. A note arriving from the user's other device. Deliberately gets
+	 *  no branch in `onSpaceChanged`: a delivery must not steal the scroll
+	 *  position or play the capture sound, so falling through to the generic
+	 *  refresh is the whole handling. */
+	| 'received'
 export type SpaceChangedPayload = { id: string; path: string; reason: ChangeReason }
 export type StoreErrorPayload = { kind: string; message: string }
 /** What a composer submission turned out to be. `# Name` is classified in Rust,
@@ -575,6 +586,15 @@ async function onSpaceChanged(payload: SpaceChangedPayload) {
 		// solely by diffing the document the pull below returns.
 		revealAddedNote = { kind: 'newest' }
 	}
+	// Every Rust-side writer, not just this one. `retireStandingToast` normally
+	// runs inside `mutate`/`restore`, which a writer on the Rust side never
+	// passes through — so a capture, an editor read-back, a re-route, a path note
+	// or a delivery from the other device each used to leave the *previous*
+	// action's pill on screen, over an `Undo` button now bound to the thing that
+	// just landed. "Moved 1 note to Done · Undo" standing over a press that would
+	// undo a received note is exactly the false claim that rule exists to
+	// prevent.
+	retireStandingToast()
 	await Promise.all([refresh(), pullStatus()])
 }
 

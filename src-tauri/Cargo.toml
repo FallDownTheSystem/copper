@@ -192,6 +192,38 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # `property`, unquoted values and `<meta>` inside a comment.
 dom_query = "0.27"
 
+# --- device share (task-026) ---
+# `ureq` rather than the `reqwest` already above, and the reason is not taste.
+# The share feature runs on a plain OS thread with no runtime under it (spec:
+# the Rust side stays synchronous), and `reqwest::blocking` is documented to
+# **panic** when constructed from inside a running async runtime — which a Tauri
+# app always has. `ureq` has no relationship to Tokio at all, so that failure is
+# unreachable however the call is made. `rustls` is named because the default
+# feature set would otherwise pull `native-tls`; `json` is for the one-field
+# `{"head": …}` reply. Verified with `cargo tree -p copper -i tokio`: nothing
+# beneath `ureq` reaches it.
+ureq = { version = "3.4", default-features = false, features = ["rustls", "json"] }
+# XChaCha20-Poly1305, for its 192-bit nonce. A random 24-byte nonce has a
+# collision bound no message budget in this app could approach; AES-GCM's 96-bit
+# nonce would need that budget reasoned about. Same argument as everywhere else
+# here — the option needing no reasoning is the right default.
+chacha20poly1305 = "0.11"
+# **0.12, deliberately, not 0.13.** `hkdf 0.13` is built on the `digest 0.11`
+# generation and cannot be parameterised over the `sha2 0.10` already in this
+# tree; 0.12 is the release that matches it. Two `sha2` majors in one binary is
+# the failure this avoids, and it is the same single-version rule the `infer`
+# and `sha2` pins above exist for.
+hkdf = "0.12"
+# The wire form for attachment bytes inside the sealed JSON, and the encoding of
+# the pairing secret the user copies between machines. Nothing on the *storage*
+# path is base64: the ciphertext travels as raw bytes in both directions.
+base64 = "0.23"
+# Randomness straight from the OS, rather than through `rand`. Nonces and the
+# pairing secret are the only two draws in the feature, and taking them here
+# means nothing depends on which RNG re-export a given AEAD release happens to
+# carry.
+getrandom = "0.3"
+
 # --- recycle bin (task-015) ---
 # Deliberately empty. The attachment sweep moved collected blobs to the Recycle
 # Bin through the `trash` crate for exactly one commit, and the mechanism was

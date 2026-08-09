@@ -108,6 +108,53 @@ const panelSizeError = errorFor('panelSize')
 const summonError = errorFor('summon')
 const captureError = errorFor('capture')
 
+// --- share (task-026) --------------------------------------------------------
+
+const {
+	config: shareConfig,
+	actionError: shareError,
+	revealedSecret,
+	testing: shareTesting,
+	generating: shareGenerating,
+	lastTest,
+	patchConfig,
+	generateSecret,
+	clearRevealedSecret,
+	testRelay,
+} = useDeviceShare()
+
+/** The two roles, in the shape `SettingsChoice` takes. */
+const ROLE_OPTIONS = [
+	{ value: 'first' as const, label: 'First' },
+	{ value: 'second' as const, label: 'Second' },
+]
+
+/**
+ * What **Test connection** last found, as one sentence.
+ *
+ * Rust supplies the transport wording; the four kinds are turned into copy here
+ * because they are UI text rather than error messages, and only this view knows
+ * that "the missing field" means a field the reader can see above.
+ */
+const testMessage = computed(() => {
+	const outcome = lastTest.value
+	if (!outcome) return null
+	switch (outcome.kind) {
+		case 'ok':
+			return 'The relay answered. This device is set up.'
+		case 'unauthorised':
+			return 'The relay refused the token. Check that it matches the one you set with wrangler.'
+		case 'unconfigured':
+			return `Fill in the ${outcome.missing} first.`
+		case 'unreachable':
+			return outcome.message
+	}
+})
+
+/** Rust's poll failure and this view's own action failure, in one line. Both are
+ *  about the same section and only one can usefully be read at a time. */
+const shareRowError = computed(() => shareError.value ?? shareConfig.value.lastError)
+
 const back = useTemplateRef<HTMLButtonElement>('back')
 
 /**
@@ -150,6 +197,10 @@ onBeforeUnmount(() => {
 	// in. Only the listener comes down, which is what stops repeated visits
 	// stacking up duplicates.
 	stopUpdater()
+	// A generated pairing secret is shown once, for as long as this view is open.
+	// Leaving it in a module-scoped ref would put it back on screen the next time
+	// Settings was opened, which is not what "shown once" means.
+	clearRevealedSecret()
 })
 
 /**
@@ -666,6 +717,159 @@ const summonNote = computed(() => {
 						@update:model-value="setLinkPreviews"
 					/>
 				</SettingsRow>
+			</SettingsSection>
+
+			<!-- Its own section rather than a row under Notes, unlike link previews:
+			     this is six controls and four facts a person cannot infer, and it is
+			     the only feature in the app whose setup happens somewhere else. -->
+			<SettingsSection title="Share">
+				<SettingsRow
+					label="Send notes to my other device"
+					description="Sends a note to your other machine through a relay you deploy to your own free Cloudflare account. Notes are encrypted before they leave; the relay only ever holds ciphertext. See worker/README.md for the five commands that set it up."
+					label-for="share-enabled"
+					:error="shareRowError"
+				>
+					<SettingsSwitch
+						id="share-enabled"
+						:model-value="shareConfig.enabled"
+						@update:model-value="(value) => patchConfig({ enabled: value })"
+					/>
+				</SettingsRow>
+
+				<!-- Everything below is hidden while the feature is off. Six controls
+				     for a switch nobody has turned on is the settings view's whole
+				     scroll length spent on a feature that is doing nothing. -->
+				<template v-if="shareConfig.enabled">
+					<SettingsRow
+						label="Relay URL"
+						description="The https address wrangler printed when you deployed. Changing it clears the stored relay token, so the old host never receives it."
+					>
+						<!-- `#below="{ errorId }"` for the reason the vibrancy row gives. -->
+						<template #below="{ errorId }">
+							<SettingsTextRow
+								:value="shareConfig.relayUrl"
+								label="Relay URL"
+								placeholder="https://copper-relay.your-subdomain.workers.dev"
+								:error-id="errorId"
+								@commit="(value) => patchConfig({ relayUrl: value })"
+							/>
+						</template>
+					</SettingsRow>
+
+					<SettingsRow
+						label="Relay token"
+						description="The value you set with wrangler secret put RELAY_TOKEN. It keeps strangers off your relay; it is not what encrypts your notes."
+					>
+						<template #below="{ errorId }">
+							<SettingsSecretRow
+								:set="shareConfig.tokenSet"
+								label="Relay token"
+								placeholder="Paste the relay token"
+								:error-id="errorId"
+								@commit="(value) => patchConfig({ token: value })"
+							/>
+						</template>
+					</SettingsRow>
+
+					<SettingsRow
+						label="Pairing secret"
+						description="What encrypts your notes. Generate it on one machine and paste it into the other. It never leaves your two devices."
+					>
+						<template #below="{ errorId }">
+							<SettingsSecretRow
+								:set="shareConfig.secretSet"
+								label="Pairing secret"
+								placeholder="Paste the pairing secret"
+								:error-id="errorId"
+								@commit="(value) => patchConfig({ secret: value })"
+							/>
+
+							<div class="mt-2 flex items-center gap-2">
+								<!-- Disabled while one is in flight. Two overlapping generates would
+								     each store a secret in Rust and race to display one, so the value
+								     on screen could be the one the loser replaced — and it is the
+								     value the user is about to carry to the other machine. -->
+								<button
+									type="button"
+									class="panel-button hit-44 relative h-8 px-2 text-meta"
+									:disabled="shareGenerating"
+									@click="generateSecret()"
+								>
+									{{ shareGenerating ? 'Generating…' : 'Generate' }}
+								</button>
+								<span class="text-text-secondary text-meta">
+									Replaces the stored secret on this device.
+								</span>
+							</div>
+
+							<!-- The one place in the app a secret value is ever displayed, and
+							     it is displayed once, at the moment it is created. There is no
+							     command that reads it back, so the sentence beside it is a
+							     statement of fact rather than a warning. -->
+							<div v-if="revealedSecret" class="border-border-subtle mt-2 rounded-md border p-2">
+								<p class="text-text-secondary text-meta">
+									Copy this to your other device now. It is shown once.
+								</p>
+								<code
+									class="text-text-primary mt-1 block break-all text-meta select-all"
+									data-testid="revealed-secret"
+									>{{ revealedSecret }}</code
+								>
+							</div>
+						</template>
+					</SettingsRow>
+
+					<SettingsRow
+						v-slot="{ errorId }"
+						label="This device is"
+						description="Set one machine to First and the other to Second. If both are the same, nothing is ever delivered in either direction."
+					>
+						<SettingsChoice
+							:model-value="shareConfig.role"
+							:options="ROLE_OPTIONS"
+							label="Which device this is"
+							:error-id="errorId"
+							@update:model-value="(value) => patchConfig({ role: value })"
+						/>
+					</SettingsRow>
+
+					<SettingsRow
+						label="Test connection"
+						description="Asks the relay for this device's mailbox. It sends no note and reads no message."
+					>
+						<template #below>
+							<div class="mt-2 flex items-center gap-2">
+								<button
+									type="button"
+									class="panel-button hit-44 relative h-8 px-2 text-meta"
+									:disabled="shareTesting"
+									@click="testRelay()"
+								>
+									{{ shareTesting ? 'Testing…' : 'Test connection' }}
+								</button>
+							</div>
+							<!-- Permanently mounted and empty until there is something to say,
+							     for the same reason `SettingsRow`'s own message region is:
+							     injecting an element and its text together does not announce. -->
+							<p
+								v-if="testMessage"
+								class="text-text-secondary mt-1.5 text-meta"
+								data-testid="share-test-result"
+							>
+								{{ testMessage }}
+							</p>
+						</template>
+					</SettingsRow>
+
+					<!-- The two facts that are neither a control nor a failure, so they
+					     have nowhere else to live: what a note costs, and that both
+					     machines need the same three values. -->
+					<p class="text-text-secondary py-3 text-meta text-pretty">
+						Both machines need the same relay URL, relay token and pairing secret. A shared note is
+						capped at 20 MB after encryption, and attachments cost about a third more than their
+						file size.
+					</p>
+				</template>
 			</SettingsSection>
 
 			<!-- "Behavior" rather than "Sound and motion" (2026-08-08): a title that

@@ -18,6 +18,10 @@ mod panel;
 /// Public because `LinkPreview` crosses the IPC boundary and `tests/commands.rs`
 /// asserts the shape it arrives in, the same reason `store` is.
 pub mod previews;
+/// Public because `ShareConfig`, `ShareSendOutcome` and their siblings cross the
+/// IPC boundary, and `tests/commands.rs` asserts the shapes they arrive in — the
+/// same reason `store` and `previews` are public.
+pub mod share;
 mod shortcuts;
 pub mod spaces;
 pub mod store;
@@ -385,6 +389,19 @@ pub fn run() {
 			// Detached, like the attachment sweep: nothing waits for it.
 			previews::commands::start_prune(app.handle());
 
+			// Task-026's poll thread. Pointed at the same directory `settings.json`
+			// lives in — `share.json` is a second app-private state file, kept out of
+			// `Settings` because every field of that struct is serialised to the
+			// WebView by `get_settings` and a pairing secret must not be.
+			//
+			// It costs nothing while the feature is off: the thread waits on its
+			// `Condvar` with **no timeout** until something calls `share::wake()`.
+			// Degrading rather than propagating, like everything else below the store
+			// bootstrap — a share that will not start must cost the user that one
+			// feature, not the app.
+			share::init(&config_dir);
+			share::start_poller(app.handle());
+
 			// Last, because it is the only step expected to fail in ordinary use:
 			// another application may already hold the chord. A failure here leaves
 			// the app running, says so in the tray tooltip, and waits to be asked
@@ -491,6 +508,12 @@ fn teardown_steps(handle: &tauri::AppHandle) {
 	// but "teardown has the registry to itself" is worth being true rather than
 	// nearly true, and `shutting_down()` above is explicitly advisory.
 	editor::stop_idle_sweeper();
+	// Joined for the same reason as the sweeper, and with a sharper one of its
+	// own: this thread writes notes into the open space, and teardown must not run
+	// beside a delivery in flight. The drain checks the stop flag between
+	// messages, so the wait is bounded by one request rather than by a whole
+	// drain.
+	share::stop_poller();
 	// Before `scavenge`: each live handoff applies or refuses whatever is on disk,
 	// so exiting is not a way to silently discard unsaved editor work. The at-exit
 	// form skips the mid-write read retry, which would otherwise cost a debounce

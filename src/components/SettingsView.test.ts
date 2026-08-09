@@ -42,6 +42,19 @@ vi.mock('@tauri-apps/api/webview', () => ({
 	}),
 }))
 
+/** Task-026's shipped default: off, unconfigured, nothing to report. The Share
+ *  section renders from this, and the note context menu's **Send to my other
+ *  device** stays disabled under it. */
+const SHARE_CONFIG = {
+	enabled: false,
+	relayUrl: '',
+	role: 'first',
+	tokenSet: false,
+	secretSet: false,
+	configured: false,
+	lastError: null,
+}
+
 function makeSettings(over: Partial<Settings> = {}): Settings {
 	return {
 		recents: ['C:\\notes.copper'],
@@ -119,6 +132,10 @@ async function openSettings(stored: Partial<Settings> = {}) {
 				return false
 			case 'get_app_version':
 				return '0.1.0'
+			// Task-026. The Share section is always mounted; its rows below the
+			// enable switch are not, because the switch ships off.
+			case 'get_share_config':
+				return SHARE_CONFIG
 			case 'update_settings':
 				return makeSettings({ ...stored, ...(args?.patch as Partial<Settings>) })
 			// Its own command rather than a patch, because it has a native side to
@@ -389,9 +406,9 @@ describe('the notes rows', () => {
 
 		const pills = group(wrapper, 'Where new notes go').findAll('[aria-hidden="true"]')
 		expect(pills).toHaveLength(1)
-		expect(segment(wrapper, 'Where new notes go', 'Top').find('[aria-hidden="true"]').exists()).toBe(
-			true,
-		)
+		expect(
+			segment(wrapper, 'Where new notes go', 'Top').find('[aria-hidden="true"]').exists(),
+		).toBe(true)
 		expect(
 			segment(wrapper, 'Where new notes go', 'Bottom').find('[aria-hidden="true"]').exists(),
 		).toBe(false)

@@ -60,6 +60,12 @@ pub enum ChangeReason {
 	/// hands on the drop or the paste, so the capture sound and its scroll
 	/// request would be answering an absence nobody experienced.
 	Attach,
+	/// `append_received` — a note arriving from the user's other device
+	/// (task-026). The sixth Rust-side writer, and the one furthest from
+	/// [`Self::Capture`]: nobody is at this machine at all. It files into a
+	/// dedicated `Received` section without moving `active_section`, so the panel
+	/// must refresh and do nothing else — no sound, no scroll, no focus move.
+	Received,
 }
 
 /// Braces, not a unit struct: `struct SettingsChanged;` and Rust's `()` both
@@ -216,6 +222,7 @@ mod tests {
 			(ChangeReason::Editor, "editor"),
 			(ChangeReason::Reroute, "reroute"),
 			(ChangeReason::Attach, "attach"),
+			(ChangeReason::Received, "received"),
 		] {
 			assert_eq!(serde_json::to_value(reason).unwrap(), expected);
 		}

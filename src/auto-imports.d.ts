@@ -63,6 +63,7 @@ declare global {
   const focusableIn: typeof import('./composables/useInteractionMode').focusableIn
   const formatBytes: typeof import('./composables/useAttachments').formatBytes
   const formatVibrancy: typeof import('./composables/useSettings').formatVibrancy
+  const generations: typeof import('./composables/useSettings').generations
   const getCurrentInstance: typeof import('vue').getCurrentInstance
   const getCurrentScope: typeof import('vue').getCurrentScope
   const getCurrentWatcher: typeof import('vue').getCurrentWatcher
@@ -127,6 +128,7 @@ declare global {
   const shallowReactive: typeof import('vue').shallowReactive
   const shallowReadonly: typeof import('vue').shallowReadonly
   const shallowRef: typeof import('vue').shallowRef
+  const shareActions: typeof import('./composables/shareActions').shareActions
   const syncRef: typeof import('@vueuse/core').syncRef
   const syncRefs: typeof import('@vueuse/core').syncRefs
   const takeRow: typeof import('./composables/useSelection').takeRow
@@ -195,6 +197,7 @@ declare global {
   const useDeviceMotion: typeof import('@vueuse/core').useDeviceMotion
   const useDeviceOrientation: typeof import('@vueuse/core').useDeviceOrientation
   const useDevicePixelRatio: typeof import('@vueuse/core').useDevicePixelRatio
+  const useDeviceShare: typeof import('./composables/useDeviceShare').useDeviceShare
   const useDevicesList: typeof import('@vueuse/core').useDevicesList
   const useDisplayMedia: typeof import('@vueuse/core').useDisplayMedia
   const useDocumentVisibility: typeof import('@vueuse/core').useDocumentVisibility
@@ -378,6 +381,9 @@ declare global {
   export type { CaptureNotice } from './composables/useCaptureNotice'
   import('./composables/useCaptureNotice')
   // @ts-ignore
+  export type { ShareRole, ShareConfig, ShareConfigPatch, ShareTestOutcome, ShareSendOutcome } from './composables/useDeviceShare'
+  import('./composables/useDeviceShare')
+  // @ts-ignore
   export type { HandoffState, OpenOutcome } from './composables/useEditorHandoff'
   import('./composables/useEditorHandoff')
   // @ts-ignore
@@ -399,7 +405,7 @@ declare global {
   export type { ScrollAnchor, SelectionSnapshot } from './composables/useSelection'
   import('./composables/useSelection')
   // @ts-ignore
-  export type { ThemePreference, MotionPreference, InsertionPoint, DoubleClickAction, ShortcutState, ShortcutTarget, SettingsScope, PreferenceScope } from './composables/useSettings'
+  export type { ThemePreference, MotionPreference, InsertionPoint, DoubleClickAction, ShortcutState, ShortcutTarget, SettingsScope, PreferenceScope, Generation } from './composables/useSettings'
   import('./composables/useSettings')
   // @ts-ignore
   export type { Note, Section, Space, StoreStatus, Settings, SpaceView, NoteView, ChangeReason, SpaceChangedPayload, StoreErrorPayload, SubmitOutcome, AddNoteResult, SubmitResult, NoteSelection, MarkdownFormat, RenderedNotes, LoadState, ActionErrorScope, ActionError, MutationResult } from './composables/useSpace'
@@ -477,6 +483,7 @@ declare module 'vue' {
     readonly focusableIn: UnwrapRef<typeof import('./composables/useInteractionMode')['focusableIn']>
     readonly formatBytes: UnwrapRef<typeof import('./composables/useAttachments')['formatBytes']>
     readonly formatVibrancy: UnwrapRef<typeof import('./composables/useSettings')['formatVibrancy']>
+    readonly generations: UnwrapRef<typeof import('./composables/useSettings')['generations']>
     readonly getCurrentInstance: UnwrapRef<typeof import('vue')['getCurrentInstance']>
     readonly getCurrentScope: UnwrapRef<typeof import('vue')['getCurrentScope']>
     readonly getCurrentWatcher: UnwrapRef<typeof import('vue')['getCurrentWatcher']>
@@ -541,6 +548,7 @@ declare module 'vue' {
     readonly shallowReactive: UnwrapRef<typeof import('vue')['shallowReactive']>
     readonly shallowReadonly: UnwrapRef<typeof import('vue')['shallowReadonly']>
     readonly shallowRef: UnwrapRef<typeof import('vue')['shallowRef']>
+    readonly shareActions: UnwrapRef<typeof import('./composables/shareActions')['shareActions']>
     readonly syncRef: UnwrapRef<typeof import('@vueuse/core')['syncRef']>
     readonly syncRefs: UnwrapRef<typeof import('@vueuse/core')['syncRefs']>
     readonly takeRow: UnwrapRef<typeof import('./composables/useSelection')['takeRow']>
@@ -609,6 +617,7 @@ declare module 'vue' {
     readonly useDeviceMotion: UnwrapRef<typeof import('@vueuse/core')['useDeviceMotion']>
     readonly useDeviceOrientation: UnwrapRef<typeof import('@vueuse/core')['useDeviceOrientation']>
     readonly useDevicePixelRatio: UnwrapRef<typeof import('@vueuse/core')['useDevicePixelRatio']>
+    readonly useDeviceShare: UnwrapRef<typeof import('./composables/useDeviceShare')['useDeviceShare']>
     readonly useDevicesList: UnwrapRef<typeof import('@vueuse/core')['useDevicesList']>
     readonly useDisplayMedia: UnwrapRef<typeof import('@vueuse/core')['useDisplayMedia']>
     readonly useDocumentVisibility: UnwrapRef<typeof import('@vueuse/core')['useDocumentVisibility']>

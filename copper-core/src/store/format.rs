@@ -28,6 +28,27 @@ pub fn now_rfc3339() -> String {
 	Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
+/// How many seconds ago a [`now_rfc3339`] timestamp was written.
+///
+/// `None` for a value that will not parse, and `Some(0)` rather than a negative
+/// for one in the future. Callers use this to decide whether a grace period has
+/// run out, and both of those cases must read as "not yet" — a clock that went
+/// backwards, or a hand-edited file, must never be able to shorten a wait that
+/// exists to avoid acting too early.
+///
+/// It lives here rather than at its caller because this module owns the
+/// timestamp format, and it is the only place in the workspace that links
+/// `chrono`.
+pub fn seconds_since(timestamp: &str) -> Option<u64> {
+	let then = chrono::DateTime::parse_from_rfc3339(timestamp).ok()?;
+	Some(
+		Utc::now()
+			.signed_duration_since(then.with_timezone(&Utc))
+			.num_seconds()
+			.max(0) as u64,
+	)
+}
+
 /// Serialises to the exact bytes that go on disk: two-space indent, struct
 /// declaration order, LF, one trailing newline.
 ///

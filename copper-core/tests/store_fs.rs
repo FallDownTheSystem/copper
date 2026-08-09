@@ -1296,6 +1296,192 @@ fn append_paths_note_emits_one_attach_and_is_undoable() {
 	);
 }
 
+// --- device share: append_received (task-026) --------------------------------
+
+fn received(body: &str) -> store::ReceivedNote {
+	store::ReceivedNote {
+		body: body.into(),
+		attachments: Vec::new(),
+	}
+}
+
+/// The bodies of the notes in the `Received` section, in document order.
+fn received_bodies(doc: &Space) -> Vec<String> {
+	let Some(section) = doc
+		.sections
+		.iter()
+		.find(|section| section.name == store::RECEIVED_SECTION)
+	else {
+		return Vec::new();
+	};
+	let mut notes: Vec<&Note> = doc.notes.iter().filter(|note| note.section == section.id).collect();
+	notes.sort_by_key(|note| note.order);
+	notes.iter().map(|note| note.body.clone()).collect()
+}
+
+fn set_insertion(harness: &Harness, at: InsertionPoint) {
+	let patch = match at {
+		InsertionPoint::Top => r#"{"insertionPoint":"top"}"#,
+		InsertionPoint::Bottom => r#"{"insertionPoint":"bottom"}"#,
+	};
+	store::lock(&harness.shared)
+		.update_settings(serde_json::from_str(patch).unwrap())
+		.unwrap();
+}
+
+#[test]
+fn append_received_creates_the_received_section_and_reuses_it() {
+	let harness = Harness::new();
+	assert!(harness.section_named(store::RECEIVED_SECTION).is_none());
+
+	let path = harness.path();
+	store::append_received(&harness.shared, &path, &[received("from the laptop")]).unwrap();
+	let created = harness
+		.section_named(store::RECEIVED_SECTION)
+		.expect("the section is created when absent");
+
+	store::append_received(&harness.shared, &path, &[received("and again")]).unwrap();
+	assert_eq!(
+		harness.section_named(store::RECEIVED_SECTION).as_deref(),
+		Some(created.as_str()),
+		"a second message created a second Received section"
+	);
+	assert_eq!(
+		harness
+			.doc()
+			.sections
+			.iter()
+			.filter(|section| section.name == store::RECEIVED_SECTION)
+			.count(),
+		1
+	);
+}
+
+/// `ops::section_by_name` matches case-insensitively, so a hand-made `received`
+/// section is the one a delivery files into rather than being shadowed by a
+/// second header that looks identical.
+#[test]
+fn append_received_reuses_a_differently_cased_section() {
+	let harness = Harness::new();
+	let existing = store::lock(&harness.shared)
+		.mutate(|doc| ops::add_section(doc, "received"))
+		.unwrap()
+		.0;
+
+	store::append_received(&harness.shared, &harness.path(), &[received("x")]).unwrap();
+
+	let doc = harness.doc();
+	assert_eq!(doc.sections.iter().filter(|s| s.name.to_lowercase() == "received").count(), 1);
+	assert!(doc.notes.iter().any(|note| note.section == existing && note.body == "x"));
+}
+
+/// `ops::add_note` with `Top` stacks consecutive adds newest-first
+/// (ops.rs:202-211), so a message written front-to-back would arrive upside
+/// down. Both settings have to produce the sender's order.
+#[test]
+fn a_multi_note_message_arrives_in_the_senders_order_under_both_insertion_points() {
+	for at in [InsertionPoint::Top, InsertionPoint::Bottom] {
+		let harness = Harness::new();
+		set_insertion(&harness, at);
+
+		store::append_received(
+			&harness.shared,
+			&harness.path(),
+			&[received("first"), received("second"), received("third")],
+		)
+		.unwrap();
+
+		assert_eq!(
+			received_bodies(&harness.doc()),
+			["first", "second", "third"],
+			"a message arrived out of order under {at:?}"
+		);
+	}
+}
+
+#[test]
+fn a_whole_message_is_one_undo_entry_and_one_received_event() {
+	let harness = Harness::new();
+	harness.sink.take();
+
+	store::append_received(
+		&harness.shared,
+		&harness.path(),
+		&[received("one"), received("two"), received("three")],
+	)
+	.unwrap();
+
+	let events = harness.sink.take();
+	assert_eq!(events.len(), 1, "a three-note message emitted more than once");
+	assert_eq!(reasons(&events), [ChangeReason::Received]);
+
+	assert!(harness.status().can_undo);
+	store::lock(&harness.shared).undo().unwrap();
+	assert!(
+		received_bodies(&harness.doc()).is_empty(),
+		"one Ctrl+Z did not remove the whole message"
+	);
+
+	settle();
+	assert!(
+		harness.sink.events().is_empty(),
+		"the delivery's own write produced a watcher event: {:?}",
+		harness.sink.names()
+	);
+}
+
+/// A note arriving while the user is typing somewhere else must not move them.
+/// `ops::add_section` sets `active_section` (ops.rs:425), which is right for the
+/// section switcher and wrong here.
+#[test]
+fn delivery_does_not_move_the_active_section() {
+	let harness = Harness::new();
+	let before = harness.doc().active_section.clone();
+
+	// Once creating the section, once reusing it: the create path is the one that
+	// would move it.
+	store::append_received(&harness.shared, &harness.path(), &[received("first")]).unwrap();
+	assert_eq!(harness.doc().active_section, before, "creating Received moved the active section");
+
+	store::append_received(&harness.shared, &harness.path(), &[received("second")]).unwrap();
+	assert_eq!(harness.doc().active_section, before);
+}
+
+/// The blobs were ingested beside one space. Filing the notes into another would
+/// leave them pointing at attachments that are not there — which is why the
+/// check is inside `append_received` rather than at its call site.
+#[test]
+fn a_mismatched_expected_path_writes_nothing_and_emits_nothing() {
+	let harness = Harness::new();
+	let before = harness.text();
+	harness.sink.take();
+
+	let err = store::append_received(
+		&harness.shared,
+		Path::new("C:\\somewhere\\else.copper"),
+		&[received("misfiled")],
+	)
+	.unwrap_err();
+
+	assert_eq!(err.kind(), "unavailable");
+	assert!(received_bodies(&harness.doc()).is_empty());
+	assert_eq!(harness.text(), before, "a refused delivery rewrote the file");
+	assert!(harness.sink.take().is_empty());
+	assert!(!harness.status().can_undo, "a refused delivery pushed an undo snapshot");
+}
+
+#[test]
+fn an_empty_message_is_refused_before_the_lock() {
+	let harness = Harness::new();
+	harness.sink.take();
+
+	let err = store::append_received(&harness.shared, &harness.path(), &[]).unwrap_err();
+
+	assert_eq!(err.kind(), "invalid");
+	assert!(harness.sink.take().is_empty());
+	assert!(!harness.status().can_undo);
+}
+
 #[test]
 fn the_emit_matrix_holds_for_every_command_path() {
 	let harness = Harness::new();

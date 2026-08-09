@@ -55,6 +55,19 @@ vi.mock('@tauri-apps/api/webview', () => ({
 	getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
 }))
 
+/** Task-026's shipped default: off, unconfigured, nothing to report. The Share
+ *  section renders from this, and the note context menu's **Send to my other
+ *  device** stays disabled under it. */
+const SHARE_CONFIG = {
+	enabled: false,
+	relayUrl: '',
+	role: 'first',
+	tokenSet: false,
+	secretSet: false,
+	configured: false,
+	lastError: null,
+}
+
 const SPACE: Space = {
 	id: 'spc_1',
 	name: 'development',
@@ -145,6 +158,7 @@ async function baseInvoke(command: string) {
 	if (command === 'get_settings') return settingsPayload
 	if (command === 'get_shortcut_state') return SHORTCUTS
 	if (command === 'get_autostart_enabled') return false
+	if (command === 'get_share_config') return SHARE_CONFIG
 	if (command === 'editor_handoffs') return []
 	if (command === 'list_recents') return RECENTS
 	if (command === 'refresh_recents') return null

@@ -399,7 +399,7 @@ const { initialize, dispose } = createStartup(
  * is actually applied makes the discard rule exactly "a newer answer already
  * won" instead of "a newer question was asked".
  */
-type Generation = {
+export type Generation = {
 	issue: () => number
 	/** True when `token` is newer than anything already settled — and records it
 	 *  as the new mark. Has a side effect, so it is called once per outcome, at
@@ -407,7 +407,13 @@ type Generation = {
 	settle: (token: number) => boolean
 }
 
-function generations(): Generation {
+/**
+ * Exported for `useDeviceShare`, which has the same problem with the same shape:
+ * two writes in flight and no ordering between their answers. Sharing the
+ * mechanism rather than the counter — each caller makes its own — is what keeps
+ * a theme write and a relay-URL write from superseding one another.
+ */
+export function generations(): Generation {
 	let issued = 0
 	let settled = 0
 	return {

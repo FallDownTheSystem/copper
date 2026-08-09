@@ -17,6 +17,7 @@ import { useNoteList } from './useNoteList'
 import { useNoteSearch } from './useNoteSearch'
 import { noteRow, rowNoteId, sectionRow, takeRow, useSelection } from './useSelection'
 import { useSettings } from './useSettings'
+import { useDeviceShare } from './useDeviceShare'
 import { countMessage, useStatusMessage, type StatusAction } from './useStatusMessage'
 import { useSpace, type MarkdownFormat, type NoteSelection } from './useSpace'
 
@@ -31,6 +32,7 @@ const status = useStatusMessage()
 const attachments = useAttachments()
 const settings = useSettings()
 const list = useNoteList()
+const share = useDeviceShare()
 
 /**
  * **The one target rule, used by every action in this file.**
@@ -886,6 +888,77 @@ async function openInEditor() {
 	}
 }
 
+// --- device share (task-026) -------------------------------------------------
+
+/**
+ * Sends the target notes to the user's other machine.
+ *
+ * Through `serialize()` like every other action here, so a send cannot run
+ * beside a delete that is removing the notes it is reading.
+ *
+ * **Every outcome is reported**, mirroring `openInEditor`'s switch. The two
+ * worth reading the wording of:
+ *
+ * - `delayed` is a *success*. The relay stored the note and failed only to
+ *   announce it; the next send announces it too, so nothing is lost and nothing
+ *   needs doing.
+ * - `unknown` is neither. The request left and its answer never arrived, so the
+ *   note may well have been delivered — which is exactly why the message says
+ *   sending it again would duplicate it rather than inviting a retry.
+ */
+function sendToOtherDevice() {
+	return serialize(async () => {
+		const ids = targetIds()
+		if (ids.length === 0) return
+
+		const outcome = await share.sendNotes(ids)
+		switch (outcome.kind) {
+			case 'sent':
+				status.setMessage(
+					countMessage(outcome.notes, {
+						one: 'Sent 1 note to your other device',
+						many: (n) => `Sent ${n} notes to your other device`,
+					}),
+				)
+				return
+			case 'delayed':
+				// **Stored, not announced**, which is not the same as "on its way". The
+				// relay kept the note and failed to advance its head pointer, and the
+				// reader only walks up to that pointer — so it is collected once a
+				// *later* send moves the pointer past it. Neither "shortly" nor "with
+				// the next one": that send can fail to announce itself too.
+				status.setMessage(
+					countMessage(outcome.notes, {
+						one: 'Sent 1 note. The relay has it; it arrives once a later send goes through.',
+						many: (n) =>
+							`Sent ${n} notes. The relay has them; they arrive once a later send goes through.`,
+					}),
+				)
+				return
+			case 'unknown':
+				status.setError(
+					`The relay did not confirm this note (${outcome.message}). It may have arrived, so sending it again would deliver it twice.`,
+				)
+				return
+			case 'too-large':
+				status.setError(
+					`This selection is ${megabytes(outcome.bytes)} MB once encrypted, over the ${megabytes(outcome.limit)} MB a shared note can be. Attachments cost about a third more than their file size.`,
+				)
+				return
+			case 'unconfigured':
+				status.setError(`Set the ${outcome.missing} in Settings → Share first.`)
+				return
+			default:
+				status.setError(outcome.message)
+		}
+	})
+}
+
+/** One decimal place, which is the precision a size limit is worth stating to. */
+function megabytes(bytes: number) {
+	return (bytes / (1024 * 1024)).toFixed(1)
+}
+
 // --- attachments -------------------------------------------------------------
 
 /**
@@ -990,6 +1063,8 @@ export function useNoteActions() {
 		edit,
 		doubleClickNote,
 		openInEditor,
+		canSendToOtherDevice: share.canSend,
+		sendToOtherDevice,
 		stopHandoff,
 		undo,
 		redo,

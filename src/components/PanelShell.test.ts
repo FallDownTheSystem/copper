@@ -116,6 +116,19 @@ vi.mock('@tauri-apps/api/webview', () => ({
 	}),
 }))
 
+/** Task-026's shipped default: off, unconfigured, nothing to report. The Share
+ *  section renders from this, and the note context menu's **Send to my other
+ *  device** stays disabled under it. */
+const SHARE_CONFIG = {
+	enabled: false,
+	relayUrl: '',
+	role: 'first',
+	tokenSet: false,
+	secretSet: false,
+	configured: false,
+	lastError: null,
+}
+
 const SPACE: Space = {
 	id: 'spc_1',
 	name: 'development',
@@ -230,7 +243,10 @@ function renderedNotes(args: Record<string, unknown> | undefined) {
 				'baseInvoke(command, args)',
 		)
 	}
-	return { text: JSON.stringify(args), count: selectedNotes(args.selection as NoteSelection).length }
+	return {
+		text: JSON.stringify(args),
+		count: selectedNotes(args.selection as NoteSelection).length,
+	}
 }
 
 /**
@@ -262,6 +278,7 @@ async function baseInvoke(command: string, args?: Record<string, unknown>) {
 	if (command === 'get_settings') return settingsPayload
 	if (command === 'get_shortcut_state') return SHORTCUTS
 	if (command === 'get_autostart_enabled') return false
+	if (command === 'get_share_config') return SHARE_CONFIG
 	if (command === 'render_notes_markdown') return renderedNotes(args)
 	if (command === 'clipboard_write_text') return null
 	// Task-013's zero-focus paste. The text branch is a capture, so it reaches

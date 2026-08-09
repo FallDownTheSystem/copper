@@ -65,7 +65,7 @@ use serde::Serialize;
 use atomic::{Attempt, Prepared};
 use error::{io_err, Result, StoreError};
 use events::{ChangeReason, EventSink, SpaceChanged, StoreEvent};
-use model::{Section, Space, DEFAULT_SECTION_NAME};
+use model::{Attachment, Section, Space, DEFAULT_SECTION_NAME};
 use settings::{Settings, SettingsPatch};
 use undo::UndoStack;
 #[cfg(feature = "watch")]
@@ -1055,6 +1055,106 @@ pub fn append_paths_note(shared: &SharedStore, body: &str) -> Result<()> {
 		id: doc.id,
 		path,
 		reason: ChangeReason::Attach,
+	})];
+	emit_after(guard, produced);
+	Ok(())
+}
+
+/// One note from the user's other device, ready to be written.
+///
+/// Its attachments are already ingested — content-addressed, sniffed and written
+/// beside the space by the time this exists. That is why the blobs and the notes
+/// have to land in the *same* document, and why [`append_received`] re-checks
+/// which one that is under its own guard.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReceivedNote {
+	pub body: String,
+	pub attachments: Vec<Attachment>,
+}
+
+/// Where a delivered message lands. Created when it is not already there.
+///
+/// A fixed section rather than the active one, and rather than a provenance
+/// field on `Note`: with exactly two devices, "who sent it" has one possible
+/// answer, and a dedicated section says it without changing the document schema
+/// for every note that did not arrive over a relay.
+pub const RECEIVED_SECTION: &str = "Received";
+
+/// Task-026's entry point: write a delivered message into the open space.
+///
+/// `expected_path` is checked **under the same guard that performs the write**,
+/// not before it. The caller ingested the attachment blobs beside one particular
+/// space; a switch between an outside check and this lock would file the notes
+/// in a different document from their attachments, leaving notes pointing at
+/// blobs that are not there. A mismatch is `unavailable`, the caller does not
+/// acknowledge the message, and the ingested blobs become ordinary sweepable
+/// orphans.
+///
+/// One `mutate`, so a whole message is one undo entry and one `Ctrl+Z` however
+/// many notes it carried. It emits, like [`append_capture`] and
+/// [`append_paths_note`] and for the same reason: no return value reaches the
+/// frontend from here, so `space-changed` is the panel's only way to learn that
+/// notes arrived. The reason is [`ChangeReason::Received`] rather than `Capture`
+/// — nothing was captured, nobody is at this machine, and the panel answers
+/// `Capture` with a sound and a scroll request.
+///
+/// The `Received` section is created when absent and `active_section` is put
+/// back afterwards: `ops::add_section` moves it, which is right for the section
+/// switcher and wrong for a note that arrived while the user was typing
+/// somewhere else.
+pub fn append_received(
+	shared: &SharedStore,
+	expected_path: &Path,
+	notes: &[ReceivedNote],
+) -> Result<()> {
+	// Before the lock, matching the store's rule for empty multi-id arguments.
+	if notes.is_empty() {
+		return Err(StoreError::Invalid("a delivered message carried no notes".into()));
+	}
+
+	let mut guard = lock(shared);
+	let active = guard.require_active_path()?;
+	if active.as_path() != expected_path {
+		return Err(StoreError::Unavailable(
+			"the open space changed while this message was being delivered".into(),
+		));
+	}
+
+	// Read out before `mutate` borrows the guard mutably, like `append_capture`:
+	// it describes the setting the delivery was written against.
+	let at = guard.settings().insertion();
+	let (_, doc) = guard.mutate(|space| {
+		let previous = space.active_section.clone();
+		let section = match ops::section_by_name(space, RECEIVED_SECTION) {
+			Some(section) => section.id.clone(),
+			None => ops::add_section(space, RECEIVED_SECTION)?,
+		};
+
+		// **Reversed for `Top`.** `ops::add_note` places a top insertion at order
+		// `-1` and lets `normalise` renumber between calls, so consecutive adds
+		// stack newest-first (ops.rs:202-211 says so in its own comment). Adding a
+		// three-note message front-to-back would deliver it upside down.
+		let ordered: Vec<&ReceivedNote> = match at {
+			settings::InsertionPoint::Top => notes.iter().rev().collect(),
+			settings::InsertionPoint::Bottom => notes.iter().collect(),
+		};
+		for note in ordered {
+			ops::add_note(space, &note.body, Some(&section), &note.attachments, at)?;
+		}
+
+		// After the adds, because `add_section` above moved it and `add_note` reads
+		// it for a `None` section. Restoring it here means a note arriving while the
+		// user is typing in another section leaves the active section exactly where
+		// it was.
+		space.active_section = previous;
+		Ok(())
+	})?;
+
+	let path = guard.active_path().map(path_string).unwrap_or_default();
+	let produced = vec![StoreEvent::SpaceChanged(SpaceChanged {
+		id: doc.id,
+		path,
+		reason: ChangeReason::Received,
 	})];
 	emit_after(guard, produced);
 	Ok(())

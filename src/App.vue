@@ -13,6 +13,11 @@ import { EASE_OUT_QUINT } from '@/lib/motion'
 
 const { view, direction, showSettings } = useView()
 const { initialize } = useSettings()
+/** Initialised here rather than from the Settings view, because the note context
+ *  menu has to know whether sharing is configured before Settings has ever been
+ *  opened — otherwise **Send to my other device** sits in an unknown state for
+ *  the whole of a first session. */
+const { initialize: startShare } = useDeviceShare()
 useTheme()
 
 /** Copper's own composable rather than VueUse's `usePreferredReducedMotion`
@@ -41,6 +46,7 @@ onMounted(() => {
 	// Listen, then pull, per task-003's startup contract. `initialize` does both in
 	// that order.
 	void initialize()
+	void startShare()
 
 	// The tray's Settings item. Safe as an event, unlike anything emitted from
 	// `setup()`: a tray menu cannot be clicked until the webview has loaded and
