@@ -725,7 +725,7 @@ dependencies = [
 
 [[package]]
 name = "copper"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.23.1",
  "chacha20poly1305",
@@ -760,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "copper-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "arboard",
  "clap",
@@ -772,7 +772,7 @@ dependencies = [
 
 [[package]]
 name = "copper-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "infer",
