@@ -75,21 +75,17 @@ fn list() -> Result<Report> {
 /// per cause ready to say instead.
 fn select(path: &Path) -> Result<Report> {
 	let resolved = resolve::absolute(path)?;
-	match availability::probe(&RealFs, &resolved).0 {
-		Availability::Available => {}
-		other => {
-			let why = other
-				.message()
-				.unwrap_or("this space cannot be opened")
-				.to_string();
-			return Err(match other {
-				Availability::Unavailable {
-					reason: availability::UnavailableReason::Missing,
-					..
-				} => StoreError::NotFound(format!("{}: {why}", resolved.display())),
-				_ => StoreError::Unavailable(format!("{}: {why}", resolved.display())),
-			});
-		}
+	let probed = availability::probe(&RealFs, &resolved).0;
+	if probed != Availability::Available {
+		let why = probed.message().unwrap_or("this space cannot be opened");
+		let described = format!("{}: {why}", resolved.display());
+		return Err(match probed {
+			Availability::Unavailable {
+				reason: availability::UnavailableReason::Missing,
+				..
+			} => StoreError::NotFound(described),
+			_ => StoreError::Unavailable(described),
+		});
 	}
 
 	// Canonical where possible, so two spellings of one path do not read as two

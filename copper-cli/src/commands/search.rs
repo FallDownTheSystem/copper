@@ -14,10 +14,7 @@ use crate::resolve;
 
 pub fn run(store: &Store, args: &SearchArgs) -> Result<Report> {
 	let space = store.active_space()?;
-	let section = match &args.section {
-		Some(reference) => Some(resolve::section(&space, reference)?.to_string()),
-		None => None,
-	};
+	let section = resolve::optional_section(&space, args.section.as_deref())?;
 
 	let results = search_notes(
 		&space,

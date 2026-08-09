@@ -35,10 +35,7 @@ pub fn run(store: &mut Store, command: &NoteCommand) -> Result<Report> {
 
 fn list(store: &Store, args: &NoteListArgs) -> Result<Report> {
 	let space = store.active_space()?;
-	let section = match &args.section {
-		Some(reference) => Some(resolve::section(&space, reference)?.to_string()),
-		None => None,
-	};
+	let section = resolve::optional_section(&space, args.section.as_deref())?;
 	let wanted = args.state.wanted();
 
 	let rows: Vec<_> = space

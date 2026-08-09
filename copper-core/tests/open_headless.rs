@@ -156,9 +156,10 @@ fn appending_a_note_headless_produces_the_same_minimal_diff() {
 /// and suffixes, and it does not depend on which of two identical `}` lines a
 /// diff algorithm chooses to align.
 ///
-/// `pub` because the end-to-end CLI test makes the same assertion about the same
-/// file, one process boundary further out.
-pub fn assert_minimal_note_diff(before: &str, after: &str) {
+/// `copper-cli/tests/cli.rs` asserts the same property one process boundary
+/// further out, and holds its own copy: an integration test in one crate cannot
+/// reach another crate's test items.
+fn assert_minimal_note_diff(before: &str, after: &str) {
 	let before_lines: Vec<&str> = before.lines().collect();
 	let after_lines: Vec<&str> = after.lines().collect();
 

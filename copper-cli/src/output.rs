@@ -344,11 +344,11 @@ impl Report {
 					.join("\n")
 			}
 			// The payload verbatim, because the point of `copy` is that its stdout
-			// can be piped somewhere. Nothing is added around it.
-			Self::Copy { text, .. } => match text {
-				Value::String(rendered) => rendered.clone(),
-				other => other.to_string(),
-			},
+			// can be piped somewhere. Nothing is added around it. Through
+			// [`Report::payload`] rather than a second unwrapping of `text`, so the
+			// bytes this prints and the bytes that reach the clipboard cannot come
+			// to differ.
+			Self::Copy { .. } => self.payload().unwrap_or_default(),
 			Self::Export { exported, failed } => {
 				let mut lines: Vec<String> = exported
 					.iter()
@@ -389,7 +389,9 @@ fn one_line(body: &str) -> String {
 		.collect();
 	let trimmed = flattened.trim();
 	let mut out: String = trimmed.chars().take(80).collect();
-	if trimmed.chars().count() > 80 {
+	// `nth(80)` rather than a full count: the question is whether an 81st character
+	// exists, and a long body should not be walked to its end to answer it.
+	if trimmed.chars().nth(80).is_some() {
 		out.push_str("...");
 	}
 	out

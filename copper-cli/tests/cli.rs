@@ -15,6 +15,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+use copper_core::store::settings;
+
 const GOLDEN: &str = include_str!("../../copper-core/tests/fixtures/space-golden.copper");
 /// The golden fixture's last section. A note added here is appended at the end
 /// of the notes array, which is what the minimal-diff assertion describes.
@@ -41,12 +43,16 @@ impl Cli {
 		}
 	}
 
+	/// The constants rather than the literals, so this fixture follows the
+	/// directory the CLI actually reads. `copper-core` already pins
+	/// `APP_IDENTIFIER` to `tauri.conf.json`'s value in a test of its own, which
+	/// is where that assertion belongs.
 	fn config_dir(&self) -> PathBuf {
-		self.appdata.join("io.github.falldownthesystem.copper")
+		self.appdata.join(settings::APP_IDENTIFIER)
 	}
 
 	fn settings_path(&self) -> PathBuf {
-		self.config_dir().join("settings.json")
+		self.config_dir().join(settings::FILE_NAME)
 	}
 
 	/// Writes a `settings.json` whose `recents` are the given paths.
@@ -54,23 +60,21 @@ impl Cli {
 		std::fs::create_dir_all(self.config_dir()).unwrap();
 		let entries: Vec<String> = recents
 			.iter()
-			.map(|path| serde_json::to_string(&path.to_string_lossy()).unwrap())
+			.map(|path| path.to_string_lossy().into_owned())
 			.collect();
 		let path = self.settings_path();
-		std::fs::write(
-			&path,
-			format!(
-				"{{\n  \"recents\": [{}],\n  \"activeSpace\": 0,\n  \"theme\": \"dark\"\n}}\n",
-				entries.join(", ")
-			),
-		)
-		.unwrap();
+		let document = serde_json::json!({
+			"recents": entries,
+			"activeSpace": 0,
+			"theme": "dark",
+		});
+		std::fs::write(&path, format!("{document}\n")).unwrap();
 		path
 	}
 
 	fn command(&self) -> Command {
 		// `copper-cli`, the cargo target name. What the user types is `copper` —
-		// clap's own `name`, and the filename task-025's installer ships it under.
+		// clap's own `name`, and the filename the installer ships it under.
 		let mut command = Command::new(env!("CARGO_BIN_EXE_copper-cli"));
 		command
 			.current_dir(&self.cwd)
@@ -81,6 +85,18 @@ impl Cli {
 
 	fn run(&self, args: &[&str]) -> Run {
 		Run::of(self.command().args(args).output().unwrap())
+	}
+
+	/// `run`, with `--space <path>` in front of every invocation.
+	///
+	/// Twelve tests below own a space and address it on every call. One copy of
+	/// the argument assembly means each of them reads as the commands it runs.
+	fn at<'a>(&'a self, space: &'a Path) -> impl Fn(&[&str]) -> Run + 'a {
+		move |args| {
+			let mut all = vec!["--space", space.to_str().unwrap()];
+			all.extend_from_slice(args);
+			self.run(&all)
+		}
 	}
 
 	/// A space file in the working directory, created through the CLI itself.
@@ -502,11 +518,7 @@ fn note_add_never_creates_a_section_from_a_heading() {
 fn top_puts_a_note_above_the_others() {
 	let cli = Cli::new();
 	let space = cli.space("ordering");
-	let at = |args: &[&str]| {
-		let mut all = vec!["--space", space.to_str().unwrap()];
-		all.extend_from_slice(args);
-		cli.run(&all)
-	};
+	let at = cli.at(&space);
 
 	at(&["note", "add", "first"]).ok();
 	at(&["note", "add", "second", "--top"]).ok();
@@ -523,11 +535,7 @@ fn top_puts_a_note_above_the_others() {
 fn a_note_id_prefix_resolves_and_an_ambiguous_one_is_refused() {
 	let cli = Cli::new();
 	let space = cli.space("prefixes");
-	let at = |args: &[&str]| {
-		let mut all = vec!["--space", space.to_str().unwrap()];
-		all.extend_from_slice(args);
-		cli.run(&all)
-	};
+	let at = cli.at(&space);
 
 	let id = at(&["note", "add", "findable"]).ok().out().to_string();
 	let hex = id.strip_prefix("nte_").unwrap();
@@ -546,11 +554,7 @@ fn a_note_id_prefix_resolves_and_an_ambiguous_one_is_refused() {
 fn an_ambiguous_section_name_is_refused_with_the_matches_listed() {
 	let cli = Cli::new();
 	let space = cli.space("ambiguous");
-	let at = |args: &[&str]| {
-		let mut all = vec!["--space", space.to_str().unwrap()];
-		all.extend_from_slice(args);
-		cli.run(&all)
-	};
+	let at = cli.at(&space);
 
 	at(&["section", "add", "Later"]).ok();
 	// A second section of the same name cannot be made through `section add`
@@ -572,11 +576,7 @@ fn an_ambiguous_section_name_is_refused_with_the_matches_listed() {
 fn a_section_named_like_an_id_is_still_reachable_by_name() {
 	let cli = Cli::new();
 	let space = cli.space("lookalike");
-	let at = |args: &[&str]| {
-		let mut all = vec!["--space", space.to_str().unwrap()];
-		all.extend_from_slice(args);
-		cli.run(&all)
-	};
+	let at = cli.at(&space);
 
 	at(&["section", "add", "sec_notreal"]).ok();
 	at(&["note", "add", "in the lookalike", "--section", "sec_notreal"]).ok();
@@ -588,11 +588,7 @@ fn a_section_named_like_an_id_is_still_reachable_by_name() {
 fn every_failure_maps_to_its_documented_exit_code() {
 	let cli = Cli::new();
 	let space = cli.space("codes");
-	let at = |args: &[&str]| {
-		let mut all = vec!["--space", space.to_str().unwrap()];
-		all.extend_from_slice(args);
-		cli.run(&all)
-	};
+	let at = cli.at(&space);
 
 	// invalid — an empty body is refused by `ops::clean_body`.
 	at(&["note", "add", "   "]).failed(2);
@@ -635,11 +631,7 @@ fn an_error_under_json_is_the_documented_envelope() {
 fn every_json_output_parses_and_carries_its_documented_keys() {
 	let cli = Cli::new();
 	let space = cli.space("shapes");
-	let at = |args: &[&str]| {
-		let mut all = vec!["--space", space.to_str().unwrap()];
-		all.extend_from_slice(args);
-		cli.run(&all)
-	};
+	let at = cli.at(&space);
 
 	let id = at(&["note", "add", "Send HTTP requests to the API"]).ok().out().to_string();
 
@@ -673,7 +665,7 @@ fn every_json_output_parses_and_carries_its_documented_keys() {
 	let added = at(&["--json", "note", "add", "another"]).ok().json();
 	assert!(added["id"].as_str().unwrap().starts_with("nte_"));
 
-    let done = at(&["--json", "note", "done", &id]).ok().json();
+	let done = at(&["--json", "note", "done", &id]).ok().json();
 	assert_eq!(done["ids"][0], id.as_str());
 
 	let current = cli.run(&["--json", "space", "current"]).ok().json();
@@ -710,11 +702,7 @@ fn space_create_refuses_to_overwrite() {
 fn each_copy_format_renders_what_its_name_says() {
 	let cli = Cli::new();
 	let space = cli.space("copying");
-	let at = |args: &[&str]| {
-		let mut all = vec!["--space", space.to_str().unwrap()];
-		all.extend_from_slice(args);
-		cli.run(&all)
-	};
+	let at = cli.at(&space);
 
 	at(&["note", "add", "alpha"]).ok();
 	let beta = at(&["note", "add", "beta"]).ok().out().to_string();
@@ -741,11 +729,7 @@ fn each_copy_format_renders_what_its_name_says() {
 fn the_content_format_and_the_output_envelope_compose() {
 	let cli = Cli::new();
 	let space = cli.space("envelopes");
-	let at = |args: &[&str]| {
-		let mut all = vec!["--space", space.to_str().unwrap()];
-		all.extend_from_slice(args);
-		cli.run(&all)
-	};
+	let at = cli.at(&space);
 	at(&["note", "add", "alpha"]).ok();
 
 	let wrapped = at(&["--json", "copy", "--all"]).ok().json();
@@ -769,11 +753,7 @@ fn the_content_format_and_the_output_envelope_compose() {
 fn copy_writes_exactly_the_rendering_with_no_trailing_newline() {
 	let cli = Cli::new();
 	let space = cli.space("exact");
-	let at = |args: &[&str]| {
-		let mut all = vec!["--space", space.to_str().unwrap()];
-		all.extend_from_slice(args);
-		cli.run(&all)
-	};
+	let at = cli.at(&space);
 	at(&["note", "add", "alpha"]).ok();
 
 	let run = at(&["copy", "--all", "--format", "bodies"]);
@@ -793,11 +773,7 @@ fn copy_writes_exactly_the_rendering_with_no_trailing_newline() {
 fn copying_by_id_uses_document_order_whatever_order_the_ids_were_given() {
 	let cli = Cli::new();
 	let space = cli.space("stable");
-	let at = |args: &[&str]| {
-		let mut all = vec!["--space", space.to_str().unwrap()];
-		all.extend_from_slice(args);
-		cli.run(&all)
-	};
+	let at = cli.at(&space);
 
 	let first = at(&["note", "add", "alpha"]).ok().out().to_string();
 	let second = at(&["note", "add", "beta"]).ok().out().to_string();
@@ -815,11 +791,7 @@ fn copying_by_id_uses_document_order_whatever_order_the_ids_were_given() {
 fn exporting_attachments_writes_them_under_their_original_names() {
 	let cli = Cli::new();
 	let space = cli.space("attached");
-	let at = |args: &[&str]| {
-		let mut all = vec!["--space", space.to_str().unwrap()];
-		all.extend_from_slice(args);
-		cli.run(&all)
-	};
+	let at = cli.at(&space);
 	let note = at(&["note", "add", "has files"]).ok().out().to_string();
 
 	// The CLI cannot ingest, so the sidecar and the document's attachment entries
@@ -866,11 +838,7 @@ fn exporting_attachments_writes_them_under_their_original_names() {
 fn a_failed_attachment_does_not_stop_the_rest_but_does_change_the_exit_code() {
 	let cli = Cli::new();
 	let space = cli.space("partial");
-	let at = |args: &[&str]| {
-		let mut all = vec!["--space", space.to_str().unwrap()];
-		all.extend_from_slice(args);
-		cli.run(&all)
-	};
+	let at = cli.at(&space);
 	let note = at(&["note", "add", "one good one bad"]).ok().out().to_string();
 
 	let assets = cli.cwd.join("partial.copper.assets");

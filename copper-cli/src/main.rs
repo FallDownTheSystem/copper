@@ -86,7 +86,7 @@ fn emit(report: &Report, as_json: bool) {
 	if let Some(payload) = report.payload() {
 		let mut out = std::io::stdout().lock();
 		let _ = out.write_all(payload.as_bytes());
-		if std::io::stdout().is_terminal() {
+		if out.is_terminal() {
 			let _ = out.write_all(b"\n");
 		}
 		let _ = out.flush();

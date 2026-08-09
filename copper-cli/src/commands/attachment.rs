@@ -18,15 +18,11 @@ use crate::resolve;
 pub fn run(store: &Store, reference: &str, out: Option<&Path>) -> Result<Report> {
 	let space_path = store.require_active_path()?;
 	let space = store.active_space()?;
-	let id = resolve::note_id(&space, reference)?;
-	let note = space
-		.note(id)
-		.ok_or_else(|| StoreError::NotFound(format!("no note {id}")))?;
+	let note = resolve::note(&space, reference)?;
 
 	let target = match out {
 		Some(dir) => resolve::absolute(dir)?,
-		None => std::env::current_dir()
-			.map_err(|err| StoreError::Io(format!("could not read the working directory: {err}")))?,
+		None => resolve::working_dir()?,
 	};
 	if !note.attachments.is_empty() {
 		std::fs::create_dir_all(&target).map_err(|err| io_err(&target, "create", &err))?;
@@ -77,6 +73,12 @@ fn export_one(space: &Path, dir: &Path, file: &str, name: &str) -> Result<PathBu
 /// the file still opens in the same application.
 fn write_without_clobbering(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf> {
 	let (stem, extension) = split_extension(name);
+	// `CommitFailure` hands the prepared file back so a further attempt does not
+	// serialise and fsync the same bytes again — the same reason
+	// `attachments::write_blob` parks one. Only the *name* changes between
+	// attempts, so a directory full of collisions costs one blob write, not a
+	// hundred.
+	let mut held: Option<atomic::Prepared> = None;
 
 	for attempt in 1..=MAX_COLLISION_ATTEMPTS {
 		let candidate = if attempt == 1 {
@@ -86,9 +88,15 @@ fn write_without_clobbering(dir: &Path, name: &str, bytes: &[u8]) -> Result<Path
 		};
 		let path = dir.join(&candidate);
 
-		match atomic::prepare_bytes(dir, bytes)?.commit_new(&path) {
+		let prepared = match held.take() {
+			Some(prepared) => prepared,
+			None => atomic::prepare_bytes(dir, bytes)?,
+		};
+		match prepared.commit_new(&path) {
 			Ok(()) => return Ok(path),
-			Err(failure) if failure.error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+			Err(failure) if failure.error.kind() == std::io::ErrorKind::AlreadyExists => {
+				held = Some(failure.prepared);
+			}
 			Err(failure) => return Err(io_err(&path, "write", &failure.error)),
 		}
 	}
@@ -138,35 +146,15 @@ fn sanitise(name: &str, file: &str) -> String {
 	// Windows drops trailing dots and spaces silently, so a name ending in one
 	// would be created under a *different* name than the one reported.
 	let trimmed = cleaned.trim().trim_end_matches(['.', ' ']).trim();
-	if trimmed.is_empty() || is_reserved(trimmed) {
+	// The store's own table, asked here about a name a user typed rather than one
+	// the store minted — the same thirty device names, the same segment before the
+	// first dot. Only what we do with the answer differs: `is_bare_filename`
+	// refuses, and this falls back to the content-addressed name so the bytes
+	// still come out.
+	if trimmed.is_empty() || attachments::is_reserved_device_name(trimmed) {
 		return file.to_string();
 	}
 	trimmed.to_string()
-}
-
-/// The DOS device names, which are still not usable as filenames and fail with an
-/// error that names none of this.
-///
-/// The list and the split both match `attachments::is_bare_filename`'s, which is
-/// the same question asked about the store's own names. Two details are easy to
-/// get wrong and both are worth stating:
-///
-/// - **The segment before the *first* dot**, not the last. `COM1.foo.bar` is
-///   reserved; taking the stem before the final dot would test `COM1.foo` and
-///   miss it.
-/// - **The console handles and the superscript forms.** `CONIN$`, `CONOUT$` and
-///   `COM¹`/`LPT²` are device names too, and a user's original filename is far
-///   more likely to hold one by accident than a name the store minted.
-fn is_reserved(name: &str) -> bool {
-	const RESERVED: [&str; 30] = [
-		"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "COM1", "COM2", "COM3", "COM4", "COM5",
-		"COM6", "COM7", "COM8", "COM9", "COM¹", "COM²", "COM³", "LPT1", "LPT2", "LPT3", "LPT4",
-		"LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "LPT¹", "LPT²", "LPT³",
-	];
-	let stem = name.split('.').next().unwrap_or_default();
-	RESERVED
-		.iter()
-		.any(|reserved| stem.eq_ignore_ascii_case(reserved))
 }
 
 #[cfg(test)]

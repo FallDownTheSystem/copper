@@ -11,8 +11,8 @@ use copper_core::entry;
 use copper_core::spaces::paths;
 use copper_core::store::error::{Result, StoreError};
 use copper_core::store::events::NullSink;
-use copper_core::store::model::Space;
-use copper_core::store::{self, settings, Store};
+use copper_core::store::model::{Note, Space};
+use copper_core::store::{self, format, settings, Store};
 use serde::{Deserialize, Serialize};
 
 /// The environment variable in the middle of the resolution chain.
@@ -81,11 +81,9 @@ pub fn load_state() -> CliState {
 	// `Path::is_absolute`, **not** `paths::is_rooted`. The two answer different
 	// questions and only one of them is the contract here: `is_rooted` is true for
 	// `C:foo` and `\foo` as well, because its job is to stop `join` from silently
-	// discarding a base — but neither of those is durable. `C:foo` resolves
-	// against drive C's own current directory and `\foo` against whatever the
-	// current drive is, so both name a different file depending on where the shell
-	// happens to be. `save_state` only ever writes a canonicalised path, so
-	// anything that fails this test did not come from here.
+	// discarding a base — but `C:foo` resolves against drive C's own current
+	// directory and `\foo` against whatever the current drive is, so neither names
+	// a fixed file.
 	match &state.space {
 		Some(entry) if Path::new(entry).is_absolute() => state,
 		_ => CliState::default(),
@@ -104,9 +102,7 @@ pub fn save_state(state: &CliState) -> Result<()> {
 		std::fs::create_dir_all(dir)
 			.map_err(|err| copper_core::store::error::io_err(dir, "create", &err))?;
 	}
-	let text = serde_json::to_string_pretty(state)
-		.map_err(|err| StoreError::Io(format!("could not encode {}: {err}", path.display())))?;
-	store::atomic::write_atomic(&path, &format!("{text}\n"))
+	store::atomic::write_atomic(&path, &format::to_git_json(state)?)
 }
 
 /// Removes the state file. A file that was never there is already the desired
@@ -131,9 +127,17 @@ pub fn absolute(path: &Path) -> Result<PathBuf> {
 	if paths::is_rooted(path) {
 		return Ok(path.to_path_buf());
 	}
-	let cwd = std::env::current_dir()
-		.map_err(|err| StoreError::Io(format!("could not read the working directory: {err}")))?;
-	Ok(cwd.join(path))
+	Ok(working_dir()?.join(path))
+}
+
+/// The invocation's working directory, and the one wording for not having one.
+///
+/// Two callers: this function resolves a relative path against it, and
+/// `attachment export` defaults its destination to it. The failure is the same
+/// failure in both, so it is spelled once.
+pub fn working_dir() -> Result<PathBuf> {
+	std::env::current_dir()
+		.map_err(|err| StoreError::Io(format!("could not read the working directory: {err}")))
 }
 
 /// The space this invocation works on (spec 5).
@@ -228,13 +232,30 @@ pub fn section<'a>(space: &'a Space, reference: &str) -> Result<&'a str> {
 	}
 }
 
-/// A note id from an id or an unambiguous prefix of its hex part (spec 6).
+/// [`section`] for the optional `--section` filter.
+///
+/// `note list` and `search` both take one and both mean the same thing by it.
+/// Two copies of the `match` is two places for the filter to come to disagree,
+/// and the drift would be silent — a filter that resolved differently still
+/// returns notes.
+pub fn optional_section(space: &Space, reference: Option<&str>) -> Result<Option<String>> {
+	reference
+		.map(|reference| section(space, reference).map(str::to_string))
+		.transpose()
+}
+
+/// The note an id or an unambiguous prefix of its hex part names (spec 6).
 ///
 /// Ids are `nte_` plus eight lowercase hex characters, so a prefix of three or
 /// four is almost always unique within a space and is far less to type. An
 /// ambiguous prefix is refused with the full list rather than resolved to the
 /// first, for the same reason an ambiguous section name is.
-pub fn note_id<'a>(space: &'a Space, reference: &str) -> Result<&'a str> {
+///
+/// The **note** rather than its id, because that is what the scan already found.
+/// `attachment export` wants the note itself, and asking for the id and then
+/// looking it up again would walk the document twice and leave a `not-found` arm
+/// the first walk has already made unreachable.
+pub fn note<'a>(space: &'a Space, reference: &str) -> Result<&'a Note> {
 	let needle = reference
 		.strip_prefix("nte_")
 		.unwrap_or(reference)
@@ -243,12 +264,12 @@ pub fn note_id<'a>(space: &'a Space, reference: &str) -> Result<&'a str> {
 		return Err(StoreError::Invalid("a note id cannot be empty".into()));
 	}
 
-	let matches: Vec<&str> = space
+	let matches: Vec<&Note> = space
 		.notes
 		.iter()
-		.map(|note| note.id.as_str())
-		.filter(|id| {
-			id.strip_prefix("nte_")
+		.filter(|note| {
+			note.id
+				.strip_prefix("nte_")
 				.is_some_and(|hex| hex.starts_with(&needle))
 		})
 		.collect();
@@ -259,9 +280,17 @@ pub fn note_id<'a>(space: &'a Space, reference: &str) -> Result<&'a str> {
 		many => Err(StoreError::Invalid(format!(
 			"{reference:?} matches {} notes: {}",
 			many.len(),
-			many.join(", ")
+			many.iter()
+				.map(|note| note.id.as_str())
+				.collect::<Vec<_>>()
+				.join(", ")
 		))),
 	}
+}
+
+/// [`note`]'s id, for the callers that only ever pass one to `ops`.
+pub fn note_id<'a>(space: &'a Space, reference: &str) -> Result<&'a str> {
+	note(space, reference).map(|note| note.id.as_str())
 }
 
 /// Every reference resolved, in the order given.

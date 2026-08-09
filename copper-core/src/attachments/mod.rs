@@ -134,8 +134,23 @@ pub fn is_bare_filename(name: &str) -> bool {
 	if name.chars().any(|ch| ch.is_control()) {
 		return false;
 	}
+	!is_reserved_device_name(name)
+}
+
+/// Whether `name`'s first segment is one of [`RESERVED_DEVICE_NAMES`].
+///
+/// Split out and made public because a second front end asks the same question
+/// and answers it differently. [`is_bare_filename`] *rejects* a name the store
+/// minted; `copper-cli`'s attachment export *repairs* a user's original
+/// filename, so it needs the test without the rejection. Thirty names written
+/// out twice is how one copy comes to be missing `CONIN$`.
+///
+/// **The segment before the first dot**, not the last: `COM1.foo.bar` is
+/// reserved, and a stem taken from the final dot would test `COM1.foo` and miss
+/// it.
+pub fn is_reserved_device_name(name: &str) -> bool {
 	let stem = name.split('.').next().unwrap_or_default();
-	!RESERVED_DEVICE_NAMES
+	RESERVED_DEVICE_NAMES
 		.iter()
 		.any(|reserved| stem.eq_ignore_ascii_case(reserved))
 }

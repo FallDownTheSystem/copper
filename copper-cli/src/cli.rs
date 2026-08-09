@@ -23,7 +23,7 @@ use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 	// default. The cargo target is `copper-cli`, so without this every usage line
 	// and every `--help` would read `copper-cli.exe` — a name that exists only
 	// inside this repository. Installed, the file *is* `copper.exe`; pinning the
-	// string means the two agree before task-025 renames anything.
+	// string means the two agree whatever the file on disk is called.
 	bin_name = "copper",
 	version,
 	about = "Read and edit Copper spaces from a terminal.",

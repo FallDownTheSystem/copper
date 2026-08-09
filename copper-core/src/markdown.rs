@@ -6,9 +6,8 @@
 //! clipboard format is two formats, and the only way "the same notes produce the
 //! same text" stays true is for there to be one renderer.
 //!
-//! **Both front ends now reach it.** The CLI calls these functions directly;
-//! the app calls them through `render_notes_markdown` (task-024), which is also
-//! what deleted the TypeScript original.
+//! **Both front ends reach it.** The CLI calls these functions directly; the app
+//! calls them through the `render_notes_markdown` command.
 //!
 //! Three renderers, not one, and the split is the TypeScript file's:
 //! [`copy_markdown`] and [`list_markdown`] are body-only and each has a recorded
