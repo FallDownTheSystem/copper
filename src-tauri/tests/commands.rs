@@ -55,8 +55,13 @@ const COMMANDS: [&str; 21] = [
 ];
 
 /// The commands later phases added beside the store's twenty.
-const EXTRA_COMMANDS: [&str; 37] = [
+const EXTRA_COMMANDS: [&str; 38] = [
 	"clipboard_write_text",
+	// Task-024. Beside the clipboard write rather than inside it: the app asks
+	// `copper_core::markdown` for the text and then writes it through the same one
+	// door, so that the renderer the CLI copies through is the renderer the app
+	// copies through. It is read-only and never touches the clipboard itself.
+	"render_notes_markdown",
 	"editor_handoffs",
 	"editor_open_note",
 	"editor_stop_handoff",
@@ -139,7 +144,7 @@ const EXTRA_COMMANDS: [&str; 37] = [
 ];
 
 /// Spec 8.1c. Every argument name in the whole surface.
-const PARAMETERS: [&str; 22] = [
+const PARAMETERS: [&str; 24] = [
 	"patch", "path", "name", "body", "section", "id", "ids", "done", "index", "text", "theme",
 	"chord", "trigger", "token", "target", "enabled",
 	// `set_panel_size` is the first command to take either; both are single
@@ -155,6 +160,11 @@ const PARAMETERS: [&str; 22] = [
 	// by the same `is_bare_filename`, and one name for one concept is what keeps
 	// the two resolvers from drifting apart.
 	"url",
+	// Task-024. `selection` is the tagged union naming which notes to render and
+	// `format` is which of the three renderings — both one word, and `format` is
+	// deliberately the same word `copper copy --format` uses for the same three
+	// `copper_core::markdown` functions.
+	"selection", "format",
 ];
 
 const SOURCE: &str = include_str!("../src/store/commands.rs");
@@ -162,8 +172,9 @@ const SOURCE: &str = include_str!("../src/store/commands.rs");
 /// Command *wrappers* live next to the module they serve; only the registration
 /// is central, because Tauri accepts one `invoke_handler` and the closure
 /// `generate_handler!` builds consumes the `Invoke` it is handed.
-const OTHER_SOURCES: [&str; 10] = [
+const OTHER_SOURCES: [&str; 11] = [
 	include_str!("../src/clipboard.rs"),
+	include_str!("../src/markdown.rs"),
 	include_str!("../src/editor.rs"),
 	include_str!("../src/spaces/mod.rs"),
 	include_str!("../src/shortcuts.rs"),

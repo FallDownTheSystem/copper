@@ -21,7 +21,7 @@ import { useSettings } from '@/composables/useSettings'
 import { useSpace } from '@/composables/useSpace'
 import { useSpaces } from '@/composables/useSpaces'
 import { useStatusMessage } from '@/composables/useStatusMessage'
-import type { Space, StoreStatus } from '@/composables/useSpace'
+import type { MarkdownFormat, NoteSelection, Space, StoreStatus } from '@/composables/useSpace'
 
 const actions = useNoteActions()
 const drag = useNoteDrag()
@@ -205,14 +205,64 @@ function defaultSettings() {
 	}
 }
 
+/**
+ * What `render_notes_markdown` answers, since task-024 moved both the Markdown
+ * rendering and the resolution of a selection into Rust.
+ *
+ * **The text is the arguments, JSON-encoded — never a rendering.** The
+ * formatting contract lives in `copper-core/tests/markdown.rs` now, byte for
+ * byte over the corpus the deleted `noteMarkdown.test.ts` used to hold, and a
+ * mock that reimplemented it here would only assert this file's copy of it.
+ * What the copy tests assert instead are the two things still owned on this
+ * side: the `NoteSelection` each affordance resolves to, and that whatever came
+ * back reached `clipboard_write_text` unaltered.
+ *
+ * `count` is resolved against the applied document, because `writeCopy` gates
+ * on it — a copy of no notes writes nothing and says nothing — and that gate is
+ * a frontend rule these tests still own. Counting which notes a selection names
+ * is not formatting them, and the mock has to agree with the real command about
+ * it for the gate to mean anything.
+ */
+function renderedNotes(args: Record<string, unknown> | undefined) {
+	if (!args) {
+		throw new Error(
+			'render_notes_markdown reached a mock that drops its arguments — forward them as ' +
+				'baseInvoke(command, args)',
+		)
+	}
+	return { text: JSON.stringify(args), count: selectedNotes(args.selection as NoteSelection).length }
+}
+
+/**
+ * The resolver's rules, as far as *counting* goes — including its two refusals,
+ * so a scope naming something the document does not hold fails here as it does
+ * in Rust rather than quietly answering zero.
+ */
+function selectedNotes(selection: NoteSelection) {
+	const notes = space.space.value?.notes ?? []
+	if (selection.kind === 'document') return notes
+
+	if (selection.kind === 'section') {
+		if (!space.sections.value.some((section) => section.id === selection.id)) {
+			throw { kind: 'not-found', message: `no such section: ${selection.id}` }
+		}
+		return notes.filter((note) => note.section === selection.id)
+	}
+
+	const missing = selection.ids.find((id) => !notes.some((note) => note.id === id))
+	if (missing !== undefined) throw { kind: 'not-found', message: `no such note: ${missing}` }
+	return notes.filter((note) => selection.ids.includes(note.id))
+}
+
 /** The store as every test finds it. Named so a test that replaces it can put it
  *  back — see the teardown below. */
-async function baseInvoke(command: string) {
+async function baseInvoke(command: string, args?: Record<string, unknown>) {
 	if (command === 'get_active_space') return SPACE
 	if (command === 'get_status') return STATUS
 	if (command === 'get_settings') return settingsPayload
 	if (command === 'get_shortcut_state') return SHORTCUTS
 	if (command === 'get_autostart_enabled') return false
+	if (command === 'render_notes_markdown') return renderedNotes(args)
 	if (command === 'clipboard_write_text') return null
 	// Task-013's zero-focus paste. The text branch is a capture, so it reaches
 	// `add_note` rather than `submit_entry`; the other branch asks `attach_paste`
@@ -346,6 +396,31 @@ async function mountPanel() {
 	panel = mount(PanelShell, { attachTo: document.body })
 	await settle(6)
 	return panel as ReturnType<typeof mount<typeof PanelShell>>
+}
+
+/**
+ * Every request a copy affordance made, in order — which notes it asked for and
+ * in which of the three renderings.
+ *
+ * This is the assertion the copy tests are built on. Since task-024 the panel
+ * decides only *which* notes a gesture means; the text is `copper_core::markdown`'s,
+ * and asserting it here would restate a contract `copper-core/tests/markdown.rs`
+ * already holds.
+ */
+function renderCalls() {
+	return mocks.invoke.mock.calls
+		.filter((call) => call[0] === 'render_notes_markdown')
+		.map((call) => call[1] as { selection: NoteSelection; format: MarkdownFormat })
+}
+
+function lastRender() {
+	return renderCalls().at(-1) ?? null
+}
+
+/** The last text written to the clipboard, or null when nothing was. */
+function copied() {
+	const written = mocks.invoke.mock.calls.filter((call) => call[0] === 'clipboard_write_text')
+	return (written.at(-1)?.[1] as { text: string } | undefined)?.text ?? null
 }
 
 describe('the grid structure', () => {
@@ -919,15 +994,25 @@ describe('the Escape ladder', () => {
 	})
 })
 
+/**
+ * Two hops since task-024, and the tests below assert one each: the panel asks
+ * `render_notes_markdown` for the notes it targeted, and writes whatever comes
+ * back through the Rust clipboard module. The Markdown itself is
+ * `copper-core/tests/markdown.rs`'s.
+ */
 describe('copy', () => {
-	it('writes the targeted bodies through the Rust clipboard module', async () => {
+	it('asks the renderer for the targeted notes and writes back what it answers', async () => {
 		const wrapper = await mountPanel()
 		selection.select('nte_1')
 
 		await wrapper.trigger('keydown', { key: 'c', ctrlKey: true })
-		await wrapper.vm.$nextTick()
+		await settle(2)
 
-		expect(mocks.invoke).toHaveBeenCalledWith('clipboard_write_text', { text: 'first note' })
+		// The scope: `Ctrl+C` targets the selection, by id, as raw bodies.
+		expect(lastRender()).toEqual({ selection: { kind: 'ids', ids: ['nte_1'] }, format: 'bodies' })
+		// The plumbing: the answer reached the clipboard unaltered. Nothing on this
+		// side reads, trims or re-joins it.
+		expect(copied()).toBe(JSON.stringify(lastRender()))
 	})
 
 	/**
@@ -936,8 +1021,14 @@ describe('copy', () => {
 	 * ranking reach it would make a multi-note copy come out in whatever order the
 	 * query happened to score them, which is a silent change to the clipboard's
 	 * contents for a search the user has since cleared.
+	 *
+	 * Still a frontend test after task-024, and deliberately: *producing* the
+	 * canonical id list is `targetIds()`'s job even though rendering from it moved
+	 * to Rust. `src-tauri/tests/markdown.rs` asserts the other half — that a
+	 * scrambled list would render identically anyway — so the property now holds
+	 * at both ends.
 	 */
-	it('copies in document order even while a search has reordered the rows', async () => {
+	it('names the notes in document order even while a search has reordered the rows', async () => {
 		const ranked: Space = {
 			...SPACE,
 			notes: [
@@ -945,9 +1036,9 @@ describe('copy', () => {
 				{ ...SPACE.notes[0]!, id: 'nte_2', section: 'sec_a', body: 'sort by date' },
 			],
 		}
-		mocks.invoke.mockImplementation(async (command: string) => {
+		mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
 			if (command === 'get_active_space') return ranked
-			return baseInvoke(command)
+			return baseInvoke(command, args)
 		})
 		const wrapper = await mountPanel()
 		await space.refresh()
@@ -963,24 +1054,88 @@ describe('copy', () => {
 
 		selection.selectAll()
 		await actions.copyNotes()
+		await settle(2)
 
-		expect(mocks.invoke).toHaveBeenCalledWith('clipboard_write_text', {
-			text: 'a resort\n\nsort by date',
-		})
+		expect(lastRender()?.selection).toEqual({ kind: 'ids', ids: ['nte_1', 'nte_2'] })
 	})
 
-	it('joins several notes with a blank line and confirms the count', async () => {
+	/** `Copy as list` is a second format over the same scope, and its own chord.
+	 *  Nothing else in the suite would notice if the two swapped. */
+	it('asks for the list format from its own chord', async () => {
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+
+		await wrapper.trigger('keydown', { key: 'C', ctrlKey: true, shiftKey: true })
+		await settle(4)
+
+		expect(lastRender()).toEqual({ selection: { kind: 'ids', ids: ['nte_1'] }, format: 'list' })
+		expect(copied()).toBe(JSON.stringify(lastRender()))
+	})
+
+	/**
+	 * The count is the command's, not this side's, which is the whole reason it
+	 * travels back with the text.
+	 *
+	 * The two can only differ in the app when the document moved between the
+	 * gesture resolving its targets and the render resolving them again — a CLI
+	 * write, a `$EDITOR` write-back, a git checkout. Here they are made to differ
+	 * on purpose, because a panel that recomputed the number locally would pass
+	 * every other test in this file.
+	 */
+	it('reports the count the command answered with rather than one of its own', async () => {
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+			if (command === 'render_notes_markdown') return { text: 'rendered', count: 3 }
+			return baseInvoke(command, args)
+		})
+
+		await actions.copyNotes()
+		await settle(2)
+
+		expect(copied()).toBe('rendered')
+		expect(wrapper.text()).toContain('Copied 3 notes')
+	})
+
+	/**
+	 * A selection naming a note the document no longer holds is refused outright
+	 * rather than silently narrowed — a copy that dropped a note would put fewer
+	 * notes on the clipboard than the message claims. The panel's part is to say
+	 * so and leave whatever was on the clipboard alone.
+	 */
+	it('says so and keeps the clipboard when the render is refused', async () => {
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+			if (command === 'render_notes_markdown') {
+				throw { kind: 'not-found', message: 'no such note: nte_1' }
+			}
+			return baseInvoke(command, args)
+		})
+
+		await actions.copyNotes()
+		await settle(2)
+
+		expect(copied()).toBeNull()
+		expect(wrapper.text()).toContain("Couldn't copy those notes.")
+	})
+
+	it('sends the whole selection as one request and confirms the count', async () => {
 		const wrapper = await mountPanel()
 		selection.select('nte_1')
 		selection.extendTo('nte_2')
 
 		await wrapper.trigger('keydown', { key: 'c', ctrlKey: true })
-		await settle(3)
+		await settle(4)
 
-		expect(mocks.invoke).toHaveBeenCalledWith('clipboard_write_text', {
-			text: `first note\n\n${SPACE.notes[1]!.body}`,
-		})
-		// Singular and plural are separate whole strings, never `note(s)`.
+		// One request for both notes, not one per note.
+		expect(renderCalls()).toEqual([
+			{ selection: { kind: 'ids', ids: ['nte_1', 'nte_2'] }, format: 'bodies' },
+		])
+		expect(copied()).toBe(JSON.stringify(lastRender()))
+		// Singular and plural are separate whole strings, never `note(s)` — and the
+		// number is the count the command answered with, not one recomputed here
+		// from a document snapshot that may have moved.
 		expect(wrapper.text()).toContain('Copied 2 notes')
 	})
 
@@ -994,8 +1149,11 @@ describe('copy', () => {
 		window.getSelection()?.addRange(range)
 
 		await wrapper.trigger('keydown', { key: 'c', ctrlKey: true })
-		await wrapper.vm.$nextTick()
+		await settle(2)
 
+		// Nothing is rendered either: the chord declines before it resolves a scope,
+		// so the browser's own copy is the only thing that ran.
+		expect(renderCalls()).toHaveLength(0)
 		expect(mocks.invoke).not.toHaveBeenCalledWith('clipboard_write_text', expect.anything())
 		window.getSelection()?.removeAllRanges()
 	})
@@ -2094,11 +2252,9 @@ describe('collapsible sections', () => {
 		expect(selection.focusedNoteId.value).toBeNull()
 
 		await wrapper.trigger('keydown', { key: 'c', ctrlKey: true })
-		await settle(3)
+		await settle(4)
 
-		expect(mocks.invoke).toHaveBeenCalledWith('clipboard_write_text', {
-			text: `first note\n\n${SPACE.notes[1]!.body}`,
-		})
+		expect(lastRender()?.selection).toEqual({ kind: 'ids', ids: ['nte_1', 'nte_2'] })
 		expect(wrapper.text()).toContain('Copied 2 notes')
 	})
 
@@ -2228,7 +2384,7 @@ describe('attachments', () => {
 				return []
 			}
 			if (command === 'attachment_open') return null
-			return baseInvoke(command)
+			return baseInvoke(command, args)
 		})
 	}
 
@@ -2762,27 +2918,35 @@ describe('attachments', () => {
 		expect(viewer()?.querySelector('img')).toBeNull()
 	})
 
-	/** AC20. `Copy` and `Copy as list` are about bodies; a local file path means
-	 *  nothing to whatever the text is pasted into. */
-	it('copies body text only, byte-identically to a note without attachments', async () => {
+	/**
+	 * AC20. `Copy` and `Copy as list` are about bodies; a local file path means
+	 * nothing to whatever the text is pasted into.
+	 *
+	 * Asserted against the *request* since task-024: a copy names notes, and an
+	 * attachment is no part of naming one, so the same note produces the same
+	 * request whether or not it carries files. That the renderer then leaves them
+	 * out is `copper_core::markdown`'s own recorded rule.
+	 */
+	it('asks for the same notes whether or not they carry attachments', async () => {
 		withAttachmentCommands()
 		await mountPanel()
 
 		await installWithAttachments(SPACE)
 		selection.select('nte_1')
 		await actions.copyNotes()
-		const withoutFiles = mocks.invoke.mock.calls.filter(
-			([command]) => command === 'clipboard_write_text',
-		)
+		const withoutFiles = renderCalls()
 
 		await installWithAttachments(documentWith([PNG, PDF]))
 		selection.select('nte_1')
 		await actions.copyNotes()
-		const all = mocks.invoke.mock.calls.filter(([command]) => command === 'clipboard_write_text')
+		const all = renderCalls()
 
 		expect(all).toHaveLength(withoutFiles.length + 1)
-		expect(all.at(-1)?.[1]).toEqual(withoutFiles.at(-1)?.[1])
-		expect(JSON.stringify(all.at(-1)?.[1])).not.toContain(PNG.file)
+		expect(all.at(-1)).toEqual(withoutFiles.at(-1))
+		expect(JSON.stringify(all.at(-1))).not.toContain(PNG.file)
+		// And the request really did reach the clipboard, so this is a copy rather
+		// than two identical no-ops.
+		expect(copied()).toBe(JSON.stringify(lastRender()))
 	})
 
 	/** AC16. The panel is 390 × 660 and fixed, so nothing added inside a note row
@@ -3695,11 +3859,12 @@ describe('the double-click action', () => {
 
 		await body.trigger('click')
 		await body.trigger('dblclick')
-		await settle(3)
+		await settle(4)
 
-		const written = mocks.invoke.mock.calls.filter((call) => call[0] === 'clipboard_write_text')
-		expect(written).toHaveLength(1)
-		expect(written[0]?.[1]).toEqual({ text: 'first note' })
+		expect(renderCalls()).toEqual([
+			{ selection: { kind: 'ids', ids: ['nte_1'] }, format: 'bodies' },
+		])
+		expect(copied()).toBe(JSON.stringify(lastRender()))
 		expect(editor.editingNoteId.value).toBeNull()
 	})
 
@@ -3710,9 +3875,10 @@ describe('the double-click action', () => {
 
 		await body.trigger('click')
 		await body.trigger('dblclick')
-		await settle(3)
+		await settle(4)
 
 		expect(editor.editingNoteId.value).toBe('nte_1')
+		expect(renderCalls()).toHaveLength(0)
 		expect(
 			mocks.invoke.mock.calls.filter((call) => call[0] === 'clipboard_write_text'),
 		).toHaveLength(0)
@@ -3755,37 +3921,29 @@ describe('the double-click action', () => {
 
 /**
  * Task-013 feature 4. Three scopes, one renderer — so what these assert is the
- * *scope resolution*: which sections and which notes each affordance hands over.
- * The formatting itself is `noteMarkdown.test.ts`.
+ * *scope resolution*: which notes each affordance hands over, as the
+ * `NoteSelection` it sends.
+ *
+ * The formatting is no longer asserted here at all. Task-024 moved it into
+ * `copper_core::markdown`, where `copper-core/tests/markdown.rs` holds the whole
+ * of the deleted `noteMarkdown.test.ts` corpus, and the section-and-note rules
+ * each scope implies — an empty heading kept here and dropped there — are
+ * asserted against the resolver in `src-tauri/tests/markdown.rs`. What is left
+ * on this side is genuinely the panel's: naming the scope, and declining to
+ * replace the clipboard with an empty result.
  */
 describe('copy as Markdown', () => {
-	// The second note opens a fence, which cannot follow a list marker on the same
-	// line without ceasing to be one — so it sits under a bare marker. See
-	// `noteMarkdown.test.ts`, which parses that form back to prove it survives.
-	const RESEARCH = [
-		'# Research',
-		'- [ ] first note',
-		'- [x]',
-		'',
-		'  ```js',
-		'  const a = 1',
-		'  ```',
-	].join('\n')
-
-	function copied() {
-		const written = mocks.invoke.mock.calls.filter((call) => call[0] === 'clipboard_write_text')
-		return (written.at(-1)?.[1] as { text: string } | undefined)?.text ?? null
-	}
-
-	it('copies the whole document, empty sections included', async () => {
+	it('asks for the whole document, empty sections included', async () => {
 		await mountPanel()
 
 		await actions.copyDocumentAsMarkdown()
 		await settle(2)
 
-		// `Inbox` holds nothing and still gets its heading: the scope is the
-		// document, and a section that is in scope is in the output.
-		expect(copied()).toBe(`${RESEARCH}\n\n# Inbox`)
+		// `Inbox` holds nothing and is still in scope: the panel says "the document"
+		// and the resolver keeps the empty section's heading, which is where that
+		// rule is now tested.
+		expect(lastRender()).toEqual({ selection: { kind: 'document' }, format: 'markdown' })
+		expect(copied()).toBe(JSON.stringify(lastRender()))
 	})
 
 	/** AC5. A "copy all" that quietly copied a filtered subset would be the one
@@ -3799,7 +3957,9 @@ describe('copy as Markdown', () => {
 		await actions.copyDocumentAsMarkdown()
 		await settle(2)
 
-		expect(copied()).toBe(`${RESEARCH}\n\n# Inbox`)
+		// The whole document, not the one matching note — and nothing about the
+		// query travels with the request.
+		expect(lastRender()).toEqual({ selection: { kind: 'document' }, format: 'markdown' })
 	})
 
 	it('copies one section, whole, from the section menu', async () => {
@@ -3808,7 +3968,11 @@ describe('copy as Markdown', () => {
 		await actions.copySectionAsMarkdown('sec_a')
 		await settle(2)
 
-		expect(copied()).toBe(RESEARCH)
+		expect(lastRender()).toEqual({
+			selection: { kind: 'section', id: 'sec_a' },
+			format: 'markdown',
+		})
+		expect(copied()).toBe(JSON.stringify(lastRender()))
 	})
 
 	it('writes nothing for a section holding no notes', async () => {
@@ -3817,32 +3981,39 @@ describe('copy as Markdown', () => {
 		await actions.copySectionAsMarkdown('sec_b')
 		await settle(2)
 
-		// A heading on its own is not worth replacing the clipboard with — the
-		// same rule every other empty copy follows. Its heading still appears in
-		// the document-wide copy above, where there are notes to carry it.
+		// The scope is asked for, and the answer's count of zero is where the panel
+		// stops. A heading on its own is not worth replacing the clipboard with —
+		// the same rule every other empty copy follows, and the one part of this
+		// that is still a frontend decision.
+		expect(lastRender()?.selection).toEqual({ kind: 'section', id: 'sec_b' })
 		expect(copied()).toBeNull()
 	})
 
-	/** AC8/AC9. A selection copy groups by the sections its notes came from, and
-	 *  a section contributing nothing is dropped rather than emitted empty. */
-	it('groups a selection under the sections its notes came from', async () => {
+	/** AC8/AC9. A selection copy carries the notes an action targets; grouping
+	 *  them under their own sections, and dropping the sections that contribute
+	 *  nothing, is the resolver's half. */
+	it('sends the targeted notes when the selection is every note', async () => {
 		await mountPanel()
 		selection.selectAll()
 
 		await actions.copySelectionAsMarkdown()
 		await settle(2)
 
-		expect(copied()).toBe(RESEARCH)
+		expect(lastRender()).toEqual({
+			selection: { kind: 'ids', ids: ['nte_1', 'nte_2'] },
+			format: 'markdown',
+		})
 	})
 
-	it('copies a single selected note under its own heading', async () => {
+	it('sends a single selected note', async () => {
 		await mountPanel()
 		selection.select('nte_1')
 
 		await actions.copySelectionAsMarkdown()
 		await settle(2)
 
-		expect(copied()).toBe('# Research\n- [ ] first note')
+		expect(lastRender()?.selection).toEqual({ kind: 'ids', ids: ['nte_1'] })
+		expect(copied()).toBe(JSON.stringify(lastRender()))
 	})
 
 	/** AC16. Folding a section away never narrows what an action targets, so a
@@ -3859,7 +4030,7 @@ describe('copy as Markdown', () => {
 		await actions.copySelectionAsMarkdown()
 		await settle(2)
 
-		expect(copied()).toBe(RESEARCH)
+		expect(lastRender()?.selection).toEqual({ kind: 'ids', ids: ['nte_1', 'nte_2'] })
 	})
 
 	it('writes nothing at all when there is nothing selected', async () => {
@@ -3870,6 +4041,9 @@ describe('copy as Markdown', () => {
 		await actions.copySelectionAsMarkdown()
 		await settle(2)
 
+		// An empty scope is still a well-formed question, and the answer's count of
+		// zero is what keeps the clipboard alone.
+		expect(lastRender()?.selection).toEqual({ kind: 'ids', ids: [] })
 		expect(copied()).toBeNull()
 	})
 })
@@ -3924,11 +4098,15 @@ describe('merge and the roving target', () => {
 })
 
 /**
- * AC12 at the panel, not at the renderer: `noteMarkdown.test.ts` proves the same
- * input formats identically, and this proves the three scopes actually resolve to
- * the same input when they should.
+ * AC12 at the panel, not at the renderer.
+ *
+ * The byte-identical claim itself belongs to `copper-core/tests/markdown.rs`
+ * since task-024: there is one renderer, so the same notes cannot come out as
+ * two texts, and that is asserted where the renderer is. What that claim rests
+ * on is the half these keep — that the three scopes really do resolve to the
+ * same notes when they should, which is still decided here.
  */
-describe('the three copy scopes agree byte for byte', () => {
+describe('the three copy scopes resolve to the same notes', () => {
 	/** Every section holding notes, so the whole-document and select-all scopes
 	 *  cover exactly the same ground — with `sec_b` empty they legitimately differ
 	 *  by its heading, which is the documented empty-section rule and a different
@@ -3949,59 +4127,54 @@ describe('the three copy scopes agree byte for byte', () => {
 				},
 			],
 		}
-		mocks.invoke.mockImplementation(async (command: string) =>
-			command === 'get_active_space' ? filled : baseInvoke(command),
+		mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
+			command === 'get_active_space' ? filled : baseInvoke(command, args),
 		)
 		await space.refresh()
 	}
 
-	function copied() {
-		const written = mocks.invoke.mock.calls.filter((call) => call[0] === 'clipboard_write_text')
-		return (written.at(-1)?.[1] as { text: string } | undefined)?.text ?? null
-	}
-
-	it('produces identical text from the menu action and from select-all', async () => {
+	it('names the same notes from the menu action and from select-all', async () => {
 		await mountPanel()
 		await installFilledDocument()
 
 		await actions.copyDocumentAsMarkdown()
 		await settle(2)
-		const fromMenu = copied()
+		const fromMenu = lastRender()
 
 		selection.selectAll()
 		await actions.copySelectionAsMarkdown()
 		await settle(2)
-		const fromSelection = copied()
+		const fromSelection = lastRender()
 
-		expect(fromSelection).toBe(fromMenu)
-		// Not vacuously equal: both carry both sections, both done states, and the
-		// fence-bearing note's block form.
-		expect(fromMenu).toContain('# Research')
-		expect(fromMenu).toContain('# Inbox')
-		expect(fromMenu).toContain('- [ ] first note')
-		expect(fromMenu).toContain('- [x] a note in the second section')
-		expect(fromMenu).toContain('  ```js')
+		// One rendering for both, so the texts cannot differ once the notes agree.
+		expect(fromSelection?.format).toBe('markdown')
+		expect(fromMenu?.format).toBe('markdown')
+
+		expect(fromMenu?.selection).toEqual({ kind: 'document' })
+		// The select-all scope is the document scope restricted to its notes: every
+		// one of them, in document order, whatever order they were selected in. With
+		// no empty section left the two cover exactly the same ground.
+		expect(fromSelection?.selection).toEqual({ kind: 'ids', ids: ['nte_1', 'nte_2', 'nte_3'] })
 	})
 
-	it('produces the same text again as the two sections copied one at a time', async () => {
+	it('covers the document again as the two sections copied one at a time', async () => {
 		await mountPanel()
 		await installFilledDocument()
 
-		await actions.copyDocumentAsMarkdown()
-		await settle(2)
-		const whole = copied()
-
 		await actions.copySectionAsMarkdown('sec_a')
 		await settle(2)
-		const research = copied()
+		const research = lastRender()
 
 		await actions.copySectionAsMarkdown('sec_b')
 		await settle(2)
-		const inbox = copied()
+		const inbox = lastRender()
 
-		// The sections are joined by exactly one blank line, so the single-section
-		// scope is the document scope restricted — not a second formatting.
-		expect(`${research}\n\n${inbox}`).toBe(whole)
+		expect(research?.selection).toEqual({ kind: 'section', id: 'sec_a' })
+		expect(inbox?.selection).toEqual({ kind: 'section', id: 'sec_b' })
+		// Between them the two requests name every section of the document, in the
+		// order the document holds them — which is what makes the single-section
+		// scope the document scope restricted rather than a second formatting.
+		expect(space.sections.value.map((section) => section.id)).toEqual(['sec_a', 'sec_b'])
 	})
 })
 

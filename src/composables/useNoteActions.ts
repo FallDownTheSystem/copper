@@ -8,13 +8,6 @@
  * duplicates it.
  */
 
-import {
-	buildCopyMarkdown,
-	buildListMarkdown,
-	buildSectionMarkdown,
-	type MarkdownSection,
-} from '@/lib/noteMarkdown'
-
 import { useAttachments } from './useAttachments'
 import { useSystemClipboard } from './useSystemClipboard'
 import { useEditorHandoff } from './useEditorHandoff'
@@ -25,7 +18,7 @@ import { useNoteSearch } from './useNoteSearch'
 import { noteRow, rowNoteId, sectionRow, takeRow, useSelection } from './useSelection'
 import { useSettings } from './useSettings'
 import { countMessage, useStatusMessage, type StatusAction } from './useStatusMessage'
-import { useSpace } from './useSpace'
+import { useSpace, type MarkdownFormat, type NoteSelection } from './useSpace'
 
 const space = useSpace()
 const selection = useSelection()
@@ -162,47 +155,43 @@ async function writeCopy(text: string, count: number) {
 	)
 }
 
-async function copyBodies(build: (bodies: readonly string[]) => string) {
-	const notes = targetNotes()
-	await writeCopy(build(notes.map((note) => note.body)), notes.length)
+/**
+ * Every copy affordance in this file, in one shape: say which notes, say which
+ * rendering, put the answer on the clipboard.
+ *
+ * **This side no longer marshals a single note body.** Task-024 moved both the
+ * rendering and the resolution of a selection into `copper_core::markdown` and
+ * `render_notes_markdown`, so the frontend's remaining job is deciding *which*
+ * notes a gesture means — `targetIds()`, a section id, or the whole document —
+ * and the clipboard write itself. That is what makes the app and `copper copy`
+ * one format rather than two implementations of one.
+ *
+ * The count comes back with the text and is not recomputed here. Both then
+ * describe the same document, which a locally counted `targetIds().length`
+ * could not promise if the document moved under the selection.
+ *
+ * The argument is `scope` rather than `selection`, which is what the command
+ * calls it: `selection` is already `useSelection()` at module scope in this
+ * file, and a parameter of that name would shadow it inside every copy.
+ */
+async function copy(scope: NoteSelection, format: MarkdownFormat) {
+	const rendered = await space.renderNotesMarkdown(scope, format)
+	if (!rendered) {
+		status.setError("Couldn't copy those notes.")
+		return
+	}
+	await writeCopy(rendered.text, rendered.count)
 }
 
 function copyNotes() {
-	return copyBodies(buildCopyMarkdown)
+	return copy({ kind: 'ids', ids: targetIds() }, 'bodies')
 }
 
 function copyAsList() {
-	return copyBodies(buildListMarkdown)
+	return copy({ kind: 'ids', ids: targetIds() }, 'list')
 }
 
 // --- copy as Markdown, in three scopes ---------------------------------------
-
-/**
- * Every section of the document, in document order — which is the display order,
- * since the store repairs each one it loads into it — carrying whichever of its
- * notes the caller says are in scope.
- *
- * The three scopes differ only in this function's argument and in what they
- * filter out of its result, which is what makes them one renderer rather than
- * three. `id` rides along for that filtering and is ignored by the renderer.
- *
- * Built per call rather than memoised: each scope copies once, on a deliberate
- * gesture, over at most a few hundred notes.
- */
-function scopedSections(
-	notesOf: (sectionId: string) => readonly { id: string; done: boolean; body: string }[],
-): (MarkdownSection & { id: string })[] {
-	return space.sections.value.map((section) => ({
-		id: section.id,
-		name: section.name,
-		notes: notesOf(section.id).map((note) => ({ done: note.done, body: note.body })),
-	}))
-}
-
-async function copyMarkdown(sections: readonly MarkdownSection[]) {
-	const count = sections.reduce((total, section) => total + section.notes.length, 0)
-	await writeCopy(buildSectionMarkdown(sections), count)
-}
 
 /**
  * The `...` menu's `Copy all as Markdown`: the whole document, every section,
@@ -212,18 +201,20 @@ async function copyMarkdown(sections: readonly MarkdownSection[]) {
  * is the deliberate exception: a "copy all" that quietly copied a filtered subset
  * would be the one export nobody could trust, and the filtered form is a
  * selection copy away.
+ *
+ * An empty section keeps its heading in this scope and in the section scope
+ * below, and loses it in the selection scope — a rule the renderer's caller has
+ * always owned and that now lives with the resolution, in `markdown.rs`.
  */
 function copyDocumentAsMarkdown() {
-	return copyMarkdown(scopedSections((id) => space.notesInSection(id)))
+	return copy({ kind: 'document' }, 'markdown')
 }
 
 /** The section context menu's copy: one section and all of its notes, the whole
  *  section rather than whatever a query left showing — matching the document
  *  scope above. */
 function copySectionAsMarkdown(sectionId: string) {
-	return copyMarkdown(
-		scopedSections((id) => space.notesInSection(id)).filter((section) => section.id === sectionId),
-	)
+	return copy({ kind: 'section', id: sectionId }, 'markdown')
 }
 
 /**
@@ -234,12 +225,7 @@ function copySectionAsMarkdown(sectionId: string) {
  * section produces one heading rather than the whole document's outline.
  */
 function copySelectionAsMarkdown() {
-	const targeted = new Set(targetIds())
-	return copyMarkdown(
-		scopedSections((id) => space.notesInSection(id).filter((note) => targeted.has(note.id))).filter(
-			(section) => section.notes.length > 0,
-		),
-	)
+	return copy({ kind: 'ids', ids: targetIds() }, 'markdown')
 }
 
 // --- zero-focus paste --------------------------------------------------------

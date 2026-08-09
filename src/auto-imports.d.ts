@@ -402,7 +402,7 @@ declare global {
   export type { ThemePreference, MotionPreference, InsertionPoint, DoubleClickAction, ShortcutState, ShortcutTarget, SettingsScope, PreferenceScope } from './composables/useSettings'
   import('./composables/useSettings')
   // @ts-ignore
-  export type { Note, Section, Space, StoreStatus, Settings, SpaceView, NoteView, ChangeReason, SpaceChangedPayload, StoreErrorPayload, SubmitOutcome, AddNoteResult, SubmitResult, LoadState, ActionErrorScope, ActionError, MutationResult } from './composables/useSpace'
+  export type { Note, Section, Space, StoreStatus, Settings, SpaceView, NoteView, ChangeReason, SpaceChangedPayload, StoreErrorPayload, SubmitOutcome, AddNoteResult, SubmitResult, NoteSelection, MarkdownFormat, RenderedNotes, LoadState, ActionErrorScope, ActionError, MutationResult } from './composables/useSpace'
   import('./composables/useSpace')
   // @ts-ignore
   export type { UnavailableReason, Availability, RecentEntry, ActivateOutcome } from './composables/useSpaces'

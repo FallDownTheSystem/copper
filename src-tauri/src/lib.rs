@@ -10,6 +10,10 @@ mod diagnostics;
 /// Public because `end_all` is the entry point Phase 6 calls on a space switch,
 /// and it must stay the only way another module ends every handoff at once.
 pub mod editor;
+/// Public because `tests/markdown.rs` drives `render` directly: which notes each
+/// selection resolves to is the whole of this module, and a `State<SharedStore>`
+/// cannot be built outside a running app.
+pub mod markdown;
 mod panel;
 /// Public because `LinkPreview` crosses the IPC boundary and `tests/commands.rs`
 /// asserts the shape it arrives in, the same reason `store` is.

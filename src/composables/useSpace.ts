@@ -175,6 +175,27 @@ export type SubmitResult = {
 	sectionId: string
 }
 
+/**
+ * Which notes a copy affordance is asking `render_notes_markdown` for.
+ *
+ * A descriptor rather than the note bodies themselves: task-024 moved the
+ * rendering into `copper_core::markdown`, the same module `copper-cli` copies
+ * through, so that one clipboard format has one implementation. Resolution is
+ * Rust's too — which notes an `ids` list names, and in what order — so nothing
+ * here has to walk the document to build a copy.
+ */
+export type NoteSelection =
+	| { kind: 'ids'; ids: string[] }
+	| { kind: 'section'; id: string }
+	| { kind: 'document' }
+
+/** The three renderings, spelled as `copper copy --format` spells them. */
+export type MarkdownFormat = 'bodies' | 'list' | 'markdown'
+
+/** `count` is what the server selected, never what this side counted: the toast
+ *  and the text then describe one document rather than two. */
+export type RenderedNotes = { text: string; count: number }
+
 /** The *initial* pull only. Named `loadState`, not `status`: task-003 already
  *  owns `get_status`/`StoreStatus` and the collision reads as the same thing. */
 export type LoadState = 'loading' | 'ready' | 'error'
@@ -1062,6 +1083,35 @@ function errorFor(scope: ActionErrorScope) {
 	return computed(() => (actionError.value?.scope === scope ? actionError.value.message : null))
 }
 
+// --- rendering ---------------------------------------------------------------
+
+/**
+ * The notes a copy affordance wants, as Markdown, rendered in Rust.
+ *
+ * A read, so it goes nowhere near `mutate`: nothing is written, no document
+ * comes back and no snapshot is pushed. It answers `null` on failure and logs,
+ * the shape `useSystemClipboard.writeText` already uses for the other half of a
+ * copy — a copy that cannot be built is a failed copy, and the caller says so in
+ * the status line rather than throwing at a chord handler.
+ *
+ * The command refuses an `ids` selection naming a note the document does not
+ * hold, rather than skipping it. That is deliberate: a copy that silently
+ * dropped a note would put fewer notes on the clipboard than the message claims.
+ * It can only happen when the selection outlives the document it was made
+ * against, which is the same race `applied` exists for elsewhere in this file.
+ */
+async function renderNotesMarkdown(
+	selection: NoteSelection,
+	format: MarkdownFormat,
+): Promise<RenderedNotes | null> {
+	try {
+		return await invoke<RenderedNotes>('render_notes_markdown', { selection, format })
+	} catch (error) {
+		console.error('[copper] could not render the notes as Markdown', error)
+		return null
+	}
+}
+
 // --- derived -----------------------------------------------------------------
 
 /** The store repairs every document it loads into canonical order — sections by
@@ -1132,6 +1182,7 @@ export function useSpace() {
 		notesInSection,
 		noteById,
 		notesByIds,
+		renderNotesMarkdown,
 		applied,
 		errorFor,
 		initialize,

@@ -2,7 +2,8 @@
 //!
 //! Command *wrappers* still live next to the module they serve — the store's
 //! twenty in `store/commands.rs`, the editor's four in `editor.rs`, the
-//! clipboard's one in `clipboard.rs`. Only the registration is here, because
+//! clipboard's one in `clipboard.rs`, the Markdown renderer's one in
+//! `markdown.rs`. Only the registration is here, because
 //! Tauri accepts exactly one `invoke_handler` and `generate_handler!` consumes
 //! the `Invoke` it is given, so two handlers cannot be chained.
 //!
@@ -12,8 +13,8 @@
 //! which this project does not do.
 
 use crate::{
-	attachments, autostart, clipboard, editor, panel, previews, shortcuts, spaces, store, theme,
-	updater,
+	attachments, autostart, clipboard, editor, markdown, panel, previews, shortcuts, spaces, store,
+	theme, updater,
 };
 
 pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
@@ -40,6 +41,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
 		store::commands::undo,
 		store::commands::redo,
 		clipboard::clipboard_write_text,
+		markdown::render_notes_markdown,
 		attachments::commands::attach_paste,
 		attachments::commands::attach_pick,
 		attachments::commands::attach_paths,

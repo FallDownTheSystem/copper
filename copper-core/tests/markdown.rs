@@ -1,10 +1,17 @@
-//! The `src/lib/noteMarkdown.test.ts` corpus, ported one `#[test]` per `it(…)`.
+//! The former `src/lib/noteMarkdown.test.ts` corpus, ported one `#[test]` per
+//! `it(…)`.
 //!
-//! Every expected string is **copied from the TypeScript file**, not re-derived
+//! Every expected string was **copied from the TypeScript file**, not re-derived
 //! from the Rust. A re-derived expectation proves only that the port agrees with
 //! itself; the claim these tests exist to support is that it agrees with the
-//! renderer the app ships today, which is the one the user's clipboard has been
-//! getting since task-013.
+//! renderer the app shipped from task-013 onwards, which is the one the user's
+//! clipboard had been getting.
+//!
+//! Task-024 then deleted that TypeScript renderer and its test, and pointed the
+//! app's copy actions at this module through `render_notes_markdown`. So this
+//! file is no longer a cross-check between two implementations — it is the only
+//! test of the only one, and the strings in it are the record of what the app
+//! produced before the switch.
 //!
 //! One `describe` block is deliberately not ported: `parsed back by markdown-it`
 //! runs a JavaScript Markdown parser over the output to prove the strings are
