@@ -15,6 +15,9 @@ dist-ssr
 # Tauri
 src-tauri/target/
 src-tauri/gen/
+# The copper-cli sidecar staged for bundle.externalBin by
+# scripts/build-copper-cli.mjs — a build artifact, same category as target/.
+src-tauri/binaries/
 
 # Updater signing key — never commit the private half
 *.key
