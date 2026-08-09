@@ -16,6 +16,7 @@
  * selects, because folding a section shut hides rows rather than narrowing scope.
  */
 
+import { runningMotions } from '@/lib/motion'
 import { sortByCreated } from '@/lib/noteTime'
 
 import { useNoteList } from './useNoteList'
@@ -855,9 +856,11 @@ function pinToBottom(region: HTMLElement) {
 		// and a stability test on its own exits during that plateau. Asking the
 		// running animations instead of guessing a duration is what makes this
 		// exact.
-		const running = region
-			.getAnimations?.({ subtree: true })
-			.some((animation) => animation.playState === 'running')
+		//
+		// Motion only: the section band's row clip is scroll-driven and so is
+		// *always* running, which asked the raw question would keep this loop
+		// pinning until its cap on every capture.
+		const running = runningMotions(region).length > 0
 
 		if ((stable >= STABLE_FRAMES && !running) || Date.now() >= cap) {
 			pinning = false

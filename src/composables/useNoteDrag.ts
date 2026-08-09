@@ -36,7 +36,7 @@ import {
 	type DragSection,
 	type DropTarget,
 } from '@/lib/dragGeometry'
-import { EASE_OUT_QUINT_CSS } from '@/lib/motion'
+import { EASE_OUT_QUINT_CSS, runningMotions } from '@/lib/motion'
 
 import { useNoteActions } from './useNoteActions'
 import { rowNoteId } from './useSelection'
@@ -237,9 +237,11 @@ function activate() {
 	// real place first. This also removes the ordering hazard in arming the drag:
 	// the auto-animate stand-down watcher runs asynchronously off `draggingNoteId`,
 	// so it cannot be relied on to have quieted anything by the time we measure.
-	for (const animation of gesture.root.getAnimations?.({ subtree: true }) ?? []) {
-		if (animation.playState === 'running') animation.finish()
-	}
+	//
+	// `runningMotions` and not the raw walk, because the FLIP is not the only
+	// animation on a row: the section band's clip is scroll-driven, finishing it
+	// clips the row away permanently, and it carries the reasoning.
+	for (const animation of runningMotions(gesture.root)) animation.finish()
 
 	layout = measure(gesture.root)
 	draggedRow = row

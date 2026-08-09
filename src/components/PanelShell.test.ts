@@ -3678,7 +3678,9 @@ describe('reordering', () => {
 
 			const finish = vi.fn()
 			const proto = Element.prototype as unknown as Record<string, unknown>
-			proto.getAnimations = () => [{ playState: 'running', finish }]
+			proto.getAnimations = () => [
+				{ playState: 'running', finish, timeline: document.timeline },
+			]
 			restore.push(() => Reflect.deleteProperty(proto, 'getAnimations'))
 
 			const grip = gripOf(wrapper, 'n:nte_1')
@@ -3687,6 +3689,39 @@ describe('reordering', () => {
 			await settle()
 
 			expect(finish).toHaveBeenCalled()
+
+			window.dispatchEvent(pointer('pointerup', 90))
+			await settle(3)
+		})
+
+		it('leaves the section band’s scroll-driven row clip alone', async () => {
+			// The band erases each row as it slides under the pinned heading, with a
+			// `clip-path` keyframe on the row's own `view()` timeline. That animation is
+			// geometry, not motion: it is permanently `running` and it never ends, so
+			// the settle above swept it up and `finish()` parked every row at the
+			// keyframe's end — `inset(100% 0 0 0)`, which is the row clipped away
+			// entirely — with no scroll position that brings it back. One drag emptied
+			// the list.
+			const wrapper = await mountPanel()
+			installReorderingStore()
+
+			const finishFlip = vi.fn()
+			const finishClip = vi.fn()
+			const proto = Element.prototype as unknown as Record<string, unknown>
+			proto.getAnimations = () => [
+				{ playState: 'running', finish: finishFlip, timeline: document.timeline },
+				// Any timeline that is not the document's is progress-based.
+				{ playState: 'running', finish: finishClip, timeline: { currentTime: 0 } },
+			]
+			restore.push(() => Reflect.deleteProperty(proto, 'getAnimations'))
+
+			const grip = gripOf(wrapper, 'n:nte_1')
+			grip.dispatchEvent(pointer('pointerdown', 40))
+			window.dispatchEvent(pointer('pointermove', 90))
+			await settle()
+
+			expect(finishFlip).toHaveBeenCalled()
+			expect(finishClip).not.toHaveBeenCalled()
 
 			window.dispatchEvent(pointer('pointerup', 90))
 			await settle(3)
