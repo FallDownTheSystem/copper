@@ -821,9 +821,15 @@ const summonNote = computed(() => {
 			     this is six controls and four facts a person cannot infer, and it is
 			     the only feature in the app whose setup happens somewhere else. -->
 			<SettingsSection title="Share">
+				<!-- **Two lines, and the guide below carries the rest.** This description
+				     used to run to five: what a relay is, whose account it lives in, that
+				     the relay holds only ciphertext, and where to find the commands. All
+				     of those are still on screen, one press away, in a place with room to
+				     explain them properly. A row description is the sentence a reader
+				     scans while deciding whether the switch is for them. -->
 				<SettingsRow
 					label="Send notes to my other device"
-					description="Sends a note to your other machine through a relay you deploy to your own free Cloudflare account. Notes are encrypted before they leave; the relay only ever holds ciphertext. Setting it up takes five commands, and the setup guide below has them."
+					description="Send a note to your other machine through your own free relay. Notes are encrypted before they leave."
 					label-for="share-enabled"
 					:error="shareRowError"
 				>
@@ -872,6 +878,18 @@ const summonNote = computed(() => {
 							data-testid="share-setup-guide"
 							class="border-separator mt-2 space-y-3 rounded-md border p-3 select-text"
 						>
+							<!-- **The paragraph the enable row used to carry.** Trimming that row
+							     to two lines cost it the sentence about what a relay actually
+							     is and what it can see, which is the one thing a reader wants
+							     before they hand a feature their notes. It reads better here
+							     anyway: a row description is scanned, and this is worth
+							     reading. -->
+							<p class="text-text-secondary text-meta text-pretty">
+								The relay is a small program you deploy to your own free Cloudflare account. Copper
+								encrypts every note on this machine before it leaves, so the relay only ever holds
+								ciphertext. It deletes each message after seven days, collected or not.
+							</p>
+
 							<!-- `h3` under `SettingsSection`'s `h2` and the view's `h1`, so the
 							     guide extends the outline rather than skipping a level in it. -->
 							<section>
@@ -978,6 +996,20 @@ const summonNote = computed(() => {
 								</p>
 							</section>
 
+							<!-- Where the arithmetic lives now. The Share rows and the send
+							     failure both state one number — about 14 MB of attachments —
+							     because that is the only figure a reader can act on. The
+							     mechanism behind it is background, and this is the one place
+							     with room to be background in. -->
+							<section>
+								<h3 :class="guideHeadingClass">What a note can carry</h3>
+								<p class="text-text-secondary mt-1 text-meta text-pretty">
+									About 14 MB of attachments. The relay caps one message at 20 MiB after encryption,
+									and attachments are encoded on the way in, which makes them about a third larger.
+									Nothing else you write comes close to the rest.
+								</p>
+							</section>
+
 							<section>
 								<h3 :class="guideHeadingClass">Hand it to an AI instead</h3>
 								<p class="text-text-secondary mt-1 text-meta text-pretty">
@@ -1020,9 +1052,13 @@ const summonNote = computed(() => {
 				     for a switch nobody has turned on is the settings view's whole
 				     scroll length spent on a feature that is doing nothing. -->
 				<template v-if="shareConfig.enabled">
+					<!-- The warning stays and the provenance goes. "wrangler printed it
+					     when you deployed" is a fact the guide states while the reader is
+					     actually deploying; "changing this clears your token" is one they
+					     can only meet here, at the moment it happens to them. -->
 					<SettingsRow
 						label="Relay URL"
-						description="The https address wrangler printed when you deployed. Changing it clears the stored relay token, so the old host never receives it."
+						description="The https address deploy printed. Changing it clears the stored relay token, so the old host never receives it."
 					>
 						<!-- `#below="{ errorId }"` for the reason the vibrancy row gives. -->
 						<template #below="{ errorId }">
@@ -1038,7 +1074,7 @@ const summonNote = computed(() => {
 
 					<SettingsRow
 						label="Relay token"
-						description="The value you set with wrangler secret put RELAY_TOKEN. It keeps strangers off your relay; it is not what encrypts your notes."
+						description="The RELAY_TOKEN value you set. It keeps strangers off your relay; it is not what encrypts your notes."
 					>
 						<template #below="{ errorId }">
 							<SettingsSecretRow
@@ -1053,7 +1089,7 @@ const summonNote = computed(() => {
 
 					<SettingsRow
 						label="Pairing secret"
-						description="What encrypts your notes. Generate it on one machine and paste it into the other. It never leaves your two devices."
+						description="What encrypts your notes. Generate it on one machine, paste it into the other, and it never leaves the two."
 					>
 						<template #below="{ errorId }">
 							<SettingsSecretRow
@@ -1102,7 +1138,7 @@ const summonNote = computed(() => {
 					<SettingsRow
 						v-slot="{ errorId }"
 						label="This device is"
-						description="Set one machine to First and the other to Second. If both are the same, nothing is ever delivered in either direction."
+						description="One machine is First, the other is Second. If they match, nothing is ever delivered."
 					>
 						<SettingsChoice
 							:model-value="shareConfig.role"
@@ -1113,41 +1149,55 @@ const summonNote = computed(() => {
 						/>
 					</SettingsRow>
 
+					<!-- **The Updates row's shape, exactly.** The button is the row's
+					     trailing control and the outcome renders in `#below`, under both.
+					     It sat in `#below` itself until now, which put a lone button on a
+					     line of its own below the description and made the row half a head
+					     taller than every other row in the view for no reason a reader
+					     could see.
+
+					     The row is named for the *subject* and the button for the action,
+					     as Version and **Check for updates** are, so the two do not read
+					     as the same words twice. -->
 					<SettingsRow
-						label="Test connection"
+						label="Relay connection"
 						description="Asks the relay for this device's mailbox. It sends no note and reads no message."
 					>
 						<template #below>
-							<div class="mt-2 flex items-center gap-2">
-								<button
-									type="button"
-									:class="shareButtonClass"
-									:disabled="shareTesting"
-									@click="testRelay()"
-								>
-									{{ shareTesting ? 'Testing…' : 'Test connection' }}
-								</button>
-							</div>
 							<!-- Permanently mounted and empty until there is something to say,
 							     for the same reason `SettingsRow`'s own message region is:
 							     injecting an element and its text together does not announce. -->
 							<p
 								v-if="testMessage"
-								class="text-text-secondary mt-1.5 text-meta"
+								class="text-text-secondary mt-1.5 text-meta text-pretty"
 								data-testid="share-test-result"
 							>
 								{{ testMessage }}
 							</p>
 						</template>
+
+						<button
+							type="button"
+							:class="shareButtonClass"
+							:disabled="shareTesting"
+							@click="testRelay()"
+						>
+							{{ shareTesting ? 'Testing…' : 'Test connection' }}
+						</button>
 					</SettingsRow>
 
 					<!-- The two facts that are neither a control nor a failure, so they
-					     have nowhere else to live: what a note costs, and that both
-					     machines need the same three values. -->
+					     have nowhere else to live: that both machines need the same three
+					     values, and what a note can carry.
+
+					     **One number, and it is attachment bytes on disk.** The relay's
+					     own cap is 20 MiB of ciphertext and base64 grows attachments by
+					     about a third on the way in — which is a multiplication the reader
+					     was being asked to do against a size they have never seen. The
+					     guide keeps that mechanism; a row states the answer. -->
 					<p class="text-text-secondary py-3 text-meta text-pretty">
-						Both machines need the same relay URL, relay token and pairing secret. A shared note is
-						capped at 20 MB after encryption, and attachments cost about a third more than their
-						file size.
+						Both machines need the same relay URL, relay token and pairing secret. One shared note
+						carries about 14 MB of attachments.
 					</p>
 				</template>
 			</SettingsSection>

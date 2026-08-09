@@ -12,8 +12,9 @@ import { beforeEach, describe, expect, it, vi } from 'vite-plus/test'
  *   that duplicates the note.
  * - `unknown` is neither success nor failure, and its message has to say so —
  *   the note may have arrived, so "try again" would be exactly the wrong advice.
- * - `too-large` has to name both numbers, because "too large" without them
- *   leaves the user with nothing to act on.
+ * - `too-large` has to name the **attachment** budget, not the ciphertext sizes
+ *   Rust measured. "Too large" alone leaves the reader with nothing to act on,
+ *   and the raw numbers leave them with arithmetic instead.
  *
  * A separate file from a hypothetical `useNoteActions.test.ts` because the
  * composables under it hold module-scoped state by design: mocking `invoke` for
@@ -135,13 +136,19 @@ describe('sendToOtherDevice reports every outcome', () => {
 		expect(toast?.text).toContain('the relay did not answer in time')
 	})
 
-	it('names both numbers when the payload is over the cap', async () => {
+	it('gives one actionable number when the payload is over the cap', async () => {
 		outcome = { kind: 'too-large', bytes: 22 * 1024 * 1024, limit: 20 * 1024 * 1024 }
 		const toast = await send()
 
 		expect(toast?.severity).toBe('error')
-		expect(toast?.text).toContain('22.0 MB')
-		expect(toast?.text).toContain('20.0 MB')
+		expect(toast?.text).toContain('14 MB')
+		// Neither of Rust's two numbers reaches the reader, and neither does the
+		// conversion between them. Both are measured after encryption, so neither is
+		// a size the reader has ever seen on disk — quoting them asks for a
+		// multiplication and answers nothing.
+		expect(toast?.text).not.toContain('22.0 MB')
+		expect(toast?.text).not.toContain('20.0 MB')
+		expect(toast?.text).not.toContain('a third')
 	})
 
 	it('names the missing field and points at Settings', async () => {

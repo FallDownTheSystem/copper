@@ -8,7 +8,7 @@
  * duplicates it.
  */
 
-import { formatBytes, useAttachments } from './useAttachments'
+import { useAttachments } from './useAttachments'
 import { useSystemClipboard } from './useSystemClipboard'
 import { useEditorHandoff } from './useEditorHandoff'
 import { useNoteDisclosure } from './useNoteDisclosure'
@@ -940,9 +940,17 @@ function sendToOtherDevice() {
 					`The relay did not confirm this note (${outcome.message}). It may have arrived, so sending it again would deliver it twice.`,
 				)
 				return
+			// **One number, and it is the one the reader can act on.** The message used
+			// to report the ciphertext size against the relay's raw cap and then
+			// explain that attachments inflate by about a third — three numbers and a
+			// multiplication, at the end of which the reader still had to work out how
+			// many files to remove. `outcome.bytes` and `outcome.limit` are measured
+			// after encryption, so neither is a size the reader has ever seen on disk.
+			// 14 MB is that arithmetic already done, rounded down so it is always
+			// true.
 			case 'too-large':
 				status.setError(
-					`This selection is ${formatBytes(outcome.bytes)} once encrypted, over the ${formatBytes(outcome.limit)} a shared note can be. Attachments cost about a third more than their file size.`,
+					'This selection is too big to share. One note carries about 14 MB of attachments, so send fewer at a time.',
 				)
 				return
 			case 'unconfigured':

@@ -840,6 +840,20 @@ describe('the share setup guide', () => {
 		return last ? (last[1] as { text: string }).text : null
 	}
 
+	/**
+	 * The guide's visible text with every run of whitespace collapsed to one
+	 * space.
+	 *
+	 * Not tidiness. The guide is prose, so the formatter wraps its sentences
+	 * across source lines and `textContent` keeps every one of those newlines and
+	 * indents. Asserting a sentence against the raw text would be asserting where
+	 * Prettier happened to break the line, and it would fail the next time a word
+	 * was added anywhere before it.
+	 */
+	function guideText(wrapper: ReturnType<typeof mount<typeof SettingsView>>) {
+		return wrapper.get('[data-testid="share-setup-guide"]').text().replace(/\s+/g, ' ')
+	}
+
 	/** Available with Share switched off, which is where a reader who has not set
 	 *  anything up yet actually stands. Everything else in the section is behind
 	 *  the switch. */
@@ -872,7 +886,7 @@ describe('the share setup guide', () => {
 		const wrapper = await openSettings()
 		await wrapper.get('[data-testid="share-guide-toggle"]').trigger('click')
 
-		const guide = wrapper.get('[data-testid="share-setup-guide"]').text()
+		const guide = guideText(wrapper)
 		expect(guide).toContain('pnpm dlx wrangler@4 login')
 		expect(guide).toContain('pnpm dlx wrangler@4 kv namespace create MAILBOX')
 		expect(guide).toContain('pnpm dlx wrangler@4 secret put RELAY_TOKEN')
@@ -883,6 +897,28 @@ describe('the share setup guide', () => {
 		// The generic form, never a real subdomain: the guide is read by people who
 		// would otherwise paste someone else's relay address into their own panel.
 		expect(guide).toContain('https://copper-relay.<your-subdomain>.workers.dev')
+	})
+
+	/**
+	 * The Share rows were trimmed to two lines each, and the guide is where their
+	 * cut sentences went. Nothing was deleted, so this is the receipt: each string
+	 * below used to be in a row description or in the closing paragraph, and every
+	 * one of them is still on screen, one press away.
+	 */
+	it('carries every fact the trimmed row descriptions gave up', async () => {
+		const wrapper = await openSettings()
+		await wrapper.get('[data-testid="share-guide-toggle"]').trigger('click')
+
+		const guide = guideText(wrapper)
+		// From the enable row, which ran to five lines.
+		expect(guide).toContain('free Cloudflare account')
+		expect(guide).toContain('only ever holds ciphertext')
+		// From the "This device is" row.
+		expect(guide).toContain('nothing detects it')
+		// From the closing paragraph. The rows and the send failure now state the
+		// 14 MB alone; the arithmetic behind it belongs here or nowhere.
+		expect(guide).toContain('14 MB')
+		expect(guide).toContain('20 MiB')
 	})
 
 	/** Both links leave for the user's browser. A real anchor would navigate the
@@ -912,7 +948,7 @@ describe('the share setup guide', () => {
 		// The real constant reached the real clipboard adapter, unaltered.
 		expect(copiedText()).toBe(SHARE_SETUP_PROMPT)
 
-		const guide = wrapper.get('[data-testid="share-setup-guide"]').text()
+		const guide = guideText(wrapper)
 		expect(guide).toContain('The prompt is on your clipboard.')
 	})
 
@@ -956,7 +992,7 @@ describe('the share setup guide', () => {
 		await wrapper.get('[data-testid="share-copy-prompt"]').trigger('click')
 		await flush()
 
-		const guide = wrapper.get('[data-testid="share-setup-guide"]').text()
+		const guide = guideText(wrapper)
 		expect(guide).toContain("Couldn't write to the clipboard.")
 		expect(guide).not.toContain('The prompt is on your clipboard.')
 	})
