@@ -171,6 +171,21 @@ function onEscape(event: KeyboardEvent) {
 }
 
 /**
+ * Click-away deselect: a click in the list area that is not on a note clears
+ * the selection, so no note keeps its ring after the user has visibly clicked
+ * somewhere else (user ruling, 2026-08-10). On the scroll region rather than
+ * the shell, and the bound is deliberate — context menus portal outside it, so
+ * an item click can never deselect the notes the action it runs is about to
+ * target. Section bands and the empty space below the list both count as
+ * "away"; the band's own click handlers run first on the way up.
+ */
+function onRegionClick(event: MouseEvent) {
+	const target = event.target as HTMLElement | null
+	if (target?.closest('[data-note-row]')) return
+	clear()
+}
+
+/**
  * The chord layer. It sits on the shell rather than on the grid because these
  * are panel-scoped bindings — the target set comes from `focusedId`, not from
  * where DOM focus happens to be — and because the ladder above has to be
@@ -427,6 +442,7 @@ function onContextMenu(event: MouseEvent) {
 			data-scroll-region
 			class="thin-scrollbar col-start-1 row-start-2 min-h-0 min-w-0 overflow-y-auto overscroll-contain [scrollbar-gutter:auto]"
 			:aria-busy="refreshing"
+			@click="onRegionClick"
 		>
 			<h1 class="sr-only">{{ spaceName || 'Copper' }}</h1>
 
@@ -446,12 +462,11 @@ function onContextMenu(event: MouseEvent) {
 				     anything scrolls under it, and 8px of lead-in meant the band jumped
 				     up by that much the first time it stuck — a heading that moves as you
 				     begin to scroll past its own section. Flush at rest is the same
-				     position it holds pinned, so nothing moves at all. What it costs is
-				     the top 4px of the *first* heading's focus halo, clipped by the
-				     region's edge; a pinned heading's is clipped there in every case
-				     already, so this makes one row consistent rather than making it
-				     worse. The landing margins in NoteSection are measured from the
-				     region's edge and are unaffected. -->
+				     position it holds pinned, so nothing moves at all. It costs the
+				     focus indicator nothing: `focus-inset` draws inside the band's own
+				     box, so a first heading flush against the region's top still shows
+				     its whole outline. The landing margins in NoteSection are measured
+				     from the region's edge and are unaffected. -->
 				<div class="px-1 pb-3">
 					<NoteList />
 

@@ -53,8 +53,9 @@ const GROUPS: Group[] = [
 	{
 		heading: 'On a section heading',
 		rows: [
-			{ action: 'Make it the active section', chords: ['Space', 'Enter'] },
-			{ action: 'Collapse or expand', chords: ['←', '→'] },
+			{ action: 'Collapse or expand', chords: ['Space'] },
+			{ action: 'Make it the active section', chords: ['Enter'] },
+			{ action: 'Collapse or expand, by direction', chords: ['←', '→'] },
 			{
 				action: 'Move the section',
 				chords: [CHORDS.reorderUp.display, CHORDS.reorderDown.display],
@@ -64,6 +65,10 @@ const GROUPS: Group[] = [
 	{
 		heading: 'Anywhere in the panel',
 		rows: [
+			// The grid's Tab order: section bands are its only sequential stops,
+			// arrows do the fine travel between the notes inside one.
+			{ action: 'Jump between sections', chords: ['Tab', 'Shift+Tab'] },
+			{ action: 'Move between rows', chords: ['↑', '↓'] },
 			{ action: 'Open the command palette', chords: [CHORDS.commandPalette.display] },
 			// `PanelShell`'s hard-wired Ctrl+F.
 			{ action: 'Search', chords: ['Ctrl+F'] },

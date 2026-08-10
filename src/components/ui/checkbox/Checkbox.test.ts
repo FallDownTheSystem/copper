@@ -136,7 +136,7 @@ describe('the completion control', () => {
 	})
 
 	/**
-	 * Task-004 makes the grid a single Tab stop with a roving `tabindex`, so every
+	 * Tab traverses the grid's section bands and nothing else, so every
 	 * interactive descendant of a row carries `tabindex="-1"` until F2 interaction
 	 * mode. `motion.button` reaches the DOM through `as-child`, and this is the
 	 * assertion that it merged onto the real control rather than wrapping it in a
@@ -152,6 +152,21 @@ describe('the completion control', () => {
 		expect(buttons).toHaveLength(1)
 		expect(buttons[0].attributes('tabindex')).toBe('-1')
 		expect(buttons[0].attributes('aria-label')).toBe('Mark as done')
+	})
+
+	/**
+	 * The indicator must be `inert`: the mark inside is a `motion.path`, and
+	 * motion-v's FocusGesture hangs a DOM focus listener on every motion element
+	 * — which trips Blink's legacy rule that an SVG element with a focus listener
+	 * is focusable. Without `inert`, every checkmark in the list was a real Tab
+	 * stop wearing Chromium's default ring (measured live, 2026-08-10). happy-dom
+	 * cannot reproduce the Blink rule, so what is pinned here is the attribute
+	 * the fix rests on.
+	 */
+	it('keeps the decorative indicator inert', () => {
+		const wrapper = mount(Checkbox, { props: { modelValue: true } })
+
+		expect(wrapper.get('[data-slot="checkbox-indicator"]').attributes('inert')).toBeDefined()
 	})
 
 	it('reports its state to the row through the toggle event', async () => {

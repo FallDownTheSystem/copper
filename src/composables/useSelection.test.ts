@@ -104,7 +104,7 @@ describe('extendTo', () => {
 })
 
 describe('moveFocus', () => {
-	it('traverses header rows and selects only when it lands on a note', () => {
+	it('traverses header rows, selecting on a note and clearing on a header', () => {
 		selection.focusRow(sectionRow('sec_a'))
 		selection.moveFocus(1)
 		expect(selection.focusedId.value).toBe(noteRow('n1'))
@@ -112,9 +112,11 @@ describe('moveFocus', () => {
 
 		selection.moveFocus(1)
 		selection.moveFocus(1)
-		// Landed on the second section's header: selection is left alone.
+		// Landed on the second section's header: the selection is cleared, so the
+		// note the arrow just left does not keep its ring while the heading wears
+		// the focus outline (the 2026-08-10 ruling recorded on `landOn`).
 		expect(selection.focusedId.value).toBe(sectionRow('sec_b'))
-		expect(selection.selectedIds.value).toEqual(['n2'])
+		expect(selection.selectedIds.value).toEqual([])
 	})
 
 	it('clamps at both ends rather than wrapping', () => {

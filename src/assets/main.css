@@ -225,9 +225,10 @@
 	/* **The halo, and it is now the only token the focus treatment has of its own.**
 	   The 1px edge used to carry a second copper here, deepened until it sat a
 	   visible step away from `--accent-ring` so that two adjacent rows wearing one
-	   each could be told apart. Nothing wears one each any more: a row's indicator
-	   is this halo alone and no row draws a 1px edge, so the edge is free to *be*
-	   the accent — see the `focus-ring` and `focus-halo` utilities.
+	   each could be told apart. Nothing wears one each any more, so the edge is
+	   free to *be* the accent — see the `focus-ring` utility, whose box-shadow is
+	   this token's one remaining consumer; the rows themselves moved to the
+	   halo-free `focus-inset`.
 
 	   Written as an alpha rather than a `color-mix` off a second token, now that
 	   there is no second token to mix. 70% rather than the shadcn 50%: on a row
@@ -620,14 +621,39 @@
 	animation-iteration-count: 1 !important;
 }
 
+/* **Tailwind's own `transition-colors`, minus `outline-color` — and the
+   subtraction is a bug fix, not taste.** Every outline in the panel is a focus
+   indicator, and a focus indicator must appear instantly; there is no state
+   where fading one in is right. What made this urgent is worse than a fade:
+   with `outline-color` in the list, Chromium restarts the colour transition on
+   every style recalc (measured live, 2026-08-10 — the CSSTransition sits
+   perpetually "running" with progress pinned at 0), and a transition's value
+   overrides the cascade *and* inline styles. The outline was therefore held at
+   its pre-focus value — `currentColor` — indefinitely: the near-white ring on
+   the checkbox, and the "pale, almost white" 1px edge the focus-ring comment
+   below records seeing on dark rows.
+
+   A plain unlayered rule rather than `@utility transition-colors`, and the
+   difference was measured, not guessed: the production pipeline kept the
+   built-in's declaration when both carried the name, and an unlayered author
+   rule beats `@layer utilities` by cascade order whatever the pipeline does.
+   Only `transition-property` is redeclared, so the utility's own timing and
+   duration keep applying. */
+.transition-colors {
+	transition-property:
+		color, background-color, border-color, text-decoration-color, fill, stroke, --tw-gradient-from,
+		--tw-gradient-via, --tw-gradient-to;
+}
+
 /* **The focus treatment, and the only copy of it.** A 1px copper edge hugging
    the control with a 3px translucent copper halo outside it — shadcn's
    `border-ring` + `ring-[3px] ring-ring/50`, which is what the panel is being
    matched to. Every focusable *control* either carries this class or is a utility
-   below that applies it; a **row** carries `focus-halo` instead and the two are
-   documented together there. One control opts out: the 16px completion checkbox,
-   where the three layers merge into a donut that buries the state — it wears an
-   offset 2px ring instead, with the measurement recorded in `Checkbox.vue`.
+   below that applies it; the list's **rows** — note rows and section bands both —
+   carry `focus-inset` instead, documented below. One control opts out: the 16px
+   completion checkbox, where the three layers merge into a donut that buries the
+   state — it wears an offset 2px ring instead, with the measurement recorded in
+   `Checkbox.vue`.
 
    **The edge is `--accent-ring`, the same copper a selected row is ringed in**,
    rather than a second copper of its own. The two used to be held apart on
@@ -682,29 +708,35 @@
 	}
 }
 
-/* **The row's half of the same treatment: the halo, and nothing else.**
+/* **The row treatment — note rows and section bands both: a 2px accent outline
+   drawn *inside* the row's box.**
 
-   A note row and a section heading are not controls with an edge — they are bands
-   of the list, 44px and 24px tall, and the 1px line `focus-ring` draws hugged the
-   full width of one. Against the rows above and below it that line read as a
-   *border on the row* rather than as an indicator on top of it, and at the dark
-   theme's lightness it read as a pale, almost white one. The halo alone says the
-   same thing without adding an edge to a thing that has none, and it is the layer
-   the two treatments share — so a focused field and a focused row still look
-   like the same event.
+   Inside, and the reason is geometry rather than taste: everything an outer
+   indicator paints falls outside the border box, and a row's edges all have
+   something that clips or crowds them. The section band spans the region edge to
+   edge (`-mx-1`), so the scroll port clips anything outside it left and right;
+   the topmost heading sits flush against the region's top at scroll 0, so the
+   port clipped a focused first section down to a bottom arc (user screenshot,
+   2026-08-10). An outline pulled 2px inside the border box has nothing outside
+   to lose: it is whole wherever the row itself is visible.
 
-   `outline` is still declared, at a width and a transparent colour that paint
-   nothing, because **forced colors is the one mode where the halo does not
-   exist**: Windows' high-contrast mode paints no box-shadows at all and forces
-   `outline-color` to a system colour whatever the author asked for. Without the
-   declaration a focused row would have no indicator there; with it, the same rule
-   that is invisible everywhere else becomes the whole indicator in the one place
-   it has to be. */
-@utility focus-halo {
+   The note rows wore a soft outer halo before this, and both reasons it existed
+   are dead. The crisp `focus-ring` edge had "read almost white" on dark rows —
+   which was the stuck `outline-color` transition documented at the
+   `transition-colors` rule above, not a property of crisp edges. And the halo
+   itself, 4px of half-alpha accent over the dark surface, read as a muddy brown
+   band (user screenshot, same day). The inset outline is the selection ring's
+   visual twin, so "you are here" looks the same everywhere: rows, bands, and —
+   offset outward instead of inward — the completion checkbox.
+
+   Keyboard only, by `:focus-visible`'s own nature — a click focuses a row
+   silently, which is the user's ruling. Forced colors keeps the indicator for
+   free: a real outline is the one layer that survives there, already at the
+   2px minimum. */
+@utility focus-inset {
 	&:focus-visible {
-		outline: 2px solid transparent;
-		outline-offset: 0;
-		box-shadow: 0 0 0 4px var(--focus-halo);
+		outline: 2px solid var(--accent-ring);
+		outline-offset: -2px;
 	}
 }
 
@@ -898,18 +930,14 @@ html:not(.translucent) {
 
 	/* The exclusions exist because `both` holds the 0% keyframe — `inset(0)` —
 	   on every row that is not under the band, and a clip-path at the border box
-	   clips box-shadows. The focus halo and the drag lift are both box-shadows
-	   that live *outside* the box, so at rest the clip cut them down to four
-	   corner arcs. A row wearing one of those shadows opts out of the erase
-	   entirely: the focused row, because keyboard focus scroll-margins itself
-	   clear of the band anyway (the one loss — a focus-visible row pushed under
-	   the band by mouse scroll does not erase — is rarer than every focused row
-	   losing its halo); the carried and settling rows, because they already pass
-	   *over* the heading at z-10 and a row above the band must not be cut by it. */
-	.translucent
-		[role='row']:not([data-section-row]):not(:focus-visible):not([data-dragging]):not(
-			[data-settling]
-		) {
+	   clips box-shadows. The drag lift is a box-shadow that lives *outside* the
+	   box, so at rest the clip cut it down to four corner arcs: the carried and
+	   settling rows opt out of the erase entirely, because they already pass
+	   *over* the heading at z-10 and a row above the band must not be cut by it.
+	   The focused row used to opt out too, when its indicator was an outer halo
+	   with the same problem; `focus-inset` draws inside the box, so a focused
+	   row now clips — and erases under the band — exactly like its neighbours. */
+	.translucent [role='row']:not([data-section-row]):not([data-dragging]):not([data-settling]) {
 		animation: copper-row-clip linear both;
 		animation-timeline: view(block calc(var(--section-heading-height) + 12px) 0px);
 		animation-range: exit;

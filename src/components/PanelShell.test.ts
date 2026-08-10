@@ -486,16 +486,22 @@ describe('the grid structure', () => {
 	})
 })
 
-describe('the roving tabindex', () => {
-	it('leaves exactly one row and no descendant in the tab order', async () => {
+describe('the grid tab order', () => {
+	it('puts every section band in the tab order and nothing else', async () => {
 		const wrapper = await mountPanel()
 
-		const rows = wrapper.findAll('[data-row-id]')
-		const tabbable = rows.filter((row) => row.attributes('tabindex') === '0')
-		expect(tabbable).toHaveLength(1)
+		// The 2026-08-10 model: Tab hops section to section, arrows travel within.
+		// So every section row is a permanent sequential stop, and no note row is
+		// — not even the focused one, which would wedge itself into the hop.
+		for (const row of wrapper.findAll('[data-section-row]')) {
+			expect(row.attributes('tabindex')).toBe('0')
+		}
+		for (const row of wrapper.findAll('[data-note-row]')) {
+			expect(row.attributes('tabindex')).toBe('-1')
+		}
 
-		// The one-Tab-stop claim only holds if every interactive descendant is out
-		// of the tab order too.
+		// The claim only holds if every interactive descendant is out of the tab
+		// order too.
 		for (const button of wrapper.find('[role="grid"]').findAll('button')) {
 			expect(button.attributes('tabindex')).toBe('-1')
 		}
@@ -517,14 +523,16 @@ describe('the roving tabindex', () => {
 
 		const selected = wrapper.get(`[data-row-id="${noteRow('nte_1')}"]`)
 		expect(selected.classes()).toContain('ring-accent-ring')
-		expect(selected.classes('focus-halo')).toBe(false)
+		expect(selected.classes('focus-inset')).toBe(false)
 
 		// The unselected row keeps it: that is the case where focus and selection
-		// genuinely differ, and the only ring it can wear. `focus-halo` and not
-		// `focus-ring` — a row wears the soft outer band alone, and the 1px edge
-		// belongs to controls that have an edge.
+		// genuinely differ, and the only ring it can wear. `focus-inset` — the
+		// same crisp 2px accent outline the section bands and checkbox wear, one
+		// focus language everywhere (2026-08-10; the halo it replaced read as a
+		// muddy band, and the "washed-out crisp edge" that justified the halo was
+		// the stuck outline-color transition, since fixed).
 		const other = wrapper.get(`[data-row-id="${noteRow('nte_2')}"]`)
-		expect(other.classes()).toContain('focus-halo')
+		expect(other.classes()).toContain('focus-inset')
 	})
 })
 
@@ -1748,9 +1756,9 @@ describe('a pinned section heading', () => {
 	 *
 	 * A heading pinned to the top of the region is already where `block: 'nearest'`
 	 * would put it, so an arrow key reaching it scrolls nothing and leaves the
-	 * focus ring hard against the region's edge with its outer halo clipped. The
+	 * reader at the *end* of a section whose heading they just landed on. The
 	 * section's rowgroup is the heading's un-pinned position, and landing that is
-	 * what brings the whole ring back on screen.
+	 * what puts the section's own start on screen.
 	 */
 	it('lands the section when an arrow key reaches a heading that is pinned', async () => {
 		const wrapper = await mountPanel()
@@ -2212,8 +2220,8 @@ describe('collapsible sections', () => {
 	})
 
 	it('keeps both traversal orders agreeing with the DOM', async () => {
-		// The same invariant the search filter has to hold: a roving `tabindex="0"`
-		// left on an unmounted row makes the grid unreachable by Tab.
+		// The same invariant the search filter has to hold: the roving target is
+		// where the arrow keys resume, so it must always name a rendered row.
 		const wrapper = await mountPanel()
 		await disclosure(wrapper, 'Research').trigger('click')
 		await settle(3)
@@ -2222,15 +2230,112 @@ describe('collapsible sections', () => {
 		expect(selection.rowIds.value).toEqual(rendered)
 		expect(selection.visibleNoteIds.value).toEqual([])
 		expect(rendered).toContain(selection.focusedId.value)
-		expect(wrapper.findAll('[data-row-id][tabindex="0"]')).toHaveLength(1)
+		// Every rendered section band is a Tab stop; nothing else is.
+		expect(wrapper.findAll('[data-row-id][tabindex="0"]')).toHaveLength(
+			wrapper.findAll('[data-section-row]').length,
+		)
+	})
+
+	it('folds and unfolds on Space, and leaves activation to Enter', async () => {
+		// The 2026-08-10 ruling: Space on a heading toggles the disclosure; making
+		// the section active moved to Enter alone.
+		const wrapper = await mountPanel()
+		takeRow(sectionRow('sec_a'))
+		await settle(2)
+
+		const grid = wrapper.get('[role="grid"]')
+		await grid.trigger('keydown', { key: ' ' })
+		await settle(3)
+		expect(wrapper.findAll('[data-row-id^="n:"]')).toHaveLength(0)
+		expect(mocks.invoke).not.toHaveBeenCalledWith('set_active_section', expect.anything())
+
+		await grid.trigger('keydown', { key: ' ' })
+		await settle(3)
+		expect(wrapper.findAll('[data-row-id^="n:"]')).toHaveLength(2)
+
+		await grid.trigger('keydown', { key: 'Enter' })
+		await settle(3)
+		expect(mocks.invoke).toHaveBeenCalledWith('set_active_section', { id: 'sec_a' })
+		// Enter did not also fold the section.
+		expect(wrapper.findAll('[data-row-id^="n:"]')).toHaveLength(2)
+	})
+
+	it('unfolds a folded section when Enter makes it active', async () => {
+		// The user ruling: choosing a section as the capture target implies
+		// wanting to see it, so activation carries the unfold — on Enter and the
+		// name click, never on Space, which stays a pure fold toggle.
+		const wrapper = await mountPanel()
+		takeRow(sectionRow('sec_a'))
+		await settle(2)
+
+		const grid = wrapper.get('[role="grid"]')
+		await grid.trigger('keydown', { key: ' ' })
+		await settle(3)
+		expect(wrapper.findAll('[data-row-id^="n:"]')).toHaveLength(0)
+
+		await grid.trigger('keydown', { key: 'Enter' })
+		await settle(3)
+		expect(mocks.invoke).toHaveBeenCalledWith('set_active_section', { id: 'sec_a' })
+		expect(wrapper.findAll('[data-row-id^="n:"]')).toHaveLength(2)
+	})
+
+	it('hands focus back to the row when a click lands it on a row control', async () => {
+		// Clicking the completion circle focuses the button, and the next keypress
+		// re-grants `:focus-visible` — a keyboard ring on a control the user never
+		// keyboard-navigated to. Outside F2 interaction mode the grid's focusin
+		// handler returns focus to the row itself.
+		const wrapper = await mountPanel()
+		const circle = wrapper.get(`[data-row-id="${noteRow('nte_1')}"] [data-slot="checkbox"]`)
+		;(circle.element as HTMLElement).focus()
+		await circle.trigger('focusin')
+		await settle(2)
+
+		expect(selection.focusedId.value).toBe(noteRow('nte_1'))
+		expect(document.activeElement).toBe(wrapper.get(`[data-row-id="${noteRow('nte_1')}"]`).element)
+	})
+
+	it('keeps the roving target in step with focus the grid did not move itself', async () => {
+		// Tab and band clicks put DOM focus on a row without going through the
+		// arrow handlers; the grid's focusin listener records the arrival so the
+		// next arrow moves relative to the row the user actually sees focused.
+		const wrapper = await mountPanel()
+		takeRow(noteRow('nte_1'))
+		await settle(2)
+
+		// `trigger` dispatches the bubbling focusin the browser would send; the
+		// grid's listener reads the row off the event target.
+		await wrapper.get('[data-row-id="s:sec_b"]').trigger('focusin')
+		await settle(2)
+
+		expect(selection.focusedId.value).toBe('s:sec_b')
+	})
+
+	it('clears the selection on a click that is not on a note', async () => {
+		// The click-away rule: no note keeps its ring after the user clicks
+		// somewhere else in the list — a section band and bare region both count.
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		await settle(2)
+
+		await wrapper.get('[data-scroll-region]').trigger('click')
+		await settle(2)
+
+		expect(selection.selectedIds.value).toEqual([])
 	})
 
 	it('never destroys a selection it merely folded away', async () => {
+		// By keyboard, deliberately: the pointer path — clicking the chevron — now
+		// also clears the selection first, because any click in the list that is
+		// not on a note is a click-away (the 2026-08-10 ruling on `PanelShell`'s
+		// region handler). The fold-versus-selection invariant lives on.
 		const wrapper = await mountPanel()
 		selection.select('nte_1')
 		selection.extendTo('nte_2')
+		// Ctrl+Arrow's traversal: up to the header without touching the selection.
+		selection.moveFocusOnly(-2)
+		expect(selection.focusedId.value).toBe('s:sec_a')
 
-		await disclosure(wrapper, 'Research').trigger('click')
+		await wrapper.get('[role="grid"]').trigger('keydown', { key: 'ArrowLeft' })
 		await settle(3)
 		// Any applied document runs reconciliation, which prunes against the whole
 		// document rather than against what is on screen.
@@ -2263,15 +2368,17 @@ describe('collapsible sections', () => {
 		// Collapse is folding, not deselection. Targeting the collapse-filtered order
 		// turned copy, delete, mark-done, merge, Move to and the $EDITOR handoff into
 		// silent no-ops the moment a section was folded — with no status message to
-		// say so.
+		// say so. Folded by keyboard, since the chevron's click is a click-away that
+		// clears the selection first.
 		const wrapper = await mountPanel()
 		selection.select('nte_1')
 		selection.extendTo('nte_2')
+		selection.moveFocusOnly(-2)
 
-		await disclosure(wrapper, 'Research').trigger('click')
+		await wrapper.get('[role="grid"]').trigger('keydown', { key: 'ArrowLeft' })
 		await settle(3)
 
-		// The roving target moved to the header, so `focusedNoteId` is null — which
+		// The roving target sits on the header, so `focusedNoteId` is null — which
 		// must not defeat a multi-select either.
 		expect(selection.focusedNoteId.value).toBeNull()
 
@@ -2302,7 +2409,9 @@ describe('collapsible sections', () => {
 		// destination, because that destination was chosen rather than arrived at —
 		// so focus lands on the destination's header instead of a key naming nothing.
 		expect(selection.focusedId.value).toBe('s:sec_b')
-		expect(wrapper.findAll('[data-row-id][tabindex="0"]')).toHaveLength(1)
+		expect(wrapper.findAll('[data-row-id][tabindex="0"]')).toHaveLength(
+			wrapper.findAll('[data-section-row]').length,
+		)
 	})
 
 	it('auto-expands the section a new note lands in', async () => {
@@ -2818,9 +2927,12 @@ describe('attachments', () => {
 		expect(search.query.value).toBe('first')
 		expect(selection.selectedIds.value).toEqual(['nte_1'])
 		expect(mocks.invoke).not.toHaveBeenCalledWith('hide_panel')
-		// Focus goes back where the press came from, not to the body — which is an
-		// ancestor of the panel root and therefore outside the ladder entirely.
-		expect(document.activeElement).toBe(card)
+		// Focus goes back toward where the press came from, not to the body — and
+		// the grid's focusin rule then seats it on the card's row: outside F2
+		// interaction mode, focus never rests on a control inside a row. (A viewer
+		// opened *from* F2 keeps the card focused — interaction mode is the
+		// exemption.)
+		expect(document.activeElement).toBe(card.closest('[data-row-id]'))
 	})
 
 	it('owns the keyboard while it is up, exactly as an open menu does', async () => {
@@ -4132,11 +4244,13 @@ describe('merge and the roving target', () => {
 
 		expect(selection.selectedIds.value).toEqual(['nte_1'])
 		// The survivor is still inside the folded section, so it has no row at all —
-		// pointing the roving target at one would leave the grid with `tabindex="0"`
-		// on nothing and unreachable by Tab.
+		// pointing the roving target at one would leave the arrows with nowhere to
+		// resume from.
 		expect(wrapper.find('[data-row-id="n:nte_1"]').exists()).toBe(false)
 		expect(selection.focusedId.value).toBe('s:sec_a')
-		expect(wrapper.findAll('[data-row-id][tabindex="0"]').length).toBe(1)
+		expect(wrapper.findAll('[data-row-id][tabindex="0"]').length).toBe(
+			wrapper.findAll('[data-section-row]').length,
+		)
 	})
 
 	it('holds the survivor itself when its section is open', async () => {
@@ -4150,7 +4264,9 @@ describe('merge and the roving target', () => {
 		await settle(4)
 
 		expect(selection.focusedId.value).toBe(noteRow('nte_1'))
-		expect(wrapper.findAll('[data-row-id][tabindex="0"]').length).toBe(1)
+		expect(wrapper.findAll('[data-row-id][tabindex="0"]').length).toBe(
+			wrapper.findAll('[data-section-row]').length,
+		)
 	})
 })
 
@@ -5361,7 +5477,7 @@ describe('the status toast', () => {
 			await settle(5)
 		}
 
-		it('hands focus on from the clicked row, not from the roving target', async () => {
+		it('hands focus on from the clicked row, which the click made the roving target', async () => {
 			const wrapper = await mountThree()
 			selection.select('nte_1')
 			takeRow(noteRow('nte_1'))
@@ -5370,12 +5486,14 @@ describe('the status toast', () => {
 			await clickCircle(wrapper, 'nte_3')
 
 			expect(wrapper.findAll('[data-note-row]')).toHaveLength(2)
-			// The roving target never moved — `nte_1` is still on screen — and the
-			// whole point is that DOM focus came back to it out of the row that left,
-			// instead of being dropped on the floor with the button it was on.
-			expect(selection.focusedId.value).toBe(noteRow('nte_1'))
+			// The grid's focusin sync moves the roving target to the clicked row —
+			// that is what keeps the arrows resuming from where the user actually
+			// acted — so when `nte_3` leaves the narrowed view, focus hands on to
+			// *its* nearest survivor rather than back to wherever the arrows last
+			// were.
+			expect(selection.focusedId.value).toBe(noteRow('nte_2'))
 			expect(document.activeElement).toBe(
-				wrapper.get(`[data-row-id="${noteRow('nte_1')}"]`).element,
+				wrapper.get(`[data-row-id="${noteRow('nte_2')}"]`).element,
 			)
 		})
 

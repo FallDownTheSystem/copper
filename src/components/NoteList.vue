@@ -17,6 +17,8 @@ const {
 	extendTo,
 	extendFocus,
 	selectAll,
+	clear,
+	focusRow,
 	moveFocus,
 	moveFocusOnly,
 	focusFirst,
@@ -26,7 +28,7 @@ const {
 const { beginEdit } = useNoteEditor()
 const { interactionRowId, enter, reconcile } = useInteractionMode()
 const { hasQuery, resultCount } = useNoteSearch()
-const { setCollapsed, collapseEnabled } = useSections()
+const { setCollapsed, toggleCollapsed, collapseEnabled } = useSections()
 const { filtersByDone } = useNoteList()
 const { toggleDone, toggleNoteDone } = useNoteActions()
 const { dropTarget, isDragging } = useNoteDrag()
@@ -157,7 +159,15 @@ function syncDomFocus() {
 	})
 }
 
+/**
+ * Activation unfolds a folded section (user ruling, 2026-08-10): choosing a
+ * section as the capture target implies wanting to see it, so the "open it"
+ * half lives on Enter and the name click — the deliberate gestures — while
+ * Space stays a pure fold toggle. Guarded so an activation during a search
+ * does not silently rewrite the stored fold state the query is overriding.
+ */
 function activateSection(id: string) {
+	if (collapseEnabled.value) setCollapsed(id, false)
 	void setActiveSection(id)
 }
 
@@ -177,6 +187,36 @@ function onPointerSelect(event: MouseEvent, noteId: string) {
 	if (event.shiftKey) extendTo(noteId)
 	else if (event.ctrlKey || event.metaKey) toggle(noteId)
 	else select(noteId)
+}
+
+/**
+ * Keeps the roving target pointed at wherever DOM focus actually lands.
+ *
+ * Two paths put focus on a row without going through the arrow-key handlers:
+ * Tab, now that every section band is a sequential stop, and a click anywhere
+ * on a band, which focuses it by its own `tabindex`. Both used to leave
+ * `focusedId` stale, so the next arrow moved relative to a row the user had
+ * visibly left. Idempotent for the handlers' own moves — `takeRow` focuses the
+ * row it just recorded, and re-recording the same key is a no-op write.
+ *
+ * **Outside F2 interaction mode, focus never rests on a row's controls.** A
+ * click focuses the button it lands on, and the browser re-evaluates
+ * `:focus-visible` on the next keypress — so clicking the completion circle
+ * and then pressing Space drew a keyboard focus ring on a control the user
+ * never keyboard-navigated to (user report, 2026-08-10). Handing focus back
+ * to the row closes that for every control in one place. Text surfaces are
+ * exempt — the rename field and the inline editor hold focus by design — and
+ * so is the row F2 promoted, whose descendants holding focus is the mode.
+ */
+function onFocusin(event: FocusEvent) {
+	const target = event.target as HTMLElement | null
+	const row = target?.closest<HTMLElement>('[data-row-id]')
+	const key = row?.dataset.rowId
+	if (!row || !key) return
+	if (key !== focusedId.value) focusRow(key)
+	if (target !== row && interactionRowId.value !== key && !target?.matches('input, textarea')) {
+		row.focus()
+	}
 }
 
 function onKeydown(event: KeyboardEvent) {
@@ -261,6 +301,14 @@ function onKeydown(event: KeyboardEvent) {
 			event.preventDefault()
 			setCollapsed(sectionId, event.key === 'ArrowLeft')
 			return
+		case 'Tab':
+			// Not prevented: the browser performs the move, and the section bands
+			// are the only sequential stops, so Tab hops section to section. What
+			// this adds is the same rule `landOn` applies to an arrow that leaves a
+			// note — the selection ring must not stay behind on a row the user has
+			// visibly moved away from.
+			clear()
+			return
 		case 'Home':
 			event.preventDefault()
 			focusFirst()
@@ -285,11 +333,14 @@ function onKeydown(event: KeyboardEvent) {
 				// Selection-aware, and one undoable operation whatever the count.
 				else void toggleDone()
 			} else if (sectionId && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-				// Only an unmodified Space activates a section. Ctrl+Space is the
-				// Windows IME chord, and swallowing it here would take the candidate
-				// window away from anyone typing Japanese.
+				// Only an unmodified Space, because Ctrl+Space is the Windows IME
+				// chord, and swallowing it here would take the candidate window away
+				// from anyone typing Japanese. Space *toggles the disclosure* — the
+				// user's ruling (2026-08-10); making the section active stays on
+				// Enter. preventDefault runs even while search disables collapse,
+				// or the press would scroll the region instead.
 				event.preventDefault()
-				activateSection(sectionId)
+				if (collapseEnabled.value) toggleCollapsed(sectionId)
 			}
 			return
 		case 'Enter':
@@ -338,6 +389,7 @@ watch(() => space.value, reconcile)
 			aria-label="Notes"
 			class="min-w-0"
 			@keydown="onKeydown"
+			@focusin="onFocusin"
 		>
 			<NoteSection
 				v-for="entry in renderedSections"

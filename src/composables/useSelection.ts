@@ -373,13 +373,24 @@ function focusRow(key: string | null) {
 	focusedId.value = key
 }
 
-/** Landing on a note selects it; landing on a header leaves the selection
- *  alone. Every arrow, Home and End path ends here. */
+/** Landing on a note selects it; landing on a header clears the selection.
+ *  Every arrow, Home and End path ends here.
+ *
+ *  The header used to leave the selection alone, and what that looked like was
+ *  a bug (user report, 2026-08-10): plain arrows move focus and selection
+ *  together, so the note the arrow just left kept its 2px ring while the
+ *  heading wore the focus outline — two things on screen claiming to be where
+ *  the user is. Deliberate detours keep their selection by not coming through
+ *  here: Ctrl+Arrow is `moveFocusOnly`, and the section menu's Select-all is
+ *  `selectSection`, which takes the header row *after* writing the selection. */
 function landOn(key: string | undefined) {
 	if (!key) return
 	const note = rowNoteId(key)
 	if (note) select(note)
-	else focusedId.value = key
+	else {
+		clear()
+		focusedId.value = key
+	}
 }
 
 /** The row `delta` steps from the roving target over `rowIds`, headers included,
@@ -749,8 +760,9 @@ function reconcile(snap: SelectionSnapshot) {
 	focusedId.value = formerNote ? nearestSurvivor(snap.noteIds, formerNote, live) : null
 
 	// Either nothing was focused before or its whole neighbourhood is gone. Give
-	// the grid a roving target anyway: with every row at tabindex="-1" the list
-	// cannot be reached by Tab at all.
+	// the grid a roving target anyway: the target is where the arrow keys resume,
+	// and an arrow pressed with no target would have nowhere to start from.
+	// (Tab needs no help — the section bands are permanent stops.)
 	if (!focusedId.value) {
 		const firstNote = visibleNoteIds.value[0]
 		focusedId.value = firstNote ? noteRow(firstNote) : (rows[0] ?? null)
@@ -993,8 +1005,8 @@ function resetForNewSpace() {
  * The search filter can unmount the row holding the roving `tabindex="0"`.
  *
  * Saying focus never moves would be unsatisfiable — the element is gone — and
- * every row is `tabindex="-1"` except the roving one, so a grid with no target
- * cannot be reached by Tab at all. It moves to the nearest remaining match by
+ * the roving target is where the arrow keys resume, so it must always point at
+ * a row that is actually rendered. It moves to the nearest remaining match by
  * the *former* row order, or out to the search field when nothing matches.
  *
  * A document change never reaches the relocation below: `reconcile` runs

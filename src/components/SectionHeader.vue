@@ -11,12 +11,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{ activate: [] }>()
 
-const { focusedId } = useSelection()
 const { renaming, draft, setDraft, endRename, cancelRename } = useSectionEditor()
 const { renameSection } = useSpace()
 const { isCollapsedStored, toggleCollapsed, collapseEnabled } = useSections()
 
-const focused = computed(() => focusedId.value === props.rowId)
 const headingId = computed(() => `section-heading-${props.section.id}`)
 const editing = computed(() => renaming.value === props.section.id)
 
@@ -110,8 +108,8 @@ function onKeydown(event: KeyboardEvent) {
 			     ring and the pinned band together. A band is what this actually is: it
 			     spans the region, it rides its top edge, and a rounded rectangle riding
 			     a straight edge reads as a card that has come loose rather than as a
-			     heading that has stuck. The ring it also rounded is gone — `focus-halo`
-			     draws no edge to round.
+			     heading that has stuck. `focus-inset`'s outline follows this square
+			     box, which is exactly right for a band.
 
 			     **The row pins itself to the top of the region while its own section is
 			     being read**, which is what keeps the answer to "which section am I in"
@@ -140,9 +138,21 @@ function onKeydown(event: KeyboardEvent) {
 			     each edge read as a strip laid on the list rather than as the region's
 			     own top edge, and under translucency, where the band is a different
 			     material from the panel rather than more of it, those two gaps were where
-			     that showed. What it costs is the focus halo: at full width its outer 4px
-			     falls outside the scroll port and is clipped left and right, the way a
-			     pinned heading's top edge already is.
+			     that showed. It is also why the focus indicator is `focus-inset` rather
+			     than the note row's halo: everything a halo paints falls outside the
+			     band's box, and at full width every edge of that box meets the scroll
+			     port — the first heading at scroll 0 kept only the bottom arc of its
+			     halo. The inset outline is whole wherever the band itself is.
+
+			     **`tabindex="0"` is unconditional: every section band is a Tab stop.**
+			     The grid's Tab order is its sections and nothing else — notes and
+			     their descendants stay at -1 and are reached by arrows, so Tab hops
+			     from section to section and Shift+Tab from a note lands on its own
+			     heading. The roving target still decides where *arrows* resume; the
+			     grid's focusin handler keeps it in step with any Tab or click, which
+			     is also what makes "click anywhere on the band" focus the section —
+			     the row is click-focusable by its tabindex, and `:focus-visible`
+			     keeps the outline keyboard-only.
 
 			     **The band's paint is not here.** `section-band` is a bare hook; every
 			     visual rule for it lives in main.css, and that location is a bug fix,
@@ -168,8 +178,8 @@ function onKeydown(event: KeyboardEvent) {
 				role="row"
 				:data-row-id="rowId"
 				data-section-row
-				:tabindex="focused ? 0 : -1"
-				class="focus-halo section-band sticky top-0 z-1 -mx-1 min-w-0 px-1 pt-1 pb-2"
+				tabindex="0"
+				class="focus-inset section-band sticky top-0 z-1 -mx-1 min-w-0 px-1 pt-1 pb-2"
 			>
 				<div
 					role="gridcell"

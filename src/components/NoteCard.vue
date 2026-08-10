@@ -19,7 +19,7 @@ const { isEditing } = useNoteEditor()
 // Subscribed to here rather than passed down. As props they sat in NoteList's
 // render dependencies, so a keypress that moved focus by one row rebuilt every
 // row in the list. They are still the wrapping row's state either way.
-const { focusedId, isSelected, select } = useSelection()
+const { isSelected, select } = useSelection()
 const { isHandingOff, isConflicted } = useEditorHandoff()
 const { stopHandoff, doubleClickNote } = useNoteActions()
 const { hasQuery } = useNoteSearch()
@@ -34,7 +34,6 @@ const { now } = useRelativeTime()
 const attachments = computed(() => props.note.attachments ?? [])
 
 const selected = computed(() => isSelected(props.note.id))
-const focused = computed(() => focusedId.value === props.rowId)
 const editing = computed(() => isEditing(props.note.id))
 /** No handle, no drag: a searched or done-filtered list is a subset of each
  *  section and a sorted one is a permutation of it, so in none of those cases is
@@ -144,34 +143,43 @@ function onDoubleClick(event: MouseEvent) {
 			     the case where they separate — Ctrl+Arrow — leaves the row unselected,
 			     which is exactly when the focus ring is drawn.
 
-			     **What is drawn there is the halo alone — `focus-halo`, not
-			     `focus-ring`.** The 1px edge belongs to a control that has an edge; on a
-			     44px band spanning the width of the list it read as a *border on the
-			     row* rather than as an indicator over it, and at the dark theme's
-			     lightness it read as an almost white one. The soft outer band is the
-			     half both treatments share, so a focused row and a focused field still
-			     look like the same event.
+			     **What is drawn there is `focus-inset` — the same crisp 2px accent
+			     outline the section band wears.** This row wore a soft outer halo for
+			     a long time, and the reasoning behind it is now known to be void: the
+			     1px `focus-ring` edge "read almost white" on dark rows because a stuck
+			     Chromium transition held every outline at `currentColor` (measured
+			     2026-08-10 — see the `transition-colors` rule in main.css), not
+			     because a crisp edge is wrong on a row. The halo itself was the next
+			     complaint: at 50% alpha over the dark surface it read as a muddy brown
+			     band (user screenshot, same day). One outline language everywhere —
+			     rows, bands, checkbox — and the selection ring is its visual twin, so
+			     "you are here" always looks the same.
 
 			     **The selected branch still needs `focus-visible:outline-hidden`.**
-			     Withholding `focus-halo` by swapping the class out also withheld its
-			     `outline: transparent` — and an element that matches `:focus-visible`
-			     with no author outline gets the browser's own default ring, which on
-			     the dark panel is the crisp white outline this suppression exists to
-			     prevent. `outline-hidden` rather than `outline-none` for the same
-			     reason `focus-halo` declares a transparent outline: in forced colors
-			     the transparent ring is forced visible and is the row's only
-			     indicator there. -->
+			     Withholding `focus-inset` by swapping the class out does not withhold
+			     the browser's own ring — an element that matches `:focus-visible`
+			     with no author outline gets the default ring, which on the dark panel
+			     is a crisp white outline. `outline-hidden` rather than `outline-none`
+			     because in forced colors the transparent outline it declares is
+			     forced visible and is the selected row's only indicator there.
+
+			     **`tabindex="-1"`, unconditionally.** Tab traverses section bands and
+			     nothing else, so a note row is never a sequential stop — not even the
+			     focused one, which would wedge itself into the section-to-section
+			     hop. Arrows land here through `takeRow`, which script-focuses a -1
+			     element; the grid's focusin handler keeps the roving target pointed
+			     at whatever row focus actually reaches. -->
 			<div
 				role="row"
 				:data-row-id="rowId"
 				data-note-row
 				:aria-selected="selected"
-				:tabindex="focused ? 0 : -1"
+				tabindex="-1"
 				class="note-row group/row rounded-lg"
 				:class="[
 					selected
 						? 'row-selected ring-accent-ring ring-2 ring-inset focus-visible:outline-hidden'
-						: 'focus-halo',
+						: 'focus-inset',
 					'hover:bg-surface-hover transition-colors duration-fast',
 				]"
 				@click="emit('pointerSelect', $event)"

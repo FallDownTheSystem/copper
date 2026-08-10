@@ -101,9 +101,18 @@ const rootClass = computed(() =>
 		>
 			<!-- Force-mounted so unchecking can retract the stroke instead of
 			     unmounting mid-draw. `transition-none` kills the inherited CSS
-			     transition, which would otherwise fight the WAAPI one. -->
+			     transition, which would otherwise fight the WAAPI one.
+
+			     `inert`, because the mark inside is a `motion.path` and motion-v's
+			     FocusGesture puts a DOM `focus` listener on every motion element —
+			     which trips Blink's legacy SVG rule that an SVG element with a focus
+			     listener is focusable. Without this, every checkmark path in the list
+			     is a real Tab stop wearing Chromium's default white ring (measured
+			     live, 2026-08-10). The indicator is decoration; the button is the
+			     control; nothing inside here may ever take focus. -->
 			<CheckboxIndicator
 				force-mount
+				inert
 				data-slot="checkbox-indicator"
 				class="grid place-content-center text-current transition-none"
 			>

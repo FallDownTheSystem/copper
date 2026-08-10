@@ -166,11 +166,11 @@ onMounted(() => {
  *
  * The row's own margin is the band's full depth — the heading's height plus its
  * 8px of vertical padding — plus the 4px the rows already sit apart by, so a
- * landing clears the band by the same gap as the row above it. The
- * group's is 4px flat, and that 4px is the focus ring's halo: the group is where
- * a *pinned* heading is scrolled to (see `scrollRowIntoView`), and landing its
- * top flush against the region would clip the outer ring of a heading that
- * arrived there by keyboard.
+ * landing clears the band by the same gap as the row above it. The group's is
+ * 4px flat: the group is where a *pinned* heading is scrolled to (see
+ * `scrollRowIntoView`), and the 4px keeps that landing a step short of flush.
+ * (`focus-inset` draws inside the band's box, so nothing clips at flush any
+ * more — the margin is breathing room now, not protection.)
  */
 .section-group {
 	scroll-margin-top: 4px;
