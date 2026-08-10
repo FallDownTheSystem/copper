@@ -14,7 +14,7 @@ resolver = "2"
 # each crate keeps its own literals, because hoisting them would be a larger diff
 # than this extraction is allowed to be.
 [workspace.package]
-version = "0.2.3"
+version = "0.2.4"
 rust-version = "1.85"
 
 # Cargo honours `[profile.*]` only in a workspace root and warns on a member that
