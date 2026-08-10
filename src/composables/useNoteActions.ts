@@ -578,8 +578,8 @@ function deleteNotes() {
  *
  * Scoped to the active section per AC9. `activeSection` is the one section the
  * panel singles out — it is where a capture lands and which header carries the
- * marker — so it is the only non-arbitrary scope available for a control that
- * sits in the header rather than in a per-section menu.
+ * marker — so it is the one section-sized scope the header's control can offer
+ * without being arbitrary. The document-wide sweep below is the other offer.
  */
 function doneInActiveSection(): string[] {
 	const sectionId = space.activeSection.value
@@ -618,8 +618,38 @@ const doneCount = computed(() => doneTargets.value.length)
  * of a note going away somewhere else in the list would be a surprise.
  */
 function deleteDoneInActiveSection() {
+	return purgeDone(doneInActiveSection)
+}
+
+/**
+ * Every done note in the document, in document order — the popover's other
+ * offer. Off the document rather than off `actionableNoteIds` for exactly the
+ * reason `doneInActiveSection` records: an "all" narrowed by a live search
+ * would be the one destructive action nobody could trust.
+ */
+function doneEverywhere(): string[] {
+	return (space.space.value?.notes ?? []).filter((note) => note.done).map((note) => note.id)
+}
+
+/** The document-wide twin of [`doneTargets`], and an identity for the same
+ *  reason: the popover's two offers both die when the done set moves. */
+const allDoneTargets = computed(() => doneEverywhere())
+
+const allDoneCount = computed(() => allDoneTargets.value.length)
+
+/** The whole document's done notes, still one `delete_notes` call and so still
+ *  one `Ctrl+Z` — the property AC7 demands of the section-scoped purge holds
+ *  for the wide one by the same construction. */
+function deleteAllDone() {
+	return purgeDone(doneEverywhere)
+}
+
+/** The shared body of the two purges; only the target set differs. The ids are
+ *  read *inside* the serialized step, so a queued purge acts on the document as
+ *  it is when its turn comes, not as it was when the button was pressed. */
+function purgeDone(targets: () => string[]) {
 	return serialize(async () => {
-		const ids = doneInActiveSection()
+		const ids = targets()
 		if (ids.length === 0) return
 
 		const held = selection.focusedNoteId.value
@@ -1094,7 +1124,10 @@ export function useNoteActions() {
 		deleteNotes,
 		doneCount,
 		doneTargets,
+		allDoneCount,
+		allDoneTargets,
 		deleteDoneInActiveSection,
+		deleteAllDone,
 		finishDrag,
 		canReorder,
 		moveFocusedBy,

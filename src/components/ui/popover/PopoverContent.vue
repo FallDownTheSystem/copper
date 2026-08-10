@@ -14,6 +14,16 @@ defineOptions({
 // which lands outside the panel root's `overflow: hidden`, outside its rounded
 // rect and outside its contextmenu policy. The panel passes its own in-clip
 // portal host.
+//
+// `pointer-events-auto` in the class list below is load-bearing, not styling.
+// The panel's portal host is `pointer-events-none` so an empty overlay layer
+// never steals clicks, and the menus survive that because reka's *menu* layer
+// sets `pointer-events: auto` inline on its open content. The non-modal
+// popover sets nothing — so without this class its content inherits `none`,
+// hover styles never fire, and every pointerdown falls through to whatever is
+// underneath, which the dismissable layer reads as an outside click and
+// closes the popover. Keyboard activation works throughout, which is what
+// made the bug look like anything but pointer-events.
 const props = withDefaults(
 	defineProps<
 		PopoverContentProps & { class?: HTMLAttributes['class']; to?: string | HTMLElement }
@@ -37,7 +47,7 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
 			v-bind="{ ...$attrs, ...forwarded }"
 			:class="
 				cn(
-					'squircle data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 ring-foreground/10 bg-popover text-popover-foreground rounded-lg p-3 shadow-md ring-1 dark:shadow-black/40 duration-base ease-out-quint z-50 w-72 origin-(--reka-popover-content-transform-origin) outline-none',
+					'squircle data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 ring-foreground/10 bg-popover text-popover-foreground pointer-events-auto rounded-lg p-3 shadow-md ring-1 dark:shadow-black/40 duration-base ease-out-quint z-50 w-72 origin-(--reka-popover-content-transform-origin) outline-none',
 					props.class,
 				)
 			"
