@@ -305,7 +305,10 @@ function accept(added: Attachment[]): string | null {
 	// silent.
 	useSounds().attachmentsAdded()
 	return added.length > available
-		? `Only ${available} more file${available === 1 ? '' : 's'} fit on one note; the rest were not attached.`
+		? countMessage(available, {
+				one: 'Only 1 more file fits on one note; the rest were not attached.',
+				many: (n) => `Only ${n} more files fit on one note; the rest were not attached.`,
+			})
 		: null
 }
 

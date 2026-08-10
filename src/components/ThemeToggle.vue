@@ -69,6 +69,7 @@ const OPTIONS = [
 			v-slot="{ checked }"
 			:value="option.value"
 			:aria-label="option.label"
+			:title="option.label"
 			class="text-text-secondary hover:bg-surface-hover data-[state=checked]:text-text-primary focus-ring relative grid size-8 place-items-center rounded-sm transition-colors duration-fast"
 		>
 			<!-- One pill that moves rather than a fill each segment paints on itself:

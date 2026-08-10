@@ -5,6 +5,7 @@ const { boundary, portalTo } = useOverlayHost()
 const {
 	canMerge,
 	canMoveTo,
+	canReorder,
 	canExpandTarget,
 	canOpenAttachment,
 	attachmentActionLabel,
@@ -17,6 +18,7 @@ const {
 	expand,
 	edit,
 	merge,
+	moveFocusedBy,
 	openInEditor,
 	canSendToOtherDevice,
 	sendToOtherDevice,
@@ -88,6 +90,23 @@ const {
 		<ContextMenuItem :disabled="!canMerge" class="min-h-6" @select="merge">
 			Merge notes
 			<ContextMenuShortcut>{{ CHORDS.merge.display }}</ContextMenuShortcut>
+		</ContextMenuItem>
+
+		<!-- The pointer route to what Alt+Arrow and the drag grip already do, and
+		     the place the chord is taught — the section menu's Move up / Move down
+		     had both and notes had neither, while the refusal toasts referenced a
+		     feature nothing announced. They act on the focused note, exactly as the
+		     chord does. Disabled while search, the done filter or a sort holds the
+		     rendered order apart from the document's; not disabled at the document's
+		     edges, where the move is the same silent no-op the chord is. -->
+		<ContextMenuItem :disabled="!canReorder" class="min-h-6" @select="moveFocusedBy(-1)">
+			Move up
+			<ContextMenuShortcut>{{ CHORDS.reorderUp.display }}</ContextMenuShortcut>
+		</ContextMenuItem>
+
+		<ContextMenuItem :disabled="!canReorder" class="min-h-6" @select="moveFocusedBy(1)">
+			Move down
+			<ContextMenuShortcut>{{ CHORDS.reorderDown.display }}</ContextMenuShortcut>
 		</ContextMenuItem>
 
 		<ContextMenuSub>

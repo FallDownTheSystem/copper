@@ -15,7 +15,7 @@ import { useNoteDisclosure } from './useNoteDisclosure'
 import { useNoteEditor } from './useNoteEditor'
 import { useNoteList } from './useNoteList'
 import { useNoteSearch } from './useNoteSearch'
-import { noteRow, rowNoteId, sectionRow, takeRow, useSelection } from './useSelection'
+import { noteRow, rowNoteId, rowSectionId, sectionRow, takeRow, useSelection } from './useSelection'
 import { useSettings } from './useSettings'
 import { useDeviceShare } from './useDeviceShare'
 import { countMessage, useStatusMessage, type StatusAction } from './useStatusMessage'
@@ -691,6 +691,14 @@ function reorderBlocked(): boolean {
 	return false
 }
 
+/** The same three conditions as `reorderBlocked` above, without its message: the
+ *  note menu disables its Move up / Move down rows instead of letting them fire
+ *  and toast. The refusal messages stay with the paths that have no UI to grey
+ *  out — the chord and the drag. */
+const canReorder = computed(
+	() => !search.hasQuery.value && !list.filtersByDone.value && !list.isSorted.value,
+)
+
 /**
  * Commits a completed drag.
  *
@@ -746,11 +754,33 @@ function positionOf(noteId: string): number {
  * The keyboard equivalent of a drag, since every action has to be reachable
  * without a pointer. At a section boundary it crosses into the neighbouring
  * section rather than stopping, which is what the drag does too.
+ *
+ * On a section header the same chord carries the whole section instead — the
+ * same move as the section menu's Move up / Move down, with the same
+ * index-after-removal semantics. That branch deliberately skips
+ * `reorderBlocked`: those refusals exist because a narrowed or permuted *note*
+ * view disagrees with the document about where an index lands, and no sort,
+ * filter or query ever reorders the headers — section order is document order
+ * in every view.
  */
 function moveFocusedBy(delta: number) {
 	// Positions are read inside the queue, so a held Alt+Down sees where the note
 	// landed on the previous press rather than recomputing the same destination.
 	return serialize(async () => {
+		const headerId = rowSectionId(selection.focusedId.value)
+		if (headerId !== null) {
+			const sections = space.sections.value
+			const at = sections.findIndex((entry) => entry.id === headerId)
+			const to = at + delta
+			if (at < 0 || to < 0 || to >= sections.length) return
+			if (!space.applied(await space.reorderSection(headerId, to))) return
+			// The header keeps its row key across the move, but DOM focus has to
+			// land back on the moved row for a held Alt+Down's next press to be
+			// seen — the same reason the note branch ends in `takeRow`.
+			takeRow(sectionRow(headerId))
+			return
+		}
+
 		const noteId = selection.focusedNoteId.value
 		// Once, up front, and it covers the neighbouring section this step may cross
 		// into as well: every reason to refuse is document-wide. The index arithmetic
@@ -986,10 +1016,15 @@ const canOpenAttachment = computed(() => focusedAttachments().length > 0)
  * Read off `mime` because this is a *label*, and a label may be wrong in a way
  * an action may not: Rust re-sniffs the bytes before deciding, so a file whose
  * recorded mime lies gets revealed rather than launched however this reads.
+ *
+ * The reveal branch says exactly what the attachment card's own menu says —
+ * one action, one name, in two menus a user can open seconds apart on the same
+ * file. The card's reasoning carries the wording: what is shown is where
+ * Copper put its copy, and the sidecar directory is not somewhere they chose.
  */
 const attachmentActionLabel = computed(() => {
 	const first = focusedAttachments()[0]
-	return first?.mime.startsWith('image/') ? 'Open attachment' : 'Reveal in Explorer'
+	return first?.mime.startsWith('image/') ? 'Open attachment' : 'Open attachment location'
 })
 
 /** Opens the first attachment. A note with several is the uncommon case, and
@@ -1061,6 +1096,7 @@ export function useNoteActions() {
 		doneTargets,
 		deleteDoneInActiveSection,
 		finishDrag,
+		canReorder,
 		moveFocusedBy,
 		expand,
 		edit,

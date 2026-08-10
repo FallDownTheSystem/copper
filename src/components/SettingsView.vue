@@ -250,8 +250,9 @@ const guideCodeClass =
 const guideCommandClass =
 	'bg-code-surface border-code-border text-text-primary mt-1 block break-words rounded-md border px-2 py-1 font-mono text-meta select-all'
 /** The link treatment, since these are `<button>`s and inherit none of an
- *  anchor's. */
-const guideLinkClass = 'text-link focus-ring rounded underline underline-offset-2'
+ *  anchor's. The hover step is `.note-prose a:hover`'s, through the token. */
+const guideLinkClass =
+	'text-link hover:text-link-hover focus-ring rounded underline underline-offset-2'
 
 const back = useTemplateRef<HTMLButtonElement>('back')
 
@@ -484,6 +485,7 @@ const summonNote = computed(() => {
 				ref="back"
 				type="button"
 				aria-label="Back to notes"
+				title="Back to notes"
 				class="icon-button hit-44 relative"
 				@click="showList"
 			>
@@ -525,14 +527,14 @@ const summonNote = computed(() => {
 				     can still has eighteen unlabelled circles to hover. -->
 				<SettingsRow
 					v-slot="{ errorId }"
-					:label="`Grey tone: ${NEUTRAL_TONES[neutralTone].label}`"
-					description="The cast of the panel's greys, from warm through to blue."
+					:label="`Gray tone: ${NEUTRAL_TONES[neutralTone].label}`"
+					description="The cast of the panel's grays, from warm through to blue."
 					:error="neutralError"
 				>
 					<SettingsPalette
 						:model-value="neutralTone"
 						:options="NEUTRAL_OPTIONS"
-						label="Grey tone"
+						label="Gray tone"
 						:error-id="errorId"
 						@update:model-value="setNeutralTone"
 					/>
@@ -541,7 +543,7 @@ const summonNote = computed(() => {
 				<SettingsRow
 					v-slot="{ errorId }"
 					:label="`Accent color: ${ACCENT_COLORS[accentColor].label}`"
-					description="What selection, focus and the active section are coloured with."
+					description="What selection, focus and the active section are colored with."
 					:error="accentError"
 				>
 					<SettingsPalette
@@ -569,7 +571,7 @@ const summonNote = computed(() => {
 				     sixty-pixel track cannot be dragged with any precision. -->
 				<SettingsRow
 					label="Vibrancy"
-					description="How colourful the accent is, from grey to as vivid as your screen can show."
+					description="How colorful the accent is, from gray to as vivid as your screen can show."
 					:error="vibrancyError"
 				>
 					<!-- `#below="{ errorId }"`, not `v-slot` on the row: the control lives
@@ -718,6 +720,10 @@ const summonNote = computed(() => {
 						:note="summonNote"
 					/>
 				</template>
+
+				<!-- Outside the `v-if`: the in-panel chords it lists are live whether or
+				     not Rust has answered for the two global rows above. -->
+				<ShortcutReference />
 			</SettingsSection>
 
 			<!-- Below Shortcuts because both are about capturing: the row above says

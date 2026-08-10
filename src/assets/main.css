@@ -110,13 +110,16 @@
 	   it rendered before any of this was adjustable.
 
 	   `useTheme` writes these four as inline properties on the root element for a
-	   chosen palette and removes them for the shipped one. Three kinds of token are
+	   chosen palette and removes them for the shipped one. Two kinds of token are
 	   deliberately *not* threaded: the achromatic ones (`oklch(L 0 0)` and the
-	   white/black alphas) have no hue to turn, `--destructive` and its text twin
-	   mean red in every palette, and `--link` is its own semantic — a link that
-	   changed colour with the accent would stop being the one thing on the panel
-	   that always looks like a link. `::highlight()`'s amber is left out for the
-	   same reason as the red. */
+	   white/black alphas) have no hue to turn, and `--destructive` and its text
+	   twin mean red in every palette. `--link` used to be a third — the ruling was
+	   that a link which changed colour with the accent would stop being the one
+	   thing that always looks like a link — but the user overrode it (2026-08-10):
+	   links follow the accent hue, the underline stays the signal that never
+	   rotates, and the chroma ceiling at `--link` is what keeps a vivid accent
+	   from making links shout. `::highlight()`'s amber is left out for the same
+	   reason as the red. */
 	--neutral-h: 60;
 	--neutral-c: 1;
 	--accent-h: 55;
@@ -201,7 +204,24 @@
 	   continuing in the direction the fill already went. */
 	--code-surface: oklch(0.24 calc(0.008 * var(--neutral-c)) var(--neutral-h) / 0.05);
 	--code-border: oklch(0.24 calc(0.008 * var(--neutral-c)) var(--neutral-h) / 0.09);
-	--link: oklch(0.5 0.14 250);
+	/* Accent-hued since the 2026-08-10 override (the dials comment above carries
+	   the ruling): the underline is the signal that marks a link, so the hue is
+	   free to follow the accent — but through `min()`, not bare. The `0.14 *`
+	   slope hands the shipped copper (accent-c 1) exactly the 0.14 chroma the old
+	   fixed blue carried, so the default palette is not desaturated at all, while
+	   the 0.16 ceiling is what a vivid accent or a raised vibrancy dial runs
+	   into — the link stays a step more muted than the accent it echoes instead
+	   of scaling to 0.42 at the dial's stop. L 0.5 is untouched and is what the
+	   contrast rides on: measured 4.87:1 (teal, the family's worst) to 6.36:1
+	   across the accent set against the composited light surface — body-size
+	   text, so the floor is 4.5:1. The vibrancy slider's live preview writes
+	   `--accent-c` inline and this calc re-resolves with it. */
+	--link: oklch(0.5 min(calc(0.14 * var(--accent-c)), 0.16) var(--accent-h));
+	/* The hover step, declared once for both themes on the `--surface-danger`
+	   pattern: both inputs re-resolve under `.dark`, so the mix leans toward
+	   near-black text on the light panel and near-white on the dark one — a
+	   deepen there, a lift here, one declaration. */
+	--link-hover: color-mix(in oklab, var(--link) 72%, var(--text-primary));
 	/* **The halo, and it is now the only token the focus treatment has of its own.**
 	   The 1px edge used to carry a second copper here, deepened until it sat a
 	   visible step away from `--accent-ring` so that two adjacent rows wearing one
@@ -298,7 +318,12 @@
 	--toast-shadow: 0 6px 16px oklch(0 0 0 / 0.45);
 	--code-surface: oklch(1 0 0 / 0.06);
 	--code-border: oklch(1 0 0 / 0.1);
-	--link: oklch(0.76 0.12 240);
+	/* The light token's twin — same slope-and-ceiling shape, tuned to the dark
+	   panel: the shipped copper lands on its old 0.12 chroma, the ceiling is
+	   0.14, and the `+ 5` hue turn follows `--accent-text`'s precedent below.
+	   Measured 8.24:1 (fuchsia, the worst) to 9.40:1 across the accent set
+	   against the composited dark surface. */
+	--link: oklch(0.76 min(calc(0.12 * var(--accent-c)), 0.14) calc(var(--accent-h) + 5));
 	/* Same lightness as `--accent-ring` below rather than lifted toward white:
 	   "lift off a dark surface means go up" was the first version of this value,
 	   at L 0.9 — and at 50% alpha over the dark panel that composites to a pale
@@ -399,6 +424,7 @@
 	--color-control-border: var(--control-border);
 	--color-destructive-text: var(--destructive-text);
 	--color-link: var(--link);
+	--color-link-hover: var(--link-hover);
 	/* Named `accent-ring` rather than the plan's bare `accent`: `shadcn-vue init`
 	   (planning ruling Q21) generates an `--accent` of its own meaning "subtle
 	   hover surface", which every generated component references. Two meanings
@@ -599,7 +625,9 @@
    `border-ring` + `ring-[3px] ring-ring/50`, which is what the panel is being
    matched to. Every focusable *control* either carries this class or is a utility
    below that applies it; a **row** carries `focus-halo` instead and the two are
-   documented together there.
+   documented together there. One control opts out: the 16px completion checkbox,
+   where the three layers merge into a donut that buries the state — it wears an
+   offset 2px ring instead, with the measurement recorded in `Checkbox.vue`.
 
    **The edge is `--accent-ring`, the same copper a selected row is ringed in**,
    rather than a second copper of its own. The two used to be held apart on
@@ -686,7 +714,7 @@
    and the ones that did not were silently falling back to Chromium's default
    ring. */
 @utility panel-button {
-	@apply squircle border-separator hover:bg-surface-hover focus-ring rounded-md border px-2 py-1 text-meta transition-colors duration-fast;
+	@apply squircle border-separator hover:bg-surface-hover active:bg-surface-active focus-ring rounded-md border px-2 py-1 text-meta transition-colors duration-fast;
 }
 
 /* The panel's text inputs and textareas: one appearance for the composer, the
@@ -868,7 +896,20 @@ html:not(.translucent) {
 		}
 	}
 
-	.translucent [role='row']:not([data-section-row]) {
+	/* The exclusions exist because `both` holds the 0% keyframe — `inset(0)` —
+	   on every row that is not under the band, and a clip-path at the border box
+	   clips box-shadows. The focus halo and the drag lift are both box-shadows
+	   that live *outside* the box, so at rest the clip cut them down to four
+	   corner arcs. A row wearing one of those shadows opts out of the erase
+	   entirely: the focused row, because keyboard focus scroll-margins itself
+	   clear of the band anyway (the one loss — a focus-visible row pushed under
+	   the band by mouse scroll does not erase — is rarer than every focused row
+	   losing its halo); the carried and settling rows, because they already pass
+	   *over* the heading at z-10 and a row above the band must not be cut by it. */
+	.translucent
+		[role='row']:not([data-section-row]):not(:focus-visible):not([data-dragging]):not(
+			[data-settling]
+		) {
 		animation: copper-row-clip linear both;
 		animation-timeline: view(block calc(var(--section-heading-height) + 12px) 0px);
 		animation-range: exit;
@@ -944,6 +985,7 @@ html:not(.translucent) {
 		--text-disabled: oklch(0.48 calc(0.006 * var(--neutral-c)) var(--neutral-h));
 		--separator: oklch(0.24 calc(0.008 * var(--neutral-c)) var(--neutral-h) / 0.4);
 		--accent-text: oklch(0.44 calc(0.12 * var(--accent-c)) var(--accent-h));
+		--link: oklch(0.4 min(calc(0.14 * var(--accent-c)), 0.16) var(--accent-h));
 	}
 
 	.dark {
@@ -952,6 +994,7 @@ html:not(.translucent) {
 		--text-disabled: oklch(0.66 calc(0.008 * var(--neutral-c)) var(--neutral-h));
 		--separator: oklch(1 0 0 / 0.4);
 		--accent-text: oklch(0.86 calc(0.09 * var(--accent-c)) calc(var(--accent-h) + 5));
+		--link: oklch(0.86 min(calc(0.12 * var(--accent-c)), 0.14) calc(var(--accent-h) + 5));
 	}
 
 	/* **Contrast wins, and this is where it wins.** A stated preference for more
@@ -1098,6 +1141,14 @@ html:not(.translucent) {
 	color: var(--link);
 	text-decoration: underline;
 	text-underline-offset: 2px;
+}
+
+/* The pointer's answer to "is this alive": a lightness step toward the theme's
+   text, deep on the light panel and lifted on the dark one — see `--link-hover`.
+   The Share guide's link-buttons take the same step through the
+   `text-link-hover` utility, so the two kinds of link answer identically. */
+.note-prose a:hover {
+	color: var(--link-hover);
 }
 
 /* A link the render rule stripped of its href is plain text and must look like

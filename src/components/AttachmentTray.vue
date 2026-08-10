@@ -83,6 +83,7 @@ watch([list, reduced], ([element]) => {
 					type="button"
 					class="text-text-disabled hover:text-text-primary focus-ring -m-1 shrink-0 rounded-sm p-1.5 transition-colors duration-fast"
 					:aria-label="`Remove ${attachment.name}`"
+					:title="`Remove ${attachment.name}`"
 					@click="removePending(attachment.id)"
 				>
 					<IconLucideX class="size-3.5" aria-hidden="true" focusable="false" />

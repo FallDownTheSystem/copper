@@ -469,7 +469,7 @@ pub async fn remove_recent(path: String, state: State<'_, SharedStore>, app: App
 
 	if is_active(&state, &path) {
 		return Err(StoreError::Invalid(
-			"this is the space you have open. Switch to another space first.".into(),
+			"This is the space you have open. Switch to another space first.".into(),
 		));
 	}
 

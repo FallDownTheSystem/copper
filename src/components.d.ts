@@ -108,6 +108,7 @@ declare module 'vue' {
     SettingsTextRow: typeof import('./components/SettingsTextRow.vue')['default']
     SettingsView: typeof import('./components/SettingsView.vue')['default']
     ShortcutRecorder: typeof import('./components/ShortcutRecorder.vue')['default']
+    ShortcutReference: typeof import('./components/ShortcutReference.vue')['default']
     SortControl: typeof import('./components/SortControl.vue')['default']
     StatusLine: typeof import('./components/StatusLine.vue')['default']
     ThemeToggle: typeof import('./components/ThemeToggle.vue')['default']

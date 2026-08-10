@@ -598,7 +598,7 @@ describe('the appearance rows', () => {
 	it('renders the two pickers as radiogroups sized to their palettes', async () => {
 		const wrapper = await openSettings()
 
-		const tones = wrapper.get('[aria-label="Grey tone"]')
+		const tones = wrapper.get('[aria-label="Gray tone"]')
 		const accents = wrapper.get('[aria-label="Accent color"]')
 		expect(tones.attributes('role')).toBe('radiogroup')
 		expect(accents.attributes('role')).toBe('radiogroup')
@@ -611,7 +611,7 @@ describe('the appearance rows', () => {
 
 		expect(wrapper.get('[aria-label="Warm"]').attributes('aria-checked')).toBe('true')
 		expect(wrapper.get('[aria-label="Copper"]').attributes('aria-checked')).toBe('true')
-		expect(wrapper.text()).toContain('Grey tone: Warm')
+		expect(wrapper.text()).toContain('Gray tone: Warm')
 		expect(wrapper.text()).toContain('Accent color: Copper')
 	})
 

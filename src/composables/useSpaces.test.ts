@@ -328,7 +328,7 @@ describe('removing an entry', () => {
 		respond('remove_recent', () => {
 			throw {
 				kind: 'invalid',
-				message: 'this is the space you have open. Switch to another space first.',
+				message: 'This is the space you have open. Switch to another space first.',
 			}
 		})
 

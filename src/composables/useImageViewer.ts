@@ -154,7 +154,7 @@ function reportBrokenImage() {
 	useAttachments().revokeFullImage(url)
 	image.value = {
 		state: 'failed',
-		reason: 'That image could not be displayed — the file may be incomplete.',
+		reason: 'That image could not be displayed. The file may be incomplete.',
 	}
 }
 

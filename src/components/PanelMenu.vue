@@ -158,7 +158,11 @@ function onSectionInput(event: Event) {
 
 <template>
 	<DropdownMenu :open="open" @update:open="onOpenChange">
-		<DropdownMenuTrigger aria-label="More actions" class="icon-button shrink-0">
+		<DropdownMenuTrigger
+			aria-label="More actions"
+			title="More actions"
+			class="icon-button shrink-0"
+		>
 			<IconLucideEllipsis class="size-4" aria-hidden="true" focusable="false" />
 		</DropdownMenuTrigger>
 

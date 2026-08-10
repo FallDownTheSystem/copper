@@ -19,9 +19,10 @@ const emit = defineEmits<{
 	toggleDone: [noteId: string]
 }>()
 
-const { noteById, listAnimated } = useSpace()
+const { noteById, listAnimated, noteCount } = useSpace()
 const { isCollapsed } = useSections()
 const { isDragging } = useNoteDrag()
+const { hasQuery } = useNoteSearch()
 
 const rowgroup = useTemplateRef<HTMLElement>('rowgroup')
 
@@ -125,8 +126,18 @@ onMounted(() => {
 		<!-- Only the *active* empty section says so, and never while it is merely
 		     collapsed: the notes are there, they are folded away. The general empty
 		     state is additive; the headers stay visible either way, because hiding
-		     where a capture will land is worst exactly when the list is empty. -->
-		<div v-if="noteIds.length === 0 && active && !collapsed" role="row">
+		     where a capture will land is worst exactly when the list is empty.
+
+		     The `noteCount`/`hasQuery` pair stands this line down while the shell's
+		     EmptyState card is on screen — its condition, mirrored. On a fresh space
+		     the card already names the destination section, and the same fact twice
+		     at the single most important first-impression moment read as a stutter.
+		     With notes elsewhere in the document the card never renders, and this
+		     line is the only thing that says the *active* section is empty. -->
+		<div
+			v-if="noteIds.length === 0 && active && !collapsed && (noteCount > 0 || hasQuery)"
+			role="row"
+		>
 			<!-- `px-4` joins the leading-mark column: the completion box and the marker
 			     dot land at 16px inside the region, and a line of text starting anywhere
 			     else reads as a stray. -->

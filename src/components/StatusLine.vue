@@ -124,7 +124,7 @@ function restoreFocus() {
 					v-if="action"
 					type="button"
 					data-toast-action
-					class="focus-ring text-accent-text hover:bg-surface-hover pointer-events-auto -my-0.5 ml-auto shrink-0 rounded-md px-1.5 py-0.5 font-semibold transition-colors duration-fast"
+					class="focus-ring text-accent-text hover:bg-surface-hover active:bg-surface-active pointer-events-auto -my-0.5 ml-auto shrink-0 rounded-md px-1.5 py-0.5 font-semibold transition-colors duration-fast"
 					@click="run"
 					@pointerenter="pause('pointer')"
 					@pointerleave="resume('pointer')"

@@ -179,7 +179,7 @@ export function settingsActions(): PaletteAction[] {
 		// shape.
 		neutral: {
 			id: 'neutral-tone',
-			label: 'Grey tone',
+			label: 'Gray tone',
 			value: NEUTRAL_TONES[neutralTone.value].label,
 			run: showSettings,
 		},
@@ -232,6 +232,9 @@ export function settingsActions(): PaletteAction[] {
 	 */
 	const unscoped: PaletteAction[] = [
 		{ id: 'open-settings', label: 'Open Settings', run: showSettings },
+		// The reference lives in Settings → Shortcuts; the palette row is how
+		// "what was that key" gets answered without knowing where the list lives.
+		{ id: 'keyboard-shortcuts', label: 'Keyboard shortcuts', run: showSettings },
 		{
 			id: 'update',
 			label: canInstall.value

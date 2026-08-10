@@ -282,9 +282,9 @@ function onShellKeydown(event: KeyboardEvent) {
 	}
 
 	// The keyboard equivalent of a drag, so reordering is not pointer-only.
-	if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+	if (CHORDS.reorderUp.matches(event) || CHORDS.reorderDown.matches(event)) {
 		event.preventDefault()
-		void moveFocusedBy(event.key === 'ArrowDown' ? 1 : -1)
+		void moveFocusedBy(CHORDS.reorderDown.matches(event) ? 1 : -1)
 	}
 }
 

@@ -62,10 +62,21 @@ const pressTransition = { duration: 0.15, ease: EASE_OUT_QUINT }
  * no `corner-shape` renders, held one pixel short of the bound so it stays a
  * rounded square there instead of collapsing into the true circle that only
  * the superellipse is allowed to approach.
+ *
+ * Focus is an offset ring rather than the panel's `focus-ring`, and the split
+ * was measured, not guessed (2026-08-10, live in both themes): on a 16px box
+ * the standard treatment's three layers — 1px edge, border swap, 4px halo —
+ * merge into a solid copper donut that buries the state it is wrapping, and
+ * on a checked box the copper-on-copper edge vanishes entirely. The 2px gap
+ * is what neither layer of `focus-ring` can express, and it is what keeps
+ * the indicator legible on both fills: a band of the surface between the box
+ * and the ring, so the ring reads as *around* the control in every state.
+ * Forced colors needs no branch — the outline is the layer that survives
+ * there, already at the 2px minimum.
  */
 const rootClass = computed(() =>
 	cn(
-		'squircle-round border-control-border focus-ring data-[state=checked]:bg-accent-ring data-[state=checked]:border-accent-ring text-accent-contrast size-4 shrink-0 rounded-[7px] supports-[corner-shape:squircle]:rounded-[8px] border transition-colors duration-base disabled:cursor-not-allowed disabled:opacity-50',
+		'squircle-round border-control-border focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-ring data-[state=checked]:bg-accent-ring data-[state=checked]:border-accent-ring text-accent-contrast size-4 shrink-0 rounded-[7px] supports-[corner-shape:squircle]:rounded-[8px] border transition-colors duration-base disabled:cursor-not-allowed disabled:opacity-50',
 		props.class,
 	),
 )

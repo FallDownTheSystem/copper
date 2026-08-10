@@ -31,10 +31,17 @@ const collapsed = computed(() => isCollapsedStored(props.section.id))
  * A click focuses the button it landed on, and the grid's key handler declines
  * any press whose target is a button — so without this, expanding a section by
  * mouse left the arrow keys inert until the user clicked somewhere else. The row
- * is the grid's tab stop; the control inside it never is.
+ * is the grid's tab stop; the control inside it never is. `activate` needs the
+ * same move for the same reason: the name is also a button, and a click on it
+ * left the arrows just as inert.
  */
 function toggle() {
 	toggleCollapsed(props.section.id)
+	takeRow(props.rowId)
+}
+
+function activate() {
+	emit('activate')
 	takeRow(props.rowId)
 }
 
@@ -220,7 +227,7 @@ function onKeydown(event: KeyboardEvent) {
 								:aria-current="active ? 'true' : undefined"
 								class="hover:bg-surface-hover active:bg-surface-active focus-ring -ml-1.5 flex min-w-0 items-center gap-1.5 rounded-inset py-1 pr-1.5 pl-1.5 transition-colors duration-fast"
 								:class="active ? 'text-accent-text' : 'text-text-secondary'"
-								@click="emit('activate')"
+								@click="activate"
 							>
 								<!-- The only one of the three markers that cross-fades: this row is on
 								     screen while it changes, unlike the two inside menus. -->
@@ -265,6 +272,7 @@ function onKeydown(event: KeyboardEvent) {
 							tabindex="-1"
 							:aria-expanded="!collapsed"
 							:aria-label="`${collapsed ? 'Expand' : 'Collapse'} ${section.name}`"
+							:title="`${collapsed ? 'Expand' : 'Collapse'} ${section.name}`"
 							class="text-text-disabled hover:bg-surface-hover hover:text-text-secondary focus-ring hit-44 relative grid size-5 shrink-0 place-items-center rounded-inset transition-colors duration-fast"
 							@click="toggle"
 						>

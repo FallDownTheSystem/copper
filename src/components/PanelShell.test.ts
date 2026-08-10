@@ -1474,8 +1474,11 @@ describe('focus after a delete', () => {
 })
 
 describe('the active-section chip', () => {
+	// By its accessible name rather than by `[title]`: since the 2026-08 tooltip
+	// sweep every icon-only control carries a title, so "the titled trigger" no
+	// longer names one element.
 	function heading(wrapper: Awaited<ReturnType<typeof mountPanel>>) {
-		return wrapper.find('[data-slot="dropdown-menu-trigger"][title]')
+		return wrapper.find('[data-slot="dropdown-menu-trigger"][aria-label^="Active section"]')
 	}
 
 	it('shows the active section and how many notes are in it', async () => {
@@ -1521,8 +1524,10 @@ describe('the active-section chip', () => {
 		const wrapper = await mountPanel()
 
 		expect(wrapper.find('header').element.contains(heading(wrapper).element)).toBe(true)
-		expect(wrapper.find('form[aria-label="Add a note"] [title]').exists()).toBe(false)
-		expect(wrapper.findAll('[data-slot="dropdown-menu-trigger"][title]')).toHaveLength(1)
+		expect(
+			wrapper.find('form[aria-label="Add a note"] [aria-label^="Active section"]').exists(),
+		).toBe(false)
+		expect(wrapper.findAll('[aria-label^="Active section"]')).toHaveLength(1)
 	})
 
 	it('carries the full name in a title, so a truncated one is still readable', async () => {
@@ -1779,8 +1784,10 @@ describe('the section switcher', () => {
 		return document.querySelector<HTMLElement>('[data-slot="dropdown-menu-content"]')
 	}
 
+	// The chip's accessible name, not `[title]` — every icon-only control has
+	// carried a title since the 2026-08 tooltip sweep.
 	function chip(wrapper: Awaited<ReturnType<typeof mountPanel>>) {
-		return wrapper.find('[data-slot="dropdown-menu-trigger"][title]')
+		return wrapper.find('[data-slot="dropdown-menu-trigger"][aria-label^="Active section"]')
 	}
 
 	/**
@@ -3018,7 +3025,7 @@ describe('attachments', () => {
 		await settle(1)
 		expect(actions.canOpenAttachment.value).toBe(true)
 		// A non-image is revealed, never launched.
-		expect(actions.attachmentActionLabel.value).toBe('Reveal in Explorer')
+		expect(actions.attachmentActionLabel.value).toBe('Open attachment location')
 
 		await installWithAttachments(documentWith([PNG]))
 		selection.select('nte_1')
@@ -3678,9 +3685,7 @@ describe('reordering', () => {
 
 			const finish = vi.fn()
 			const proto = Element.prototype as unknown as Record<string, unknown>
-			proto.getAnimations = () => [
-				{ playState: 'running', finish, timeline: document.timeline },
-			]
+			proto.getAnimations = () => [{ playState: 'running', finish, timeline: document.timeline }]
 			restore.push(() => Reflect.deleteProperty(proto, 'getAnimations'))
 
 			const grip = gripOf(wrapper, 'n:nte_1')

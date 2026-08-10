@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { UNDO_ACTION } from '@/composables/useNoteActions'
 import type { Section } from '@/composables/useSpace'
+import { CHORDS } from '@/lib/chords'
 
 const props = defineProps<{ section: Section }>()
 
@@ -61,13 +62,17 @@ function move(delta: number) {
 		</ContextMenuItem>
 
 		<!-- Disabled items stay rendered, so the menu does not change shape between
-		     openings. -->
-		<ContextMenuItem :disabled="isFirst" class="min-h-6" @select="move(-1)"
-			>Move up</ContextMenuItem
-		>
-		<ContextMenuItem :disabled="isLast" class="min-h-6" @select="move(1)"
-			>Move down</ContextMenuItem
-		>
+		     openings. The chords are the same pair the note menu shows: on a
+		     focused header row Alt+Arrow carries the section, and this is where a
+		     pointer user learns that. -->
+		<ContextMenuItem :disabled="isFirst" class="min-h-6" @select="move(-1)">
+			Move up
+			<ContextMenuShortcut>{{ CHORDS.reorderUp.display }}</ContextMenuShortcut>
+		</ContextMenuItem>
+		<ContextMenuItem :disabled="isLast" class="min-h-6" @select="move(1)">
+			Move down
+			<ContextMenuShortcut>{{ CHORDS.reorderDown.display }}</ContextMenuShortcut>
+		</ContextMenuItem>
 
 		<ContextMenuSeparator />
 

@@ -80,6 +80,21 @@ export const CHORDS = {
 		display: 'Delete',
 		matches: (event) => event.key === 'Delete' && !ctrl(event) && !event.shiftKey,
 	},
+	/**
+	 * The keyboard equivalent of a drag: a note travels through its list, a
+	 * section header carries its whole section. In the table rather than
+	 * hand-matched in the shell so the context menus' Move up / Move down hints
+	 * and the handler share one definition.
+	 */
+	reorderUp: {
+		display: 'Alt+↑',
+		matches: (event) => event.altKey && !ctrl(event) && !event.shiftKey && event.key === 'ArrowUp',
+	},
+	reorderDown: {
+		display: 'Alt+↓',
+		matches: (event) =>
+			event.altKey && !ctrl(event) && !event.shiftKey && event.key === 'ArrowDown',
+	},
 	undo: {
 		display: 'Ctrl+Z',
 		matches: (event) => ctrl(event) && !event.shiftKey && letter(event, 'z'),

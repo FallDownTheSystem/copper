@@ -272,6 +272,7 @@ function onKeydown(event: KeyboardEvent) {
 			<button
 				type="button"
 				aria-label="Attach files"
+				title="Attach files"
 				class="icon-button hover:text-text-primary hit-44 relative shrink-0"
 				@click="pick"
 			>
