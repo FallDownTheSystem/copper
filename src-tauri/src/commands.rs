@@ -74,6 +74,8 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
 		updater::check_for_update,
 		updater::install_update,
 		panel::hide_panel,
+		panel::minimize_panel,
+		panel::quit_app,
 		panel::set_always_on_top,
 		panel::set_translucency,
 		panel::set_resizable,

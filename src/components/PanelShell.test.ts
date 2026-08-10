@@ -292,6 +292,8 @@ async function baseInvoke(command: string, args?: Record<string, unknown>) {
 	// section happens to be collapsed.
 	if (command === 'merge_notes') return MERGED
 	if (command === 'hide_panel') return null
+	if (command === 'minimize_panel') return null
+	if (command === 'quit_app') return null
 	if (command === 'editor_handoffs') return []
 	if (command === 'set_notes_done') return SPACE
 	if (command === 'set_active_section') return SPACE
@@ -1016,6 +1018,31 @@ describe('the Escape ladder', () => {
 		await wrapper.vm.$nextTick()
 
 		expect(mocks.invoke).not.toHaveBeenCalledWith('delete_notes', expect.anything())
+	})
+})
+
+describe('the window controls', () => {
+	it('minimizes through the Rust command, not a JS window call', async () => {
+		const wrapper = await mountPanel()
+
+		await wrapper.find('[aria-label="Minimize"]').trigger('click')
+
+		expect(mocks.invoke).toHaveBeenCalledWith('minimize_panel')
+	})
+
+	it('quits through the Rust command from the overflow menu', async () => {
+		const wrapper = await mountPanel()
+
+		await wrapper.find('[aria-label="More actions"]').trigger('click')
+		await settle(3)
+		const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((row) =>
+			row.textContent?.includes('Quit Copper'),
+		)
+		expect(item, 'the Quit Copper item is missing').toBeTruthy()
+		item!.click()
+		await settle(2)
+
+		expect(mocks.invoke).toHaveBeenCalledWith('quit_app')
 	})
 })
 
@@ -4680,6 +4707,12 @@ describe('the done filter', () => {
 		expect(button.attributes('aria-label')).toBe('Delete 2 done notes in Research')
 	})
 
+	/** The confirmation popover, portalled to the panel's overlay host — so it is
+	 *  found on the document rather than through the wrapper, like the menus. */
+	function confirmPopover() {
+		return document.querySelector<HTMLElement>('[data-slot="popover-content"]')
+	}
+
 	/** AC6. One press asks, the second acts — and the first press must not delete
 	 *  anything, which is the whole point of the confirmation. */
 	it('asks before deleting, and the first press deletes nothing', async () => {
@@ -4688,16 +4721,15 @@ describe('the done filter', () => {
 		await wrapper.get('[data-done-filter]').trigger('click')
 		await settle(2)
 
-		const button = wrapper.get('[data-delete-done]')
-		await button.trigger('click')
-		await settle(2)
+		await wrapper.get('[data-delete-done]').trigger('click')
+		await settle(3)
 
 		expect(calls).toEqual([])
-		// The label names the scope as well as the count — see the section-naming
-		// case below for why the two cannot be left to be inferred from each other.
-		expect(button.text()).toContain('Delete 2 done?')
+		// The question names the count, the noun and the section — the popover has
+		// the width the button's strip never did.
+		expect(confirmPopover()?.textContent).toContain('Delete 2 done notes in Research?')
 
-		await button.trigger('click')
+		confirmPopover()!.querySelector<HTMLElement>('[data-confirm-delete-done]')!.click()
 		await settle(3)
 		expect(calls).toHaveLength(1)
 	})
@@ -4710,7 +4742,8 @@ describe('the done filter', () => {
 		await settle(2)
 
 		await wrapper.get('[data-delete-done]').trigger('click')
-		await wrapper.get('[data-delete-done]').trigger('click')
+		await settle(3)
+		confirmPopover()!.querySelector<HTMLElement>('[data-confirm-delete-done]')!.click()
 		await settle(4)
 
 		// AC7's other half: one call, not one per note. The store pushes one
@@ -4728,7 +4761,8 @@ describe('the done filter', () => {
 		await settle(2)
 
 		await wrapper.get('[data-delete-done]').trigger('click')
-		await wrapper.get('[data-delete-done]').trigger('click')
+		await settle(3)
+		confirmPopover()!.querySelector<HTMLElement>('[data-confirm-delete-done]')!.click()
 		await settle(4)
 
 		// The chord no longer has to be spelled in the sentence: the pill carries the
@@ -4818,9 +4852,10 @@ describe('the done filter', () => {
 	/**
 	 * The scope names the **section**, because the count and the view can
 	 * legitimately disagree: the filter shows done notes document-wide, the delete
-	 * takes the active section's alone (AC9). The strip carries the count and the
-	 * noun; the section rides on the accessible name and tooltip, where user text
-	 * of any length cannot push the chip out of the header.
+	 * takes the active section's alone (AC9). The popover has room for the whole
+	 * sentence, so the section is *visible* at the moment of confirming rather
+	 * than riding only on the accessible name — the width problem that once
+	 * forced it off the strip does not exist in an overlay.
 	 */
 	it('names the section it would delete from, not just the count', async () => {
 		const { wrapper } = await mountWithDoneInBoth()
@@ -4832,12 +4867,12 @@ describe('the done filter', () => {
 		expect(wrapper.findAll('[data-note-row]')).toHaveLength(3)
 
 		await wrapper.get('[data-delete-done]').trigger('click')
-		await settle(2)
+		await settle(3)
 
-		expect(wrapper.get('[data-delete-done]').text()).toContain('Delete 2 done?')
-		expect(wrapper.get('[data-delete-done]').attributes('aria-label')).toBe(
-			'Delete 2 done? In Research.',
-		)
+		expect(confirmPopover()?.textContent).toContain('Delete 2 done notes in Research?')
+		// The button itself stays icon-only in every state, which is what keeps the
+		// chip beside it from ever being pushed out of the header.
+		expect(wrapper.get('[data-delete-done]').text()).toBe('')
 	})
 
 	/**
@@ -4854,8 +4889,8 @@ describe('the done filter', () => {
 		await settle(2)
 
 		await wrapper.get('[data-delete-done]').trigger('click')
-		await settle(2)
-		expect(wrapper.get('[data-delete-done]').text()).toContain('Delete 2 done?')
+		await settle(3)
+		expect(confirmPopover()).not.toBeNull()
 
 		// Still two done notes in `sec_a`, but a different two: `nte_1` is no longer
 		// done and `nte_3` now is.
@@ -4879,50 +4914,42 @@ describe('the done filter', () => {
 		await space.refresh()
 		await settle(3)
 
-		// The offer went away rather than silently re-aiming, so the next press arms
-		// against the new set instead of deleting the old one. Disarmed is the
-		// icon-only state, which is what having no label at all asserts here.
-		expect(wrapper.get('[data-delete-done]').text()).toBe('')
+		// The offer went away rather than silently re-aiming: the popover closed, so
+		// the next press asks again about the new set instead of deleting the old
+		// one.
+		expect(confirmPopover()).toBeNull()
 		await wrapper.get('[data-delete-done]').trigger('click')
 		await settle(2)
 		expect(calls).toEqual([])
 	})
 
 	/**
-	 * A held Enter must not arm and confirm inside one hold. The browser
-	 * synthesises a click from every repeat of the keydown, so without refusing the
-	 * repeat the second one confirms a deletion the user never pressed twice.
+	 * A held Enter must not arm and confirm inside one hold. The one-button form
+	 * needed a keydown guard for this; the popover retires it structurally — the
+	 * confirming control is a *different element* from the one the key is held
+	 * on, and it is never the one reka autofocuses (Cancel is the first
+	 * tabbable), so the clicks a browser synthesises from the repeat can only
+	 * toggle or dismiss, never delete.
 	 */
-	it('refuses the repeat of a held activation key', async () => {
+	it('never hands the held activation key to the delete control', async () => {
 		const { wrapper, calls } = await mountWithDoneInBoth()
 		await wrapper.get('[data-done-filter]').trigger('click')
 		await wrapper.get('[data-done-filter]').trigger('click')
 		await settle(2)
 
-		const button = wrapper.get('[data-delete-done]')
-		// The first press arms, as an ordinary one does.
-		await button.trigger('click')
-		await settle(2)
-		expect(button.text()).toContain('Delete 2 done?')
+		await wrapper.get('[data-delete-done]').trigger('click')
+		await settle(3)
 
-		// The key is still down. The repeat is declined at the source, so no click is
-		// generated from it and nothing is confirmed.
-		const repeat = new KeyboardEvent('keydown', {
-			key: 'Enter',
-			repeat: true,
-			bubbles: true,
-			cancelable: true,
-		})
-		button.element.dispatchEvent(repeat)
-		await settle(2)
-
-		expect(repeat.defaultPrevented).toBe(true)
+		const confirm = confirmPopover()?.querySelector<HTMLElement>('[data-confirm-delete-done]')
+		expect(confirm, 'the delete control is missing from the popover').toBeTruthy()
+		// The property the held key rides on: opening never focuses the delete
+		// control, so no synthesised repeat click can land there.
+		expect(document.activeElement).not.toBe(confirm)
 		expect(calls).toEqual([])
-		expect(button.text()).toContain('Delete 2 done?')
 	})
 
-	/** The second click of a double-click is the same gesture as the first, aimed
-	 *  at a label that changed halfway through it. */
+	/** The second click of a double-click is the same gesture as the first: it
+	 *  closes the popover the first click opened, and deletes nothing. */
 	it('does not let a double-click arm and confirm in one gesture', async () => {
 		const { wrapper, calls } = await mountWithDoneInBoth()
 		await wrapper.get('[data-done-filter]').trigger('click')
@@ -4936,12 +4963,35 @@ describe('the done filter', () => {
 		await settle(3)
 
 		expect(calls).toEqual([])
-		expect(button.text()).toContain('Delete 2 done?')
+		expect(confirmPopover()).toBeNull()
 
-		// A deliberate separate press still works.
+		// A deliberate separate flow still works.
 		await button.trigger('click', { detail: 1 })
 		await settle(3)
+		confirmPopover()!.querySelector<HTMLElement>('[data-confirm-delete-done]')!.click()
+		await settle(3)
 		expect(calls).toHaveLength(1)
+	})
+
+	/** Escape dismisses the question through reka's own layer, resolving at the
+	 *  shell's `inOverlay` guard — so it neither hides the panel nor takes any
+	 *  other rung of the Escape ladder with it. */
+	it('backs out on Escape without taking a rung of the ladder', async () => {
+		const { wrapper, calls } = await mountWithDoneInBoth()
+		await wrapper.get('[data-done-filter]').trigger('click')
+		await wrapper.get('[data-done-filter]').trigger('click')
+		await settle(2)
+
+		await wrapper.get('[data-delete-done]').trigger('click')
+		await settle(3)
+		expect(confirmPopover()).not.toBeNull()
+
+		confirmPopover()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+		await settle(3)
+
+		expect(confirmPopover()).toBeNull()
+		expect(calls).toEqual([])
+		expect(mocks.invoke).not.toHaveBeenCalledWith('hide_panel')
 	})
 })
 

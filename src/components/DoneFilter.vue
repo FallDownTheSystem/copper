@@ -17,25 +17,37 @@ const { doneFilter, doneOnly, doneTotal, todoTotal, allTotal, nextDoneFilter, cy
 	useNoteList()
 const { doneCount, doneTargets, deleteDoneInActiveSection } = useNoteActions()
 const { activeSectionObject } = useSpace()
+// The same in-clip portal host and collision boundary every menu here uses —
+// see `useOverlayHost` for why reka's document.body default is wrong for this
+// panel.
+const { boundary, portalTo } = useOverlayHost()
 
 /** Never blank, so the label always names a scope. */
 const sectionName = computed(() => activeSectionObject.value?.name ?? 'this section')
 
 /**
- * The confirmation, as a state of the button rather than as a dialog.
+ * The confirmation, as a popover rather than as a state of the button.
  *
- * **AC6 asks for a prompt, and the codebase has already answered the same
- * question the other way**: deleting a section takes all of its notes with it and
- * ships with no confirmation, because "the whole operation is one undo, and an
- * undoable action reads better as a reversible one than as a question"
- * (`SectionContextMenu`). There is also no dialog primitive here — `ui/` holds
- * checkbox, context-menu and dropdown-menu — so a modal would mean porting a
- * fourth one.
+ * It was an inline label first — the armed button grew `DELETE 2 DONE?` into
+ * the strip it shares with the section chip — and live use found the flaw: the
+ * armed width comes out of the chip beside it, and in the done view it pushed
+ * the chip's chevron out of the header. A label that must name a count of any
+ * size cannot live in a row that promises its width to a neighbour, so the
+ * question moved into an overlay with room to name the whole scope — count,
+ * noun and section — while the button itself stays icon-wide in every state.
  *
- * The inline form satisfies the criterion without contradicting either. It is
- * two presses in the same place, it names the count so the scope is visible
- * before the second one, and the undo message still carries the real safety net.
- * Nothing is stolen from the surrounding UI, and there is no focus trap to unwind.
+ * The popover also puts the confirming press on a *separate control*, which is
+ * what retires the two guards the one-button form carried: a held Enter now
+ * toggles the popover instead of confirming it — reka autofocuses the content,
+ * where Cancel is the first tabbable, so even the browser's synthesised repeat
+ * clicks land somewhere safe — and the second click of a double-click merely
+ * closes what the first opened. Escape and a click elsewhere dismiss it through
+ * reka's own layer, which `inOverlay` keeps off the shell's Escape ladder.
+ *
+ * Still not a modal dialog, deliberately: deleting a section ships with no
+ * confirmation at all because the operation is one undo (`SectionContextMenu`),
+ * and this prompt exists for the count-vs-view discrepancy, not because the
+ * action is unrecoverable. The undo message stays the real safety net.
  */
 const confirming = ref(false)
 
@@ -62,84 +74,45 @@ const confirming = ref(false)
  */
 const armedTargets = computed(() => [...doneTargets.value].sort().join('\u0000'))
 
-/** Re-armed whenever the offer stops being the one the user is looking at: a
+/** Withdrawn whenever the offer stops being the one the user is looking at: a
  *  different set of targets under them, or the view they opened it from going
  *  away. Keyed on the whole filter rather than on `doneOnly`, so leaving the done
- *  view disarms whichever of the other two states the press lands in. */
+ *  view closes the popover whichever of the other two states the press lands in. */
 watch([armedTargets, doneFilter], () => {
 	confirming.value = false
 })
 
-/**
- * Both presses have to be separate, deliberate ones, and two things defeat that
- * without the user meaning them to.
- *
- * **A held Enter or Space.** The browser synthesises a click from every repeat of
- * the keydown, so holding the key would arm on the first and confirm on the
- * second without it ever coming up — a confirmation nobody consented to, on the
- * one destructive control here. Handled at the source in `onKeydown` by refusing
- * the repeat, rather than here, because the honest fix is to stop the extra click
- * being generated at all.
- *
- * **The second click of a double-click**, which carries `detail === 2`. A
- * double-click is one gesture, and the label it was aimed at changed halfway
- * through it.
- *
- * Neither guard is a timer. A time-based rule would have to pick an interval that
- * is either long enough to swallow a genuine second press or short enough to miss
- * a slow repeat, and it would make the behaviour untestable without faking
- * clocks.
- */
-function press(event: MouseEvent) {
-	if (confirming.value && event.detail > 1) return
-
-	if (!confirming.value) {
-		confirming.value = true
-		return
-	}
+/** The confirming press, on its own control inside the popover. */
+function confirm() {
 	confirming.value = false
 	void deleteDoneInActiveSection()
 }
 
 /**
- * Escape backs out of the offer without leaving the panel's own Escape ladder a
- * rung short: the press is consumed only while there is something to cancel.
- *
- * The repeat guard is the other half of `press`'s "two deliberate presses" rule —
- * see there for why it lives on the keydown.
+ * The question the popover asks. It names the count, the noun *and* the section
+ * — the overlay has the width the strip never did, and the section is the half
+ * a reader cannot infer: the view behind the button is document-wide while the
+ * delete takes the active section's notes alone (AC9), so the two counts can
+ * legitimately disagree.
  */
-function onKeydown(event: KeyboardEvent) {
-	if (event.repeat && (event.key === 'Enter' || event.key === ' ')) {
-		event.preventDefault()
-		return
-	}
-	if (event.key !== 'Escape' || !confirming.value) return
-	event.preventDefault()
-	event.stopPropagation()
-	confirming.value = false
-}
-
-/** What the confirming press would take, in the words the armed button shows. */
-const confirmLabel = computed(() => `Delete ${doneCount.value} done?`)
+const confirmQuestion = computed(() =>
+	countMessage(doneCount.value, {
+		one: `Delete 1 done note in ${sectionName.value}?`,
+		many: (count) => `Delete ${count} done notes in ${sectionName.value}?`,
+	}),
+)
 
 /**
- * The accessible name, which at rest is the *only* name this button has: it is an
- * icon and nothing else until it is armed. It names the section in both states —
- * the view is document-wide and this is not, so a screen reader landing on
- * "Delete done notes" would be told a scope the button does not have.
- *
- * Armed, it leads with the visible label verbatim and adds the scope after it.
- * That order is the one requirement the two halves cannot negotiate: a voice-input
- * user says the words they can see, and a name that merely *contains* them
- * somewhere is a name "click Delete 2 done" can miss.
+ * The accessible name, which is the *only* name this button has: it is an icon
+ * and nothing else. It names the section as well as the count — the view is
+ * document-wide and this is not, so a screen reader landing on "Delete done
+ * notes" would be told a scope the button does not have.
  */
 const label = computed(() =>
-	confirming.value
-		? `${confirmLabel.value} In ${sectionName.value}.`
-		: countMessage(doneCount.value, {
-				one: `Delete 1 done note in ${sectionName.value}`,
-				many: (count) => `Delete ${count} done notes in ${sectionName.value}`,
-			}),
+	countMessage(doneCount.value, {
+		one: `Delete 1 done note in ${sectionName.value}`,
+		many: (count) => `Delete ${count} done notes in ${sectionName.value}`,
+	}),
 )
 
 /**
@@ -192,50 +165,57 @@ const cycleTitle = computed(
 	     both children carry their own border, and two bordered controls a pixel
 	     apart read as one control with a seam. -->
 	<div class="flex shrink-0 items-center gap-3">
-		<!-- **Icon-only at rest, and it grows a label only while it is armed.** The
-		     resting button is one of three controls in a strip a panel wide, and
-		     "Delete done" beside a trash icon told the pointer nothing the icon had
-		     not; the accessible name carries it for everyone the icon does not reach.
-
-		     The armed state is the one place text is not decoration. This deletes the
-		     *active* section's done notes and leaves every other section alone (AC9),
-		     while the view behind it is document-wide — so the two can legitimately
-		     disagree, and a user looking at nine done notes across three sections can
-		     be offered two. A bare red icon confirms nothing at all, and "Delete 2?"
-		     names neither what is being counted nor that the count is the point, so
-		     the noun stays: the number is what makes the discrepancy visible.
-
-		     The *scope* rides on the accessible name and the tooltip rather than on
-		     the strip. A section is user text of any length, and the armed label
-		     borrows its width from the chip beside it — a label that could grow to
-		     any width is one that can push the chip out of a header sized to hold
-		     both. Three words are a width the strip can promise, and it is a state
-		     that lasts seconds, so what it borrows it gives back.
+		<!-- **Icon-only, in every state.** The resting button is one of three
+		     controls in a strip a panel wide, and "Delete done" beside a trash icon
+		     told the pointer nothing the icon had not; the accessible name carries
+		     it for everyone the icon does not reach. The confirmation lives in the
+		     popover rather than on the button, so no state of this control can
+		     borrow width from the chip beside it — which is the overflow the armed
+		     inline label caused.
 
 		     It leads the strip rather than following the filter it belongs to: the
 		     destructive control is the one that must not sit where a mis-aimed press
 		     can find it, and the filter is what the pointer arrives for. -->
-		<button
-			v-if="doneOnly && doneCount > 0"
-			type="button"
-			data-delete-done
-			class="panel-button inline-flex min-h-6 shrink-0 items-center gap-1 px-1.5"
-			:class="confirming ? 'text-destructive-text' : 'text-text-secondary'"
-			:title="label"
-			:aria-label="label"
-			@click="press"
-			@keydown="onKeydown"
-			@blur="confirming = false"
-		>
-			<IconLucideTrash2 class="size-3.5 shrink-0" aria-hidden="true" focusable="false" />
-			<!-- `min-w-0` and `truncate`: this button shares its row with the chip, and
-			     a count has no upper bound. `uppercase` because `text-label` carries
-			     0.06em of tracking, which is spacing cut for capitals — every other
-			     label in this strip is set the same way. -->
-			<span v-if="confirming" class="min-w-0 truncate text-label uppercase">{{
-				confirmLabel
-			}}</span>
-		</button>
+		<Popover v-if="doneOnly && doneCount > 0" :open="confirming" @update:open="confirming = $event">
+			<PopoverTrigger
+				data-delete-done
+				class="panel-button text-text-secondary inline-flex min-h-6 shrink-0 items-center px-1.5"
+				:title="label"
+				:aria-label="label"
+			>
+				<IconLucideTrash2 class="size-3.5 shrink-0" aria-hidden="true" focusable="false" />
+			</PopoverTrigger>
+
+			<!-- `align="end"` because the trigger sits near the panel's right edge;
+			     the collision boundary slides it back inside the rounded clip either
+			     way, exactly as it does for the menus. -->
+			<PopoverContent
+				v-if="portalTo"
+				:to="portalTo"
+				align="end"
+				:collision-boundary="boundary ?? undefined"
+				:collision-padding="8"
+				class="w-64 text-meta"
+			>
+				<p class="text-text-primary">{{ confirmQuestion }}</p>
+				<!-- Cancel first, and the order is load-bearing rather than layout: reka
+				     autofocuses the first tabbable on open, so the clicks a held Enter
+				     synthesises land on the dismissal, never on the delete. -->
+				<div class="mt-2 flex justify-end gap-1">
+					<button type="button" class="panel-button py-0.5" @click="confirming = false">
+						Cancel
+					</button>
+					<button
+						type="button"
+						data-confirm-delete-done
+						class="panel-button text-destructive-text py-0.5"
+						@click="confirm"
+					>
+						Delete
+					</button>
+				</div>
+			</PopoverContent>
+		</Popover>
 
 		<!-- **A three-state cycle, not a toggle**, and `aria-pressed` went with the
 		     second state: a control with three positions is not pressed or unpressed,

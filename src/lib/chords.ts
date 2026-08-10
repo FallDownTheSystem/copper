@@ -156,12 +156,17 @@ export function inTextSurface(target: EventTarget | null): boolean {
  * the query. The selector matches its outermost element, so everything the
  * overlay contains resolves here — including a press that landed on the dialog
  * container itself rather than on the field.
+ *
+ * **The popover is a reka layer like the menus**, portalled to the same in-clip
+ * host, and it owns the keyboard for the same reason: reka moves focus into the
+ * open content, so an `Escape` there must close the popover rather than take a
+ * rung of the shell's ladder with it.
  */
 export function inOverlay(target: EventTarget | null): boolean {
 	return (
 		target instanceof HTMLElement &&
 		target.closest(
-			'[data-slot="context-menu-content"], [data-slot="dropdown-menu-content"], [data-slot="command-overlay"]',
+			'[data-slot="context-menu-content"], [data-slot="dropdown-menu-content"], [data-slot="popover-content"], [data-slot="command-overlay"]',
 		) !== null
 	)
 }

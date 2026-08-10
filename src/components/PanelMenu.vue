@@ -376,9 +376,9 @@ function onSectionInput(event: Event) {
 			<DropdownMenuSeparator />
 
 			<!-- Its own group at the bottom, below the space and section actions:
-			     everything above operates on the open document, and these two leave it.
-			     Settings leads because it goes somewhere; hiding is last because it is
-			     the one entry that ends the session at the panel. -->
+			     everything above operates on the open document, and these three leave
+			     it. Settings leads because it goes somewhere; the other two are ordered
+			     by how much they end — the session at the panel, then the process. -->
 			<DropdownMenuItem class="min-h-6" @select="showSettings()">
 				<IconLucideSettings class="size-4" aria-hidden="true" focusable="false" />
 				Settings
@@ -395,6 +395,16 @@ function onSectionInput(event: Event) {
 			<DropdownMenuItem class="min-h-6" @select="invoke('hide_panel')">
 				<IconLucideEyeOff class="size-4" aria-hidden="true" focusable="false" />
 				Hide to tray
+			</DropdownMenuItem>
+
+			<!-- The tray menu's Quit, reachable without the tray: the panel wears no
+			     native close box, so this is the one in-panel way to end the process.
+			     `quit_app` rather than a JS-side exit, because the quit sequence —
+			     flush the debounced position write, then tear down — lives in Rust and
+			     a second path must not do half of it. -->
+			<DropdownMenuItem class="min-h-6" @select="invoke('quit_app')">
+				<IconLucidePower class="size-4" aria-hidden="true" focusable="false" />
+				Quit Copper
 			</DropdownMenuItem>
 		</DropdownMenuContent>
 	</DropdownMenu>

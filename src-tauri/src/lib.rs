@@ -192,7 +192,7 @@ pub fn run() {
 		// otherwise stops Alt+F4 from destroying the panel while it is revealed and
 		// focused, leaving a live process whose tray icon reveals nothing.
 		// `closable: false` in the window config is belt-and-braces. Quitting stays
-		// the tray menu's job.
+		// an explicit menu action — the tray's Quit or the panel menu's.
 		.on_window_event(|window, event| {
 			if window.label() != panel::PANEL_LABEL {
 				return;

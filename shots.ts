@@ -732,6 +732,8 @@ async function invoke(cmd: string, args?: Args): Promise<unknown> {
 		case 'undo':
 		case 'redo':
 		case 'hide_panel':
+		case 'minimize_panel':
+		case 'quit_app':
 			return null
 		default:
 			if (cmd.startsWith('plugin:')) return null

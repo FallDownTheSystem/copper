@@ -735,6 +735,47 @@ pub fn hide(window: &WebviewWindow) -> tauri::Result<()> {
 	window.hide()
 }
 
+/// Minimizes the panel to the taskbar.
+///
+/// Distinct from [`hide`]: a hidden panel leaves only the tray behind, a
+/// minimized one keeps its taskbar button, which is the Windows-native way to
+/// put a window aside. It still ends any recording session, for the reason
+/// every hide path does — minimizing is a dismissal that bypasses the
+/// recorder's own cancel, and the live chords must not stay unregistered
+/// behind a put-away panel.
+pub fn minimize(window: &WebviewWindow) -> tauri::Result<()> {
+	crate::shortcuts::cancel_recording_off_thread(window.app_handle());
+	window.minimize()
+}
+
+/// The header's minimize button. A command rather than
+/// `getCurrentWindow().minimize()` from JS, for the reason [`hide_panel`]
+/// gives: minimizing is not just a window call — it also ends an open
+/// recording session — and the window operations live here so a second path
+/// cannot end up doing half of one.
+#[tauri::command]
+pub async fn minimize_panel(app: AppHandle) {
+	with_panel(&app, "minimize", minimize);
+}
+
+/// Ends the process: the tray's Quit and the panel menu's, one sequence.
+///
+/// The debounced position write is flushed before the exit, not after — a drag
+/// followed promptly by quitting is exactly the case a debounced write loses.
+/// `exit(0)` then runs the ordinary teardown through `RunEvent::Exit`.
+pub fn quit(app: &AppHandle) {
+	flush_position(app);
+	app.exit(0);
+}
+
+/// The panel menu's Quit. A command rather than a JS-side exit, for the reason
+/// [`hide_panel`] gives: the shutdown sequence lives in Rust, and a second
+/// path must not end up doing half of it.
+#[tauri::command]
+pub async fn quit_app(app: AppHandle) {
+	quit(&app);
+}
+
 /// Looks the panel up and runs `op` against it, logging rather than returning
 /// any failure. `verb` names the action in that log line, e.g. "reveal".
 ///
@@ -825,12 +866,18 @@ pub fn toggle_or_log<M: Manager<tauri::Wry>>(app: &M) {
 /// Whether the panel is currently visible, defaulting to `false` if it cannot be
 /// determined — a failed query should not leave the tray toggle stuck.
 ///
+/// **A minimized panel counts as not visible**, whatever `IsWindowVisible` says
+/// — Win32 keeps `WS_VISIBLE` set on a minimized window, but a taskbar button
+/// is not somewhere the user can read a note. This is what makes the summon
+/// chord and the tray toggle *restore* a minimized panel rather than hide it,
+/// and what lets a capture toast fire while the panel sits in the taskbar.
+///
 /// Read by capture as well as by the two toggles: a capture notification is worth
 /// firing only when the note lands somewhere the user cannot see it. The default
 /// serves that reading too, since a toast the user did not need costs less than a
 /// capture they never learn about. Main thread only, like every window call here.
 pub fn is_visible(window: &WebviewWindow) -> bool {
-	window.is_visible().unwrap_or(false)
+	window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false)
 }
 
 // --- position ----------------------------------------------------------------

@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { invoke } from '@tauri-apps/api/core'
+
 /**
  * The query lives in `useNoteSearch` at module scope, not here. A ref held
  * inside this component cannot be read by `NoteList` — the same private-copy
@@ -176,6 +178,23 @@ defineExpose({ focusSearch, query })
 			</button>
 
 			<PanelMenu />
+
+			<!-- Rightmost, where a caption control sits on Windows — the panel has no
+			     native title bar, so this is its minimize box, and the `...` menu to
+			     its left mirrors where a browser puts its own. Through
+			     `minimize_panel` rather than `getCurrentWindow().minimize()`, for the
+			     reason the menu's Hide to tray gives: minimizing also ends an open
+			     recording session, and the window operations live in Rust so a second
+			     path cannot end up doing half of one. -->
+			<button
+				type="button"
+				class="icon-button shrink-0"
+				aria-label="Minimize"
+				title="Minimize"
+				@click="invoke('minimize_panel')"
+			>
+				<IconLucideMinus class="size-4" aria-hidden="true" focusable="false" />
+			</button>
 		</div>
 
 		<!-- Directly under the field, labelling the list below it. Its own row, so

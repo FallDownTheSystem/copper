@@ -84,12 +84,9 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
 				let app = app.clone();
 				std::thread::spawn(move || autostart::toggle_from_tray(&app));
 			}
-			MENU_QUIT => {
-				// Before the exit, not after: a drag followed promptly by quitting is
-				// exactly the case a debounced write loses.
-				panel::flush_position(app);
-				app.exit(0);
-			}
+			// One quit sequence, shared with the panel menu's entry — the flush
+			// ordering it needs is recorded on `panel::quit` itself.
+			MENU_QUIT => panel::quit(app),
 			_ => {}
 		})
 		.on_tray_icon_event(|tray, event| {

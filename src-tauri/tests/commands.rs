@@ -55,7 +55,7 @@ const COMMANDS: [&str; 21] = [
 ];
 
 /// The commands later phases added beside the store's twenty.
-const EXTRA_COMMANDS: [&str; 43] = [
+const EXTRA_COMMANDS: [&str; 45] = [
 	"clipboard_write_text",
 	// Task-024. Beside the clipboard write rather than inside it: the app asks
 	// `copper_core::markdown` for the text and then writes it through the same one
@@ -89,6 +89,13 @@ const EXTRA_COMMANDS: [&str; 43] = [
 	"get_autostart_enabled",
 	"set_autostart_enabled",
 	"hide_panel",
+	// The taskbar round's pair. Minimize is a command rather than
+	// `core:window:allow-minimize` for `set_always_on_top`'s reason: window
+	// operations are centralised in `panel.rs`, and this one also ends an open
+	// recording session. Quit is the tray's exit sequence made reachable from the
+	// panel menu, so the flush-then-exit ordering cannot fork.
+	"minimize_panel",
+	"quit_app",
 	// Task-011. Note what is *not* here: nothing for `tauri-plugin-fs`, which
 	// stays excluded, and nothing for the asset protocol — thumbnails travel as
 	// bytes over these commands precisely so that no capability scope has to widen

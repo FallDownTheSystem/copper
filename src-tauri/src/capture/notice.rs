@@ -226,8 +226,14 @@ impl NoticeController {
 			};
 
 			// A failed query must not leave the episode believing it owns a window
-			// it never revealed, so an unknown state is treated as visible.
-			let was_visible = window.is_visible().unwrap_or(true);
+			// it never revealed, so an unknown state is treated as visible. A
+			// *minimized* panel is not visible whatever the visibility flag says —
+			// Win32 keeps `WS_VISIBLE` set on it — and a notice it swallowed would
+			// play out on the taskbar where nobody can read it, so the episode
+			// treats it as hidden and reveals. The reveal's `SW_SHOWNOACTIVATE`
+			// restores a minimized window without moving focus.
+			let was_visible =
+				window.is_visible().unwrap_or(true) && !window.is_minimized().unwrap_or(false);
 			let reveal = shared.episode().begin(generation, was_visible);
 
 			if reveal {
