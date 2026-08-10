@@ -1,0 +1,395 @@
+[
+	{
+		"name": "hero-light",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-light&theme=light",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "wait", "ms": 300 }
+		]
+	},
+	{
+		"name": "hero-dark",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-dark&theme=dark",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "wait", "ms": 300 }
+		]
+	},
+	{
+		"name": "hero-light-acrylic",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-light&theme=light&acrylic=1",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "wait", "ms": 300 }
+		]
+	},
+	{
+		"name": "hero-dark-acrylic",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-dark&theme=dark&acrylic=1",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "wait", "ms": 300 }
+		]
+	},
+	{
+		"name": "hero-mesh-copper-created",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=mesh-copper&theme=light&created=1",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "wait", "ms": 300 }
+		]
+	},
+	{
+		"name": "section-copper",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=theme-a&theme=light&section=sec_copper",
+		"actions": [
+			{ "do": "scrollto", "selector": "[data-row-id='s:sec_copper']", "block": "start" },
+			{ "do": "wait", "ms": 300 }
+		]
+	},
+	{
+		"name": "code-table-dark",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=mesh-graphite&theme=dark&section=sec_copper",
+		"actions": [
+			{ "do": "scrollto", "selector": "[data-row-id='n:nte_8']", "block": "center" },
+			{ "do": "wait", "ms": 300 }
+		]
+	},
+	{
+		"name": "section-reading-dark",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=theme-d&theme=dark&section=sec_read&acrylic=1",
+		"actions": [
+			{ "do": "scrollto", "selector": "[data-row-id='s:sec_read']", "block": "start" },
+			{ "do": "wait", "ms": 300 }
+		]
+	},
+	{
+		"name": "attachments-light",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-light&theme=light",
+		"actions": [
+			{ "do": "scrollto", "selector": "button[aria-label^='View venue-lakeside']", "block": "center" },
+			{ "do": "wait", "ms": 400 }
+		]
+	},
+	{
+		"name": "attachments-dark-acrylic",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-dark&theme=dark&acrylic=1",
+		"actions": [
+			{ "do": "scrollto", "selector": "button[aria-label^='View venue-lakeside']", "block": "center" },
+			{ "do": "wait", "ms": 400 }
+		]
+	},
+	{
+		"name": "composer-tray",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=mesh-copper&theme=light",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "click", "selector": "button[aria-label='Attach files']" },
+			{ "do": "wait", "ms": 900 }
+		]
+	},
+	{
+		"name": "menu-open",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-light&theme=light",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "click", "selector": "button[aria-label='More actions']" },
+			{ "do": "wait", "ms": 500 }
+		]
+	},
+	{
+		"name": "palette-dark-acrylic",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-dark&theme=dark&acrylic=1",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "key", "key": "k+ctrl" },
+			{ "do": "wait", "ms": 500 }
+		]
+	},
+	{
+		"name": "palette-light",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=theme-b&theme=light",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "key", "key": "k+ctrl" },
+			{ "do": "wait", "ms": 500 }
+		]
+	},
+	{
+		"name": "context-menu",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=theme-b&theme=light",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "rightclick", "selector": "[data-row-id='n:nte_2']" },
+			{ "do": "wait", "ms": 500 }
+		]
+	},
+	{
+		"name": "context-menu-dark",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-dark&theme=dark",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "rightclick", "selector": "[data-row-id='n:nte_2']" },
+			{ "do": "wait", "ms": 500 }
+		]
+	},
+	{
+		"name": "editor-inline",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-light&theme=light",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "dblclick", "selector": "[data-row-id='n:nte_1']" },
+			{ "do": "wait", "ms": 500 }
+		]
+	},
+	{
+		"name": "search-active-dark",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-dark&theme=dark",
+		"actions": [
+			{ "do": "click", "selector": "input[placeholder^='Search']" },
+			{ "do": "type", "text": "ferry" },
+			{ "do": "wait", "ms": 700 }
+		]
+	},
+	{
+		"name": "switcher-open",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=mesh-copper&theme=light",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "click", "selector": "button[aria-label^='Active section']" },
+			{ "do": "wait", "ms": 500 }
+		]
+	},
+	{
+		"name": "image-viewer",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=theme-c&theme=dark&section=sec_copper",
+		"actions": [
+			{ "do": "scrollto", "selector": "button[aria-label^='View corner-seam']" },
+			{ "do": "dblclick", "selector": "button[aria-label^='View corner-seam']" },
+			{ "do": "wait", "ms": 900 }
+		]
+	},
+	{
+		"name": "hover-row",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-light&theme=light",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "hover", "selector": "[data-row-id='n:nte_2']" },
+			{ "do": "wait", "ms": 400 }
+		]
+	},
+	{
+		"name": "focused-row",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-light&theme=light",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "click", "selector": "[data-row-id='n:nte_2']" },
+			{ "do": "wait", "ms": 400 }
+		]
+	},
+	{
+		"name": "composer-typed",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-light&theme=light",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "click", "selector": "textarea" },
+			{ "do": "type", "text": "Ask the venue about the projector — and pack the HDMI cable" },
+			{ "do": "wait", "ms": 400 }
+		]
+	},
+	{
+		"name": "toast-copied",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-light&theme=light",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "rightclick", "selector": "[data-row-id='n:nte_1']" },
+			{ "do": "wait", "ms": 400 },
+			{ "do": "click", "selector": "[data-slot='context-menu-content'] [role='menuitem']", "text": "copy" },
+			{ "do": "wait", "ms": 600 }
+		]
+	},
+	{
+		"name": "done-only",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=theme-a&theme=light",
+		"actions": [
+			{ "do": "click", "selector": "button[aria-label^='All notes']" },
+			{ "do": "wait", "ms": 300 },
+			{ "do": "click", "selector": "button[aria-label*='press for']" },
+			{ "do": "wait", "ms": 500 }
+		]
+	},
+	{
+		"name": "settings-light",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-light&theme=light",
+		"actions": [
+			{ "do": "click", "selector": "button[aria-label='More actions']" },
+			{ "do": "wait", "ms": 400 },
+			{ "do": "click", "selector": "[data-slot='dropdown-menu-content'] [role='menuitem']", "text": "settings" },
+			{ "do": "wait", "ms": 700 }
+		]
+	},
+	{
+		"name": "settings-dark",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-dark&theme=dark&acrylic=1",
+		"actions": [
+			{ "do": "click", "selector": "button[aria-label='More actions']" },
+			{ "do": "wait", "ms": 400 },
+			{ "do": "click", "selector": "[data-slot='dropdown-menu-content'] [role='menuitem']", "text": "settings" },
+			{ "do": "wait", "ms": 700 }
+		]
+	},
+	{
+		"name": "settings-shortcuts",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=theme-c&theme=light",
+		"actions": [
+			{ "do": "click", "selector": "button[aria-label='More actions']" },
+			{ "do": "wait", "ms": 400 },
+			{ "do": "click", "selector": "[data-slot='dropdown-menu-content'] [role='menuitem']", "text": "settings" },
+			{ "do": "wait", "ms": 700 },
+			{ "do": "scrollto", "selector": "h2, [class*=section]", "text": "shortcuts", "block": "start" },
+			{ "do": "wait", "ms": 400 }
+		]
+	},
+	{
+		"name": "shortcut-reference",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=theme-a&theme=light",
+		"actions": [
+			{ "do": "click", "selector": "button[aria-label='More actions']" },
+			{ "do": "wait", "ms": 400 },
+			{ "do": "click", "selector": "[data-slot='dropdown-menu-content'] [role='menuitem']", "text": "settings" },
+			{ "do": "wait", "ms": 700 },
+			{ "do": "scrollto", "selector": "button", "text": "show all shortcuts", "block": "center" },
+			{ "do": "wait", "ms": 300 },
+			{ "do": "click", "selector": "button", "text": "show all shortcuts" },
+			{ "do": "wait", "ms": 800 }
+		]
+	},
+	{
+		"name": "settings-update",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=theme-b&theme=dark&update=1",
+		"actions": [
+			{ "do": "click", "selector": "button[aria-label='More actions']" },
+			{ "do": "wait", "ms": 400 },
+			{ "do": "click", "selector": "[data-slot='dropdown-menu-content'] [role='menuitem']", "text": "settings" },
+			{ "do": "wait", "ms": 700 },
+			{ "do": "scrollto", "selector": "button", "text": "check for updates", "block": "center" },
+			{ "do": "wait", "ms": 300 },
+			{ "do": "click", "selector": "button", "text": "check for updates" },
+			{ "do": "wait", "ms": 900 },
+			{ "do": "scrollto", "selector": "button", "text": "install", "block": "center" },
+			{ "do": "wait", "ms": 400 }
+		]
+	},
+	{
+		"name": "empty-state",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=mesh-copper&theme=light&empty=1",
+		"settle": 2600
+	},
+	{
+		"name": "style-teal-zinc",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=theme-c&theme=light&accent=teal&neutral=zinc",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "wait", "ms": 300 }
+		]
+	},
+	{
+		"name": "style-violet-slate-dark",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=theme-d&theme=dark&accent=violet&neutral=slate&acrylic=1",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "wait", "ms": 300 }
+		]
+	},
+	{
+		"name": "style-rose-gray",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=theme-b&theme=light&accent=rose&neutral=gray",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "wait", "ms": 300 }
+		]
+	},
+	{
+		"name": "style-amber-graphite-dark",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=mesh-graphite&theme=dark&accent=amber&neutral=stone&vibrancy=1.4&acrylic=1",
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "wait", "ms": 300 }
+		]
+	},
+	{
+		"name": "settings-palette-teal",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=theme-c&theme=light&accent=teal&neutral=zinc",
+		"actions": [
+			{ "do": "click", "selector": "button[aria-label='More actions']" },
+			{ "do": "wait", "ms": 400 },
+			{ "do": "click", "selector": "[data-slot='dropdown-menu-content'] [role='menuitem']", "text": "settings" },
+			{ "do": "wait", "ms": 700 }
+		]
+	},
+	{
+		"name": "square-light",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-light&theme=light",
+		"viewport": [1080, 1080],
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "wait", "ms": 300 }
+		]
+	},
+	{
+		"name": "square-dark-acrylic",
+		"url": "http://localhost:1420/shots.html?mode=desktop&wall=bloom-dark&theme=dark&acrylic=1",
+		"viewport": [1080, 1080],
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "wait", "ms": 300 }
+		]
+	},
+	{
+		"name": "plain-light",
+		"url": "http://localhost:1420/shots.html?mode=plain&theme=light",
+		"viewport": [440, 760],
+		"scale": 4,
+		"transparent": true,
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "wait", "ms": 300 }
+		]
+	},
+	{
+		"name": "plain-dark",
+		"url": "http://localhost:1420/shots.html?mode=plain&theme=dark",
+		"viewport": [440, 760],
+		"scale": 4,
+		"transparent": true,
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "wait", "ms": 300 }
+		]
+	},
+	{
+		"name": "plain-light-settings",
+		"url": "http://localhost:1420/shots.html?mode=plain&theme=light",
+		"viewport": [440, 760],
+		"scale": 4,
+		"transparent": true,
+		"actions": [
+			{ "do": "click", "selector": "button[aria-label='More actions']" },
+			{ "do": "wait", "ms": 400 },
+			{ "do": "click", "selector": "[data-slot='dropdown-menu-content'] [role='menuitem']", "text": "settings" },
+			{ "do": "wait", "ms": 700 }
+		]
+	},
+	{
+		"name": "plain-dark-palette",
+		"url": "http://localhost:1420/shots.html?mode=plain&theme=dark",
+		"viewport": [440, 760],
+		"scale": 4,
+		"transparent": true,
+		"actions": [
+			{ "do": "eval", "js": "document.querySelector('[data-scroll-region]').scrollTop = 0" },
+			{ "do": "key", "key": "k+ctrl" },
+			{ "do": "wait", "ms": 500 }
+		]
+	}
+]

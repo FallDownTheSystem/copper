@@ -35,6 +35,12 @@ src-tauri/binaries/
 # other checkout, so it is supplied per machine rather than committed.
 src-tauri/tauri.release.conf.json
 
+# Screenshot pipeline outputs (scripts/shots/README.md). The wallpapers are
+# Microsoft's and are re-staged per machine by stage-walls.mjs; the gallery is
+# generated 4K PNGs plus hand-picked extras, too heavy for history.
+shots-walls/
+shots-gallery/
+
 # Project management artifacts
 backlog/
 

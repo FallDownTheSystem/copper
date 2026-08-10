@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Copper shots</title>
+		<script>
+			// Same pre-hydration contract as index.html, but the choice comes from the
+			// shot URL so every capture is deterministic.
+			;(() => {
+				const params = new URLSearchParams(location.search)
+				const dark = params.get('theme') === 'dark'
+				try {
+					localStorage.setItem('color-scheme', dark ? 'dark' : 'light')
+				} catch {}
+				document.documentElement.classList.toggle('dark', dark)
+				document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
+
+				const body = () => {
+					document.body.dataset.mode = params.get('mode') ?? 'desktop'
+					document.body.dataset.wall = params.get('wall') ?? 'bloom-light'
+					const w = params.get('w') ?? '440'
+					const h = params.get('h') ?? '760'
+					document.documentElement.style.setProperty('--shot-w', w + 'px')
+					document.documentElement.style.setProperty('--shot-h', h + 'px')
+				}
+				document.readyState === 'loading'
+					? addEventListener('DOMContentLoaded', body)
+					: body()
+			})()
+		</script>
+		<style>
+			/* The harness owns the page ground; the app must never paint it here. */
+			html {
+				background: transparent !important;
+			}
+			/* Dev-only overlays that must never appear in a capture. */
+			#__vue-devtools-container__,
+			#vue-inspector-container {
+				display: none !important;
+			}
+			body {
+				margin: 0;
+				height: 100vh;
+				overflow: hidden;
+			}
+
+			/* --- plain mode: the panel fills the viewport, ground stays transparent
+			       so omitBackground captures yield an alpha PNG of just the panel. --- */
+			body[data-mode='plain'] {
+				display: grid;
+				/* The wall rules key off data-wall alone; plain mode must stay
+				   transparent for omitBackground captures. */
+				background: none !important;
+			}
+			body[data-mode='plain'] .window {
+				width: 100vw;
+				height: 100vh;
+				position: relative;
+			}
+			/* The real window IS the viewport, so the app's position: fixed overlays
+			   (menus, drop target, jump buttons) must resolve against the panel box,
+			   not the harness viewport. A transform makes .window their containing
+			   block. */
+			.window {
+				transform: translateZ(0);
+			}
+
+			/* --- desktop mode: wallpaper, centered window, DWM-ish shadow. --- */
+			body[data-mode='desktop'] {
+				display: grid;
+				place-items: center;
+				background: #202020 center / cover no-repeat;
+			}
+			body[data-wall='bloom-light'] { background-image: url('/shots-walls/bloom-light.jpg'); }
+			body[data-wall='bloom-dark'] { background-image: url('/shots-walls/bloom-dark.jpg'); }
+			body[data-wall='spot-1'] { background-image: url('/shots-walls/spot-1.jpg'); }
+			body[data-wall='spot-2'] { background-image: url('/shots-walls/spot-2.jpg'); }
+			body[data-wall='theme-a'] { background-image: url('/shots-walls/theme-a.jpg'); }
+			body[data-wall='theme-b'] { background-image: url('/shots-walls/theme-b.jpg'); }
+			body[data-wall='theme-c'] { background-image: url('/shots-walls/theme-c.jpg'); }
+			body[data-wall='theme-d'] { background-image: url('/shots-walls/theme-d.jpg'); }
+			/* Painted gradients for a brand-toned backdrop with no photo. */
+			body[data-wall='mesh-copper'] {
+				background:
+					radial-gradient(90rem 60rem at 12% -10%, oklch(0.86 0.06 55), transparent 60%),
+					radial-gradient(80rem 55rem at 105% 15%, oklch(0.72 0.1 35), transparent 55%),
+					radial-gradient(70rem 70rem at 50% 120%, oklch(0.62 0.11 55), transparent 60%),
+					oklch(0.93 0.02 60);
+			}
+			body[data-wall='mesh-graphite'] {
+				background:
+					radial-gradient(90rem 60rem at 10% -10%, oklch(0.42 0.04 55), transparent 60%),
+					radial-gradient(80rem 60rem at 110% 20%, oklch(0.35 0.05 280), transparent 55%),
+					radial-gradient(75rem 70rem at 45% 125%, oklch(0.5 0.09 40), transparent 60%),
+					oklch(0.24 0.015 270);
+			}
+
+			body[data-mode='desktop'] .window {
+				width: var(--shot-w, 440px);
+				height: var(--shot-h, 760px);
+				position: relative;
+				border-radius: var(--panel-radius, 8px);
+				/* DWM's drop shadow, approximated. */
+				box-shadow:
+					0 1.6px 3.6px rgb(0 0 0 / 0.13),
+					0 6px 16px rgb(0 0 0 / 0.14),
+					0 32px 64px rgb(0 0 0 / 0.22);
+			}
+			/* Windows 11's 1px window border, outside the surface. */
+			body[data-mode='desktop'] .window::after {
+				content: '';
+				position: absolute;
+				inset: -1px;
+				border-radius: calc(var(--panel-radius, 8px) + 1px);
+				border: 1px solid rgb(0 0 0 / 0.14);
+				pointer-events: none;
+				z-index: 10;
+			}
+			html.dark body[data-mode='desktop'] .window::after {
+				border-color: rgb(255 255 255 / 0.12);
+			}
+
+			/* --- fake Acrylic: only sensible in desktop mode. The app's translucent
+			       surface is semi-transparent; the material behind it is composited by
+			       Windows in the real app. Here a blurred copy of the wallpaper stands
+			       in for it, aligned with the body's cover background via
+			       background-attachment: fixed and overscanned so the blur has real
+			       pixels to sample at the edges. --- */
+			.acrylic {
+				display: none;
+			}
+			html.translucent body[data-mode='desktop'] .acrylic {
+				display: block;
+				position: absolute;
+				inset: 0;
+				border-radius: var(--panel-radius, 8px);
+				overflow: hidden;
+				z-index: 0;
+			}
+			html.translucent body[data-mode='desktop'] .acrylic::before {
+				content: '';
+				position: absolute;
+				inset: -160px;
+				background: inherit;
+				background: var(--acrylic-wall, none) center / cover no-repeat fixed;
+				filter: blur(56px) saturate(1.25);
+			}
+			body[data-wall='bloom-light'] .acrylic::before { --acrylic-wall: url('/shots-walls/bloom-light.jpg'); }
+			body[data-wall='bloom-dark'] .acrylic::before { --acrylic-wall: url('/shots-walls/bloom-dark.jpg'); }
+			body[data-wall='spot-1'] .acrylic::before { --acrylic-wall: url('/shots-walls/spot-1.jpg'); }
+			body[data-wall='spot-2'] .acrylic::before { --acrylic-wall: url('/shots-walls/spot-2.jpg'); }
+			body[data-wall='theme-a'] .acrylic::before { --acrylic-wall: url('/shots-walls/theme-a.jpg'); }
+			body[data-wall='theme-b'] .acrylic::before { --acrylic-wall: url('/shots-walls/theme-b.jpg'); }
+			body[data-wall='theme-c'] .acrylic::before { --acrylic-wall: url('/shots-walls/theme-c.jpg'); }
+			body[data-wall='theme-d'] .acrylic::before { --acrylic-wall: url('/shots-walls/theme-d.jpg'); }
+			body[data-wall='mesh-copper'] .acrylic::before {
+				background:
+					radial-gradient(90rem 60rem at 12% -10%, oklch(0.86 0.06 55), transparent 60%),
+					radial-gradient(80rem 55rem at 105% 15%, oklch(0.72 0.1 35), transparent 55%),
+					radial-gradient(70rem 70rem at 50% 120%, oklch(0.62 0.11 55), transparent 60%),
+					oklch(0.93 0.02 60);
+			}
+			body[data-wall='mesh-graphite'] .acrylic::before {
+				background:
+					radial-gradient(90rem 60rem at 10% -10%, oklch(0.42 0.04 55), transparent 60%),
+					radial-gradient(80rem 60rem at 110% 20%, oklch(0.35 0.05 280), transparent 55%),
+					radial-gradient(75rem 70rem at 45% 125%, oklch(0.5 0.09 40), transparent 60%),
+					oklch(0.24 0.015 270);
+			}
+			/* Acrylic's luminosity tint + the faint noise the real material carries. */
+			html.translucent body[data-mode='desktop'] .acrylic::after {
+				content: '';
+				position: absolute;
+				inset: 0;
+				background: rgb(252 250 248 / 0.28);
+			}
+			html.translucent.dark body[data-mode='desktop'] .acrylic::after {
+				background: rgb(26 24 22 / 0.35);
+			}
+
+			/* The app sits above the acrylic stand-in. */
+			.window > #app {
+				position: absolute;
+				inset: 0;
+				z-index: 1;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="window">
+			<div class="acrylic"></div>
+			<div id="app"></div>
+		</div>
+		<script type="module" src="/shots.ts"></script>
+	</body>
+</html>
