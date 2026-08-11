@@ -1,19 +1,40 @@
 <script setup lang="ts">
 import { invoke } from '@tauri-apps/api/core'
 
+import { PopoverAnchor } from '@/components/ui/popover'
+import { rowNoteId } from '@/composables/useSelection'
 import { CHORDS, inOverlay, inTextSurface } from '@/lib/chords'
+import { splitFlatList } from '@/lib/listPaste'
+import { moveFocusOnArrow } from '@/lib/popoverFocus'
 
 // `activeSectionObject` left with `EmptyState`, which is the only thing that
 // named the destination and now asks for it itself.
-const { loadState, refreshing, actionError, noteCount, spaceName, initialize } = useSpace()
+const { loadState, refreshing, actionError, errorFor, noteCount, spaceName, initialize } =
+	useSpace()
+const { showListError } = useStatusMessage()
+
+/**
+ * A failed `list`-scope mutation is shown in the toast stack rather than only
+ * reaching the assertive live region below, where it would be invisible to
+ * everyone not using a screen reader. The store owns its lifecycle — it appears
+ * when a shell operation is refused and leaves when a retry succeeds — so the
+ * watch mirrors both directions and the toast carries no Dismiss of its own.
+ * (This mirroring lived in StatusLine when the pill was a single surface.)
+ *
+ * `errorFor('list')`, never the bare `actionError`: the other scopes render
+ * beside the surface that produced them — the composer's refusal sits under the
+ * composer — and mirroring those here would say everything twice.
+ */
+watch(errorFor('list'), (message) => showListError(message))
 const { setClampHeight } = useNoteDisclosure()
 const { ensureHighlighter } = useMarkdown()
 // `setOverlayHost` below is what fills the two refs every menu reads; each menu
-// reads them from the composable itself rather than being handed them.
-const { setOverlayHost } = useOverlayHost()
+// reads them from the composable itself rather than being handed them. The
+// shell reads the pair back for the list-paste popover it owns itself.
+const { setOverlayHost, boundary, portalTo } = useOverlayHost()
 const { hasQuery, clearQuery, resultCount } = useNoteSearch()
 const { open: openPalette } = usePalette()
-const { selectedIds, clear } = useSelection()
+const { selectedIds, isSelected, clear } = useSelection()
 const { editingNoteId, cancel } = useNoteEditor()
 const { isOpen: viewerOpen, close: closeViewer } = useImageViewer()
 const { interactionRowId, exit } = useInteractionMode()
@@ -23,6 +44,7 @@ const {
 	copyNotes,
 	copyAsList,
 	capturePaste,
+	captureListPaste,
 	merge,
 	openInEditor,
 	deleteNotes,
@@ -62,10 +84,31 @@ function measureClamp() {
 
 useResizeObserver(clampProbe, measureClamp)
 
+const scrollRegion = useTemplateRef<HTMLElement>('scrollRegion')
+
+/**
+ * The width the vertical scrollbar actually takes, published as
+ * `--scrollbar-space` on the region for the right-edge paddings to absorb —
+ * see main.css for the split. Measured rather than assumed 11px: zoom, a
+ * future scrollbar style, or an overlay scrollbar (which takes nothing) all
+ * change the number, and `offsetWidth - clientWidth` is the number. The
+ * observer fires exactly when it can change — the content box resizes when a
+ * scrollbar arrives or leaves, and on every panel resize besides.
+ */
+function measureScrollbar() {
+	const region = scrollRegion.value
+	if (!region) return
+	const taken = Math.max(0, region.offsetWidth - region.clientWidth)
+	region.style.setProperty('--scrollbar-space', `${taken}px`)
+}
+
+useResizeObserver(scrollRegion, measureScrollbar)
+
 onMounted(() => {
 	setOverlayHost(root.value, portalHost.value)
 
 	measureClamp()
+	measureScrollbar()
 
 	void initialize()
 	void initializeHandoffs()
@@ -171,17 +214,47 @@ function onEscape(event: KeyboardEvent) {
 }
 
 /**
- * Click-away deselect: a click in the list area that is not on a note clears
- * the selection, so no note keeps its ring after the user has visibly clicked
- * somewhere else (user ruling, 2026-08-10). On the scroll region rather than
- * the shell, and the bound is deliberate — context menus portal outside it, so
- * an item click can never deselect the notes the action it runs is about to
- * target. Section bands and the empty space below the list both count as
- * "away"; the band's own click handlers run first on the way up.
+ * Click-away deselect: a click in the list area that does not land on a
+ * selected note clears the selection, so no note keeps its ring after the user
+ * has visibly clicked somewhere else (user rulings, 2026-08-10 and
+ * 2026-08-11).
+ *
+ * **Capture phase, and that is the fix rather than a detail.** The rule ran on
+ * bubble, which let every row control that stops propagation punch a hole in
+ * it: pressing another note's completion circle left the old selection
+ * standing, because the circle's `@click.stop` kept the press from ever
+ * arriving here. Capture sees the click before any control can swallow it, so
+ * the rule holds for exactly the presses the controls consume — and the
+ * orderings bubble used to provide implicitly become the explicit guards
+ * below:
+ *
+ * - A modifier click is a selection-extending gesture — Ctrl adds, Shift
+ *   ranges — never "away". Cleared first, a Ctrl+click would add one note to
+ *   an emptied selection.
+ * - The grip owns its clicks: a plain one selects through the row, and the
+ *   click that trails a drag — committed or abandoned — is swallowed on the
+ *   grip itself, which this listener would otherwise beat to the press.
+ * - A click anywhere on a *selected* note's row is not away, wherever inside
+ *   the row it lands — its own circle, its attachments, its editor.
+ * - A click on an unselected note's row clears and then lets the row's own
+ *   handler re-aim the selection, which is the order bubbling already
+ *   produced.
+ *
+ * On the scroll region rather than the shell, and the bound is deliberate —
+ * context menus portal outside it, so an item click can never deselect the
+ * notes the action it runs is about to target. Section bands and the empty
+ * space below the list both count as "away".
  */
 function onRegionClick(event: MouseEvent) {
-	const target = event.target as HTMLElement | null
-	if (target?.closest('[data-note-row]')) return
+	if (event.ctrlKey || event.metaKey || event.shiftKey) return
+	const target = event.target
+	// `Element`, not `HTMLElement`: the press usually lands on the SVG inside
+	// the very control this exists for.
+	if (!(target instanceof Element)) return
+	if (target.closest('[data-drag-handle]')) return
+	const row = target.closest<HTMLElement>('[data-note-row]')
+	const noteId = rowNoteId(row?.dataset.rowId ?? null)
+	if (noteId !== null && isSelected(noteId)) return
 	clear()
 }
 
@@ -348,10 +421,104 @@ function onPaste(event: ClipboardEvent) {
 
 	// Read here rather than inside the queued action: `clipboardData` is live only
 	// while the event is dispatching.
-	void capturePaste(event.clipboardData?.getData('text/plain') ?? '')
+	const text = event.clipboardData?.getData('text/plain') ?? ''
+
+	// A flat list is the one clipboard shape with two right answers — one note,
+	// or one note per item — so it is asked about rather than assumed. Anything
+	// with more structure (a heading, nesting, prose between bullets) captures
+	// as one note exactly as before: `splitFlatList` refuses it. Only this
+	// zero-focus path asks; a paste into the composer is text editing and the
+	// guard above has already declined it.
+	const items = splitFlatList(text)
+	if (items) {
+		offerListPaste(text, items)
+		return
+	}
+
+	void capturePaste(text)
 }
 
 useEventListener(document, 'paste', onPaste)
+
+/**
+ * The list-paste question, and the offer it holds. The popover is anchored to
+ * the composer — a paste has no DOM anchor of its own, and the composer is
+ * where the panel already says captures happen — and its two offers run the
+ * two capture actions; nothing is added until one of them is pressed. Escape
+ * and an outside click dismiss through reka's layer, and dismissal adds
+ * nothing: the clipboard still holds the text, so declining costs one `Ctrl+V`
+ * to change your mind, while a dismissal that silently pasted anyway would
+ * make the question pointless.
+ *
+ * Not a modal dialog, for `DoneFilter`'s reason: both offers are single
+ * undoable adds, so this exists to pick a shape, not to gate anything.
+ */
+const pendingListPaste = ref<{ text: string; items: string[] } | null>(null)
+
+/**
+ * Where focus sat when the question opened, so closing can put it back. The
+ * popover autofocuses an offer — the question is asked mid-keyboard-flow and
+ * has to be answerable without a pointer — which means reka's close would
+ * otherwise drop focus to the body, where no chord and no arrow key works.
+ * `null` when focus was nowhere in particular; the panel root is the landing
+ * that keeps the keyboard alive, the same one `onMounted` chooses.
+ */
+let listPasteOpener: HTMLElement | null = null
+
+function offerListPaste(text: string, items: string[]) {
+	const active = document.activeElement
+	listPasteOpener = active instanceof HTMLElement && active !== document.body ? active : null
+	pendingListPaste.value = { text, items }
+}
+
+/** Escape and an outside click arrive here through reka's layer; the two offer
+ *  buttons close by writing the state first, so reka emits nothing for them. */
+function onListPasteOpen(open: boolean) {
+	if (!open) pendingListPaste.value = null
+}
+
+function pasteAsOneNote() {
+	const pending = pendingListPaste.value
+	pendingListPaste.value = null
+	if (pending) void capturePaste(pending.text)
+}
+
+function pasteAsSeparateNotes() {
+	const pending = pendingListPaste.value
+	pendingListPaste.value = null
+	if (pending) void captureListPaste(pending.items)
+}
+
+const oneNoteButton = useTemplateRef<HTMLButtonElement>('oneNoteButton')
+
+/** Reka's default is the first tabbable, which the DOM order below already
+ *  makes the one-note offer — stated explicitly so Enter meaning "what a paste
+ *  always did" does not depend on markup order staying put. */
+function onListPasteAutoFocus(event: Event) {
+	event.preventDefault()
+	oneNoteButton.value?.focus()
+}
+
+/** Every close path lands here: back to the element that held focus when the
+ *  question opened, or to the panel root when that element is gone or was the
+ *  body — focus left on a vanished node is a dead keyboard. */
+function onListPasteCloseFocus(event: Event) {
+	event.preventDefault()
+	const target = listPasteOpener?.isConnected ? listPasteOpener : root.value
+	listPasteOpener = null
+	target?.focus()
+}
+
+/** `DoneFilter`'s held-key guard, verbatim and for its reason: the browser
+ *  synthesises a click from every repeat of an Enter keydown, and this popover
+ *  autofocuses a control on open. */
+function onListPasteKeydown(event: KeyboardEvent) {
+	if (event.repeat && (event.key === 'Enter' || event.key === ' ')) {
+		event.preventDefault()
+		return
+	}
+	moveFocusOnArrow(event)
+}
 
 /**
  * The default WebView context menu is suppressed everywhere except the two text
@@ -435,14 +602,25 @@ function onContextMenu(event: MouseEvent) {
 		     nothing on the left, so the notes sat visibly off-centre in the panel
 		     with no scrollbar on screen to explain it.
 
-		     What this trades away is real and much smaller: crossing the threshold
-		     now re-wraps the note bodies once, where before it never did. A rare,
-		     transient re-wrap against a permanent, always-visible asymmetry. -->
+		     The re-wrap that used to be the price of `auto` is paid differently
+		     now: `measureScrollbar` publishes the scrollbar's real width as
+		     `--scrollbar-space`, and the right-edge paddings absorb it (the
+		     variable split lives in main.css). Crossing the threshold narrows the
+		     card boxes by the scrollbar's width — it must, a card cannot underlap
+		     a classic scrollbar — but the text column and every trailing control
+		     hold their position, so nothing shifts and nothing re-wraps. -->
+		<!-- `overflow-x-hidden` states the design rule outright: this region never
+		     scrolls horizontally. Left implicit (`overflow-y-auto` computes x to
+		     `auto`), any invisible box past the edge summons a horizontal bar —
+		     the chevron's centred `hit-44` pokes ~2px out once the row padding
+		     yields to the scrollbar, and that conjured one (user report,
+		     2026-08-11). Hit areas may overhang; bars may not. -->
 		<main
+			ref="scrollRegion"
 			data-scroll-region
-			class="thin-scrollbar col-start-1 row-start-2 min-h-0 min-w-0 overflow-y-auto overscroll-contain [scrollbar-gutter:auto]"
+			class="thin-scrollbar col-start-1 row-start-2 min-h-0 min-w-0 overflow-x-hidden overflow-y-auto overscroll-contain [scrollbar-gutter:auto]"
 			:aria-busy="refreshing"
-			@click="onRegionClick"
+			@click.capture="onRegionClick"
 		>
 			<h1 class="sr-only">{{ spaceName || 'Copper' }}</h1>
 
@@ -467,7 +645,11 @@ function onContextMenu(event: MouseEvent) {
 				     box, so a first heading flush against the region's top still shows
 				     its whole outline. The landing margins in NoteSection are measured
 				     from the region's edge and are unaffected. -->
-				<div class="px-1 pb-3">
+				<!-- The right half is `--region-inset-r` rather than the left's plain
+				     4px: it is the first spacing the scrollbar is paid out of, shrinking
+				     toward zero as `--scrollbar-space` grows. The fallback keeps the
+				     4px wherever main.css's region block is not in effect. -->
+				<div class="pb-3 pl-1 pr-[var(--region-inset-r,--spacing(1))]">
 					<NoteList />
 
 					<!-- Additive, not a replacement: a zero-note space still renders its
@@ -495,7 +677,54 @@ function onContextMenu(event: MouseEvent) {
 			</PanelStates>
 		</main>
 
-		<Composer ref="composer" class="col-start-1 row-start-3" />
+		<!-- The list-paste question, anchored onto the composer itself: the root
+		     renders nothing and the anchor merges onto the form, so the shell's
+		     grid still sees the same third-row child it always had. The content
+		     goes through the same in-clip portal host as every menu. -->
+		<Popover :open="pendingListPaste !== null" @update:open="onListPasteOpen">
+			<PopoverAnchor as-child>
+				<Composer ref="composer" class="col-start-1 row-start-3" />
+			</PopoverAnchor>
+
+			<PopoverContent
+				v-if="portalTo"
+				:to="portalTo"
+				data-list-paste
+				side="top"
+				align="start"
+				:collision-boundary="boundary ?? undefined"
+				:collision-padding="8"
+				class="w-64 text-meta"
+				@open-auto-focus="onListPasteAutoFocus"
+				@close-auto-focus="onListPasteCloseFocus"
+				@keydown="onListPasteKeydown"
+			>
+				<p class="text-text-primary">Paste the list as…</p>
+				<!-- The split offer carries the count, because the number is what makes
+				     it a different offer from the one above it — and it is the one thing
+				     the clipboard cannot show from under a popover. -->
+				<div class="mt-2 flex flex-col gap-1">
+					<button
+						ref="oneNoteButton"
+						type="button"
+						data-paste-one-note
+						class="panel-button flex items-center justify-between gap-2 py-1"
+						@click="pasteAsOneNote"
+					>
+						<span class="min-w-0 truncate">One note</span>
+					</button>
+					<button
+						type="button"
+						data-paste-separate-notes
+						class="panel-button flex items-center justify-between gap-2 py-1"
+						@click="pasteAsSeparateNotes"
+					>
+						<span class="min-w-0 truncate">Separate notes</span>
+						<span class="shrink-0 tabular-nums">{{ pendingListPaste?.items.length }}</span>
+					</button>
+				</div>
+			</PopoverContent>
+		</Popover>
 
 		<!-- Inside the panel root, so teleported menu content stays inside the clip,
 		     the rounded rect and the contextmenu policy above. `pointer-events-none`
@@ -530,15 +759,24 @@ function onContextMenu(event: MouseEvent) {
 
 		     `z-20` is measured, not picked: above the note rows, and above the pinned
 		     section heading's `z-1`, which is the one thing in the region that can
-		     rise to meet it. The whole band is `pointer-events-none` — see StatusLine
-		     for why the rows underneath must stay clickable through it — so nothing
-		     here costs the list a hit target, and the layout is untouched either way:
-		     these are overlays in a cell that is already the region's. -->
+		     rise to meet it. Both bands are `pointer-events-none` — the pills
+		     overlay the tail of the list, and the rows underneath must stay
+		     clickable through the bare parts — so nothing here costs the list a hit
+		     target, and the layout is untouched either way: these are overlays in a
+		     cell that is already the region's. The toasts themselves re-enable
+		     pointer events, which is what hover-to-hold and `Undo` need. -->
 		<div
 			class="pointer-events-none col-start-1 row-start-2 z-20 flex flex-col gap-1 self-end px-3 pb-2"
 		>
-			<StatusLine />
 			<CaptureNotice />
+		</div>
+
+		<!-- Spans the whole list cell rather than hugging its foot, because the
+		     toast stack is `absolute` against it and grows upward from the bottom
+		     edge — see StatusToaster for why the stack cannot ride the flex band
+		     above. -->
+		<div class="status-toaster-host pointer-events-none relative col-start-1 row-start-2 z-20">
+			<StatusToaster />
 		</div>
 
 		<!-- After the band it has to paint over, and at a z-index between the band's

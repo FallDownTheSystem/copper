@@ -824,9 +824,8 @@ const SETTLE_CAP_MS = 2000
  * Re-asserted every frame until the list stops changing height, because the
  * pin's own target keeps moving after it lands.
  *
- * auto-animate scales a newly inserted row from `.98` to `1` across its entry
- * animation, and a transformed box still contributes to its scroll container's
- * *scrollable overflow* — so `scrollHeight` climbs for the whole animation.
+ * The list transition unfolds a newly inserted row from zero height across its
+ * entry animation — so `scrollHeight` climbs for the whole animation.
  * Clamping a freshly measured note shrinks and regrows the list several times on
  * top of that. Measured in WebView2 at 175% scaling: the pin landed correctly,
  * then the list grew and left `scrollTop` 12.57px below its true maximum, with
@@ -862,12 +861,11 @@ function pinToBottom(region: HTMLElement) {
 			stable = 0
 		}
 
-		// Holding still is not the same as being finished. auto-animate's entry
-		// keyframes park the row at `scale(.98)` until the animation's halfway
-		// point, so the list sits perfectly still for ~110ms and only then grows —
-		// and a stability test on its own exits during that plateau. Asking the
-		// running animations instead of guessing a duration is what makes this
-		// exact.
+		// Holding still is not the same as being finished. An unfolding row's
+		// growth eases toward its end — fractions of a pixel per frame at the
+		// tail, slowly enough for a stability test on its own to exit mid-entry.
+		// Asking the running animations instead of guessing a duration is what
+		// makes this exact.
 		//
 		// Motion only: the section band's row clip is scroll-driven and so is
 		// *always* running, which asked the raw question would keep this loop
@@ -937,10 +935,10 @@ export function revealRow(key: string, block: ScrollLogicalPosition = 'nearest')
  * **Instant, never smooth, and that is not a reduced-motion compromise.**
  *
  * A smooth scroll runs over frames, and both of the things it would have to run
- * against are hostile. The list is still growing when this fires — auto-animate
- * scales an inserted row over ~150ms and `pinToBottom` exists because that growth
- * moves the target — so an animated scroll would be chasing a position that is
- * still moving. And in a hidden window frames are throttled or stopped
+ * against are hostile. The list is still growing when this fires — the list
+ * transition unfolds an inserted row over 150ms and `pinToBottom` exists because
+ * that growth moves the target — so an animated scroll would be chasing a
+ * position that is still moving. And in a hidden window frames are throttled or stopped
  * altogether, so the one case this feature is *for* is the case where a smooth
  * scroll would be left half-finished. An instant scroll satisfies
  * `prefers-reduced-motion` by having nothing to reduce.

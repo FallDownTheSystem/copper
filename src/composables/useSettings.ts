@@ -55,6 +55,11 @@ export type InsertionPoint = 'top' | 'bottom'
  *  than a switch. */
 export type DoubleClickAction = 'copy' | 'edit'
 
+/** What a bare Enter does in the two multi-line fields — the composer and the
+ *  inline note editor. The other value is always on Ctrl+Enter, and Shift+Enter
+ *  is a newline in both modes, so neither choice loses an action. */
+export type EnterKeyAction = 'submit' | 'newline'
+
 /** Everything `get_shortcut_state` carries: current bindings, the shipped
  *  defaults so Reset needs no second copy of them here, and whether registration
  *  actually took. */
@@ -91,6 +96,7 @@ export type PreferenceScope =
 	| 'motion'
 	| 'insertionPoint'
 	| 'doubleClick'
+	| 'enterKey'
 	| 'alwaysOnTop'
 	| 'showCreated'
 	| 'captureNotifications'
@@ -204,6 +210,10 @@ const insertionPoint = computed<InsertionPoint>(() =>
 
 const doubleClickAction = computed<DoubleClickAction>(() =>
 	settings.value?.doubleClick === 'edit' ? 'edit' : 'copy',
+)
+
+const enterKeyAction = computed<EnterKeyAction>(() =>
+	settings.value?.enterKey === 'newline' ? 'newline' : 'submit',
 )
 
 /** On unless the file explicitly says otherwise — the opposite default to
@@ -459,6 +469,7 @@ const rowWrites: Record<SettingsScope, Generation> = {
 	motion: generations(),
 	insertionPoint: generations(),
 	doubleClick: generations(),
+	enterKey: generations(),
 	alwaysOnTop: generations(),
 	showCreated: generations(),
 	captureNotifications: generations(),
@@ -553,6 +564,10 @@ function setInsertionPoint(point: InsertionPoint): Promise<boolean> {
 
 function setDoubleClick(action: DoubleClickAction): Promise<boolean> {
 	return patchSettings('doubleClick', { doubleClick: action })
+}
+
+function setEnterKey(action: EnterKeyAction): Promise<boolean> {
+	return patchSettings('enterKey', { enterKey: action })
 }
 
 function setShowCreated(enabled: boolean): Promise<boolean> {
@@ -783,6 +798,7 @@ export function useSettings() {
 		motionPreference,
 		insertionPoint,
 		doubleClickAction,
+		enterKeyAction,
 		alwaysOnTop,
 		showCreated,
 		captureNotifications,
@@ -803,6 +819,7 @@ export function useSettings() {
 		setMotion,
 		setInsertionPoint,
 		setDoubleClick,
+		setEnterKey,
 		setShowCreated,
 		setCaptureNotifications,
 		setLinkPreviews,

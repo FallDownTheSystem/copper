@@ -26,6 +26,7 @@ import {
 	formatVibrancy,
 	vibrancyToDial,
 	type DoubleClickAction,
+	type EnterKeyAction,
 	type InsertionPoint,
 } from '@/composables/useSettings'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -41,6 +42,7 @@ const {
 	motionPreference,
 	insertionPoint,
 	doubleClickAction,
+	enterKeyAction,
 	alwaysOnTop,
 	showCreated,
 	captureNotifications,
@@ -60,6 +62,7 @@ const {
 	setMotion,
 	setInsertionPoint,
 	setDoubleClick,
+	setEnterKey,
 	setShowCreated,
 	setCaptureNotifications,
 	setLinkPreviews,
@@ -97,6 +100,7 @@ const soundsError = errorFor('sounds')
 const motionError = errorFor('motion')
 const insertionError = errorFor('insertionPoint')
 const doubleClickError = errorFor('doubleClick')
+const enterKeyError = errorFor('enterKey')
 const alwaysOnTopError = errorFor('alwaysOnTop')
 const showCreatedError = errorFor('showCreated')
 const captureNotificationsError = errorFor('captureNotifications')
@@ -212,9 +216,9 @@ const promptCopyMessage = ref<string | null>(null)
 /**
  * The one clipboard write in the settings view.
  *
- * Reported in place rather than through `useStatusMessage`: that toast is
- * rendered by `StatusLine`, which `PanelShell` mounts and this view does not, so
- * a message sent there would be written to a pill nobody can see.
+ * Reported in place rather than through `useStatusMessage`: the toast stack is
+ * rendered by `StatusToaster`, which `PanelShell` mounts and this view does not,
+ * so a message sent there would be written to a pill nobody can see.
  *
  * The confirmation carries no timer, unlike the toast's five seconds. It is a
  * statement that stays true — the prompt really is still on the clipboard — and
@@ -372,6 +376,11 @@ const DOUBLE_CLICK_OPTIONS = [
 	{ value: 'copy', label: 'Copy' },
 	{ value: 'edit', label: 'Edit' },
 ] as const satisfies readonly { value: DoubleClickAction; label: string }[]
+
+const ENTER_KEY_OPTIONS = [
+	{ value: 'submit', label: 'Submit' },
+	{ value: 'newline', label: 'New line' },
+] as const satisfies readonly { value: EnterKeyAction; label: string }[]
 
 /** Both pickers read their maps rather than repeating them: a family added to
  *  `lib/palette` reaches the settings view with no second edit here to forget.
@@ -757,6 +766,21 @@ const summonNote = computed(() => {
 						label="What double-clicking a note does"
 						:error-id="errorId"
 						@update:model-value="setDoubleClick"
+					/>
+				</SettingsRow>
+
+				<SettingsRow
+					v-slot="{ errorId }"
+					label="Enter key"
+					description="What Enter does when writing a note. The other action moves to Ctrl+Enter."
+					:error="enterKeyError"
+				>
+					<SettingsChoice
+						:model-value="enterKeyAction"
+						:options="ENTER_KEY_OPTIONS"
+						label="What the Enter key does when writing"
+						:error-id="errorId"
+						@update:model-value="setEnterKey"
 					/>
 				</SettingsRow>
 

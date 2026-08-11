@@ -5,12 +5,14 @@ import { CHORDS } from '@/lib/chords'
 const props = defineProps<{ section: Section }>()
 
 const { boundary, portalTo } = useOverlayHost()
-const { sections, reorderSection, setActiveSection } = useSpace()
+const { sections, countsInSection, reorderSection, setActiveSection } = useSpace()
 const { beginRename } = useSectionEditor()
 const { selectSection } = useSelection()
 // `removeSection` carries the delete, the undo message and the focus handoff —
 // one step shared with the keyboard confirm, so the two paths cannot drift.
-const { copySectionAsMarkdown, removeSection } = useNoteActions()
+// `deleteDoneInSection` shares its body with the header control's two scopes,
+// so this third one is the same single command and the same undo toast.
+const { copySectionAsMarkdown, removeSection, deleteDoneInSection } = useNoteActions()
 
 const index = computed(() => sections.value.findIndex((entry) => entry.id === props.section.id))
 const isFirst = computed(() => index.value <= 0)
@@ -24,6 +26,10 @@ const isOnly = computed(() => sections.value.length < 2)
 function move(delta: number) {
 	return reorderSection(props.section.id, index.value + delta)
 }
+
+/** What each delete takes with it. Live, so a menu opened over a section that
+ *  just gained a capture shows the counts the presses would actually delete. */
+const counts = computed(() => countsInSection(props.section.id))
 </script>
 
 <template>
@@ -80,13 +86,33 @@ function move(delta: number) {
 		     `SectionHeader` used to carry. -->
 		<ContextMenuSeparator />
 
+		<!-- Above the section delete because it takes less with it — the two
+		     destructive rows read smallest first. Disabled rather than hidden at
+		     zero, like every other row here, so the menu keeps its shape and the
+		     section delete cannot inherit a press aimed at this row from memory.
+		     This section's done notes, not the active section's — the header
+		     control offers that scope, and the two can name different sections. -->
+		<ContextMenuItem
+			:disabled="counts.done === 0"
+			variant="destructive"
+			class="min-h-6"
+			@select="deleteDoneInSection(section.id)"
+		>
+			Delete done notes{{ counts.done > 0 ? ` (${counts.done})` : '' }}
+		</ContextMenuItem>
+
+		<!-- `Delete section (11)`, not `Delete section and its notes`: the sentence
+		     form wrapped to two lines beside the shortcut in a w-52 menu, and the
+		     row read as saying delete twice. The count carries the warning the
+		     sentence carried — what the press takes with it — in the width of a
+		     number, and the undo toast still names it in full after. -->
 		<ContextMenuItem
 			:disabled="isOnly"
 			variant="destructive"
 			class="min-h-6"
 			@select="removeSection(section)"
 		>
-			Delete section and its notes
+			Delete section{{ counts.total > 0 ? ` (${counts.total})` : '' }}
 			<ContextMenuShortcut>{{ CHORDS.remove.display }}</ContextMenuShortcut>
 		</ContextMenuItem>
 	</ContextMenuContent>

@@ -8,45 +8,22 @@
  * space comes from — which is why each item is one line and the whole list is
  * capped at ten by `useAttachments`.
  */
-import autoAnimate, { type AnimationController } from '@formkit/auto-animate'
-
-import { listMotion } from '@/lib/listMotion'
-
 const { pending, pendingLabel, removePending } = useAttachments()
 
-// The imperative controller rather than `v-auto-animate`, and gated explicitly,
-// for the same reason as `NoteSection`: the directive gives no handle to
-// disable, and auto-animate drives the Web Animations API — so neither the
-// `prefers-reduced-motion` block nor the `.reduce-motion` root class can reach
-// it, and the library's own media check misses Copper's "Animate controls".
-const list = useTemplateRef<HTMLElement>('list')
-let controller: AnimationController | null = null
-
+// The same `<TransitionGroup>` hooks as the note list, gated on the
+// reduced-motion pair alone — the tray has no drag and no external reload to
+// stand down for. `reduced` folds in Copper's "Animate controls" setting, which
+// the hooks drive through the Web Animations API where main.css's root gate
+// cannot reach.
+//
+// Accepted and by design: the `v-if` around the `<ul>` means the first
+// attachment arriving and the last one leaving take the whole list with them
+// and stay instant. Only the rows added and removed in between animate.
 const reduced = useReducedMotion()
 
-function syncAnimation() {
-	if (!controller) return
-	if (reduced.value) controller.disable()
-	else controller.enable()
-}
-
-// Watched rather than set up in `onMounted`, because the `<ul>` is inside
-// `v-if="pending.length > 0"` and is therefore absent at mount whenever the
-// composer opens with nothing attached — the common case. The element is also
-// destroyed and rebuilt each time the tray empties and refills, so the
-// controller has to be rebound to whatever element is current.
-//
-// Accepted and by design: that same `v-if` means the first attachment arriving
-// and the last one leaving take the whole list with them and stay instant. Only
-// the rows added and removed in between animate.
-watch([list, reduced], ([element]) => {
-	if (!element) {
-		controller = null
-		return
-	}
-	controller ??= autoAnimate(element, listMotion)
-	syncAnimation()
-})
+const { moveClass, onEnter, onLeave, onEnterCancelled, onLeaveCancelled } = useListTransition(
+	() => !reduced.value,
+)
 </script>
 
 <template>
@@ -58,7 +35,16 @@ watch([list, reduced], ([element]) => {
 
 		<!-- A list rather than a row of chips: filenames are long, the panel is 440px
 		     wide, and side-by-side chips would each truncate to nothing. -->
-		<ul ref="list" class="flex min-w-0 flex-col gap-1">
+		<TransitionGroup
+			tag="ul"
+			class="flex min-w-0 flex-col gap-1"
+			:css="false"
+			:move-class="moveClass"
+			@enter="onEnter"
+			@leave="onLeave"
+			@enter-cancelled="onEnterCancelled"
+			@leave-cancelled="onLeaveCancelled"
+		>
 			<li
 				v-for="attachment in pending"
 				:key="attachment.id"
@@ -89,6 +75,6 @@ watch([list, reduced], ([element]) => {
 					<IconLucideX class="size-3.5" aria-hidden="true" focusable="false" />
 				</button>
 			</li>
-		</ul>
+		</TransitionGroup>
 	</div>
 </template>

@@ -103,6 +103,7 @@ export type Settings = {
 	 *  the same reason `theme` and `motion` are. */
 	insertionPoint: string
 	doubleClick: string
+	enterKey: string
 	/** Whether the panel window sits in the topmost band. A genuine boolean,
 	 *  unlike the four above — there is nothing for a name to say here. */
 	alwaysOnTop: boolean
@@ -179,6 +180,9 @@ export type StoreErrorPayload = { kind: string; message: string }
  *  section directive. */
 export type SubmitOutcome = 'note' | 'section-created' | 'section-activated'
 export type AddNoteResult = { space: Space; noteId: string }
+/** `noteIds` answers in the order the bodies were sent, so the first id is the
+ *  first pasted item wherever the batch landed. */
+export type AddNotesResult = { space: Space; noteIds: string[] }
 export type SubmitResult = {
 	space: Space
 	outcome: SubmitOutcome
@@ -875,6 +879,28 @@ async function addNote(body: string) {
 	)
 }
 
+/**
+ * The split half of the list paste. Maps to `add_notes` — one command, one
+ * store snapshot, so the whole batch is a single `Ctrl+Z`, which is the same
+ * discipline every batch mutation here states. Looping `addNote` would push
+ * one snapshot per item and make undoing an eleven-item paste take eleven
+ * presses.
+ *
+ * Like `addNote` and unlike `submitEntry`, every body is opaque text: a list
+ * item that happens to read `# Name` becomes a note, not a section directive.
+ *
+ * The reveal follows the *first* pasted item, which is the top of the batch at
+ * either insertion point — the batch keeps its pasted order, so reading starts
+ * where the list did.
+ */
+async function addNotes(bodies: string[]) {
+	return mutate(
+		() => invoke<AddNotesResult>('add_notes', { bodies, section: null }),
+		(value) => value.space,
+		{ scope: 'composer', revealNote: (value) => value.noteIds[0] ?? null },
+	)
+}
+
 /** Maps to `edit_note` — not to a command named after this method. */
 async function updateNoteBody(id: string, body: string) {
 	return mutate(
@@ -975,6 +1001,15 @@ async function deleteNotes(ids: string[]) {
  *  removed from it, and clamped by the store. */
 async function reorderNote(id: string, section: string, index: number) {
 	return listCommand('reorder_note', { id, section, index })
+}
+
+/** The multi-select block move: the same after-removal index with **every**
+ *  carried note removed, and the block lands contiguously in the document's
+ *  canonical order. One command, one snapshot — a block drag or a block
+ *  Alt+Arrow is a single `Ctrl+Z`, which is why the callers must not loop
+ *  `reorderNote` instead. */
+async function reorderNotes(ids: string[], section: string, index: number) {
+	return listCommand('reorder_notes', { ids, section, index })
 }
 
 /** Appended last and **made active immediately** by the store, which is what
@@ -1153,6 +1188,28 @@ function notesInSection(sectionId: string): Note[] {
 	return notesBySection.value.get(sectionId) ?? []
 }
 
+/**
+ * Done and total per section, built in one pass over the notes. The section
+ * headers and the switcher both label every section with `done/total`, and
+ * filtering `notesInSection` once per label would walk each group per render
+ * — this asks the document once and every label reads a map entry.
+ */
+const sectionCounts = computed(() => {
+	const counts = new Map<string, { done: number; total: number }>()
+	for (const section of sections.value) counts.set(section.id, { done: 0, total: 0 })
+	for (const note of space.value?.notes ?? []) {
+		const entry = counts.get(note.section)
+		if (!entry) continue
+		entry.total++
+		if (note.done) entry.done++
+	}
+	return counts
+})
+
+function countsInSection(sectionId: string): { done: number; total: number } {
+	return sectionCounts.value.get(sectionId) ?? { done: 0, total: 0 }
+}
+
 /** Id lookup for the action layer, which resolves a selection into note objects
  *  on every menu open. A linear `find` per id is quadratic over a selection. */
 const notesById = computed(() => new Map((space.value?.notes ?? []).map((note) => [note.id, note])))
@@ -1203,6 +1260,7 @@ export function useSpace() {
 	return {
 		...readonlyViews,
 		notesInSection,
+		countsInSection,
 		noteById,
 		notesByIds,
 		renderNotesMarkdown,
@@ -1216,6 +1274,7 @@ export function useSpace() {
 		adopt,
 		submitEntry,
 		addNote,
+		addNotes,
 		updateNoteBody,
 		setNotesDone,
 		setActiveSection,
@@ -1223,6 +1282,7 @@ export function useSpace() {
 		mergeNotes,
 		deleteNotes,
 		reorderNote,
+		reorderNotes,
 		addSection,
 		renameSection,
 		deleteSection,

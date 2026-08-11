@@ -49,6 +49,7 @@ function makeSettings(linkPreviews: boolean): Settings {
 		motion: 'auto',
 		insertionPoint: 'bottom',
 		doubleClick: 'copy',
+		enterKey: 'submit',
 		alwaysOnTop: true,
 		showCreated: false,
 		captureNotifications: true,

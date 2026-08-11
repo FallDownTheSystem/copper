@@ -104,6 +104,7 @@ pub struct Settings {
 	pub motion: String,
 	pub insertion_point: String,
 	pub double_click: String,
+	pub enter_key: String,
 	pub always_on_top: bool,
 	pub show_created: bool,
 	pub capture_notifications: bool,
@@ -161,6 +162,12 @@ impl Default for Settings {
 			// behaviour a user upgrading into this feature already has.
 			insertion_point: "bottom".to_string(),
 			double_click: "copy".to_string(),
+			// Enter submits in every multi-line field, with the newline on
+			// Ctrl+Enter and Shift+Enter (user ruling 2026-08-11: the capture line
+			// and the inline editor follow one matrix, and this is the one the
+			// composer has always had). "newline" is the inverse for users who
+			// write multi-line notes more often than they capture.
+			enter_key: "submit".to_string(),
 			// The band the window was born in (`alwaysOnTop` in `tauri.conf.json`).
 			// Defaulting to `false` would change what every existing install does on
 			// its first launch after an upgrade, over a setting nobody had asked for.
@@ -279,6 +286,7 @@ struct RawSettings {
 	motion: Value,
 	insertion_point: Value,
 	double_click: Value,
+	enter_key: Value,
 	always_on_top: Value,
 	show_created: Value,
 	capture_notifications: Value,
@@ -409,6 +417,7 @@ impl RawSettings {
 			defaults.double_click,
 			&mut notices,
 		);
+		let enter_key = repair_named(self.enter_key, "enterKey", defaults.enter_key, &mut notices);
 		let neutral = repair_named(self.neutral, "neutral", defaults.neutral, &mut notices);
 		let accent = repair_named(self.accent, "accent", defaults.accent, &mut notices);
 
@@ -451,6 +460,7 @@ impl RawSettings {
 			motion,
 			insertion_point,
 			double_click,
+			enter_key,
 			always_on_top,
 			show_created,
 			capture_notifications,
@@ -664,6 +674,9 @@ impl Settings {
 		if let Some(double_click) = patch.double_click {
 			self.double_click = double_click;
 		}
+		if let Some(enter_key) = patch.enter_key {
+			self.enter_key = enter_key;
+		}
 		if let Some(always_on_top) = patch.always_on_top {
 			self.always_on_top = always_on_top;
 		}
@@ -725,6 +738,8 @@ pub struct SettingsPatch {
 	pub insertion_point: Option<String>,
 	#[serde(default)]
 	pub double_click: Option<String>,
+	#[serde(default)]
+	pub enter_key: Option<String>,
 	#[serde(default)]
 	pub always_on_top: Option<bool>,
 	#[serde(default)]
@@ -1012,7 +1027,7 @@ mod tests {
 			 \"shortcuts\": {\n    \"capture\": \"Shift Shift\",\n    \"summon\": \
 			 \"Ctrl+Shift+Space\"\n  },\n  \"theme\": \"system\",\n  \"sounds\": false,\n  \
 			 \"motion\": \"auto\",\n  \"insertionPoint\": \"bottom\",\n  \"doubleClick\": \
-			 \"copy\",\n  \"alwaysOnTop\": true,\n  \"showCreated\": false,\n  \
+			 \"copy\",\n  \"enterKey\": \"submit\",\n  \"alwaysOnTop\": true,\n  \"showCreated\": false,\n  \
 			 \"captureNotifications\": true,\n  \"linkPreviews\": false,\n  \"translucent\": \
 			 false,\n  \"neutral\": \"warm\",\n  \"accent\": \"copper\",\n  \"vibrancy\": 1.0,\n  \
 			 \"resizable\": false,\n  \"panelWidth\": 440.0,\n  \"panelHeight\": 760.0\n}\n"
@@ -1518,6 +1533,56 @@ mod tests {
 		settings.apply_patch(patch(r#"{"doubleClick":"edit"}"#));
 		assert_eq!(settings.insertion_point, "top", "a doubleClick patch must not clear insertionPoint");
 		assert_eq!(settings.double_click, "edit");
+	}
+
+	/// `enterKey` joins the same guarantee every named preference holds: a file
+	/// written before the key existed reads as the documented default, silently.
+	#[test]
+	fn a_file_without_the_enter_key_reads_as_submit_without_a_notice() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"theme":"dark"}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(loaded.notice.is_none(), "absence was reported as damage: {:?}", loaded.notice);
+		assert_eq!(loaded.settings.enter_key, "submit");
+	}
+
+	#[test]
+	fn a_wrong_typed_enter_key_is_repaired_to_submit_and_reported() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"enterKey":3}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert_eq!(loaded.settings.enter_key, "submit");
+		let notice = loaded.notice.expect("repairs must be reported");
+		assert!(notice.contains("enterKey"), "enterKey unreported in: {notice}");
+	}
+
+	#[test]
+	fn an_explicit_newline_enter_key_survives_a_load() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"enterKey":"newline"}"#);
+
+		let loaded = load(&path);
+
+		assert!(loaded.notice.is_none(), "a stored choice was reported: {:?}", loaded.notice);
+		assert_eq!(loaded.settings.enter_key, "newline");
+	}
+
+	#[test]
+	fn a_patch_sets_enter_key_without_touching_its_neighbours() {
+		let mut settings = Settings::default();
+
+		settings.apply_patch(patch(r#"{"enterKey":"newline"}"#));
+		assert_eq!(settings.enter_key, "newline");
+		assert_eq!(settings.double_click, "copy", "an enterKey patch must not clear doubleClick");
+
+		settings.apply_patch(patch(r#"{"doubleClick":"edit"}"#));
+		assert_eq!(settings.enter_key, "newline", "a doubleClick patch must not clear enterKey");
 	}
 
 	/// Task-012 AC13. A `settings.json` written by any earlier build has neither

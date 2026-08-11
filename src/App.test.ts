@@ -32,8 +32,8 @@ const SHARE_CONFIG = {
 	lastError: null,
 }
 
-// happy-dom implements no Web Animations API; auto-animate calls `el.animate`
-// from a MutationObserver callback and throws out of band without this.
+// happy-dom implements no Web Animations API; with the stub in place the list's
+// enter and leave hooks run their real animated path instead of skipping.
 //
 // Torn down again below: `restoreMocks` does not reach a plain assignment to a
 // host prototype, so a stub left in place would hand every later suite in the

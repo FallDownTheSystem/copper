@@ -12,7 +12,8 @@
 /** Control points for motion-v / WAAPI, which take the curve as numbers. */
 export const EASE_OUT_QUINT = [0.22, 1, 0.36, 1] as const
 
-/** The same curve for anything that takes a CSS easing string — auto-animate. */
+/** The same curve for anything that takes a CSS easing string — the list
+ *  transition's Web Animations keyframes, and the drag's settle-home. */
 export const EASE_OUT_QUINT_CSS = 'cubic-bezier(0.22, 1, 0.36, 1)'
 
 /**

@@ -478,13 +478,13 @@ describe('the scroll anchor', () => {
 
 		const metrics = { scrollTop: 380, scrollHeight: 500, clientHeight: 120 }
 		const region = mountRegion(metrics)
-		// auto-animate parks a new row at `scale(.98)` until its entry animation is
-		// half over, so the list holds perfectly still for ~110ms and only then
-		// grows. Measured in WebView2, a settle loop that exited on that stillness
-		// stopped before the growth and left `scrollTop` 12.57px below the true
-		// maximum — the note flush against the viewport with the list's bottom
-		// padding stranded underneath. Reporting a running animation is what
-		// carries the loop across the plateau.
+		// A row entering near `scale(1)` grows the scrollable overflow so slowly
+		// that the list can read as still while the entry animation is running.
+		// Measured in WebView2 (under the earlier animation library), a settle
+		// loop that exited on stillness alone stopped before the growth and left
+		// `scrollTop` 12.57px below the true maximum — the note flush against the
+		// viewport with the list's bottom padding stranded underneath. Reporting a
+		// running animation is what carries the loop across the plateau.
 		region.getAnimations = () => [{ playState: 'running' }] as unknown as Animation[]
 
 		selection.restoreDom(selection.snapshot())

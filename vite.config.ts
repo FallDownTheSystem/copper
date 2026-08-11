@@ -74,9 +74,10 @@ export default defineConfig({
 	// datasets and ResizeObserver-free measurement, not a browser.
 	test: {
 		environment: 'happy-dom',
-		// happy-dom stubs `Element.animate` but ships neither `KeyframeEffect` nor
-		// `Animation`, and auto-animate's plugin path constructs both by name.
-		setupFiles: ['./src/testing/waapi.ts'],
+		// Un-stubs the real `<TransitionGroup>` — the note list's rowgroups are
+		// TransitionGroups now, and test-utils' default stub breaks the list
+		// semantics the axe suite asserts.
+		setupFiles: ['./src/testing/transitions.ts'],
 		// `tests/` is for suites that assert the *build*, not the app: they read
 		// node builtins, which tsconfig.app.json deliberately gives no types for so
 		// that a component importing `node:fs` stays a type error.

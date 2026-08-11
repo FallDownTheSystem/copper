@@ -30,6 +30,7 @@ const SETTINGS = {
 	motion: 'auto',
 	insertionPoint: 'bottom',
 	doubleClick: 'copy',
+	enterKey: 'submit',
 	alwaysOnTop: true,
 	showCreated: false,
 	captureNotifications: true,

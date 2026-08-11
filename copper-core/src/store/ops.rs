@@ -223,6 +223,40 @@ pub fn add_note(
 	Ok(id)
 }
 
+/// Adds one note per body — one op, and so one snapshot and one `Ctrl+Z` for
+/// the whole batch. This is the discipline every batch mutation here states
+/// (`set_notes_done`, `delete_notes`): a pasted list split into eleven notes
+/// must not take eleven presses to take back. Looping [`add_note`] from the
+/// caller would push one snapshot per note.
+///
+/// The ids come back in `bodies` order, whichever end the notes landed at.
+///
+/// **Under `Top` the loop walks the slice in reverse.** Each top insertion
+/// lands above the one before it, so a forward walk would leave the batch
+/// reading bottom-to-top — a list pasted as `a, b, c` showing as `c, b, a`.
+/// Consecutive *gestures* still stack newest-first; within the one gesture the
+/// pasted order is the order the user chose.
+///
+/// Validation is per body and fail-fast: ops run against a scratch copy of the
+/// document (`mutate`'s validate-then-mutate rule), so a bad body anywhere in
+/// the list means no note is added rather than half the list.
+pub fn add_notes(
+	space: &mut Space,
+	bodies: &[String],
+	section: Option<&str>,
+	at: InsertionPoint,
+) -> Result<Vec<String>> {
+	let mut ids = vec![String::new(); bodies.len()];
+	let order: Vec<usize> = match at {
+		InsertionPoint::Top => (0..bodies.len()).rev().collect(),
+		InsertionPoint::Bottom => (0..bodies.len()).collect(),
+	};
+	for index in order {
+		ids[index] = add_note(space, &bodies[index], section, &[], at)?;
+	}
+	Ok(ids)
+}
+
 pub fn edit_note(space: &mut Space, id: &str, body: &str) -> Result<()> {
 	let body = clean_body(body)?;
 	let now = now_rfc3339();
@@ -292,6 +326,56 @@ pub fn reorder_note(space: &mut Space, id: &str, section: &str, index: i64) -> R
 		}
 	}
 	group.insert(clamp_index(index, group.len()), moved);
+	for (position, note) in group.iter_mut().enumerate() {
+		note.order = position as i64;
+	}
+
+	rest.append(&mut group);
+	space.notes = rest;
+	// `updated` is deliberately untouched: this changed position, not content.
+	normalise(space);
+	Ok(())
+}
+
+/// Moves several notes to `index` within `section` as one contiguous block —
+/// the multi-select form of [`reorder_note`], and one op so a block drag or a
+/// block Alt+Arrow is one snapshot and one `Ctrl+Z` (the same discipline every
+/// batch mutation here states).
+///
+/// `index` is [`reorder_note`]'s rule extended to the batch: interpreted
+/// against the target list **after every selected note has been removed** from
+/// it. Without that a within-section block move would mean different
+/// destinations depending on how many of the block's own notes sat above it.
+///
+/// The block keeps the *document's* canonical order, exactly as [`move_notes`]
+/// does and by the same drain — scrambling the ids in the argument changes
+/// nothing. A selection that was discontiguous, or spread over several
+/// sections, comes out contiguous: gathering is what "move them together"
+/// means, and it is what a drop at a single point can only mean.
+pub fn reorder_notes(space: &mut Space, ids: &[String], section: &str, index: i64) -> Result<()> {
+	let ids = dedupe_ids(ids)?;
+	require_notes(space, &ids)?;
+	require_section(space, section)?;
+
+	let selected: HashSet<&str> = ids.iter().map(String::as_str).collect();
+	let mut moved: Vec<Note> = Vec::new();
+	let mut group: Vec<Note> = Vec::new();
+	let mut rest: Vec<Note> = Vec::new();
+	for note in space.notes.drain(..) {
+		if selected.contains(note.id.as_str()) {
+			moved.push(note);
+		} else if note.section == section {
+			group.push(note);
+		} else {
+			rest.push(note);
+		}
+	}
+
+	let at = clamp_index(index, group.len());
+	for (offset, mut note) in moved.into_iter().enumerate() {
+		note.section = section.to_string();
+		group.insert(at + offset, note);
+	}
 	for (position, note) in group.iter_mut().enumerate() {
 		note.order = position as i64;
 	}
@@ -833,6 +917,92 @@ mod tests {
 			reorder_note(&mut space, &id, "sec_nope", 0).unwrap_err().kind(),
 			"not-found"
 		);
+	}
+
+	// --- reorder_notes ---
+
+	#[test]
+	fn reorder_notes_moves_a_contiguous_block_past_a_neighbour() {
+		let mut space = space();
+		let group = ids_in(&space, "sec_aaaaaaaa");
+		// [0, 1, 2] -> move the block [0, 1] to index 1 (after removal only [2]
+		// remains) -> [2, 0, 1]
+		reorder_notes(&mut space, &strings(&[&group[0], &group[1]]), "sec_aaaaaaaa", 1).unwrap();
+		assert_eq!(
+			ids_in(&space, "sec_aaaaaaaa"),
+			vec![group[2].clone(), group[0].clone(), group[1].clone()]
+		);
+	}
+
+	/// The drain is what makes both true at once: a scrambled argument changes
+	/// nothing, and a discontiguous selection gathers into one block.
+	#[test]
+	fn reorder_notes_gathers_a_discontiguous_selection_in_canonical_order() {
+		let mut space = space();
+		let group = ids_in(&space, "sec_aaaaaaaa");
+		// Select 0 and 2 (skipping 1), scrambled: the block gathers as [0, 2] at
+		// the top -> [0, 2, 1]
+		reorder_notes(&mut space, &strings(&[&group[2], &group[0]]), "sec_aaaaaaaa", 0).unwrap();
+		assert_eq!(
+			ids_in(&space, "sec_aaaaaaaa"),
+			vec![group[0].clone(), group[2].clone(), group[1].clone()]
+		);
+	}
+
+	#[test]
+	fn reorder_notes_carries_a_block_across_sections_without_touching_updated() {
+		let mut space = space();
+		let group = ids_in(&space, "sec_aaaaaaaa");
+		let stamp = space.note(&group[0]).unwrap().updated.clone();
+
+		reorder_notes(&mut space, &strings(&[&group[0], &group[1]]), "sec_bbbbbbbb", 1).unwrap();
+
+		let target = ids_in(&space, "sec_bbbbbbbb");
+		assert_eq!(target.len(), 4);
+		// Index 1 of the target's own two notes, block order preserved.
+		assert_eq!(&target[1..3], &[group[0].clone(), group[1].clone()]);
+		assert_eq!(ids_in(&space, "sec_aaaaaaaa"), vec![group[2].clone()]);
+		assert_eq!(space.note(&group[0]).unwrap().updated, stamp);
+	}
+
+	#[test]
+	fn reorder_notes_clamps_an_out_of_range_index() {
+		let mut space = space();
+		let group = ids_in(&space, "sec_aaaaaaaa");
+		reorder_notes(&mut space, &strings(&[&group[0], &group[1]]), "sec_aaaaaaaa", 900).unwrap();
+		assert_eq!(
+			ids_in(&space, "sec_aaaaaaaa"),
+			vec![group[2].clone(), group[0].clone(), group[1].clone()]
+		);
+
+		reorder_notes(&mut space, &strings(&[&group[0], &group[1]]), "sec_aaaaaaaa", -5).unwrap();
+		assert_eq!(
+			ids_in(&space, "sec_aaaaaaaa"),
+			vec![group[0].clone(), group[1].clone(), group[2].clone()]
+		);
+	}
+
+	#[test]
+	fn reorder_notes_rejects_every_bad_argument_without_moving_anything() {
+		let mut space = space();
+		let id = space.notes[0].id.clone();
+		let before = space.clone();
+
+		assert_eq!(
+			reorder_notes(&mut space, &[], "sec_aaaaaaaa", 0).unwrap_err().kind(),
+			"invalid"
+		);
+		assert_eq!(
+			reorder_notes(&mut space, &strings(&[&id, "nte_nope"]), "sec_aaaaaaaa", 0)
+				.unwrap_err()
+				.kind(),
+			"not-found"
+		);
+		assert_eq!(
+			reorder_notes(&mut space, &strings(&[&id]), "sec_nope", 0).unwrap_err().kind(),
+			"not-found"
+		);
+		assert_eq!(space, before, "a rejected block move still changed the document");
 	}
 
 	// --- move_notes ---

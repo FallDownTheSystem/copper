@@ -267,6 +267,25 @@ function capturePaste(text: string) {
 	})
 }
 
+/**
+ * The split half of a list paste — the popover's other offer, after
+ * `PanelShell` has asked and the user has chosen separate notes.
+ *
+ * In the same queue as `capturePaste` and for its reason: the items resolve
+ * against the document as it is when this turn comes, not as it was when the
+ * popover opened. The batch itself is `useSpace.addNotes`'s — one command, one
+ * undo step — so nothing here loops.
+ *
+ * No toast: like every other add, the result is on screen. The count the user
+ * confirmed is the count that appears.
+ */
+function captureListPaste(items: string[]) {
+	return serialize(async () => {
+		space.clearActionError('composer')
+		await space.addNotes(items)
+	})
+}
+
 // --- mark as done ------------------------------------------------------------
 
 /**
@@ -491,12 +510,12 @@ function merge() {
  *   nothing was lost. The grid was left with its roving target on a row
  *   nothing was focused on, and the next arrow key went nowhere.
  * - **From the keyboard it was, and the test still answers "still connected".**
- *   auto-animate takes a removed row back out of the DOM on its exit animation's
- *   `finish`, not when Vue patches — so at the tick `restoreDom` runs, the row
- *   that held focus is both deleted and `isConnected`. It declines, the row leaves
- *   a moment later, and focus falls to the body. That path passed intermittently
- *   depending on which side of the animation the tick landed on, which is a worse
- *   failure than not working at all.
+ *   The list's `<TransitionGroup>` holds a removed row in the DOM until its leave
+ *   animation reports done, not until Vue patches — so at the tick `restoreDom`
+ *   runs, the row that held focus is both deleted and `isConnected`. It declines,
+ *   the row leaves a moment later, and focus falls to the body. That path passed
+ *   intermittently depending on which side of the animation the tick landed on,
+ *   which is a worse failure than not working at all.
  *
  * Moving focus here rather than relaxing that `isConnected` test, because the test
  * is right about what it guards — never steal focus out of something the user is
@@ -567,8 +586,8 @@ function deleteNotes() {
 // --- delete a section ----------------------------------------------------------
 
 /**
- * `Delete section and its notes`, shared by the section context menu and the
- * keyboard confirm in `SectionHeader`.
+ * `Delete section`, shared by the section context menu and the keyboard
+ * confirm in `SectionHeader`.
  *
  * No confirmation dialog *here*: the whole operation is one undo, and an
  * undoable action reads better as a reversible one than as a question. The
@@ -625,7 +644,13 @@ function removeSection(section: Section) {
  */
 function doneInActiveSection(): string[] {
 	const sectionId = space.activeSection.value
-	if (sectionId === null) return []
+	return sectionId === null ? [] : doneInSection(sectionId)
+}
+
+/** One section's done notes, off the document — the body the active-section
+ *  offer above narrows to, and what the section context menu asks for its own
+ *  section, which is not always the active one. */
+function doneInSection(sectionId: string): string[] {
 	return space
 		.notesInSection(sectionId)
 		.filter((note) => note.done)
@@ -684,6 +709,14 @@ const allDoneCount = computed(() => allDoneTargets.value.length)
  *  for the wide one by the same construction. */
 function deleteAllDone() {
 	return purgeDone(doneEverywhere)
+}
+
+/** The section context menu's purge: the menu's own section, named by id
+ *  because the right-clicked section and the active one can differ. The same
+ *  shared body as the other two scopes, so it is one command, one undo step
+ *  and the same toast. */
+function deleteDoneInSection(sectionId: string) {
+	return purgeDone(() => doneInSection(sectionId))
 }
 
 /** The shared body of the two purges; only the target set differs. The ids are
@@ -772,15 +805,61 @@ const canReorder = computed(
 )
 
 /**
- * Commits a completed drag.
+ * The notes a move gesture carries: the whole selection when the note the
+ * gesture names is part of it, that note alone otherwise — the target rule,
+ * anchored on the carried note rather than on focus, because a drag can grab a
+ * card the keyboard has never visited. It is what makes the drag and Alt+Arrow
+ * agree about what "move" means over a multi-selection.
+ *
+ * Document order, off `actionableNoteIds` like every batch action. That order
+ * is narrowed by a query and by the done filter — but every caller here sits
+ * behind `reorderBlocked`, which refuses both, so what this answers is the
+ * document's own order. Collapse deliberately does not narrow it: folding a
+ * section shut never narrowed what an action targets, so a selected note in a
+ * folded section travels with the block.
+ */
+function movedIds(anchorId: string): string[] {
+	if (!selection.isSelected(anchorId)) return [anchorId]
+	const ids = selection.actionableNoteIds.value.filter((id) => selection.isSelected(id))
+	return ids.includes(anchorId) ? ids : [anchorId]
+}
+
+/**
+ * Whether `reorder_notes` would leave the document exactly as it is — the
+ * no-op a drag back to where it started must be recognised as, so it pushes no
+ * undo entry.
+ *
+ * Answered by building the target section's resulting order and comparing,
+ * rather than by comparing any one note's position: a block is unmoved only
+ * when it is already *contiguous* at the destination, and contiguity is a
+ * property of the whole group. Read off the document, not off `visibleGroups`
+ * — `useNoteDrag` counts over the whole section, a collapsed section publishes
+ * an empty visible list, and every other way the two could disagree is refused
+ * by `reorderBlocked` before this runs.
+ */
+function blockUnmoved(ids: string[], sectionId: string, index: number): boolean {
+	if (!ids.every((id) => space.noteById(id)?.section === sectionId)) return false
+	const carried = new Set(ids)
+	const group = space.notesInSection(sectionId).map((entry) => entry.id)
+	const rest = group.filter((id) => !carried.has(id))
+	const at = Math.min(Math.max(index, 0), rest.length)
+	const after = [...rest.slice(0, at), ...ids, ...rest.slice(at)]
+	return after.every((id, position) => id === group[position])
+}
+
+/**
+ * Commits a completed drag — of the focused block, not only of the grabbed row.
  *
  * The destination arrives as a section and an index rather than being read back
  * out of the DOM. The drag does not reorder the list as it runs — it translates
  * the row it carries and paints a line where that row would land — so at drop
  * time the DOM still holds the *old* order and reading it would compute a no-op
- * every time. `useNoteDrag` resolves the destination from geometry instead, and
- * counts its index over the section with the dragged note excluded, which is
- * exactly what `reorder_note` takes.
+ * every time. `useNoteDrag` resolves the destination from geometry instead.
+ *
+ * That geometry counts its index over the target's rows with only the *dragged*
+ * note excluded, while `reorder_notes` interprets it with the whole block
+ * removed — so every other carried note above the drop point is subtracted
+ * here, translating between the two coordinate systems.
  */
 function finishDrag(noteId: string, sectionId: string, index: number) {
 	return serialize(async () => {
@@ -788,44 +867,34 @@ function finishDrag(noteId: string, sectionId: string, index: number) {
 		if (!note) return
 		if (reorderBlocked()) return
 
+		const ids = movedIds(noteId)
+		const carried = new Set(ids)
+		const others = space.notesInSection(sectionId).filter((entry) => entry.id !== noteId)
+		const at = index - others.slice(0, index).filter((entry) => carried.has(entry.id)).length
+
 		// A drag that changed nothing must not push an undo entry.
-		if (note.section === sectionId && positionOf(noteId) === index) return
+		if (blockUnmoved(ids, sectionId, at)) return
 
-		if (!space.applied(await space.reorderNote(noteId, sectionId, index))) return
+		if (!space.applied(await space.reorderNotes(ids, sectionId, at))) return
 
-		// Selected unconditionally — collapse folds a row away, it never unselects
-		// the note — but focus goes to whatever row actually exists, which is the
-		// destination's header when the note was dropped into a folded section.
-		selection.select(noteId)
+		// A lone note is selected on landing, as a drop has always done — collapse
+		// folds a row away, it never unselects the note. A carried block is *not*
+		// re-selected to the grabbed note: the block is still what the user picked,
+		// and it is all still selected. Focus goes to whatever row actually
+		// exists, which is the destination's header inside a folded section.
+		if (ids.length === 1) selection.select(noteId)
 		const target = landingRow(noteId, sectionId)
 		if (target !== null) takeRow(target)
 	})
 }
 
 /**
- * The note's index within its own section in the *document*, which is what a
- * no-op drag has to be compared against.
- *
- * Read off the document rather than off `visibleGroups`, which is what the
- * docstring always claimed and the body did not do. `useNoteDrag` counts the
- * destination index over the whole section, so comparing it against a position
- * taken from the *rendered* rows compares two different coordinate systems. It
- * happened to agree whenever nothing narrowed or reordered the list, and every
- * condition that breaks that agreement is refused by `reorderBlocked` — so the
- * bug was unreachable rather than absent. Making the body match the contract is
- * what keeps it unreachable when the next filter arrives, instead of resting on a
- * guard somebody has to remember to extend.
- */
-function positionOf(noteId: string): number {
-	const note = space.noteById(noteId)
-	if (!note) return -1
-	return space.notesInSection(note.section).findIndex((entry) => entry.id === noteId)
-}
-
-/**
  * The keyboard equivalent of a drag, since every action has to be reachable
- * without a pointer. At a section boundary it crosses into the neighbouring
- * section rather than stopping, which is what the drag does too.
+ * without a pointer — and it carries what a drag carries: the whole selection
+ * when the focused note is part of it (`movedIds`), the focused note alone
+ * otherwise. A single note is a block of one, so both run the same arithmetic.
+ * At a section boundary the block crosses into the neighbouring section rather
+ * than stopping, which is what the drag does too.
  *
  * On a section header the same chord carries the whole section instead — the
  * same move as the section menu's Move up / Move down, with the same
@@ -858,44 +927,55 @@ function moveFocusedBy(delta: number) {
 		// into as well: every reason to refuse is document-wide. The index arithmetic
 		// below depends on it having refused.
 		if (noteId === null || reorderBlocked()) return
+		const note = space.noteById(noteId)
+		if (!note) return
 
-		const groups = selection.visibleGroups.value
-		const groupIndex = groups.findIndex((group) => group.noteIds.includes(noteId))
-		const group = groups[groupIndex]
-		if (!group) return
+		const ids = movedIds(noteId)
+		const carried = new Set(ids)
 
-		const at = group.noteIds.indexOf(noteId)
-		const next = at + delta
+		// Everything is counted over the notes the block leaves behind, because
+		// that is the list `reorder_notes` interprets its index against. `before`
+		// is how many of them sit above the focused note in its own section — the
+		// block's index-after-removal — and one step is one hop over the nearest
+		// remaining note. Counted off the *document* rather than off the visible
+		// walk, which publishes an empty list for a collapsed section; reordering
+		// is refused outright under a query, the done filter and a sort, so the
+		// document is never a filtered subset here.
+		const group = space.notesInSection(note.section)
+		const at = group.findIndex((entry) => entry.id === noteId)
+		const before = group.slice(0, at).filter((entry) => !carried.has(entry.id)).length
+		const remaining = group.filter((entry) => !carried.has(entry.id)).length
 
-		let sectionId = group.sectionId
-		let index = next
+		let sectionId = note.section
+		let index = delta > 0 ? before + 1 : before - 1
 
-		if (next < 0 || next >= group.noteIds.length) {
-			const neighbour = groups[groupIndex + delta]
+		// No remaining note left to hop in the direction of travel: the block
+		// crosses into the neighbouring section, entering at the near end —
+		// from above it lands at the top, from below at the bottom.
+		if (delta > 0 ? before >= remaining : before === 0) {
+			const sections = space.sections.value
+			const here = sections.findIndex((entry) => entry.id === note.section)
+			const neighbour = sections[here + delta]
 			if (!neighbour) return
-			sectionId = neighbour.sectionId
-			// Entering from above lands at the top; entering from below lands at the
-			// bottom — the note keeps travelling in the direction it was going.
-			//
-			// Counted off the *document* rather than off `neighbour.noteIds`, which is
-			// what the visible walk publishes: a collapsed section publishes an empty
-			// list, so an Alt+Up into one landed the note at index 0 — the top — which
-			// is the opposite of what travelling upward means. Reordering is refused
-			// outright while a query is active, so the document count is the whole
-			// section here and never a filtered subset of it.
-			index = delta > 0 ? 0 : space.notesInSection(neighbour.sectionId).length
+			sectionId = neighbour.id
+			index =
+				delta > 0
+					? 0
+					: space.notesInSection(neighbour.id).filter((entry) => !carried.has(entry.id))
+							.length
 		}
 
-		if (!space.applied(await space.reorderNote(noteId, sectionId, index))) return
+		if (!space.applied(await space.reorderNotes(ids, sectionId, index))) return
 
 		// `takeRow` rather than `focusRowSoon`: both halves of the roving target, not
 		// just the DOM one. The note keeps its row key across a reorder, so
 		// reconciliation leaves `focusedId` pointing at it and the two happen to
 		// agree — but "happen to" is not a guarantee, and a held Alt+Down depends on
 		// DOM focus landing back inside the grid for the *next* press to be seen at
-		// all. The selection is deliberately left alone: unlike a drag, this is a
-		// keyboard action on the focused note, and collapsing a multi-note selection
-		// as a side effect of nudging one note is not something the user asked for.
+		// all. The selection is deliberately left alone: a carried block is still
+		// the thing the user picked, and when focus sits outside the selection,
+		// collapsing that selection as a side effect of nudging one note is not
+		// something they asked for.
 		//
 		// Through `landingRow` because this can cross into a collapsed section, where
 		// the moved note has no row to hold.
@@ -1159,6 +1239,7 @@ export function useNoteActions() {
 		copySectionAsMarkdown,
 		copySelectionAsMarkdown,
 		capturePaste,
+		captureListPaste,
 		toggleDone,
 		toggleNoteDone,
 		moveTo,
@@ -1171,6 +1252,7 @@ export function useNoteActions() {
 		allDoneTargets,
 		deleteDoneInActiveSection,
 		deleteAllDone,
+		deleteDoneInSection,
 		finishDrag,
 		canReorder,
 		moveFocusedBy,

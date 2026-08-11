@@ -229,14 +229,14 @@ function activate() {
 	const row = gesture.handle.closest<HTMLElement>('[data-note-row]')
 	if (!row) return
 
-	// **Settle the list before reading a single rect.** auto-animate is mid-FLIP
-	// for 150ms after any list change, and a row being animated reports its
-	// *transformed* box — so a drag begun just after a capture landed would measure
-	// rows at positions they are still travelling away from and drop the note
-	// somewhere nobody pointed at. Finishing the animations puts every row at its
-	// real place first. This also removes the ordering hazard in arming the drag:
-	// the auto-animate stand-down watcher runs asynchronously off `draggingNoteId`,
-	// so it cannot be relied on to have quieted anything by the time we measure.
+	// **Settle the list before reading a single rect.** The list is mid-motion for
+	// 150ms after any change — the move FLIP and the enter and leave animations —
+	// and a row being animated reports its *transformed* box, so a drag begun just
+	// after a capture landed would measure rows at positions they are still
+	// travelling away from and drop the note somewhere nobody pointed at.
+	// Finishing the animations puts every row at its real place first. The gate in
+	// `NoteSection` only stops *new* animations once `draggingNoteId` is set; what
+	// was already in flight when the drag armed is finished here.
 	//
 	// `runningMotions` and not the raw walk, because the FLIP is not the only
 	// animation on a row: the section band's clip is scroll-driven, finishing it
@@ -267,8 +267,8 @@ function onUp(event: PointerEvent) {
 	//
 	// A release with nowhere to land is an abandonment like any other and the row
 	// travels back. A release that commits does not: the reorder the next line
-	// requests is what moves the row, through auto-animate, and animating it home
-	// first would be the same row travelling twice for one gesture.
+	// requests is what moves the row, through the list's move FLIP, and animating
+	// it home first would be the same row travelling twice for one gesture.
 	end(target === null)
 
 	if (!target) return
@@ -330,8 +330,8 @@ function clearDragStyles(row: HTMLElement) {
  * The row was under the pointer a moment ago and is about to be somewhere else
  * entirely; cutting between the two in one frame gives the eye nothing to follow,
  * and the note reads as having been *replaced* rather than as having gone back.
- * Only abandonment gets this. A drop that lands is followed by auto-animate's own
- * FLIP, and two motions arguing over one row is worse than either alone.
+ * Only abandonment gets this. A drop that lands is followed by the list's own
+ * move FLIP, and two motions arguing over one row is worse than either alone.
  *
  * **`data-settling` rather than holding `data-dragging` through the return.** The
  * row does need to keep its surface and its raised stacking order for the trip,
@@ -376,8 +376,8 @@ function settleHome(row: HTMLElement) {
  * impossible rather than merely unlikely: a `pointerup` delivered to another
  * window, a lost capture, an alt-tab, a document arriving from disk. Without it
  * the row keeps its transform and its raised z-index, `isDragging` stays true and
- * auto-animate stays switched off, and the auto-scroll loop keeps requesting
- * frames for a gesture nobody is performing.
+ * the list animation stays switched off, and the auto-scroll loop keeps
+ * requesting frames for a gesture nobody is performing.
  *
  * `settle` asks for the row's *visual* return to be animated, and is the one
  * thing here that outlives the call. Everything else — the click swallow, the
@@ -438,9 +438,9 @@ watch(
 	() => space.space.value,
 	() => {
 		// The one abandonment that does not animate the row home. Everything in the
-		// list is about to move — auto-animate comes back on as `isDragging` falls,
-		// and the new document is what it FLIPs to — so a settle here would be a
-		// second transform on a row already being carried by the first.
+		// list is about to move — the list animation comes back on as `isDragging`
+		// falls, and the new document is what it FLIPs to — so a settle here would
+		// be a second transform on a row already being carried by the first.
 		if (draggingNoteId.value !== null) end()
 	},
 )
@@ -493,7 +493,7 @@ function beginDrag(noteId: string, event: PointerEvent) {
 	// The window losing focus is the one way a `pointerup` never arrives at all:
 	// an alt-tab, or a click that raises another window, delivers the release
 	// somewhere else entirely. Without this the row stays stuck to the cursor and
-	// auto-animate stays switched off for the rest of the session.
+	// the list animation stays switched off for the rest of the session.
 	//
 	// Wrapped rather than passed straight in: `end`'s first parameter would
 	// otherwise be the `Event`, and every blur would ask for a settle by accident.

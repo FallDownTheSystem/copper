@@ -235,6 +235,7 @@ declare global {
   const useIntervalFn: typeof import('@vueuse/core').useIntervalFn
   const useKeyModifier: typeof import('@vueuse/core').useKeyModifier
   const useLastChanged: typeof import('@vueuse/core').useLastChanged
+  const useListTransition: typeof import('./composables/useListTransition').useListTransition
   const useLocalStorage: typeof import('@vueuse/core').useLocalStorage
   const useMagicKeys: typeof import('@vueuse/core').useMagicKeys
   const useManualRefHistory: typeof import('@vueuse/core').useManualRefHistory
@@ -406,16 +407,16 @@ declare global {
   export type { ScrollAnchor, SelectionSnapshot } from './composables/useSelection'
   import('./composables/useSelection')
   // @ts-ignore
-  export type { ThemePreference, MotionPreference, InsertionPoint, DoubleClickAction, ShortcutState, ShortcutTarget, SettingsScope, PreferenceScope, Generation } from './composables/useSettings'
+  export type { ThemePreference, MotionPreference, InsertionPoint, DoubleClickAction, EnterKeyAction, ShortcutState, ShortcutTarget, SettingsScope, PreferenceScope, Generation } from './composables/useSettings'
   import('./composables/useSettings')
   // @ts-ignore
-  export type { Note, Section, Space, StoreStatus, Settings, SpaceView, NoteView, ChangeReason, SpaceChangedPayload, StoreErrorPayload, SubmitOutcome, AddNoteResult, SubmitResult, NoteSelection, MarkdownFormat, RenderedNotes, LoadState, ActionErrorScope, ActionError, MutationResult } from './composables/useSpace'
+  export type { Note, Section, Space, StoreStatus, Settings, SpaceView, NoteView, ChangeReason, SpaceChangedPayload, StoreErrorPayload, SubmitOutcome, AddNoteResult, AddNotesResult, SubmitResult, NoteSelection, MarkdownFormat, RenderedNotes, LoadState, ActionErrorScope, ActionError, MutationResult } from './composables/useSpace'
   import('./composables/useSpace')
   // @ts-ignore
   export type { UnavailableReason, Availability, RecentEntry, ActivateOutcome } from './composables/useSpaces'
   import('./composables/useSpaces')
   // @ts-ignore
-  export type { StatusAction, StatusSeverity, StatusToast } from './composables/useStatusMessage'
+  export type { StatusAction, StatusSeverity } from './composables/useStatusMessage'
   import('./composables/useStatusMessage')
   // @ts-ignore
   export type { UpdateStatus, UpdateInfo, UpdateProgress } from './composables/useUpdater'
@@ -656,6 +657,7 @@ declare module 'vue' {
     readonly useIntervalFn: UnwrapRef<typeof import('@vueuse/core')['useIntervalFn']>
     readonly useKeyModifier: UnwrapRef<typeof import('@vueuse/core')['useKeyModifier']>
     readonly useLastChanged: UnwrapRef<typeof import('@vueuse/core')['useLastChanged']>
+    readonly useListTransition: UnwrapRef<typeof import('./composables/useListTransition')['useListTransition']>
     readonly useLocalStorage: UnwrapRef<typeof import('@vueuse/core')['useLocalStorage']>
     readonly useMagicKeys: UnwrapRef<typeof import('@vueuse/core')['useMagicKeys']>
     readonly useManualRefHistory: UnwrapRef<typeof import('@vueuse/core')['useManualRefHistory']>

@@ -33,6 +33,8 @@ vi.mock('@tauri-apps/api/webview', () => ({
 	getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
 }))
 
+import { toast as sonner } from 'vue-sonner'
+
 import { useNoteActions } from './useNoteActions'
 import { noteRow, useSelection } from './useSelection'
 import { type Space } from './useSpace'
@@ -89,9 +91,18 @@ beforeEach(() => {
 	selection.focusRow(noteRow('n1'))
 })
 
-async function send() {
+/** Reads the outcome back off Sonner's own state rather than a DOM: the toast
+ *  store is a module singleton `useStatusMessage` writes through, and no
+ *  `<Toaster>` is mounted in a composable suite. The last active toast is the
+ *  one the send just wrote, reshaped to the seam's vocabulary. */
+async function send(): Promise<{ text: string; severity: 'info' | 'error' } | null> {
 	await actions.sendToOtherDevice()
-	return status.toast.value
+	const latest = sonner.getToasts().at(-1)
+	if (!latest || !('title' in latest)) return null
+	return {
+		text: typeof latest.title === 'string' ? latest.title : '',
+		severity: latest.type === 'error' ? 'error' : 'info',
+	}
 }
 
 describe('sendToOtherDevice reports every outcome', () => {

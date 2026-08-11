@@ -3,6 +3,7 @@ import { PopoverAnchor } from '@/components/ui/popover'
 import { focusRowSoon, takeRow } from '@/composables/useSelection'
 import type { Section } from '@/composables/useSpace'
 import { isComposing } from '@/lib/chords'
+import { moveFocusOnArrow } from '@/lib/popoverFocus'
 
 const props = defineProps<{
 	section: Section
@@ -13,7 +14,7 @@ const props = defineProps<{
 const emit = defineEmits<{ activate: [] }>()
 
 const { renaming, draft, setDraft, endRename, cancelRename } = useSectionEditor()
-const { renameSection, notesInSection } = useSpace()
+const { renameSection, notesInSection, countsInSection } = useSpace()
 const { isCollapsedStored, toggleCollapsed, collapseEnabled } = useSections()
 const { confirming: confirmingDelete, closeConfirm } = useSectionDelete()
 const { removeSection } = useNoteActions()
@@ -28,6 +29,20 @@ const editing = computed(() => renaming.value === props.section.id)
 const collapsed = computed(() => isCollapsedStored(props.section.id))
 
 const confirmingThis = computed(() => confirmingDelete.value === props.section.id)
+
+/** What the band says beside the name: how much is here and how much of it is
+ *  finished. Withheld while the section is empty — `0/0` beside every fresh
+ *  heading is a mark that says nothing, the same rule the section menu's
+ *  delete count follows. */
+const counts = computed(() => countsInSection(props.section.id))
+
+/** Spoken rather than shown, `SectionSwitcher`'s rule: `1/2` is unambiguous to
+ *  a reader looking at it and means nothing read aloud on its own. */
+const spokenCounts = computed(() => {
+	const { done, total } = counts.value
+	const notes = countMessage(total, { one: '1 note', many: (n) => `${n} notes` })
+	return `${notes}, ${done} done`
+})
 
 /** Live, so the question always shows the count it would delete — and
  *  `useSectionDelete`'s reconcile withdraws the whole popover the moment the
@@ -80,7 +95,9 @@ function confirmDelete() {
 function onConfirmKeydown(event: KeyboardEvent) {
 	if (event.repeat && (event.key === 'Enter' || event.key === ' ')) {
 		event.preventDefault()
+		return
 	}
+	moveFocusOnArrow(event)
 }
 
 /**
@@ -152,110 +169,137 @@ function onKeydown(event: KeyboardEvent) {
 </script>
 
 <template>
-	<!-- A `grid` may own only `row` and `rowgroup`, and a `rowgroup` only `row`,
-	     so the section header is itself a row rather than an <h2> sitting between
-	     rowgroups. It pays for itself: the header becomes keyboard-reachable
-	     through ordinary arrow navigation instead of needing a bespoke path.
-	     Header rows carry no aria-selected — they are not selectable.
+	<div
+		role="row"
+		:data-row-id="rowId"
+		data-section-row
+		tabindex="0"
+		class="focus-inset section-band sticky top-0 z-1 -ml-1 -mr-[var(--region-inset-r,--spacing(1))] min-w-0 pl-1 pr-[var(--region-inset-r,--spacing(1))] pt-1 pb-2"
+	>
+		<!-- A `grid` may own only `row` and `rowgroup`, and a `rowgroup` only `row`,
+		     so the section header is itself a row rather than an <h2> sitting between
+		     rowgroups. It pays for itself: the header becomes keyboard-reachable
+		     through ordinary arrow navigation instead of needing a bespoke path.
+		     Header rows carry no aria-selected — they are not selectable.
 
-	     The context menu attached here is the *section* menu. A note menu must
-	     not open on a header row, which is why the trigger lives on note rows
-	     only and this one carries its own content. -->
-	<ContextMenu>
-		<ContextMenuTrigger as-child>
-			<!-- **Square, and that is a property of the band rather than of the row.**
-			     The corner used to be the small-control tier's 10px, rounding the focus
-			     ring and the pinned band together. A band is what this actually is: it
-			     spans the region, it rides its top edge, and a rounded rectangle riding
-			     a straight edge reads as a card that has come loose rather than as a
-			     heading that has stuck. `focus-inset`'s outline follows this square
-			     box, which is exactly right for a band.
+		     The context menu attached here is the *section* menu. A note menu must
+		     not open on a header row, which is why the trigger lives on note rows
+		     only and this one carries its own content.
 
-			     **The row pins itself to the top of the region while its own section is
-			     being read**, which is what keeps the answer to "which section am I in"
-			     on screen through a long one. `position: sticky` rather than a second
-			     rendered copy: the row that rides the top edge *is* this one, so the
-			     roving `tabindex`, the context menu, the collapse control and the active
-			     marker all keep working up there with no duplicate to keep in step. The
-			     containing block is the section's own rowgroup, so a heading is pushed
-			     back out by the end of its section instead of stacking with the next
-			     one — and a collapsed or search-dropped section renders no rows at all,
-			     which leaves nothing to pin and no rule to withdraw.
+		     **The row element is this component's root, and that is load-bearing** —
+		     the same constraint `NoteCard` documents: a `<TransitionGroup>` child
+		     must resolve to a single element root, and reka-ui's renderless chain
+		     (`PopperRoot` renders a slot fragment) can never be one. So the whole
+		     `ContextMenu` lives inside the row, its trigger merged onto the gridcell
+		     alongside the delete popover's anchor. The band's own `px-1 pt-1 pb-2`
+		     sliver falls outside the trigger; a right-click there hits the row and
+		     opens no menu, which is the cost of the row animating at all.
 
-			     **`z-1` is measured against three things rather than picked as "on
-			     top".** Above the rows it covers; below the carried row's `z-10`
-			     (NoteCard), so a note being dragged passes over the heading rather than
-			     behind it; and below the drop indicator's `z-20` (NoteList), so the line
-			     saying where that note would land is never what the heading hides. The
-			     status band and the portal host sit above again at `z-20`/`z-30` in this
-			     same stacking context — the panel's `isolate` root — and both live at
-			     the far end of the list.
+		     And as in `NoteCard`: every template comment sits *inside* the row,
+		     because a comment beside the root makes the dev subtree a fragment
+		     whose `el` is a text anchor, which `TransitionGroup` skips when it
+		     installs leave and move hooks. -->
+		<!-- **Square, and that is a property of the band rather than of the row.**
+		     The corner used to be the small-control tier's 10px, rounding the focus
+		     ring and the pinned band together. A band is what this actually is: it
+		     spans the region, it rides its top edge, and a rounded rectangle riding
+		     a straight edge reads as a card that has come loose rather than as a
+		     heading that has stuck. `focus-inset`'s outline follows this square
+		     box, which is exactly right for a band.
 
-			     **The band spans the region edge to edge, which is what `-mx-1 px-1`
-			     buys.** The margin reaches past the scroll region's own `px-1` — the 4px
-			     rhythm the cards are inset by — and the padding puts the heading back
-			     where it was, so only the fill moves. A band that stopped 4px short of
-			     each edge read as a strip laid on the list rather than as the region's
-			     own top edge, and under translucency, where the band is a different
-			     material from the panel rather than more of it, those two gaps were where
-			     that showed. It is also why the focus indicator is `focus-inset` rather
-			     than the note row's halo: everything a halo paints falls outside the
-			     band's box, and at full width every edge of that box meets the scroll
-			     port — the first heading at scroll 0 kept only the bottom arc of its
-			     halo. The inset outline is whole wherever the band itself is.
+		     **The row pins itself to the top of the region while its own section is
+		     being read**, which is what keeps the answer to "which section am I in"
+		     on screen through a long one. `position: sticky` rather than a second
+		     rendered copy: the row that rides the top edge *is* this one, so the
+		     roving `tabindex`, the context menu, the collapse control and the active
+		     marker all keep working up there with no duplicate to keep in step. The
+		     containing block is the section's own rowgroup, so a heading is pushed
+		     back out by the end of its section instead of stacking with the next
+		     one — and a collapsed or search-dropped section renders no rows at all,
+		     which leaves nothing to pin and no rule to withdraw.
 
-			     **`tabindex="0"`: every row in the grid is a Tab stop.** Tab walks
-			     the list row by row, bands and notes alike (user ruling, 2026-08-11,
-			     reversing the sections-only order), while the descendants of every
-			     row stay at -1 and are reached through F2. The roving target still
-			     decides where *arrows* resume; the
-			     grid's focusin handler keeps it in step with any Tab or click, which
-			     is also what makes "click anywhere on the band" focus the section —
-			     the row is click-focusable by its tabindex, and `:focus-visible`
-			     keeps the outline keyboard-only.
+		     **`z-1` is measured against three things rather than picked as "on
+		     top".** Above the rows it covers; below the carried row's `z-10`
+		     (NoteCard), so a note being dragged passes over the heading rather than
+		     behind it; and below the drop indicator's `z-20` (NoteList), so the line
+		     saying where that note would land is never what the heading hides. The
+		     status band and the portal host sit above again at `z-20`/`z-30` in this
+		     same stacking context — the panel's `isolate` root — and both live at
+		     the far end of the list.
 
-			     **The band's paint is not here.** `section-band` is a bare hook; every
-			     visual rule for it lives in main.css, and that location is a bug fix,
-			     not taste — the scoped-style compiler mis-rewrites
-			     `:global(.translucent) .section-band` down to bare `.translucent`,
-			     which shipped 0.1.1 painting the band's frost across the whole root
-			     element. The rules themselves say the band paints nothing at rest in
-			     every mode, wears a `--surface-solid` plate only while actually stuck
-			     over the opaque ground, and over the translucent ground wears nothing
-			     ever — the rows passing beneath clip themselves out at the band's
-			     bottom edge instead. The whole story, and its fallbacks, sits with
-			     those rules.
+		     **The band spans the region edge to edge, which is what the negative
+		     margins buy.** They reach past the scroll region's own card inset —
+		     4px on the left, `--region-inset-r` on the right, which is the same
+		     4px until a scrollbar starts consuming it (see main.css) — and the
+		     matching paddings put the heading back where it was, so only the
+		     fill moves. A band that stopped 4px short of
+		     each edge read as a strip laid on the list rather than as the region's
+		     own top edge, and under translucency, where the band is a different
+		     material from the panel rather than more of it, those two gaps were where
+		     that showed. It is also why the focus indicator is `focus-inset` rather
+		     than the note row's halo: everything a halo paints falls outside the
+		     band's box, and at full width every edge of that box meets the scroll
+		     port — the first heading at scroll 0 kept only the bottom arc of its
+		     halo. The inset outline is whole wherever the band itself is.
 
-			     **`pt-1 pb-2` is asymmetric because the two paddings do different
-			     jobs.** The 8px below the heading is the stuck plate's dissolve tail —
-			     room the heading never sits on, where the plate thins to nothing so a
-			     line of text passing under fades out instead of meeting a hard
-			     boundary — and it is also the offset the translucent mode's clip line
-			     inherits, since the rows vanish at the band's bottom edge. The 4px
-			     above is only breathing room, keeping the pinned row off the text
-			     scrolling past. -->
-			<div
-				role="row"
-				:data-row-id="rowId"
-				data-section-row
-				tabindex="0"
-				class="focus-inset section-band sticky top-0 z-1 -mx-1 min-w-0 px-1 pt-1 pb-2"
-			>
-				<!-- The keyboard Delete's confirmation, anchored to the heading it asks
-				     about. A popover rather than a state of the row for `DoneFilter`'s
-				     reason: the question must name a count of any size without the row
-				     lending it width. The row itself stays exactly what it was — the
-				     root renders nothing and the anchor merges onto the gridcell, so
-				     the grid's aria-required-children contract sees no new child.
-				     Opened only by `NoteList`'s Delete case; the context menu keeps its
-				     own unconfirmed item, which is already a second gesture. Cancel is
-				     first in the DOM *and* takes the autofocus explicitly, so the
-				     destructive control can never be where the opening press lands. -->
-				<Popover :open="confirmingThis" @update:open="onConfirmOpen">
+		     **`tabindex="0"`: every row in the grid is a Tab stop.** Tab walks
+		     the list row by row, bands and notes alike (user ruling, 2026-08-11,
+		     reversing the sections-only order), while the descendants of every
+		     row stay at -1 and are reached through F2. The roving target still
+		     decides where *arrows* resume; the
+		     grid's focusin handler keeps it in step with any Tab or click, which
+		     is also what makes "click anywhere on the band" focus the section —
+		     the row is click-focusable by its tabindex, and `:focus-visible`
+		     keeps the outline keyboard-only.
+
+		     **The band's paint is not here.** `section-band` is a bare hook; every
+		     visual rule for it lives in main.css, and that location is a bug fix,
+		     not taste — the scoped-style compiler mis-rewrites
+		     `:global(.translucent) .section-band` down to bare `.translucent`,
+		     which shipped 0.1.1 painting the band's frost across the whole root
+		     element. The rules themselves say the band paints nothing at rest in
+		     every mode, wears a `--surface-solid` plate only while actually stuck
+		     over the opaque ground, and over the translucent ground wears nothing
+		     ever — the rows passing beneath clip themselves out at the band's
+		     bottom edge instead. The whole story, and its fallbacks, sits with
+		     those rules.
+
+		     **`pt-1 pb-2` is asymmetric because the two paddings do different
+		     jobs.** The 8px below the heading is the stuck plate's dissolve tail —
+		     room the heading never sits on, where the plate thins to nothing so a
+		     line of text passing under fades out instead of meeting a hard
+		     boundary — and it is also the offset the translucent mode's clip line
+		     inherits, since the rows vanish at the band's bottom edge. The 4px
+		     above is only breathing room, keeping the pinned row off the text
+		     scrolling past. -->
+		<ContextMenu>
+			<!-- The keyboard Delete's confirmation, anchored to the heading it asks
+			     about. A popover rather than a state of the row for `DoneFilter`'s
+			     reason: the question must name a count of any size without the row
+			     lending it width. The row itself stays exactly what it was — the
+			     root renders nothing and the anchor merges onto the gridcell, so
+			     the grid's aria-required-children contract sees no new child.
+			     Opened only by `NoteList`'s Delete case; the context menu keeps its
+			     own unconfirmed item, which is already a second gesture. Cancel is
+			     first in the DOM *and* takes the autofocus explicitly, so the
+			     destructive control can never be where the opening press lands. -->
+			<Popover :open="confirmingThis" @update:open="onConfirmOpen">
+				<ContextMenuTrigger as-child>
 					<PopoverAnchor as-child>
+						<!-- **`pl-1.5`, deliberately off the leading-mark column.** The heading
+						     used to pay `px-4` so its dot sat on the 20px line the search
+						     magnifier and the completion box share; the user reversed that
+						     (2026-08-11): a heading *outdented* from the notes under it reads
+						     as the level above them, which one shared column flattened. The
+						     6px puts the name's pill edge on the 4px inset the note cards'
+						     own boxes sit at — the heading hangs off the cards' edge, not off
+						     a second arbitrary number. The right padding is 16px less the
+						     scrollbar's overflow share (`--row-inset-comp`), which is what
+						     keeps the chevron exactly where every other trailing control
+						     sits whether or not the list scrolls. -->
 						<div
 							role="gridcell"
-							class="flex min-h-(--section-heading-height) min-w-0 items-center gap-2 px-4"
+							class="flex min-h-(--section-heading-height) min-w-0 items-center gap-2 pr-[calc(--spacing(4)-var(--row-inset-comp,0px))] pl-1.5"
 						>
 							<template v-if="editing">
 								<label :for="`section-rename-${section.id}`" class="sr-only">Section name</label>
@@ -284,30 +328,21 @@ function onKeydown(event: KeyboardEvent) {
 						     The name shrinks rather than holding its width — with the
 						     chevron at the end of the row, an unshrinkable one would push it
 						     out. The inner `truncate` is what makes that safe. -->
-								<!-- **`-ml-1.5 pl-1.5` nets to zero, and that is the point: the dot is
-						     placed by the gridcell, the button only decides where the pill's
-						     edge falls.** What lines up is the leading mark of every row in
-						     the panel, and it is measured from the *panel* edge rather than
-						     from this row: the search field's magnifier sits at 20px and is
-						     the anchor the other three were brought onto — this dot, the note
-						     row's completion box, and the active-section chip's icon. Here
-						     that 20 is the row's own `px-1` giving back the 4px the `-mx-1`
-						     bleed took, plus the gridcell's `px-4`.
-
-						     Every split of that 16 lands the dot; only this one leaves the
-						     hover surface even. Carrying it all on the button would put more
-						     room beside the dot on its left than `pr-1.5` leaves on its right,
-						     and a dot with a lopsided pill around it reads as misplaced even
-						     when it is exactly where it belongs. Six each side is what makes
-						     it symmetric, and the note row carries the same `px-4` on its own
-						     gridcell — anything that changes that number has to come back
-						     here. -->
+								<!-- **`-ml-1.5 pl-1.5` nets to zero: the dot is placed by the
+						     gridcell, the button only decides where the pill's edge falls.**
+						     The heading no longer sits on the leading-mark column the search
+						     magnifier and the completion box share — the gridcell above
+						     records the outdent ruling — but the split still matters for the
+						     pill itself: six each side of the dot is what keeps the hover
+						     surface symmetric around it, where carrying the inset on the
+						     button alone would leave more room on the dot's left than
+						     `pr-1.5` leaves on its right. -->
 								<h2 :id="headingId" class="min-w-0">
 									<button
 										type="button"
 										tabindex="-1"
 										:aria-current="active ? 'true' : undefined"
-										class="hover:bg-surface-hover active:bg-surface-active focus-ring -ml-1.5 flex min-w-0 items-center gap-1.5 rounded-inset py-1 pr-1.5 pl-1.5 transition-colors duration-fast"
+										class="section-title hover:bg-surface-hover active:bg-surface-active focus-ring relative -ml-1.5 flex min-w-0 items-center gap-1.5 rounded-inset py-1 pr-1.5 pl-1.5 transition-colors duration-fast"
 										:class="active ? 'text-accent-text' : 'text-text-secondary'"
 										@click="activate"
 									>
@@ -325,6 +360,23 @@ function onKeydown(event: KeyboardEvent) {
 												{{ section.name }}
 											</span>
 										</ActiveMarker>
+
+										<!-- After the name and inside its pill, so the two never separate
+								     when the name truncates — the count is the part that must stay
+								     readable, which is why it is the `shrink-0` of the pair.
+								     `text-text-secondary` in both states: on an active heading the
+								     accent stays the name's alone, so the count reads as annotation
+								     rather than as more name. -->
+										<template v-if="counts.total > 0">
+											<span
+												aria-hidden="true"
+												data-section-counts
+												class="text-text-secondary shrink-0 text-label tabular-nums"
+											>
+												{{ counts.done }}/{{ counts.total }}
+											</span>
+											<span class="sr-only">{{ spokenCounts }}</span>
+										</template>
 									</button>
 								</h2>
 
@@ -369,42 +421,61 @@ function onKeydown(event: KeyboardEvent) {
 							</template>
 						</div>
 					</PopoverAnchor>
+				</ContextMenuTrigger>
 
-					<PopoverContent
-						v-if="portalTo"
-						:to="portalTo"
-						align="start"
-						:collision-boundary="boundary ?? undefined"
-						:collision-padding="8"
-						class="w-64 text-meta"
-						@open-auto-focus="onConfirmAutoFocus"
-						@keydown="onConfirmKeydown"
-					>
-						<p class="text-text-primary">{{ deleteQuestion }}</p>
-						<div class="mt-2 flex items-center justify-end gap-2">
-							<button
-								ref="cancelButton"
-								type="button"
-								data-section-delete-cancel
-								class="panel-button min-h-6 px-2"
-								@click="cancelDelete"
-							>
-								Cancel
-							</button>
-							<button
-								type="button"
-								data-section-delete-confirm
-								class="panel-button text-destructive-text min-h-6 px-2"
-								@click="confirmDelete"
-							>
-								Delete
-							</button>
-						</div>
-					</PopoverContent>
-				</Popover>
-			</div>
-		</ContextMenuTrigger>
+				<PopoverContent
+					v-if="portalTo"
+					:to="portalTo"
+					align="start"
+					:collision-boundary="boundary ?? undefined"
+					:collision-padding="8"
+					class="w-64 text-meta"
+					@open-auto-focus="onConfirmAutoFocus"
+					@keydown="onConfirmKeydown"
+				>
+					<p class="text-text-primary">{{ deleteQuestion }}</p>
+					<div class="mt-2 flex items-center justify-end gap-2">
+						<button
+							ref="cancelButton"
+							type="button"
+							data-section-delete-cancel
+							class="panel-button min-h-6 px-2"
+							@click="cancelDelete"
+						>
+							Cancel
+						</button>
+						<button
+							type="button"
+							data-section-delete-confirm
+							class="panel-button text-destructive-text min-h-6 px-2"
+							@click="confirmDelete"
+						>
+							Delete
+						</button>
+					</div>
+				</PopoverContent>
+			</Popover>
 
-		<SectionContextMenu :section="section" />
-	</ContextMenu>
+			<SectionContextMenu :section="section" />
+		</ContextMenu>
+	</div>
 </template>
+
+<style scoped>
+/* The title's real hit area, much larger than the pill it paints — the same
+   trade the chevron makes with `hit-44`, shaped to the band instead of a
+   square, because a 44px box centred on a wide, short button would leave most
+   of the button's own width uncovered. It spans the heading band's full
+   height — the 4px above and 8px below mirror the band's `pt-1`/`pb-2` —
+   reaches the panel edge on the left, and ends a little past the pill on the
+   right, so the separator's length and the chevron keep their own targets.
+   The button's `relative` is what the expander resolves against. */
+.section-title::before {
+	content: '';
+	position: absolute;
+	top: -4px;
+	right: -12px;
+	bottom: -8px;
+	left: -4px;
+}
+</style>

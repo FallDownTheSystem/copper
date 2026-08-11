@@ -25,12 +25,14 @@ use copper_core::store::StoreStatus;
 
 // The command wrappers themselves stayed with the app, so this one path is
 // unchanged while its four neighbours moved.
-use copper_lib::store::commands::{AddNoteResult, SubmitOutcome, SubmitResult};
+use copper_lib::store::commands::{AddNoteResult, AddNotesResult, SubmitOutcome, SubmitResult};
 
 /// Spec 8.1's twenty, plus `submit_entry` — the composer's submit, added by
 /// task-010 so that inline `# Name` section creation could be classified above
-/// the store without `add_note` ever parsing a body.
-const COMMANDS: [&str; 21] = [
+/// the store without `add_note` ever parsing a body — plus `add_notes`, the
+/// list-paste batch, and `reorder_notes`, the multi-select block move: each a
+/// batch beside its singular, one snapshot, one undo step.
+const COMMANDS: [&str; 23] = [
 	"get_settings",
 	"update_settings",
 	"get_status",
@@ -38,11 +40,13 @@ const COMMANDS: [&str; 21] = [
 	"open_space",
 	"create_space",
 	"add_note",
+	"add_notes",
 	"submit_entry",
 	"edit_note",
 	"set_notes_done",
 	"delete_notes",
 	"reorder_note",
+	"reorder_notes",
 	"move_notes",
 	"merge_notes",
 	"add_section",
@@ -165,9 +169,12 @@ const EXTRA_COMMANDS: [&str; 45] = [
 ];
 
 /// Spec 8.1c. Every argument name in the whole surface.
-const PARAMETERS: [&str; 24] = [
+const PARAMETERS: [&str; 25] = [
 	"patch", "path", "name", "body", "section", "id", "ids", "done", "index", "text", "theme",
 	"chord", "trigger", "token", "target", "enabled",
+	// `add_notes`. The plural of `body`, as `ids` and `paths` are of theirs — one
+	// word, so the Rust and JavaScript spellings cannot diverge.
+	"bodies",
 	// `set_panel_size` is the first command to take either; both are single
 	// lowercase words, so their Rust and JavaScript spellings cannot diverge.
 	"width", "height",
@@ -335,8 +342,9 @@ fn every_defined_command_is_registered_and_matches_the_documented_twenty() {
 	);
 	assert_eq!(
 		store_defined.len(),
-		21,
-		"the store's own surface is no longer spec 8.1's twenty plus submit_entry"
+		23,
+		"the store's own surface is no longer spec 8.1's twenty plus submit_entry, add_notes and \
+		 reorder_notes"
 	);
 }
 
@@ -441,6 +449,23 @@ fn add_note_returns_note_id_in_camel_case() {
 	assert!(payload["space"].get("activeSection").is_some());
 }
 
+/// The batch's twin of the test above: the frontend reads `noteIds` to reveal
+/// the first note of a split paste, and a snake_case leak would leave it
+/// revealing nothing without failing anything.
+#[test]
+fn add_notes_returns_note_ids_in_camel_case() {
+	let payload = serde_json::to_value(AddNotesResult {
+		space: space(),
+		note_ids: vec!["nte_00000001".into(), "nte_00000002".into()],
+	})
+	.unwrap();
+
+	assert!(payload.get("noteIds").is_some(), "add_notes must return noteIds: {payload}");
+	assert!(payload.get("note_ids").is_none(), "the snake_case spelling leaked over IPC");
+	assert_eq!(payload.as_object().unwrap().len(), 2);
+	assert_eq!(payload["noteIds"].as_array().unwrap().len(), 2);
+}
+
 #[test]
 fn store_status_crosses_the_boundary_in_camel_case() {
 	let payload = serde_json::to_value(StoreStatus {
@@ -474,6 +499,7 @@ fn settings_cross_the_boundary_in_camel_case() {
 		"motion",
 		"insertionPoint",
 		"doubleClick",
+		"enterKey",
 		"alwaysOnTop",
 		"showCreated",
 		"captureNotifications",
@@ -488,7 +514,7 @@ fn settings_cross_the_boundary_in_camel_case() {
 	] {
 		assert!(payload.get(key).is_some(), "get_settings is missing {key}: {payload}");
 	}
-	assert_eq!(payload.as_object().unwrap().len(), 20, "get_settings grew a field");
+	assert_eq!(payload.as_object().unwrap().len(), 21, "get_settings grew a field");
 	assert_eq!(payload["shortcuts"]["capture"], "Shift Shift");
 	assert_eq!(payload["shortcuts"]["summon"], "Ctrl+Shift+Space");
 	// The shipped defaults, which are the whole of "this task changes no
@@ -498,6 +524,10 @@ fn settings_cross_the_boundary_in_camel_case() {
 	assert_eq!(payload["motion"], "auto");
 	assert_eq!(payload["insertionPoint"], "bottom");
 	assert_eq!(payload["doubleClick"], "copy");
+	// Submit is what the composer has always done on Enter; the setting extends
+	// that one matrix to the inline editor (user ruling 2026-08-11), so the
+	// default is the behaviour the capture line already had.
+	assert_eq!(payload["enterKey"], "submit");
 	// Task-014's pin ships on, matching the `alwaysOnTop` the window is created
 	// with: the setting exists to let the user turn the band off, not to change
 	// what an upgraded install does before they touch it.

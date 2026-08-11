@@ -19,7 +19,8 @@
  * into `errorFor(scope)`, which only the settings view renders; the palette is
  * in exactly the position `PanelHeader`'s pin is — a control outside Settings
  * with no inline slot of its own — so it re-reports the row's own message into
- * the `list` scope, which is the band `StatusLine` shows. Rust's sentence rather
+ * the `list` scope, which the shell mirrors into the toast stack. Rust's
+ * sentence rather
  * than one of ours: it names which half failed, and a sentence of our own could
  * only be vaguer.
  */
@@ -56,6 +57,7 @@ export function settingsActions(): PaletteAction[] {
 		motionPreference,
 		insertionPoint,
 		doubleClickAction,
+		enterKeyAction,
 		alwaysOnTop,
 		showCreated,
 		captureNotifications,
@@ -73,6 +75,7 @@ export function settingsActions(): PaletteAction[] {
 		setMotion,
 		setInsertionPoint,
 		setDoubleClick,
+		setEnterKey,
 		setShowCreated,
 		setCaptureNotifications,
 		setLinkPreviews,
@@ -125,6 +128,15 @@ export function settingsActions(): PaletteAction[] {
 			run: () =>
 				write('doubleClick', () =>
 					setDoubleClick(doubleClickAction.value === 'edit' ? 'copy' : 'edit'),
+				),
+		},
+		enterKey: {
+			id: 'enter-key',
+			label: 'Enter key',
+			value: enterKeyAction.value === 'newline' ? 'New line' : 'Submit',
+			run: () =>
+				write('enterKey', () =>
+					setEnterKey(enterKeyAction.value === 'newline' ? 'submit' : 'newline'),
 				),
 		},
 		showCreated: {

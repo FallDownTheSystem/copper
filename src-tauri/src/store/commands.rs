@@ -1,5 +1,6 @@
 //! The twenty commands Phase 3 codes against (spec 8.1), plus the one task-010
-//! added — and nothing else.
+//! added, the list-paste batch beside `add_note` and the multi-select block
+//! move beside `reorder_note` — and nothing else.
 //!
 //! Registration lives in the crate's own `commands.rs`: Tauri accepts exactly
 //! one `invoke_handler`, and the closure `generate_handler!` builds consumes the
@@ -54,6 +55,15 @@ type Reply<T> = std::result::Result<T, StoreError>;
 pub struct AddNoteResult {
 	pub space: Space,
 	pub note_id: String,
+}
+
+/// What `add_notes` gives back: the batch's ids in the order they were sent,
+/// so the caller can reveal the first of them without walking the document.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AddNotesResult {
+	pub space: Space,
+	pub note_ids: Vec<String>,
 }
 
 /// Which of the three things a composer submission turned out to be.
@@ -145,6 +155,37 @@ pub fn add(shared: &SharedStore, body: &str, section: Option<&str>) -> Reply<Add
 	let at = guard.settings().insertion();
 	let (note_id, space) = guard.mutate(|doc| ops::add_note(doc, body, section, &[], at))?;
 	Ok(AddNoteResult { space, note_id })
+}
+
+/// The batch behind "paste as separate notes": several bodies, one snapshot,
+/// one undo step. Like `add_note` — and unlike `submit_entry` — every body is
+/// opaque text, so a list item that happens to read `# Name` becomes a note.
+#[tauri::command]
+pub async fn add_notes(
+	bodies: Vec<String>,
+	section: Option<String>,
+	state: State<'_, SharedStore>,
+) -> Reply<AddNotesResult> {
+	add_many(&state, &bodies, section.as_deref())
+}
+
+/// The body of [`add_notes`], as a plain function over the shared store — split
+/// out for the reason [`add`] is: `cargo test` cannot construct a `State`.
+pub fn add_many(
+	shared: &SharedStore,
+	bodies: &[String],
+	section: Option<&str>,
+) -> Reply<AddNotesResult> {
+	// Refused rather than treated as a vacuous success: an empty batch that
+	// "succeeded" would still push an undo snapshot of an unchanged document,
+	// making one Ctrl+Z do visibly nothing.
+	if bodies.is_empty() {
+		return Err(StoreError::Invalid("add_notes needs at least one body".into()));
+	}
+	let mut guard = lock(shared);
+	let at = guard.settings().insertion();
+	let (note_ids, space) = guard.mutate(|doc| ops::add_notes(doc, bodies, section, at))?;
+	Ok(AddNotesResult { space, note_ids })
 }
 
 /// The composer's submit, and the only entry point that reads a body as
@@ -290,6 +331,21 @@ pub async fn reorder_note(
 	state: State<'_, SharedStore>,
 ) -> Reply<Space> {
 	let (_, space) = lock(&state).mutate(|doc| ops::reorder_note(doc, &id, &section, index))?;
+	Ok(space)
+}
+
+/// The multi-select form of `reorder_note`: the block lands contiguously at
+/// `index` — interpreted with **every** carried note removed — in the
+/// document's canonical order. One `mutate`, so a block drag or a block
+/// Alt+Arrow is one snapshot and one `Ctrl+Z`.
+#[tauri::command]
+pub async fn reorder_notes(
+	ids: Vec<String>,
+	section: String,
+	index: i64,
+	state: State<'_, SharedStore>,
+) -> Reply<Space> {
+	let (_, space) = lock(&state).mutate(|doc| ops::reorder_notes(doc, &ids, &section, index))?;
 	Ok(space)
 }
 

@@ -13,6 +13,8 @@
  * there is something to delete — a button that explains it has nothing to do is
  * worse than one that is not there.
  */
+import { moveFocusOnArrow } from '@/lib/popoverFocus'
+
 const { doneFilter, doneOnly, doneTotal, todoTotal, allTotal, nextDoneFilter, cycleDoneFilter } =
 	useNoteList()
 const { doneCount, allDoneCount, allDoneTargets, deleteDoneInActiveSection, deleteAllDone } =
@@ -114,7 +116,9 @@ function confirmAll() {
 function onContentKeydown(event: KeyboardEvent) {
 	if (event.repeat && (event.key === 'Enter' || event.key === ' ')) {
 		event.preventDefault()
+		return
 	}
+	moveFocusOnArrow(event)
 }
 
 /**

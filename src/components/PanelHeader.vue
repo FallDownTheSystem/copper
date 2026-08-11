@@ -94,9 +94,11 @@ defineExpose({ focusSearch, query })
 	     to buy a 2px strip nobody could aim at anyway. The list under it is on a
 	     different edge and always was: a card's own box starts at 4px, and what
 	     lines up with the header is neither of those boxes but the *leading marks*
-	     — the search icon at 20px, and the completion box and section dot brought
-	     onto it. The chip pays for its share in its own padding rather than here,
-	     because moving this number would move the field with it.
+	     — the search icon at 20px and the completion box brought onto it. (The
+	     section dot used to share that column and deliberately left: a heading
+	     outdents from its notes now, by the 2026-08-11 ruling in `SectionHeader`.)
+	     The chip pays for its share in its own padding rather than here, because
+	     moving this number would move the field with it.
 
 	     **`pb-2` against `pt-3`, so the bottom strip is 8px and not 12.** The gap
 	     above the chip is the row `gap-1.5` plus the pixel or so the taller
@@ -112,8 +114,16 @@ defineExpose({ focusSearch, query })
 		class="border-separator flex min-h-12 flex-col gap-1.5 border-b px-3 pt-3 pb-2"
 	>
 		<!-- The search row keeps its own line, so the heading below it can be added
-		     and removed without the field ever moving. -->
-		<div class="flex items-center gap-2">
+		     and removed without the field ever moving.
+
+		     **`data-tauri-drag-region` on the rows as well as the header.** Tauri
+		     reads the attribute off the element the mousedown actually lands on,
+		     and a press in the gap between two controls lands on the row's own
+		     flex container — not on the header behind it. Without the attribute
+		     here, only the header's padding strips dragged and every gap was dead
+		     (user report, 2026-08-11). The controls themselves stay clean of it,
+		     which is what keeps them clickable. -->
+		<div data-tauri-drag-region class="flex items-center gap-2">
 			<label for="panel-search" class="sr-only">Search notes</label>
 			<div class="relative min-w-0 flex-1">
 				<IconLucideSearch
@@ -208,14 +218,15 @@ defineExpose({ focusSearch, query })
 		     finding their own way to the edge: they read as a group, and where the
 		     boundary between them falls is not something the header should be able to
 		     see. -->
-		<div class="flex min-w-0 items-center gap-2">
+		<div data-tauri-drag-region class="flex min-w-0 items-center gap-2">
 			<ActiveSectionChip @closed="emit('switcherClosed', $event)" />
 			<!-- `gap-3`, not `gap-1`: both of these carry their own border, and two
 			     bordered controls a pixel apart read as one segmented control with a
 			     seam. Twelve pixels is what separates them into two. The chip beside
 			     them truncates, so the width comes out of a long section name rather
-			     than off the edge of the panel. -->
-			<div class="ml-auto flex shrink-0 items-center gap-3">
+			     than off the edge of the panel. The strip carries the drag attribute
+			     for its own gap, for the search row's reason: the press lands here. -->
+			<div data-tauri-drag-region class="ml-auto flex shrink-0 items-center gap-3">
 				<DoneFilter />
 				<SortControl />
 			</div>

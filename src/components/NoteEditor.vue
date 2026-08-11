@@ -2,6 +2,7 @@
 import { useAutoSize } from '@/composables/useAutoSize'
 import { focusRowSoon } from '@/composables/useSelection'
 import { isComposing } from '@/lib/chords'
+import { insertNewline } from '@/lib/insertNewline'
 
 const props = defineProps<{ rowId: string }>()
 
@@ -17,6 +18,7 @@ const {
 	resolveKeepMine,
 } = useNoteEditor()
 const { updateNoteBody, errorFor } = useSpace()
+const { enterKeyAction } = useSettings()
 
 const editorError = errorFor('editor')
 
@@ -82,22 +84,42 @@ function onKeydown(event: KeyboardEvent) {
 		return
 	}
 
-	if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-		// `stopPropagation` for the same reason `Escape` above has it: the press has
-		// to be *withheld* from the shell, not merely handled here. Ctrl+Enter is
-		// two things by context — `CHORDS.openInEditor` starts the `$EDITOR` handoff
-		// from a focused card — and the shell resolves that today by declining every
-		// chord from a text surface. That guard is one reordering away from not
-		// covering this: `Ctrl+K` already sits above it as a documented exception,
-		// so a second exception would fork a handoff off a note whose inline draft
-		// is mid-commit.
+	if (event.key === 'Enter') {
+		// The same matrix as the composer, chosen by the `Enter key` setting
+		// (user ruling 2026-08-11: one rule for both multi-line fields — the old
+		// inverted matrix here read as a bug). Shift+Enter is a newline in both
+		// modes and is *declined* so the field's own undo and IME behaviour
+		// handle it; Ctrl+Enter's newline has to be inserted by hand, Chromium
+		// mapping that chord to nothing.
+		if (event.shiftKey) return
+		const submitOnEnter = enterKeyAction.value === 'submit'
+		if (event.ctrlKey || event.metaKey) {
+			// `stopPropagation` in both modes, for the same reason `Escape` above
+			// has it: the press has to be *withheld* from the shell, not merely
+			// handled here. Ctrl+Enter is two things by context —
+			// `CHORDS.openInEditor` starts the `$EDITOR` handoff from a focused
+			// card — and the shell resolves that today by declining every chord
+			// from a text surface. That guard is one reordering away from not
+			// covering this: `Ctrl+K` already sits above it as a documented
+			// exception, so a second exception would fork a handoff off a note
+			// whose inline draft is mid-commit.
+			event.preventDefault()
+			event.stopPropagation()
+			if (submitOnEnter) {
+				const field = textarea.value
+				if (field) insertNewline(field)
+			} else {
+				void commit().then(returnFocusToRow)
+			}
+			return
+		}
+		// A bare Enter: the browser's newline under `newline`, the save under
+		// `submit`. Withheld from the shell either way it is consumed.
+		if (!submitOnEnter) return
 		event.preventDefault()
 		event.stopPropagation()
 		void commit().then(returnFocusToRow)
 	}
-	// Bare Enter and Shift+Enter both insert a newline: a note body is a document,
-	// unlike the composer's capture line, where the matrix is the other way up and
-	// Enter submits.
 }
 
 /**

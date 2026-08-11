@@ -1,7 +1,4 @@
 <script setup lang="ts">
-import autoAnimate, { type AnimationController } from '@formkit/auto-animate'
-
-import { listMotion } from '@/lib/listMotion'
 import { noteRow, sectionRow } from '@/composables/useSelection'
 import type { Section } from '@/composables/useSpace'
 
@@ -23,8 +20,6 @@ const { noteById, listAnimated, noteCount } = useSpace()
 const { isCollapsed } = useSections()
 const { isDragging } = useNoteDrag()
 const { hasQuery } = useNoteSearch()
-
-const rowgroup = useTemplateRef<HTMLElement>('rowgroup')
 
 /** Read here rather than passed as a prop, like selection and focus: a prop
  *  would put it in the parent's render dependencies and rebuild every section on
@@ -55,58 +50,55 @@ const orderedNotes = computed(() =>
 )
 
 // --- list animation ----------------------------------------------------------
-// The imperative controller rather than `v-auto-animate`: the directive gives no
-// handle to disable animation, and rows mid-transform report transformed offsets
-// — which invalidates the pixel offset a scroll restore is anchored on and makes
-// an external reload visibly thrash.
-
-let controller: AnimationController | null = null
+// `useListTransition` records why `<TransitionGroup>` replaced auto-animate: the
+// library animated from cached positions, and a section whose neighbours moved
+// it carried a stale cache into its next gesture. The gate below is read per
+// animation rather than watched into a controller, so there is no stand-down
+// ordering to reason about.
 
 const reduced = useReducedMotion()
 
-function syncAnimation() {
-	if (!controller) return
-	// The dragged row carries a transform of its own for the length of the
-	// gesture, and auto-animate would put a second, independent one on the same
-	// element. Every section stands down rather than only the one the note came
-	// from: a drag can cross into another section, and the row lands there.
-	if (listAnimated.value && !isDragging.value && !reduced.value) controller.enable()
-	else controller.disable()
-}
-
-watch([listAnimated, isDragging, reduced], syncAnimation)
-
-onMounted(() => {
-	const element = rowgroup.value
-	if (!element) return
-	// A plugin rather than an options object, because the options only reach the
-	// FLIP: `listMotion` records what the library hard-codes for the other two
-	// actions and why an arrival has to be authored to arrive at all.
-	//
-	// auto-animate consults `prefers-reduced-motion` itself but knows nothing of
-	// Copper's own "Animate controls" setting, and it drives the Web Animations
-	// API — so main.css's root gate cannot reach it either. `reduced` above is the
-	// half neither of them covers.
-	controller = autoAnimate(element, listMotion)
-	syncAnimation()
-})
+// The dragged row carries a transform of its own for the length of the gesture,
+// and a FLIP would put a second, independent one on the same element. Every
+// section stands down rather than only the one the note came from: a drag can
+// cross into another section, and the row lands there.
+//
+// `reduced` folds in Copper's own "Animate controls" setting, which the
+// enter/leave hooks drive through the Web Animations API — the one channel
+// main.css's `.reduce-motion` root gate cannot reach. The `.list-move` CSS
+// transition *is* reachable, so reduced motion truncates moves twice over.
+const { moveClass, onEnter, onLeave, onEnterCancelled, onLeaveCancelled } = useListTransition(
+	() => listAnimated.value && !isDragging.value && !reduced.value,
+)
 </script>
 
 <template>
 	<!-- `data-section-id` is read by two things: this is the element a drop
-	     resolves a section from, as well as the rowgroup auto-animate is bound
-	     to. -->
-	<div
-		ref="rowgroup"
+	     resolves a section from, as well as the rowgroup whose children animate.
+
+	     The rowgroup is a `<TransitionGroup>` so that every measurement is taken
+	     fresh in the render pass immediately before the patch — a moved row FLIPs
+	     from where it actually is, not from where a cache last saw it. `:css`
+	     off because enter and leave are Web Animations owned by the hooks; the
+	     move stays a CSS class, which is the only form Vue's FLIP takes. -->
+	<TransitionGroup
+		tag="div"
 		role="rowgroup"
 		:data-section-id="section.id"
 		:aria-labelledby="`section-heading-${section.id}`"
 		class="section-group min-w-0"
+		:css="false"
+		:move-class="moveClass"
+		@enter="onEnter"
+		@leave="onLeave"
+		@enter-cancelled="onEnterCancelled"
+		@leave-cancelled="onLeaveCancelled"
 	>
 		<!-- Neither row's selection or focus arrives as a prop: reading them here
 		     would put them in this component's render dependencies, and every arrow
 		     keypress would rebuild all 200 rows to change two of them. -->
 		<SectionHeader
+			key="heading"
 			:section="section"
 			:active="active"
 			:row-id="sectionRow(section.id)"
@@ -136,6 +128,7 @@ onMounted(() => {
 		     line is the only thing that says the *active* section is empty. -->
 		<div
 			v-if="noteIds.length === 0 && active && !collapsed && (noteCount > 0 || hasQuery)"
+			key="empty"
 			role="row"
 		>
 			<!-- `px-4` joins the leading-mark column: the completion box and the marker
@@ -145,7 +138,7 @@ onMounted(() => {
 				No notes in this section yet.
 			</div>
 		</div>
-	</div>
+	</TransitionGroup>
 </template>
 
 <style scoped>

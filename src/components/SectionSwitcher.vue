@@ -45,16 +45,18 @@ import { countMessage } from '@/composables/useStatusMessage'
  */
 const emit = defineEmits<{ close: [] }>()
 
-const { sections, activeSection, notesInSection, submitEntry, setActiveSection } = useSpace()
+const { sections, activeSection, countsInSection, submitEntry, setActiveSection } = useSpace()
 const { filterQuery } = useSections()
 
-/** Spoken rather than shown: the bare numeral beside a name is unambiguous to a
- *  reader looking at it and means nothing read aloud on its own. */
+/** Spoken rather than shown: `1/2` beside a name is unambiguous to a reader
+ *  looking at it and means nothing read aloud on its own. */
 function spokenCount(sectionId: string) {
-	return countMessage(notesInSection(sectionId).length, {
+	const { done, total } = countsInSection(sectionId)
+	const notes = countMessage(total, {
 		one: '1 note',
-		many: (total) => `${total} notes`,
+		many: (count) => `${count} notes`,
 	})
+	return `${notes}, ${done} done`
 }
 
 const input = useTemplateRef<HTMLInputElement>('input')
@@ -278,11 +280,13 @@ function onListKeydown(event: KeyboardEvent) {
 				</span>
 			</ActiveMarker>
 
-			<!-- How much is in each destination, which is the thing that makes one
-			     worth picking over another. `tabular-nums` so a column of counts lines
-			     up on its digits. -->
+			<!-- How much is in each destination — and how much of it is already done,
+			     which together are what make one worth picking over another. Shown
+			     even at `0/0`, unlike the header's count: a column answers "how much
+			     is there", and an empty destination is an answer. `tabular-nums` so
+			     the column lines up on its digits. -->
 			<span aria-hidden="true" class="text-text-secondary shrink-0 tabular-nums">
-				{{ notesInSection(section.id).length }}
+				{{ countsInSection(section.id).done }}/{{ countsInSection(section.id).total }}
 			</span>
 			<span class="sr-only">{{ spokenCount(section.id) }}</span>
 		</DropdownMenuItem>

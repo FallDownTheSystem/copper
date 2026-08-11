@@ -442,6 +442,94 @@ fn position_of(doc: &Space, id: &str) -> usize {
 		.expect("the note is in the document")
 }
 
+/// The batch behind "paste as separate notes": one snapshot for the whole
+/// list, and the pasted order preserved under **both** insertion points — under
+/// `top` the op walks the bodies in reverse, and this is what would catch a
+/// forward walk showing the list upside down.
+#[test]
+fn add_notes_is_one_undo_step_and_keeps_the_pasted_order() {
+	let harness = Harness::new();
+	harness.add("already here").unwrap();
+
+	fn bodies_of(doc: &Space) -> Vec<String> {
+		doc.notes.iter().map(|note| note.body.clone()).collect()
+	}
+
+	let bodies: Vec<String> = ["one", "two", "three"].map(String::from).to_vec();
+	let result = commands::add_many(&harness.shared, &bodies, None).unwrap();
+
+	// The shipped default appends: the batch follows the existing note, in order.
+	assert_eq!(bodies_of(&harness.doc()), vec!["already here", "one", "two", "three"]);
+	// The ids answer in `bodies` order, which is what the caller reveals by.
+	let answered: Vec<String> = result
+		.note_ids
+		.iter()
+		.map(|id| harness.doc().note(id).expect("the id names a note").body.clone())
+		.collect();
+	assert_eq!(answered, bodies);
+
+	// One snapshot: a single undo removes the whole batch and nothing else.
+	store::lock(&harness.shared).undo().unwrap().unwrap();
+	assert_eq!(bodies_of(&harness.doc()), vec!["already here"]);
+
+	store::lock(&harness.shared)
+		.update_settings(serde_json::from_str(r#"{"insertionPoint":"top"}"#).unwrap())
+		.unwrap();
+
+	let result = commands::add_many(&harness.shared, &bodies, None).unwrap();
+
+	// Top insertion: the batch leads the list and still reads top-to-bottom in
+	// the pasted order, with the ids still answering in `bodies` order.
+	assert_eq!(bodies_of(&harness.doc()), vec!["one", "two", "three", "already here"]);
+	let answered: Vec<String> = result
+		.note_ids
+		.iter()
+		.map(|id| harness.doc().note(id).expect("the id names a note").body.clone())
+		.collect();
+	assert_eq!(answered, bodies);
+}
+
+/// A bad body anywhere in the list refuses the whole batch: the op runs against
+/// `mutate`'s scratch copy, so nothing reaches the document or the undo stack —
+/// never half a pasted list.
+#[test]
+fn add_notes_refuses_the_whole_batch_on_one_bad_body() {
+	let harness = Harness::new();
+
+	let bodies: Vec<String> = ["good", "   "].map(String::from).to_vec();
+	let error = commands::add_many(&harness.shared, &bodies, None).unwrap_err();
+
+	assert!(matches!(error, StoreError::Invalid(_)));
+	assert!(harness.doc().notes.is_empty(), "a refused batch still added a note");
+	assert!(!harness.status().can_undo, "a refused batch pushed a snapshot");
+}
+
+/// The multi-select block move: one `mutate`, so the whole block travels back
+/// on a single undo — the same discipline `add_notes` states, at the other end
+/// of a note's life.
+#[test]
+fn reorder_notes_is_one_undo_step_for_the_whole_block() {
+	let harness = Harness::new();
+	let first = harness.add("first").unwrap();
+	let second = harness.add("second").unwrap();
+	let third = harness.add("third").unwrap();
+
+	fn order(doc: &Space) -> Vec<String> {
+		doc.notes.iter().map(|note| note.id.clone()).collect()
+	}
+
+	let section = harness.doc().active_section.clone();
+	let block = vec![first.clone(), second.clone()];
+	store::lock(&harness.shared)
+		.mutate(|doc| ops::reorder_notes(doc, &block, &section, 1))
+		.unwrap();
+	assert_eq!(order(&harness.doc()), vec![third.clone(), first.clone(), second.clone()]);
+
+	// One snapshot: a single undo puts the whole block back where it was.
+	store::lock(&harness.shared).undo().unwrap().unwrap();
+	assert_eq!(order(&harness.doc()), vec![first, second, third]);
+}
+
 /// A known two-section, two-note document. It is the same fixture
 /// `copper-core/tests/store_fs.rs` serialises byte-for-byte; here it is only a
 /// second space with recognisable contents to switch to.

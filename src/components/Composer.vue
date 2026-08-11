@@ -2,8 +2,10 @@
 import { useAutoSize } from '@/composables/useAutoSize'
 import { noteRow, takeRow } from '@/composables/useSelection'
 import { isComposing } from '@/lib/chords'
+import { insertNewline } from '@/lib/insertNewline'
 
 const { submitEntry, errorFor, clearActionError, reportActionError } = useSpace()
+const { enterKeyAction } = useSettings()
 
 const composerError = errorFor('composer')
 const { visibleNoteIds } = useSelection()
@@ -194,15 +196,27 @@ function onKeydown(event: KeyboardEvent) {
 	if (isComposing(event) || composing.value) return
 
 	if (event.key === 'Enter') {
-		// Deviation from the form convention, and a deliberate one: the composer is
-		// a capture line in a keyboard-first tool, so the most frequent action in
-		// the app must not require a chord. Shift+Enter and Ctrl+Enter both give a
-		// newline, and both by *declining* the press rather than inserting one:
-		// Chromium maps either to `InsertNewline` in a textarea, so the field keeps
-		// its own undo stack and its IME behaviour. This is the inverse of the
-		// inline note editor, where Ctrl+Enter saves — a note body there is a
-		// document, and this is one line being captured.
-		if (event.shiftKey || event.ctrlKey || event.metaKey) return
+		// One matrix for both multi-line fields, chosen by the `Enter key`
+		// setting (user ruling 2026-08-11): under `submit` a bare Enter submits
+		// and Ctrl+Enter gives the newline; under `newline` the two swap.
+		// Shift+Enter is a newline in both modes, by *declining* the press:
+		// Chromium maps it to `InsertNewline`, so the field keeps its own undo
+		// stack and its IME behaviour. Ctrl+Enter has no such mapping — a
+		// declined press did nothing at all, which was the reported bug — so its
+		// newline is inserted by hand.
+		if (event.shiftKey) return
+		const submitOnEnter = enterKeyAction.value === 'submit'
+		if (event.ctrlKey || event.metaKey) {
+			event.preventDefault()
+			if (submitOnEnter) {
+				const field = textarea.value
+				if (field) insertNewline(field)
+			} else {
+				void submit()
+			}
+			return
+		}
+		if (!submitOnEnter) return
 		event.preventDefault()
 		void submit()
 		return

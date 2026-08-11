@@ -166,7 +166,8 @@ const { adopt, reportActionError, clearActionError } = useSpace()
 
 /**
  * Every action funnels through here so a failure lands in the same place a
- * failed list mutation does, which is the band `StatusLine` renders.
+ * failed list mutation does — the `list` scope the shell mirrors into the
+ * toast stack.
  *
  * On success with `changed: false` nothing happens at all — that is the
  * already-active case, and reloading an identical document would cost the

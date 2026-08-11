@@ -115,7 +115,7 @@ declare module 'vue' {
     ShortcutRecorder: typeof import('./components/ShortcutRecorder.vue')['default']
     ShortcutReference: typeof import('./components/ShortcutReference.vue')['default']
     SortControl: typeof import('./components/SortControl.vue')['default']
-    StatusLine: typeof import('./components/StatusLine.vue')['default']
+    StatusToaster: typeof import('./components/StatusToaster.vue')['default']
     ThemeToggle: typeof import('./components/ThemeToggle.vue')['default']
   }
 }

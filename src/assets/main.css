@@ -543,6 +543,33 @@
 		   width as the list crosses the overflow threshold. */
 		scrollbar-gutter: stable;
 	}
+
+	/* The scroll region does not reserve a gutter (see the `scrollbar-gutter:
+	   auto` note in PanelShell); instead the scrollbar, when it exists, is paid
+	   for out of the right-edge spacing the list already has, so nothing inside
+	   moves when the list crosses the overflow threshold (user request,
+	   2026-08-11 — the whole column used to shift left by the scrollbar's width).
+
+	   `--scrollbar-space` is written by PanelShell's observer: the width the
+	   vertical scrollbar actually occupies, 0 while the list fits or when the OS
+	   uses overlay scrollbars. It is split into two derived numbers because the
+	   spacing it must come out of lives at two depths:
+
+	   - `--region-inset-r`: what remains of the wrapper's 4px card inset
+	     (`px-1`). The first 4px of scrollbar land here — the cards' right edge
+	     yields before anything inside them does. The section band's negative
+	     margin mirrors it, so the band keeps ending exactly at the region's
+	     content edge.
+	   - `--row-inset-comp`: whatever the scrollbar takes beyond those 4px, paid
+	     by the row-level right paddings (the note gridcell's and the heading
+	     line's `pr-4`). The text column and every trailing control keep their
+	     absolute position; only the row boxes narrow, which they must — a card
+	     cannot underlap a classic scrollbar. */
+	[data-scroll-region] {
+		--scrollbar-space: 0px;
+		--region-inset-r: max(0px, calc(var(--spacing) * 1 - var(--scrollbar-space)));
+		--row-inset-comp: max(0px, calc(var(--scrollbar-space) - var(--spacing) * 1));
+	}
 }
 
 /* The one place the native scrollbar above cannot be kept, and it is a shape
@@ -643,6 +670,18 @@
 	transition-property:
 		color, background-color, border-color, text-decoration-color, fill, stroke, --tw-gradient-from,
 		--tw-gradient-via, --tw-gradient-to;
+}
+
+/* The FLIP `<TransitionGroup>` runs on list rows when they change places —
+   `useListTransition` binds it as `move-class` and records why the moves are a
+   CSS class while enter and leave are Web Animations. Vue probes this class for
+   a transform transition and skips every move when it finds none, so the
+   declaration must survive the cascade on the note rows — which also carry
+   `.transition-colors` above. Both rules are unlayered single classes, so the
+   later one wins: this rule must stay below it, and while a row is mid-move its
+   colour transitions stand down for the 150ms, which is invisible. */
+.list-move {
+	transition: transform var(--transition-duration-base) var(--ease-out-quint);
 }
 
 /* **The focus treatment, and the only copy of it.** A 1px copper edge hugging

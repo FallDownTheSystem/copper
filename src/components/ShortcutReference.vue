@@ -31,7 +31,12 @@ type Row = {
 
 type Group = { heading: string; rows: Row[] }
 
-const GROUPS: Group[] = [
+const { enterKeyAction } = useSettings()
+
+/** A computed rather than a constant for exactly one row: the writing group
+ *  reads the `Enter key` setting, and a reference that showed the other mode's
+ *  chords would be teaching a dead press. */
+const GROUPS = computed<Group[]>(() => [
 	{
 		heading: 'With a note focused',
 		rows: [
@@ -80,13 +85,21 @@ const GROUPS: Group[] = [
 		],
 	},
 	{
-		heading: 'In the composer',
-		rows: [
-			{ action: 'Add the note', chords: ['Enter'] },
-			{ action: 'New line', chords: ['Shift+Enter'] },
-		],
+		// One group for the composer and the inline editor, because the `Enter
+		// key` setting gives them one matrix.
+		heading: 'When writing a note',
+		rows:
+			enterKeyAction.value === 'newline'
+				? [
+						{ action: 'Add or save the note', chords: ['Ctrl+Enter'] },
+						{ action: 'New line', chords: ['Enter', 'Shift+Enter'] },
+					]
+				: [
+						{ action: 'Add or save the note', chords: ['Enter'] },
+						{ action: 'New line', chords: ['Ctrl+Enter', 'Shift+Enter'] },
+					],
 	},
-]
+])
 
 const open = ref(false)
 const list = useTemplateRef<HTMLElement>('list')

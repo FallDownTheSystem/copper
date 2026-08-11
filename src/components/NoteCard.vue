@@ -35,6 +35,22 @@ const attachments = computed(() => props.note.attachments ?? [])
 
 const selected = computed(() => isSelected(props.note.id))
 const editing = computed(() => isEditing(props.note.id))
+
+/**
+ * True while a drag is carrying the selection this row belongs to — every
+ * selected row except the one under the pointer. A drag whose grabbed note is
+ * selected commits the whole selection (`useNoteActions.movedIds`), and the
+ * rows that will travel have to say so *during* the gesture, not surprise on
+ * the drop. Cheap to be reactive, unlike the pointer position the drag module
+ * keeps out of refs: it changes at drag start and end, never per move.
+ */
+const carried = computed(
+	() =>
+		draggingNoteId.value !== null &&
+		draggingNoteId.value !== props.note.id &&
+		selected.value &&
+		isSelected(draggingNoteId.value),
+)
 /** No handle, no drag: a searched or done-filtered list is a subset of each
  *  section and a sorted one is a permutation of it, so in none of those cases is
  *  an index read off the rendered rows the index `reorder_note` takes. Either
@@ -117,78 +133,96 @@ function onDoubleClick(event: MouseEvent) {
 </script>
 
 <template>
-	<!-- `ContextMenu` renders no element of its own, and the trigger merges onto
-	     the row through `as-child`: a `grid` may own only `row` and `rowgroup` and
-	     a `rowgroup` only `row`, so a wrapper here would break
-	     `aria-required-children`. Note rows only — a section header row opens no
-	     note menu. -->
-	<ContextMenu>
-		<ContextMenuTrigger as-child>
-			<!-- **One ring at a time: the focus ring is withheld from a selected row.**
-			     The two used to stack — the selection ring is `ring-inset` and painted
-			     the band from 0 to 2px inside the edge, and the focus ring was pushed
-			     out to `-outline-offset-4` so it took the band from 2 to 4px and sat
-			     beside it rather than over it. Two concentric rings 2px apart is what
-			     a selected row looked like the moment it was focused, which on a
-			     `rounded-lg` row reads as a doubled border rather than as two states.
+	<div
+		role="row"
+		:data-row-id="rowId"
+		data-note-row
+		:data-carried="carried ? '' : undefined"
+		:aria-selected="selected"
+		tabindex="0"
+		class="note-row group/row rounded-lg"
+		:class="[
+			selected
+				? 'row-selected ring-accent-ring ring-2 ring-inset focus-visible:outline-hidden'
+				: 'focus-inset',
+			'hover:bg-surface-hover transition-colors duration-fast',
+		]"
+		@click="emit('pointerSelect', $event)"
+		@dblclick="onDoubleClick"
+		@contextmenu="onContextMenu"
+	>
+		<!-- **The row element is this component's root, and that is load-bearing.**
+		     The card is a `<TransitionGroup>` child, and the group can hand its
+		     enter/leave/move work only to a child that resolves to a single element
+		     root. `ContextMenu` can never be that root: reka-ui's renderless chain
+		     bottoms out in a `PopperRoot` whose render is a slot *fragment*, and Vue
+		     refuses to carry transition hooks through a fragment ("renders
+		     non-element root node that cannot be animated" — the 2026-08-11
+		     dead-animation bug). So the menu lives inside the row, and its trigger
+		     merges onto the gridcell through `as-child`. The cell is the row's whole
+		     box, so the right-click surface is unchanged — and no wrapper element
+		     appears anywhere, which `aria-required-children` requires: a `grid` may
+		     own only `row` and `rowgroup`, a `rowgroup` only `row`. The menu content
+		     teleports to the overlay host either way. Note rows only — a section
+		     header row opens no note menu.
 
-			     It also arrived without warning: `:focus-visible` does not match a row
-			     focused by the click that selected it, and then the *next* key — Shift
-			     on its own is enough, since the browser re-evaluates the heuristic on
-			     any keypress — made a second outline appear around a row nothing had
-			     happened to.
+		     Every template comment sits *inside* the row for the same reason. A
+		     comment beside the root survives into dev builds and turns the
+		     component's subtree into a root fragment whose `el` is a text anchor
+		     — and Vue 3.6's `TransitionGroup` skips any previous child whose `el`
+		     is not an `Element` when it installs leave and move hooks. Enter has
+		     no such check, so the symptom is rows that unfold in but vanish
+		     without folding out, in dev only (production strips comments). -->
+		<!-- **One ring at a time: the focus ring is withheld from a selected row.**
+		     The two used to stack — the selection ring is `ring-inset` and painted
+		     the band from 0 to 2px inside the edge, and the focus ring was pushed
+		     out to `-outline-offset-4` so it took the band from 2 to 4px and sat
+		     beside it rather than over it. Two concentric rings 2px apart is what
+		     a selected row looked like the moment it was focused, which on a
+		     `rounded-lg` row reads as a doubled border rather than as two states.
 
-			     What is lost is knowing *which* selected row holds focus, and it is
-			     affordable here: plain arrows move focus and selection together, and
-			     the case where they separate — Ctrl+Arrow — leaves the row unselected,
-			     which is exactly when the focus ring is drawn.
+		     It also arrived without warning: `:focus-visible` does not match a row
+		     focused by the click that selected it, and then the *next* key — Shift
+		     on its own is enough, since the browser re-evaluates the heuristic on
+		     any keypress — made a second outline appear around a row nothing had
+		     happened to.
 
-			     **What is drawn there is `focus-inset` — the same crisp 2px accent
-			     outline the section band wears.** This row wore a soft outer halo for
-			     a long time, and the reasoning behind it is now known to be void: the
-			     1px `focus-ring` edge "read almost white" on dark rows because a stuck
-			     Chromium transition held every outline at `currentColor` (measured
-			     2026-08-10 — see the `transition-colors` rule in main.css), not
-			     because a crisp edge is wrong on a row. The halo itself was the next
-			     complaint: at 50% alpha over the dark surface it read as a muddy brown
-			     band (user screenshot, same day). One outline language everywhere —
-			     rows, bands, checkbox — and the selection ring is its visual twin, so
-			     "you are here" always looks the same.
+		     What is lost is knowing *which* selected row holds focus, and it is
+		     affordable here: plain arrows move focus and selection together, and
+		     the case where they separate — Ctrl+Arrow — leaves the row unselected,
+		     which is exactly when the focus ring is drawn.
 
-			     **The selected branch still needs `focus-visible:outline-hidden`.**
-			     Withholding `focus-inset` by swapping the class out does not withhold
-			     the browser's own ring — an element that matches `:focus-visible`
-			     with no author outline gets the default ring, which on the dark panel
-			     is a crisp white outline. `outline-hidden` rather than `outline-none`
-			     because in forced colors the transparent outline it declares is
-			     forced visible and is the selected row's only indicator there.
+		     **What is drawn there is `focus-inset` — the same crisp 2px accent
+		     outline the section band wears.** This row wore a soft outer halo for
+		     a long time, and the reasoning behind it is now known to be void: the
+		     1px `focus-ring` edge "read almost white" on dark rows because a stuck
+		     Chromium transition held every outline at `currentColor` (measured
+		     2026-08-10 — see the `transition-colors` rule in main.css), not
+		     because a crisp edge is wrong on a row. The halo itself was the next
+		     complaint: at 50% alpha over the dark surface it read as a muddy brown
+		     band (user screenshot, same day). One outline language everywhere —
+		     rows, bands, checkbox — and the selection ring is its visual twin, so
+		     "you are here" always looks the same.
 
-			     **`tabindex="0"`, unconditionally.** Every row in the grid is a
-			     sequential stop, notes included (user ruling, 2026-08-11, reversing
-			     the sections-only order): Tab walks the list row by row, moved by
-			     `NoteList`'s keydown exactly as an arrow is, so a landing selects
-			     the note. The attribute is what lets a Tab at either end still
-			     enter and leave the grid. The descendants stay at -1 — F2 is still
-			     the way in. Arrows land here through `takeRow`; the grid's focusin
-			     handler keeps the roving target pointed at whatever row focus
-			     actually reaches. -->
-			<div
-				role="row"
-				:data-row-id="rowId"
-				data-note-row
-				:aria-selected="selected"
-				tabindex="0"
-				class="note-row group/row rounded-lg"
-				:class="[
-					selected
-						? 'row-selected ring-accent-ring ring-2 ring-inset focus-visible:outline-hidden'
-						: 'focus-inset',
-					'hover:bg-surface-hover transition-colors duration-fast',
-				]"
-				@click="emit('pointerSelect', $event)"
-				@dblclick="onDoubleClick"
-				@contextmenu="onContextMenu"
-			>
+		     **The selected branch still needs `focus-visible:outline-hidden`.**
+		     Withholding `focus-inset` by swapping the class out does not withhold
+		     the browser's own ring — an element that matches `:focus-visible`
+		     with no author outline gets the default ring, which on the dark panel
+		     is a crisp white outline. `outline-hidden` rather than `outline-none`
+		     because in forced colors the transparent outline it declares is
+		     forced visible and is the selected row's only indicator there.
+
+		     **`tabindex="0"`, unconditionally.** Every row in the grid is a
+		     sequential stop, notes included (user ruling, 2026-08-11, reversing
+		     the sections-only order): Tab walks the list row by row, moved by
+		     `NoteList`'s keydown exactly as an arrow is, so a landing selects
+		     the note. The attribute is what lets a Tab at either end still
+		     enter and leave the grid. The descendants stay at -1 — F2 is still
+		     the way in. Arrows land here through `takeRow`; the grid's focusin
+		     handler keeps the roving target pointed at whatever row focus
+		     actually reaches. -->
+		<ContextMenu>
+			<ContextMenuTrigger as-child>
 				<!-- A grid rather than a flex row, for `content-center` alone. The row
 				     track is the height of its tallest item, so centring the *track*
 				     inside `min-h-11` centres a one-line note in the row while leaving a
@@ -213,16 +247,19 @@ function onDoubleClick(event: MouseEvent) {
 				     than the box opposite it, and every line of every note was 4px
 				     off-centre.
 
-					     **`px-4` rather than `px-3`, and the number is not this row's to
-					     choose.** With the list's own `px-1` outside it the completion box
+					     **16px each side rather than 12, and the number is not this row's
+					     to choose.** (The right side gives up the scrollbar's overflow
+					     share, `--row-inset-comp`, so the text column and the grip hold
+					     still when the list starts to scroll — see main.css.) With the list's own `px-1` outside it the completion box
 					     lands 20px from the panel edge, which is where the search field's
-					     magnifier sits — the leading mark of every row in the panel is on
-					     that column, and `SectionHeader` splits the same 16 between its
-					     gridcell and the marker dot's pill. The 8px it takes off the text
-					     column is what the alignment costs; the grip's hit strip below
-					     follows it. -->
+					     magnifier sits — the leading marks share that column. The section
+					     heading's dot used to be brought onto it too and deliberately left
+					     (user ruling, 2026-08-11): a heading outdented from its notes is
+					     the visual hierarchy, so only the box and the magnifier align now.
+					     The 8px this takes off the text column is what the alignment
+					     costs; the grip's hit strip below follows it. -->
 				<div
-					class="grid min-h-11 min-w-0 grid-cols-[auto_minmax(0,1fr)_1rem] content-center items-start gap-2 px-4 py-2"
+					class="grid min-h-11 min-w-0 grid-cols-[auto_minmax(0,1fr)_1rem] content-center items-start gap-2 py-2 pl-4 pr-[calc(--spacing(4)-var(--row-inset-comp,0px))]"
 					role="gridcell"
 				>
 					<!-- A rounded square rather than task-004's circle, so the squircle
@@ -331,11 +368,11 @@ function onDoubleClick(event: MouseEvent) {
 						<IconLucideGripVertical class="size-4" aria-hidden="true" focusable="false" />
 					</span>
 				</div>
-			</div>
-		</ContextMenuTrigger>
+			</ContextMenuTrigger>
 
-		<NoteContextMenu />
-	</ContextMenu>
+			<NoteContextMenu />
+		</ContextMenu>
+	</div>
 </template>
 
 <style scoped>
@@ -386,7 +423,10 @@ function onDoubleClick(event: MouseEvent) {
 		top: 0;
 		right: 0;
 		bottom: 0;
-		width: 2.5rem;
+		/* Less the scrollbar's share of the row's right padding, so the strip
+		   keeps agreeing with the gutter it spans when the padding yields to the
+		   scrollbar (see `--row-inset-comp` in main.css). */
+		width: calc(2.5rem - var(--row-inset-comp, 0px));
 	}
 }
 
@@ -415,6 +455,13 @@ function onDoubleClick(event: MouseEvent) {
    was holding it has usually been released by then. */
 .note-row[data-dragging] {
 	cursor: grabbing;
+}
+
+/* The rest of a carried selection. Dimmed for the length of the gesture, so
+   the block that will travel on the drop reads as in hand rather than left
+   behind — the selection ring alone claimed nothing about the drag. */
+.note-row[data-carried] {
+	opacity: 0.45;
 }
 
 /* Done notes drop to the secondary colour with a faint rule through the text

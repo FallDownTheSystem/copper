@@ -71,6 +71,7 @@ function makeSettings(over: Partial<Settings> = {}): Settings {
 		motion: 'auto',
 		insertionPoint: 'bottom',
 		doubleClick: 'copy',
+		enterKey: 'submit',
 		alwaysOnTop: true,
 		showCreated: false,
 		captureNotifications: true,
@@ -406,6 +407,22 @@ describe('the notes rows', () => {
 		await segment(wrapper, 'What double-clicking a note does', 'Edit').trigger('click')
 		await flush()
 		expect(patchesSent()).toEqual([{ insertionPoint: 'top' }, { doubleClick: 'edit' }])
+	})
+
+	/** The Enter row follows the same one-key contract, and its shipped default
+	 *  is the composer's own historical behaviour — submit. */
+	it('offers the Enter choice, defaulting to submit and patching only its key', async () => {
+		const wrapper = await openSettings()
+
+		expect(
+			segment(wrapper, 'What the Enter key does when writing', 'Submit').attributes(
+				'aria-checked',
+			),
+		).toBe('true')
+
+		await segment(wrapper, 'What the Enter key does when writing', 'New line').trigger('click')
+		await flush()
+		expect(patchesSent()).toEqual([{ enterKey: 'newline' }])
 	})
 
 	/** The moving pill is one element handed between segments, not a fill each

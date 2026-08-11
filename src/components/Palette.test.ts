@@ -30,8 +30,8 @@ const space = useSpace()
 const spaces = useSpaces()
 const view = useView()
 
-// happy-dom implements no Web Animations API and auto-animate calls `el.animate`
-// out of band, so a filtered row throws rather than failing an assertion. Same
+// happy-dom implements no Web Animations API; with the stub in place the list's
+// enter and leave hooks run their real animated path instead of skipping. Same
 // stub, and the same reason, as the shell's own suite.
 const elementPrototype = Element.prototype as unknown as Record<string, unknown>
 if (elementPrototype.animate === undefined) {
@@ -145,6 +145,7 @@ function defaultSettings() {
 		motion: 'auto',
 		insertionPoint: 'bottom',
 		doubleClick: 'copy',
+		enterKey: 'submit',
 		alwaysOnTop: true,
 		showCreated: false,
 		captureNotifications: true,

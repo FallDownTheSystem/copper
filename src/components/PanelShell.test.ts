@@ -38,16 +38,14 @@ const space = useSpace()
 const spaces = useSpaces()
 const status = useStatusMessage()
 
-// happy-dom implements no Web Animations API, and auto-animate calls
-// `el.animate` from a MutationObserver callback — so a test that adds or removes
-// a row (filtering, undo, delete) throws out of band rather than failing an
-// assertion. Stubbed rather than worked around in the component: the animation
-// is real product behaviour and only the environment is missing.
+// happy-dom implements no Web Animations API. The list's enter and leave hooks
+// skip animation entirely when `el.animate` is missing, so the suite would pass
+// without this — but with the stub in place the hooks run their real path, which
+// is the product behaviour and only the environment is missing.
 //
-// It has to *finish*, not merely exist: auto-animate re-appends a removed
-// element to animate it out and only takes it back out of the DOM on the
-// `finish` event, so a stub that never fires one leaves every filtered-out row
-// on screen forever.
+// It has to *finish*, not merely exist: the `<TransitionGroup>` holds a removed
+// row in the DOM until its leave animation reports done, so a stub that never
+// fires `finish` leaves every filtered-out row on screen forever.
 // Reached through an index signature rather than as `Element.prototype.animate`:
 // the typed property is a method, and both reading it and narrowing on it upset
 // the linter for reasons that have nothing to do with a stub.
@@ -213,6 +211,7 @@ function defaultSettings() {
 		motion: 'auto',
 		insertionPoint: 'bottom',
 		doubleClick: 'copy',
+		enterKey: 'submit',
 		alwaysOnTop: true,
 		showCreated: false,
 	}
@@ -286,6 +285,8 @@ async function baseInvoke(command: string, args?: Record<string, unknown>) {
 	// what the clipboard holds, and an empty list is its "there was text, or
 	// nothing" answer.
 	if (command === 'add_note') return { space: SPACE, noteId: 'nte_1' }
+	// The split half of a list paste: one command for the whole batch.
+	if (command === 'add_notes') return { space: SPACE, noteIds: ['nte_1'] }
 	if (command === 'attach_paste') return []
 	// The two notes of `sec_a` become one, keeping the first id — which is what
 	// `merge_notes` does, and what makes the survivor's row disappear when that
@@ -400,7 +401,7 @@ afterEach(async () => {
 
 /**
  * Lets the chained work of an applied document finish: the pull, reconciliation,
- * the post-`nextTick` DOM restore, the re-render, and auto-animate's exit
+ * the post-`nextTick` DOM restore, the re-render, and the list's leave
  * animation — which only takes a removed row back out of the DOM on `finish`.
  *
  * A macrotask per turn rather than `nextTick`, because several of those steps
@@ -409,6 +410,13 @@ afterEach(async () => {
  */
 async function settle(turns = 4) {
 	for (let i = 0; i < turns; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+/** Sonner keeps a dismissed toast in the DOM for its 200ms exit animation
+ *  (`TIME_BEFORE_UNMOUNT`), so an absence assertion after a dismissal has to
+ *  outwait real time — `settle`'s zero-delay turns never reach it. */
+async function toastGone() {
+	await new Promise((resolve) => setTimeout(resolve, 250))
 }
 
 async function mountPanel() {
@@ -666,10 +674,33 @@ describe('the section delete confirm', () => {
 		expect(confirmPopover()).toBeNull()
 		// One undo covers the section and its notes together.
 		expect(wrapper.text()).toContain('Deleted “Research” and 2 notes')
-		expect(wrapper.get('[data-toast-action]').text()).toBe('Undo')
+		expect(wrapper.get('[data-sonner-toast] [data-action]').text()).toBe('Undo')
 		// The header row died with the section; the DOM half of focus follows the
 		// roving target to the nearest surviving row.
 		expect(selection.focusedId.value).toBe('s:sec_b')
+	})
+
+	it('moves between Cancel and Delete on the arrow keys, cycling', async () => {
+		const wrapper = await mountPanel()
+		takeRow(sectionRow('sec_a'))
+		await settle(2)
+		pressDelete(wrapper)
+		await settle(3)
+
+		const popover = confirmPopover()!
+		const arrow = (key: string) =>
+			document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+
+		// Focus opens on Cancel; one arrow reaches the other offer, in either
+		// direction — the popover's two controls are otherwise Tab-only.
+		arrow('ArrowRight')
+		expect(document.activeElement).toBe(popover.querySelector('[data-section-delete-confirm]'))
+		arrow('ArrowRight')
+		expect(document.activeElement).toBe(popover.querySelector('[data-section-delete-cancel]'))
+		arrow('ArrowLeft')
+		expect(document.activeElement).toBe(popover.querySelector('[data-section-delete-confirm]'))
+		// Arrows move focus only; nothing was pressed.
+		expect(mocks.invoke).not.toHaveBeenCalledWith('delete_section', expect.anything())
 	})
 
 	it('cancels back to the row the question was asked from', async () => {
@@ -940,25 +971,87 @@ describe('row controls', () => {
 	})
 })
 
+describe('the section menu’s done purge', () => {
+	async function openMenuOn(wrapper: Awaited<ReturnType<typeof mountPanel>>, sectionId: string) {
+		// At the gridcell, not the row: the menu trigger listens there — the row
+		// element must stay bare so `TransitionGroup` can animate it — and a
+		// dispatch at the parent never reaches a descendant's listener. A real
+		// right-click always lands inside the cell, which fills the row.
+		await wrapper.find(`[data-row-id="s:${sectionId}"] [role="gridcell"]`).trigger('contextmenu')
+		await settle()
+		const content = document.querySelector<HTMLElement>('[data-slot="context-menu-content"]')
+		expect(content, 'the section menu did not open').not.toBeNull()
+		return content!
+	}
+
+	function doneRow(menu: HTMLElement) {
+		return [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((entry) =>
+			entry.textContent?.includes('Delete done notes'),
+		)
+	}
+
+	it('deletes this section’s done notes, named with their count', async () => {
+		mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+			if (command === 'delete_notes') {
+				const { ids } = args as { ids: string[] }
+				return { ...SPACE, notes: SPACE.notes.filter((note) => !ids.includes(note.id)) }
+			}
+			return baseInvoke(command, args)
+		})
+		const wrapper = await mountPanel()
+		const item = doneRow(await openMenuOn(wrapper, 'sec_a'))
+		expect(item?.textContent).toContain('Delete done notes (1)')
+
+		item!.click()
+		await settle(4)
+
+		// The right-clicked section’s done note and nothing else — one command,
+		// one undo step, and the same toast the header control’s purges carry.
+		expect(mocks.invoke).toHaveBeenCalledWith('delete_notes', { ids: ['nte_2'] })
+		expect(wrapper.text()).toContain('Deleted 1 done note')
+		expect(wrapper.get('[data-sonner-toast] [data-action]').text()).toBe('Undo')
+	})
+
+	it('disables the offer when the section has nothing done', async () => {
+		// Disabled rather than hidden, like every other row here, so the menu
+		// keeps its shape and the section delete below cannot inherit a press
+		// aimed at this row from memory. Bare, with no count: zero is what the
+		// disabled state already says.
+		const wrapper = await mountPanel()
+		const item = doneRow(await openMenuOn(wrapper, 'sec_b'))
+
+		expect(item?.textContent).toContain('Delete done notes')
+		expect(item?.textContent).not.toContain('(')
+		expect(item?.getAttribute('data-disabled')).not.toBeNull()
+	})
+})
+
 describe('the header drag region', () => {
 	/**
 	 * The property is invisible in a screenshot and easy to undo.
 	 *
 	 * Tauri reads `data-tauri-drag-region` off the element the mousedown actually
-	 * lands on. The header used to delegate that to Copper's `c` mark, because the
-	 * field and the two buttons left it almost no bare area of its own; with the
-	 * mark gone the header's own padding is the whole grab handle, so the attribute
-	 * has to be on the header and nothing inside it may claim the same role and
-	 * quietly become the only draggable pixel again.
+	 * lands on — which is why the attribute sits on three elements, not one. The
+	 * header's own padding is the outer grab handle; the two row containers are
+	 * the gaps *between* controls, where a press lands on the row and not on the
+	 * header behind it. Before they carried it, every gap in the header was dead
+	 * to dragging (user report, 2026-08-11). What may never carry it is a
+	 * control: a drag region swallows the pointer events of whatever it is on,
+	 * so an attribute on a button is a button that cannot be clicked.
 	 */
-	it('is the header itself, with no control standing in for it', async () => {
+	it('is the header and its bare rows, never a control', async () => {
 		const wrapper = await mountPanel()
 		const header = wrapper.get('header')
 
 		expect(header.attributes('data-tauri-drag-region')).toBeDefined()
-		// A descendant selector, so this is anything *inside* the header claiming to
-		// be the drag handle.
-		expect(wrapper.find('header [data-tauri-drag-region]').exists()).toBe(false)
+		// Both rows: the search row's gaps and the chip row's, the strip included.
+		expect(wrapper.findAll('header div[data-tauri-drag-region]').length).toBeGreaterThanOrEqual(
+			3,
+		)
+		// No control claims it — that is the half that makes them clickable.
+		expect(
+			wrapper.find('header :is(button, input, a)[data-tauri-drag-region]').exists(),
+		).toBe(false)
 	})
 })
 
@@ -1196,7 +1289,8 @@ describe('the Escape ladder', () => {
 		const wrapper = await mountPanel()
 		selection.select('nte_1')
 
-		await wrapper.find('[data-row-id="n:nte_1"]').trigger('contextmenu')
+		// The cell, not the row — the trigger listens there. See `openMenuOn`.
+		await wrapper.find('[data-row-id="n:nte_1"] [role="gridcell"]').trigger('contextmenu')
 		await settle()
 
 		const content = document.querySelector<HTMLElement>('[data-slot="context-menu-content"]')
@@ -1214,7 +1308,7 @@ describe('the Escape ladder', () => {
 		const wrapper = await mountPanel()
 		selection.select('nte_1')
 
-		await wrapper.find('[data-row-id="n:nte_1"]').trigger('contextmenu')
+		await wrapper.find('[data-row-id="n:nte_1"] [role="gridcell"]').trigger('contextmenu')
 		await settle()
 
 		const content = document.querySelector<HTMLElement>('[data-slot="context-menu-content"]')
@@ -1511,7 +1605,7 @@ describe('the composer submit', () => {
 		await wrapper.vm.$nextTick()
 		const field = wrapper.find('textarea[aria-label="Edit note"]')
 		await field.setValue('# Research')
-		await field.trigger('keydown', { key: 'Enter', ctrlKey: true })
+		await field.trigger('keydown', { key: 'Enter' })
 		await settle(3)
 
 		// Editing a body must never be able to delete the note being edited.
@@ -1521,24 +1615,31 @@ describe('the composer submit', () => {
 })
 
 /**
- * The two Enter matrices, which are deliberate inverses of each other: the
- * composer is a capture line where the most frequent action must not cost a
- * chord, and a note body is a document where a newline must not.
+ * One matrix for both multi-line fields, chosen by the `Enter key` setting
+ * (user ruling 2026-08-11). Under the shipped `submit`: Enter submits, and
+ * Shift+Enter and Ctrl+Enter give a newline — Shift's is the browser's own,
+ * Ctrl's is inserted by hand because Chromium maps that chord to nothing.
+ * Under `newline` the bare press and the Ctrl chord swap.
  */
 describe('the Enter matrix', () => {
-	it('submits the composer on a bare Enter and leaves both modified forms to the field', async () => {
+	it('submits the composer on a bare Enter and gives both modified forms a newline', async () => {
 		const wrapper = await mountPanel()
 		const composer = wrapper.find('#composer')
 		await composer.setValue('captured')
 
-		for (const modifier of [{ shiftKey: true }, { ctrlKey: true }]) {
-			await composer.trigger('keydown', { key: 'Enter', ...modifier })
-			await settle(2)
-		}
-		// Neither one submits, and neither is prevented — the newline is Chromium's
-		// `InsertNewline`, which is what keeps the field's own undo stack intact.
+		// Shift's newline is Chromium's `InsertNewline` — declined, not inserted —
+		// which is what keeps the field's own undo stack intact.
+		await composer.trigger('keydown', { key: 'Enter', shiftKey: true })
+		await settle(2)
 		expect(mocks.invoke).not.toHaveBeenCalledWith('submit_entry', expect.anything())
 
+		// Ctrl has no browser mapping, so its newline lands in the field by hand.
+		await composer.trigger('keydown', { key: 'Enter', ctrlKey: true })
+		await settle(2)
+		expect(mocks.invoke).not.toHaveBeenCalledWith('submit_entry', expect.anything())
+		expect((composer.element as HTMLTextAreaElement).value).toContain('\n')
+
+		await composer.setValue('captured')
 		await composer.trigger('keydown', { key: 'Enter' })
 		await settle(3)
 		expect(mocks.invoke).toHaveBeenCalledWith('submit_entry', {
@@ -1547,20 +1648,22 @@ describe('the Enter matrix', () => {
 		})
 	})
 
-	it('leaves both bare and Shift+Enter to the field inside the inline editor', async () => {
+	it('saves the inline editor on a bare Enter and leaves Shift+Enter to the field', async () => {
 		const wrapper = await mountPanel()
 		editor.beginEdit(SPACE, SPACE.notes[0]!)
 		await wrapper.vm.$nextTick()
 
 		const field = wrapper.find('textarea[aria-label="Edit note"]')
 		await field.setValue('first line')
-		await field.trigger('keydown', { key: 'Enter' })
 		await field.trigger('keydown', { key: 'Enter', shiftKey: true })
 		await settle(3)
-
+		// Still open: a newline is not a save, so the session survives the press.
 		expect(mocks.invoke).not.toHaveBeenCalledWith('edit_note', expect.anything())
-		// Still open: a newline is not a save, so the session survives both presses.
 		expect(editor.session.value).not.toBeNull()
+
+		await field.trigger('keydown', { key: 'Enter' })
+		await settle(3)
+		expect(mocks.invoke).toHaveBeenCalledWith('edit_note', { id: 'nte_1', body: 'first line' })
 	})
 
 	/**
@@ -1570,7 +1673,7 @@ describe('the Enter matrix', () => {
 	 * shell's text-surface guard, which `Ctrl+K` has already been made an exception
 	 * to once.
 	 */
-	it('saves on Ctrl+Enter without also starting the external handoff', async () => {
+	it('gives Ctrl+Enter a newline in the editor without starting the external handoff', async () => {
 		const wrapper = await mountPanel()
 		editor.beginEdit(SPACE, SPACE.notes[0]!)
 		await wrapper.vm.$nextTick()
@@ -1580,8 +1683,45 @@ describe('the Enter matrix', () => {
 		await field.trigger('keydown', { key: 'Enter', ctrlKey: true })
 		await settle(3)
 
-		expect(mocks.invoke).toHaveBeenCalledWith('edit_note', { id: 'nte_1', body: 'edited body' })
+		expect(mocks.invoke).not.toHaveBeenCalledWith('edit_note', expect.anything())
+		expect((field.element as HTMLTextAreaElement).value).toContain('\n')
 		expect(mocks.invoke).not.toHaveBeenCalledWith('editor_open_note', expect.anything())
+		expect(editor.session.value).not.toBeNull()
+	})
+
+	/** The inverse mode: the bare press and the Ctrl chord swap, in both fields.
+	 *  Shift+Enter stays a newline, so no choice loses an action. */
+	it('swaps the pair under the newline setting', async () => {
+		settingsPayload = { ...defaultSettings(), enterKey: 'newline' }
+		const wrapper = await mountPanel()
+		await settings.refresh()
+		await settle(2)
+
+		const composer = wrapper.find('#composer')
+		await composer.setValue('captured')
+		await composer.trigger('keydown', { key: 'Enter' })
+		await settle(2)
+		// Declined: the bare press is the browser's newline now.
+		expect(mocks.invoke).not.toHaveBeenCalledWith('submit_entry', expect.anything())
+
+		await composer.trigger('keydown', { key: 'Enter', ctrlKey: true })
+		await settle(3)
+		expect(mocks.invoke).toHaveBeenCalledWith('submit_entry', {
+			body: 'captured',
+			attachments: [],
+		})
+
+		editor.beginEdit(SPACE, SPACE.notes[0]!)
+		await wrapper.vm.$nextTick()
+		const field = wrapper.find('textarea[aria-label="Edit note"]')
+		await field.setValue('edited body')
+		await field.trigger('keydown', { key: 'Enter' })
+		await settle(2)
+		expect(mocks.invoke).not.toHaveBeenCalledWith('edit_note', expect.anything())
+
+		await field.trigger('keydown', { key: 'Enter', ctrlKey: true })
+		await settle(3)
+		expect(mocks.invoke).toHaveBeenCalledWith('edit_note', { id: 'nte_1', body: 'edited body' })
 	})
 
 	/**
@@ -1986,6 +2126,44 @@ describe('a pinned section heading', () => {
 		)
 	})
 
+	it('says done over total after the name, and nothing beside an empty section', async () => {
+		// `1/2`: nte_2 is done and nte_1 is not. The empty section shows no count
+		// at all — `0/0` beside every fresh heading is a mark that says nothing,
+		// the same rule the section menu's delete count follows.
+		const wrapper = await mountPanel()
+
+		const research = wrapper.get(`[data-row-id="${sectionRow('sec_a')}"]`)
+		expect(research.find('[data-section-counts]').text()).toBe('1/2')
+		expect(research.text()).toContain('2 notes, 1 done')
+
+		const inbox = wrapper.get(`[data-row-id="${sectionRow('sec_b')}"]`)
+		expect(inbox.find('[data-section-counts]').exists()).toBe(false)
+	})
+
+	it('keeps the count current as notes are marked done', async () => {
+		// Live off the document, not read once: the band is on screen while the
+		// completion circle changes what it counts.
+		const wrapper = await mountPanel()
+		mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+			if (command === 'set_notes_done') {
+				const { ids, done } = args as { ids: string[]; done: boolean }
+				return {
+					...SPACE,
+					notes: SPACE.notes.map((note) =>
+						ids.includes(note.id) ? { ...note, done } : note,
+					),
+				}
+			}
+			return baseInvoke(command)
+		})
+
+		await space.setNotesDone(['nte_1'], true)
+		await settle(3)
+
+		const research = wrapper.get(`[data-row-id="${sectionRow('sec_a')}"]`)
+		expect(research.find('[data-section-counts]').text()).toBe('2/2')
+	})
+
 	/**
 	 * The same rule the reveal path follows, through the other entrance.
 	 *
@@ -2073,19 +2251,20 @@ describe('the section switcher', () => {
 		)
 	})
 
-	it('shows each section with its own note count', async () => {
-		// The count is what makes one destination worth picking over another, and it
-		// is the document's rather than the filtered list's — a query narrows what is
-		// on screen, not what a section holds.
+	it('shows each section with its done and total counts', async () => {
+		// The counts are what make one destination worth picking over another, and
+		// they are the document's rather than the filtered list's — a query narrows
+		// what is on screen, not what a section holds.
 		const wrapper = await mountPanel()
 		await showSwitcher(wrapper)
 
 		const rows = [...(content()?.querySelectorAll('[role="menuitem"]') ?? [])]
 		expect(rows[0]?.textContent).toContain('Research')
-		expect(rows[0]?.textContent).toContain('2 notes')
+		expect(rows[0]?.textContent).toContain('1/2')
+		expect(rows[0]?.textContent).toContain('2 notes, 1 done')
 		// An empty section still says so rather than showing nothing.
 		expect(rows[1]?.textContent).toContain('Inbox')
-		expect(rows[1]?.textContent).toContain('0 notes')
+		expect(rows[1]?.textContent).toContain('0/0')
 	})
 
 	it('offers one field that both filters and creates', async () => {
@@ -2543,6 +2722,50 @@ describe('collapsible sections', () => {
 		await settle(2)
 
 		expect(selection.focusedId.value).toBe('s:sec_b')
+	})
+
+	it('clears the selection when another note’s completion circle is pressed', async () => {
+		// The hole the bubble-phase rule had: the circle’s `@click.stop` kept the
+		// press from ever reaching the region handler, so acting on another note
+		// left the old selection standing under its ring. The rule runs on
+		// capture now, which sees the press before any control can swallow it.
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		await settle(2)
+
+		await wrapper.get('[data-row-id="n:nte_2"] button[aria-label="Mark as not done"]').trigger('click')
+		await settle(3)
+
+		expect(selection.selectedIds.value).toEqual([])
+	})
+
+	it('keeps the selection when the pressed circle belongs to a selected note', async () => {
+		// A click anywhere on a selected note’s row is not “away” — the circle
+		// deliberately ignores the selection for the toggle, and taking the
+		// selection with it would make acting on your own selection destroy it.
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		selection.extendTo('nte_2')
+		await settle(2)
+
+		await wrapper.get('[data-row-id="n:nte_2"] button[aria-label="Mark as not done"]').trigger('click')
+		await settle(3)
+
+		expect(selection.selectedIds.value).toEqual(['nte_1', 'nte_2'])
+	})
+
+	it('leaves a modifier click to extend the selection rather than clearing it first', async () => {
+		// Ctrl adds and Shift ranges; both are selection gestures, never “away”.
+		// Running the capture-phase clear under them would empty the selection a
+		// tick before the row’s own handler adds one note back to it.
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		await settle(2)
+
+		await wrapper.get('[data-row-id="n:nte_2"]').trigger('click', { ctrlKey: true })
+		await settle(2)
+
+		expect(selection.selectedIds.value).toEqual(['nte_1', 'nte_2'])
 	})
 
 	it('clears the selection on a click that is not on a note', async () => {
@@ -3501,23 +3724,28 @@ describe('reordering', () => {
 	 * A store that actually reorders, so a second press sees the result of the
 	 * first. That is the whole subject here — every bug in this area was about what
 	 * the *next* press does.
+	 *
+	 * It answers `reorder_notes`, which is the one command both move paths send
+	 * now: a single note is a block of one, so the drag and Alt+Arrow tests all
+	 * assert the same shape. The block lands whole at the after-removal index,
+	 * which is the op's own arithmetic in miniature.
 	 */
-	function installReorderingStore() {
-		let current: Space = { ...SPACE, notes: SPACE.notes.map((note) => ({ ...note })) }
-		const calls: { id: string; section: string; index: number }[] = []
+	function installReorderingStore(base: Space = SPACE) {
+		let current: Space = { ...base, notes: base.notes.map((note) => ({ ...note })) }
+		const calls: { ids: string[]; section: string; index: number }[] = []
 
 		mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
 			if (command === 'get_active_space') return current
-			if (command !== 'reorder_note') return baseInvoke(command)
+			if (command !== 'reorder_notes') return baseInvoke(command)
 
-			const { id, section, index } = args as { id: string; section: string; index: number }
-			calls.push({ id, section, index })
+			const { ids, section, index } = args as { ids: string[]; section: string; index: number }
+			calls.push({ ids, section, index })
 
-			const moved = current.notes.find((note) => note.id === id)
-			if (!moved) return current
-			const rest = current.notes.filter((note) => note.id !== id)
+			const carried = new Set(ids)
+			const moved = current.notes.filter((note) => carried.has(note.id))
+			const rest = current.notes.filter((note) => !carried.has(note.id))
 			const target = rest.filter((note) => note.section === section)
-			target.splice(index, 0, { ...moved, section })
+			target.splice(index, 0, ...moved.map((note) => ({ ...note, section })))
 			const others = rest.filter((note) => note.section !== section)
 
 			current = {
@@ -3637,15 +3865,13 @@ describe('reordering', () => {
 
 			// Index 1, after the note already there — not 0, which is what the empty
 			// published list produced.
-			expect(store.calls.at(-1)).toEqual({ id: 'nte_1', section: 'sec_a', index: 1 })
+			expect(store.calls.at(-1)).toEqual({ ids: ['nte_1'], section: 'sec_a', index: 1 })
 			expect(store.order('sec_a')).toEqual(['nte_2', 'nte_1'])
 		})
 
-		it('does not collapse a multi-note selection as a side effect', async () => {
-			// Unlike a drag, this is a keyboard action on the *focused* note. Nudging
-			// one note is not a reason to throw away the others the user picked.
+		it('carries the whole selection as one block when the focused note is in it', async () => {
 			const wrapper = await mountPanel()
-			installReorderingStore()
+			const store = installReorderingStore()
 			selection.select('nte_1')
 			selection.extendTo('nte_2')
 
@@ -3654,7 +3880,49 @@ describe('reordering', () => {
 				.trigger('keydown', { key: 'ArrowDown', altKey: true })
 			await settle(4)
 
+			// Both of sec_a's notes are selected, so there is nothing left to hop
+			// inside it: the block crosses into the next section — together, in
+			// document order, as one call and so one undo step.
+			expect(store.calls).toEqual([{ ids: ['nte_1', 'nte_2'], section: 'sec_b', index: 0 }])
+			expect(store.order('sec_b')).toEqual(['nte_1', 'nte_2'])
+			// And the selection survives the move: the block is still what the user
+			// picked, so nudging it is not a reason to collapse it.
 			expect(selection.selectedIds.value).toEqual(['nte_1', 'nte_2'])
+		})
+
+		it('hops a selected block past the next remaining note in one call', async () => {
+			const third: Space = {
+				...SPACE,
+				notes: [
+					...SPACE.notes,
+					{
+						id: 'nte_3',
+						section: 'sec_a',
+						order: 2,
+						done: false,
+						body: 'third note',
+						created: '2026-08-05T00:00:00Z',
+						updated: '2026-08-05T00:00:00Z',
+					},
+				],
+			}
+			const wrapper = await mountPanel()
+			const store = installReorderingStore(third)
+			await space.refresh()
+			await settle(3)
+
+			selection.select('nte_1')
+			selection.extendTo('nte_2')
+			await wrapper
+				.find('[data-row-id="n:nte_2"]')
+				.trigger('keydown', { key: 'ArrowDown', altKey: true })
+			await settle(4)
+
+			// One step is one hop over the nearest note the block leaves behind, and
+			// the index is counted with *both* carried notes removed: `[1, 2]` past
+			// `3` is index 1 of `[3]`, never index 2 of the rendered rows.
+			expect(store.calls).toEqual([{ ids: ['nte_1', 'nte_2'], section: 'sec_a', index: 1 }])
+			expect(store.order('sec_a')).toEqual(['nte_3', 'nte_1', 'nte_2'])
 		})
 	})
 
@@ -3782,7 +4050,7 @@ describe('reordering', () => {
 			window.dispatchEvent(pointer('pointerup', 90))
 			await settle(4)
 
-			expect(store.calls).toEqual([{ id: 'nte_1', section: 'sec_a', index: 1 }])
+			expect(store.calls).toEqual([{ ids: ['nte_1'], section: 'sec_a', index: 1 }])
 			expect(store.order('sec_a')).toEqual(['nte_2', 'nte_1'])
 			// Nothing of the gesture is left on the row.
 			expect(draggingRow()).toBeNull()
@@ -3800,8 +4068,74 @@ describe('reordering', () => {
 			window.dispatchEvent(pointer('pointerup', 150))
 			await settle(4)
 
-			expect(store.calls).toEqual([{ id: 'nte_1', section: 'sec_b', index: 0 }])
+			expect(store.calls).toEqual([{ ids: ['nte_1'], section: 'sec_b', index: 0 }])
 			expect(store.order('sec_b')).toEqual(['nte_1'])
+		})
+
+		it('drops the whole selection together when the dragged note is part of it', async () => {
+			const wrapper = await mountPanel()
+			const store = installReorderingStore()
+			selection.select('nte_1')
+			selection.extendTo('nte_2')
+			const grip = gripOf(wrapper, 'n:nte_1')
+
+			grip.dispatchEvent(pointer('pointerdown', 40))
+			window.dispatchEvent(pointer('pointermove', 150))
+			await settle()
+
+			// The rest of the carried selection says so for the length of the
+			// gesture, so the drop is not a surprise about what travels.
+			expect(document.querySelector('[data-row-id="n:nte_2"][data-carried]')).not.toBeNull()
+
+			window.dispatchEvent(pointer('pointerup', 150))
+			await settle(4)
+
+			// One call and so one undo step, the block in document order.
+			expect(store.calls).toEqual([{ ids: ['nte_1', 'nte_2'], section: 'sec_b', index: 0 }])
+			expect(store.order('sec_b')).toEqual(['nte_1', 'nte_2'])
+			// The block stays selected — nothing collapses to the grabbed note.
+			expect(selection.selectedIds.value).toEqual(['nte_1', 'nte_2'])
+			expect(document.querySelector('[data-carried]')).toBeNull()
+		})
+
+		it('leaves the selection behind when the dragged note is not part of it', async () => {
+			// The block rule is anchored on the dragged note, exactly as every other
+			// action anchors on focus: a selection elsewhere is not what this
+			// gesture names.
+			const wrapper = await mountPanel()
+			const store = installReorderingStore()
+			selection.select('nte_2')
+			const grip = gripOf(wrapper, 'n:nte_1')
+
+			grip.dispatchEvent(pointer('pointerdown', 40))
+			window.dispatchEvent(pointer('pointermove', 150))
+			await settle()
+			expect(document.querySelector('[data-carried]')).toBeNull()
+
+			window.dispatchEvent(pointer('pointerup', 150))
+			await settle(4)
+
+			expect(store.calls).toEqual([{ ids: ['nte_1'], section: 'sec_b', index: 0 }])
+		})
+
+		it('recognises a drop that reassembles the block where it already is as a no-op', async () => {
+			// Both of sec_a's notes are selected and the first is dropped below the
+			// second. The geometry answers index 1 — counted with only the *dragged*
+			// note excluded — but with the whole block removed the destination is
+			// index 0, which is where the block already sits. Nothing may reach the
+			// store, and no undo entry may be pushed.
+			const wrapper = await mountPanel()
+			const store = installReorderingStore()
+			selection.select('nte_1')
+			selection.extendTo('nte_2')
+			const grip = gripOf(wrapper, 'n:nte_1')
+
+			grip.dispatchEvent(pointer('pointerdown', 40))
+			window.dispatchEvent(pointer('pointermove', 90))
+			window.dispatchEvent(pointer('pointerup', 90))
+			await settle(4)
+
+			expect(store.calls).toEqual([])
 		})
 
 		it("places an empty section's line from its group, not from a pinned heading", async () => {
@@ -3930,8 +4264,8 @@ describe('reordering', () => {
 			// The one way a `pointerup` never arrives at all: an alt-tab, or a click
 			// that raises another window, delivers the release somewhere else. Left
 			// running, the row keeps its transform and its raised stacking order,
-			// `isDragging` stays true so auto-animate never comes back, and the
-			// auto-scroll loop keeps asking for frames.
+			// `isDragging` stays true so the list animation never comes back, and
+			// the auto-scroll loop keeps asking for frames.
 			const wrapper = await mountPanel()
 			const store = installReorderingStore()
 			const grip = gripOf(wrapper, 'n:nte_1')
@@ -3990,7 +4324,7 @@ describe('reordering', () => {
 
 			window.dispatchEvent(pointer('pointerup', 90))
 			await settle(4)
-			expect(store.calls).toEqual([{ id: 'nte_1', section: 'sec_b', index: 0 }])
+			expect(store.calls).toEqual([{ ids: ['nte_1'], section: 'sec_b', index: 0 }])
 		})
 
 		it('abandons the drag when a document arrives mid-gesture', async () => {
@@ -4022,11 +4356,11 @@ describe('reordering', () => {
 		})
 
 		it('settles the list animation before it measures a single row', async () => {
-			// auto-animate is mid-FLIP for 150ms after any list change, and an animated
+			// The list is mid-motion for 150ms after any change, and an animated
 			// row reports its *transformed* box — so a drag begun just after a capture
 			// landed would measure rows at positions they are still travelling away
-			// from. The stand-down watcher cannot be relied on for this: it runs
-			// asynchronously off the same flag the drag sets.
+			// from. The gate cannot be relied on for this: it only stops animations
+			// that have not started when the drag arms.
 			const wrapper = await mountPanel()
 			installReorderingStore()
 
@@ -4101,7 +4435,7 @@ describe('reordering', () => {
 			window.dispatchEvent(pointer('pointerup', 150))
 			await settle(4)
 
-			expect(store.calls).toEqual([{ id: 'nte_1', section: 'sec_b', index: 0 }])
+			expect(store.calls).toEqual([{ ids: ['nte_1'], section: 'sec_b', index: 0 }])
 			// The note is still selected — collapse folds a row away, it never
 			// unselects — but the roving target went somewhere that exists.
 			expect(selection.selectedIds.value).toEqual(['nte_1'])
@@ -4240,6 +4574,130 @@ describe('zero-focus paste', () => {
 		// is what makes a stray whitespace clipboard silent rather than an error.
 		expect(calls('add_note')).toHaveLength(0)
 		expect(calls('attach_paste')).toHaveLength(1)
+	})
+})
+
+/**
+ * The list-paste question: a zero-focus paste whose clipboard is a flat
+ * Markdown-style list is the one shape with two right answers, so the shell
+ * asks — one note, or one note per item — and adds nothing until an offer is
+ * pressed. Everything else about the paste path above is unchanged, including
+ * the composer's own paste, which the text-surface guard never lets get here.
+ */
+describe('the list-paste question', () => {
+	function paste(text: string) {
+		const event = new Event('paste', { bubbles: true, cancelable: true })
+		Object.defineProperty(event, 'clipboardData', {
+			value: { getData: () => text },
+		})
+		return event
+	}
+
+	function calls(command: string) {
+		return mocks.invoke.mock.calls.filter((call) => call[0] === command)
+	}
+
+	function question() {
+		return document.querySelector<HTMLElement>('[data-list-paste]')
+	}
+
+	const LIST = '- Empty dishwasher\n- Take out trash\n- Defrost fridge'
+
+	it('asks instead of adding, count on the split offer, focus on the safe one', async () => {
+		await mountPanel()
+
+		document.body.dispatchEvent(paste(LIST))
+		await settle(3)
+
+		const popover = question()
+		expect(popover).not.toBeNull()
+		expect(popover!.textContent).toContain('One note')
+		expect(popover!.textContent).toContain('Separate notes')
+		expect(popover!.textContent).toContain('3')
+		// The first press adds nothing — that is the point of asking.
+		expect(calls('add_note')).toHaveLength(0)
+		expect(calls('add_notes')).toHaveLength(0)
+		// The offer that means "what a paste always did" takes the autofocus, so
+		// Enter answers the question without a pointer.
+		expect(document.activeElement).toBe(popover!.querySelector('[data-paste-one-note]'))
+	})
+
+	it('pastes the clipboard verbatim as one note on the first offer', async () => {
+		await mountPanel()
+		document.body.dispatchEvent(paste(LIST))
+		await settle(3)
+
+		question()!.querySelector<HTMLElement>('[data-paste-one-note]')!.click()
+		await settle(3)
+
+		expect(question()).toBeNull()
+		expect(calls('add_note')[0]?.[1]).toEqual({ body: LIST, section: null })
+		expect(calls('add_notes')).toHaveLength(0)
+	})
+
+	it('splits into one note per item, markers stripped, on the second offer', async () => {
+		await mountPanel()
+		document.body.dispatchEvent(paste(LIST))
+		await settle(3)
+
+		question()!.querySelector<HTMLElement>('[data-paste-separate-notes]')!.click()
+		await settle(3)
+
+		expect(question()).toBeNull()
+		// One command for the whole batch, so the split is one undo step.
+		expect(calls('add_notes')).toHaveLength(1)
+		expect(calls('add_notes')[0]?.[1]).toEqual({
+			bodies: ['Empty dishwasher', 'Take out trash', 'Defrost fridge'],
+			section: null,
+		})
+		expect(calls('add_note')).toHaveLength(0)
+	})
+
+	it('moves between the offers on the arrow keys', async () => {
+		await mountPanel()
+		document.body.dispatchEvent(paste(LIST))
+		await settle(3)
+
+		const popover = question()!
+		const arrow = (key: string) =>
+			document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+
+		// The offers stack vertically, so the vertical pair is the natural one —
+		// but the helper takes both axes, so either works.
+		arrow('ArrowDown')
+		expect(document.activeElement).toBe(popover.querySelector('[data-paste-separate-notes]'))
+		arrow('ArrowUp')
+		expect(document.activeElement).toBe(popover.querySelector('[data-paste-one-note]'))
+	})
+
+	it('adds nothing when dismissed — the clipboard still holds the text', async () => {
+		await mountPanel()
+		document.body.dispatchEvent(paste(LIST))
+		await settle(3)
+
+		question()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+		await settle(3)
+
+		expect(question()).toBeNull()
+		expect(calls('add_note')).toHaveLength(0)
+		expect(calls('add_notes')).toHaveLength(0)
+		// The press resolved at the overlay guard, not on the Escape ladder: the
+		// question closing must not also hide the panel.
+		expect(mocks.invoke).not.toHaveBeenCalledWith('hide_panel')
+	})
+
+	it('does not ask about text with structure beyond a flat list', async () => {
+		await mountPanel()
+
+		const structured = '# Chores\n- one\n- two'
+		document.body.dispatchEvent(paste(structured))
+		await settle(3)
+
+		// A heading, nesting or prose means the split would destroy structure, so
+		// the paste stays exactly what it always was: one captured note.
+		expect(question()).toBeNull()
+		expect(calls('add_note')[0]?.[1]).toEqual({ body: structured, section: null })
+		expect(calls('add_notes')).toHaveLength(0)
 	})
 })
 
@@ -5054,7 +5512,7 @@ describe('the done filter', () => {
 		// The chord no longer has to be spelled in the sentence: the pill carries the
 		// button that performs the same single step.
 		expect(wrapper.text()).toContain('Deleted 2 done notes')
-		expect(wrapper.get('[data-toast-action]').text()).toBe('Undo')
+		expect(wrapper.get('[data-sonner-toast] [data-action]').text()).toBe('Undo')
 	})
 
 	/**
@@ -5078,7 +5536,7 @@ describe('the done filter', () => {
 		await wrapper.get('[role="grid"]').trigger('keydown', { key: 'ArrowDown', altKey: true })
 		await settle(3)
 
-		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_note', expect.anything())
+		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_notes', expect.anything())
 		expect(wrapper.text()).toContain('Show all notes to reorder them.')
 
 		// And it comes back with the view.
@@ -5314,7 +5772,7 @@ describe('sort', () => {
 		await wrapper.get('[role="grid"]').trigger('keydown', { key: 'ArrowDown', altKey: true })
 		await settle(3)
 
-		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_note', expect.anything())
+		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_notes', expect.anything())
 		expect(wrapper.text()).toContain('Set the sort to Manual to reorder notes.')
 
 		list.setSort('manual')
@@ -5389,29 +5847,29 @@ describe('sort', () => {
 		await settle(2)
 		await wrapper.get('[role="grid"]').trigger('keydown', { key: 'ArrowDown', altKey: true })
 		await settle(3)
-		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_note', expect.anything())
+		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_notes', expect.anything())
 		expect(wrapper.text()).toContain('Show all notes to reorder them.')
 
 		// And the commit itself, in case a drag is ever started some other way.
 		await actions.finishDrag('nte_2', 'sec_a', 0)
 		await settle(3)
-		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_note', expect.anything())
+		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_notes', expect.anything())
 	})
 
 	/**
-	 * `positionOf` answers in **document** coordinates, which is what its contract
-	 * always said and what `finishDrag`'s no-op check needs — `useNoteDrag` counts
-	 * the destination index over the whole section, so a position taken from the
-	 * rendered rows compares two different coordinate systems.
+	 * `blockUnmoved` answers in **document** coordinates, which is what
+	 * `finishDrag`'s no-op check needs — `useNoteDrag` counts the destination
+	 * index over the whole section, so a position taken from the rendered rows
+	 * compares two different coordinate systems.
 	 *
 	 * Collapse is the condition this is observable under. Every *other* way the
 	 * rendered rows can disagree with the document — a query, the done filter, a
 	 * non-manual sort — is refused outright by `reorderBlocked` before the no-op
 	 * check runs, so the defect was unreachable rather than absent. A collapsed
-	 * section is not refused, and it publishes an empty note list: reading the
-	 * position off `visibleGroups` there returned -1, which never equals the index,
-	 * so a drag that changed nothing went to the store and pushed an undo entry the
-	 * user then had to press Ctrl+Z to get rid of.
+	 * section is not refused, and it publishes an empty note list: a position
+	 * read off `visibleGroups` there returned -1, which never equals the index,
+	 * so a drag that changed nothing went to the store and pushed an undo entry
+	 * the user then had to press Ctrl+Z to get rid of.
 	 */
 	it('treats a no-op drag inside a collapsed section as a no-op', async () => {
 		const wrapper = await mountPanel()
@@ -5424,7 +5882,7 @@ describe('sort', () => {
 		await actions.finishDrag('nte_2', 'sec_a', 1)
 		await settle(3)
 
-		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_note', expect.anything())
+		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_notes', expect.anything())
 	})
 })
 
@@ -5526,7 +5984,9 @@ describe('the status toast', () => {
 	it('places every flow child of the shell in both axes, in one column', async () => {
 		const wrapper = await mountPanel()
 		status.setMessage('Copied 1 note')
-		await wrapper.vm.$nextTick()
+		// One macrotask, not one tick: Sonner's Toaster takes the message in a
+		// `nextTick` callback of its own, and the render is a tick behind that.
+		await settle(1)
 
 		const root = wrapper.get('[data-panel-root]')
 		expect(root.classes()).toContain('grid-cols-1')
@@ -5551,14 +6011,14 @@ describe('the status toast', () => {
 		}
 
 		// And the rows they name: the two fixed bands either side of the region, and
-		// the toast band sharing the region's cell rather than taking a row from it.
+		// the toast host sharing the region's cell rather than taking a row from it.
 		expect(wrapper.get('header').classes()).toContain('row-start-1')
 		expect(wrapper.get('[data-scroll-region]').classes()).toContain('row-start-2')
 		expect(wrapper.get('form').classes()).toContain('row-start-3')
-		// Through `closest` rather than a parent chain: the pill sits inside
-		// StatusLine's own live-region wrapper, so the band is its grandparent and
-		// counting the hops would break the moment either gains a level.
-		const band = wrapper.get('[data-status-toast]').element.closest('.row-start-2')
+		// Through `closest` rather than a parent chain: the toast sits inside
+		// Sonner's own list and section, so the host is levels above it and
+		// counting the hops would break the moment the library gains one.
+		const band = wrapper.get('[data-sonner-toast]').element.closest('.row-start-2')
 		expect(band).not.toBeNull()
 		// And it is a child of the grid itself, so the cell it names is a cell of the
 		// shell rather than of something nested inside the region.
@@ -5566,35 +6026,37 @@ describe('the status toast', () => {
 	})
 
 	/**
-	 * The pill overlays the last rows of the list for five seconds after every
-	 * action, so it must not eat presses aimed at what is underneath it. The band,
-	 * the pill and everything in it are click-through; the action button re-enables
-	 * pointer events for itself alone, being the only part that does anything.
+	 * The toasts overlay the last rows of the list for five seconds after every
+	 * action, so the *bare* parts of their host must not eat presses aimed at
+	 * what is underneath. The host cell is click-through; each toast re-enables
+	 * pointer events for itself — hovering one is what holds its clock, and its
+	 * button is what does anything.
 	 */
-	it('is click-through except for its action button', async () => {
+	it('is click-through outside the toasts themselves', async () => {
 		const wrapper = await mountPanel()
 		status.setMessage('Copied 1 note', { label: 'Undo', run: () => {} })
-		await wrapper.vm.$nextTick()
+		await settle(1)
 
-		const pill = wrapper.get('[data-status-toast]')
-		expect(pill.classes()).not.toContain('pointer-events-auto')
-		// `closest`, not `parentElement`: VTU's Transition stub inserts an element
-		// between the pill and the click-through wrapper that runtime Vue does not.
+		const pill = wrapper.get('[data-sonner-toast]')
+		expect(pill.classes()).toContain('pointer-events-auto')
 		expect(pill.element.closest('.pointer-events-none')).not.toBeNull()
-		expect(wrapper.get('[data-toast-action]').classes()).toContain('pointer-events-auto')
+		expect(wrapper.get('[data-sonner-toast] [data-action]').text()).toBe('Undo')
 	})
 
-	/** One pill, whatever happened. A second message takes the surface rather than
-	 *  opening a second one under it. */
-	it('replaces the message rather than stacking a second pill', async () => {
+	/** The stack, which is what replaced the single pill (user direction,
+	 *  2026-08-11): a second message joins the first rather than taking its
+	 *  surface, so marking five notes done leaves five `Undo`s, each undoing its
+	 *  own press. */
+	it('stacks a second message rather than replacing the first', async () => {
 		const wrapper = await mountPanel()
 		status.setMessage('Copied 1 note')
-		await wrapper.vm.$nextTick()
+		await settle(1)
 		status.setMessage('Copied 3 notes')
-		await wrapper.vm.$nextTick()
+		await settle(1)
 
-		expect(wrapper.findAll('[data-status-toast]')).toHaveLength(1)
-		expect(wrapper.get('[data-status-toast]').text()).toContain('Copied 3 notes')
+		expect(wrapper.findAll('[data-sonner-toast]')).toHaveLength(2)
+		expect(wrapper.text()).toContain('Copied 1 note')
+		expect(wrapper.text()).toContain('Copied 3 notes')
 	})
 
 	/**
@@ -5607,15 +6069,23 @@ describe('the status toast', () => {
 		vi.useFakeTimers()
 		try {
 			status.setMessage('Copied 1 note')
+			// Two ticks under the fake clock — `settle` would wait on a timer that
+			// never fires. The first flushes the Toaster's own `nextTick` intake,
+			// the second the render behind it.
 			await wrapper.vm.$nextTick()
-			expect(wrapper.find('[data-status-toast]').exists()).toBe(true)
+			await wrapper.vm.$nextTick()
+			expect(wrapper.find('[data-sonner-toast]').exists()).toBe(true)
 
 			await wrapper.trigger('keydown', { key: 'Escape' })
-			expect(wrapper.find('[data-status-toast]').exists()).toBe(true)
+			expect(wrapper.find('[data-sonner-toast]').exists()).toBe(true)
 
+			// The expiry, then Sonner's 200ms unmount delay — the element outlives
+			// its dismissal by the length of the exit animation.
 			vi.advanceTimersByTime(5000)
 			await wrapper.vm.$nextTick()
-			expect(wrapper.find('[data-status-toast]').exists()).toBe(false)
+			vi.advanceTimersByTime(300)
+			await wrapper.vm.$nextTick()
+			expect(wrapper.find('[data-sonner-toast]').exists()).toBe(false)
 		} finally {
 			vi.useRealTimers()
 		}
@@ -5647,15 +6117,17 @@ describe('the status toast', () => {
 		await settle(4)
 
 		expect(wrapper.findAll('[data-note-row]')).toHaveLength(0)
-		expect(wrapper.get('[data-status-toast]').text()).toContain('Moved 1 note to Done')
+		expect(wrapper.get('[data-sonner-toast]').text()).toContain('Moved 1 note to Done')
 
-		await wrapper.get('[data-toast-action]').trigger('click')
+		await wrapper.get('[data-sonner-toast] [data-action]').trigger('click')
 		await settle(3)
 
 		expect(mocks.invoke).toHaveBeenCalledWith('undo')
-		// The offer is spent, so the pill does not stay up inviting a second press
-		// at a step that has already been taken.
-		expect(wrapper.find('[data-toast-action]').exists()).toBe(false)
+		// The offer is spent, so the toast does not stay up inviting a second press
+		// at a step that has already been taken. Sonner keeps the element for its
+		// 200ms exit animation, so the wait is real time, not ticks.
+		await toastGone()
+		expect(wrapper.find('[data-sonner-toast] [data-action]').exists()).toBe(false)
 	})
 
 	/**
@@ -5673,7 +6145,7 @@ describe('the status toast', () => {
 		await settle(2)
 		await actions.toggleDone()
 		await settle(4)
-		expect(wrapper.get('[data-status-toast]').text()).toContain('Moved 1 note to Done')
+		expect(wrapper.get('[data-sonner-toast]').text()).toContain('Moved 1 note to Done')
 
 		const composer = wrapper.find('#composer')
 		await composer.setValue('a new note')
@@ -5684,9 +6156,10 @@ describe('the status toast', () => {
 			'submit_entry',
 			expect.objectContaining({ body: 'a new note' }),
 		)
-		// Message and button together: a pill naming a step that is no longer the
+		// Message and button together: a toast naming a step that is no longer the
 		// one its button would take has no honest half left.
-		expect(wrapper.find('[data-status-toast]').exists()).toBe(false)
+		await toastGone()
+		expect(wrapper.find('[data-sonner-toast]').exists()).toBe(false)
 	})
 
 	/** The reverse direction reports too, and for the same reason: in the done view
@@ -5707,7 +6180,7 @@ describe('the status toast', () => {
 		await actions.toggleDone()
 		await settle(4)
 
-		expect(wrapper.get('[data-status-toast]').text()).toContain('Moved 1 note out of Done')
+		expect(wrapper.get('[data-sonner-toast]').text()).toContain('Moved 1 note out of Done')
 	})
 
 	/**
@@ -5771,9 +6244,9 @@ describe('the status toast', () => {
 	 * a real press focuses the button first, which is the state under test.
 	 *
 	 * **These assert the guarantee, not the mechanism, and they cannot do more
-	 * here.** The failure in a real WebView needs auto-animate's exit window — the
-	 * row is removed from the list and still `isConnected` at the tick
-	 * `restoreDom` runs, so its own handoff declines; the same race
+	 * here.** The failure in a real WebView needs the leave animation's exit
+	 * window — the row is removed from the list and still `isConnected` at the
+	 * tick `restoreDom` runs, so its own handoff declines; the same race
 	 * `handFocusOnVanished` was written for. In this environment the row leaves
 	 * synchronously, `restoreDom` covers the same ground, and no arrangement of
 	 * the stubbed WAAPI reopens the window.
