@@ -640,8 +640,8 @@ export function focusRowSoon(key: string) {
 
 /**
  * The roving target and DOM focus together, which is what a caller that moves
- * focus deliberately always means. `focusRow` alone leaves the grid's
- * `tabindex="0"` on a row that nothing is focused on.
+ * focus deliberately always means. `focusRow` alone leaves the roving target
+ * on a row that nothing is focused on.
  */
 export function takeRow(key: string) {
 	focusRow(key)
@@ -740,7 +740,7 @@ function captureScroll(): ScrollAnchor | null {
  * narrows what an action *targets*, never the selection itself.
  *
  * Focus relocation still runs on the filtered orders, and must: the roving
- * `tabindex="0"` has to sit on a row that is actually rendered.
+ * target has to name a row that is actually rendered.
  */
 function reconcile(snap: SelectionSnapshot) {
 	const existing = documentNoteIds()
@@ -762,7 +762,7 @@ function reconcile(snap: SelectionSnapshot) {
 	// Either nothing was focused before or its whole neighbourhood is gone. Give
 	// the grid a roving target anyway: the target is where the arrow keys resume,
 	// and an arrow pressed with no target would have nowhere to start from.
-	// (Tab needs no help — the section bands are permanent stops.)
+	// (Tab needs no help — every row is a permanent stop.)
 	if (!focusedId.value) {
 		const firstNote = visibleNoteIds.value[0]
 		focusedId.value = firstNote ? noteRow(firstNote) : (rows[0] ?? null)
@@ -1002,7 +1002,8 @@ function resetForNewSpace() {
 }
 
 /**
- * The search filter can unmount the row holding the roving `tabindex="0"`.
+ * The search filter can unmount the row the roving target names — and the row
+ * holding DOM focus with it.
  *
  * Saying focus never moves would be unsatisfiable — the element is gone — and
  * the roving target is where the arrow keys resume, so it must always point at

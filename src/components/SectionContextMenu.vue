@@ -1,16 +1,16 @@
 <script setup lang="ts">
-import { UNDO_ACTION } from '@/composables/useNoteActions'
 import type { Section } from '@/composables/useSpace'
 import { CHORDS } from '@/lib/chords'
 
 const props = defineProps<{ section: Section }>()
 
 const { boundary, portalTo } = useOverlayHost()
-const { sections, notesInSection, deleteSection, reorderSection, setActiveSection } = useSpace()
+const { sections, reorderSection, setActiveSection } = useSpace()
 const { beginRename } = useSectionEditor()
-const { setMessage } = useStatusMessage()
 const { selectSection } = useSelection()
-const { copySectionAsMarkdown } = useNoteActions()
+// `removeSection` carries the delete, the undo message and the focus handoff —
+// one step shared with the keyboard confirm, so the two paths cannot drift.
+const { copySectionAsMarkdown, removeSection } = useNoteActions()
 
 const index = computed(() => sections.value.findIndex((entry) => entry.id === props.section.id))
 const isFirst = computed(() => index.value <= 0)
@@ -18,25 +18,6 @@ const isLast = computed(() => index.value === sections.value.length - 1)
 /** The store refuses to delete the last remaining section, so a capture target
  *  always exists. Disabled here rather than left to fail. */
 const isOnly = computed(() => sections.value.length < 2)
-
-async function remove() {
-	const count = notesInSection(props.section.id).length
-	const result = await deleteSection(props.section.id)
-	if (!result) return
-	// No confirmation dialog: the whole operation is one undo, and an undoable
-	// action reads better as a reversible one than as a question. The chord is not
-	// spelled out in the sentence, for the reason the note deletions stopped
-	// spelling it out: the pill carries a button that takes that same one step.
-	setMessage(
-		count === 0
-			? `Deleted “${props.section.name}”`
-			: countMessage(count, {
-					one: `Deleted “${props.section.name}” and 1 note`,
-					many: (n) => `Deleted “${props.section.name}” and ${n} notes`,
-				}),
-		UNDO_ACTION,
-	)
-}
 
 /** `index` is interpreted against the list *after* the section has been removed
  *  from it, which is why moving down is `index + 1` rather than `index + 2`. */
@@ -99,8 +80,14 @@ function move(delta: number) {
 		     `SectionHeader` used to carry. -->
 		<ContextMenuSeparator />
 
-		<ContextMenuItem :disabled="isOnly" variant="destructive" class="min-h-6" @select="remove">
+		<ContextMenuItem
+			:disabled="isOnly"
+			variant="destructive"
+			class="min-h-6"
+			@select="removeSection(section)"
+		>
 			Delete section and its notes
+			<ContextMenuShortcut>{{ CHORDS.remove.display }}</ContextMenuShortcut>
 		</ContextMenuItem>
 	</ContextMenuContent>
 </template>

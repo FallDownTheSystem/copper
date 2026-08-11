@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { PopoverAnchor } from '@/components/ui/popover'
 import { focusRowSoon, takeRow } from '@/composables/useSelection'
 import type { Section } from '@/composables/useSpace'
 import { isComposing } from '@/lib/chords'
@@ -12,8 +13,11 @@ const props = defineProps<{
 const emit = defineEmits<{ activate: [] }>()
 
 const { renaming, draft, setDraft, endRename, cancelRename } = useSectionEditor()
-const { renameSection } = useSpace()
+const { renameSection, notesInSection } = useSpace()
 const { isCollapsedStored, toggleCollapsed, collapseEnabled } = useSections()
+const { confirming: confirmingDelete, closeConfirm } = useSectionDelete()
+const { removeSection } = useNoteActions()
+const { boundary, portalTo } = useOverlayHost()
 
 const headingId = computed(() => `section-heading-${props.section.id}`)
 const editing = computed(() => renaming.value === props.section.id)
@@ -22,6 +26,62 @@ const editing = computed(() => renaming.value === props.section.id)
  *  section is expanded, but the control still has to say what pressing it does
  *  to the state the query is overriding. */
 const collapsed = computed(() => isCollapsedStored(props.section.id))
+
+const confirmingThis = computed(() => confirmingDelete.value === props.section.id)
+
+/** Live, so the question always shows the count it would delete — and
+ *  `useSectionDelete`'s reconcile withdraws the whole popover the moment the
+ *  set underneath it changes, so the two cannot disagree for longer than a
+ *  render. */
+const deleteQuestion = computed(() => {
+	const count = notesInSection(props.section.id).length
+	if (count === 0) return `Delete “${props.section.name}”?`
+	return countMessage(count, {
+		one: `Delete “${props.section.name}” and its 1 note?`,
+		many: (n) => `Delete “${props.section.name}” and its ${n} notes?`,
+	})
+})
+
+const cancelButton = useTemplateRef<HTMLButtonElement>('cancelButton')
+
+/** Reka's own default is the first tabbable, which the DOM order below already
+ *  makes the Cancel button — stated explicitly so the safe landing does not
+ *  depend on markup order staying put. A held Delete cannot confirm: focus
+ *  arrives on Cancel, and the repeat guard below refuses synthesised clicks. */
+function onConfirmAutoFocus(event: Event) {
+	event.preventDefault()
+	cancelButton.value?.focus()
+}
+
+/** Escape and an outside click arrive here through reka's layer; the Cancel
+ *  button lands in the same place through `cancelDelete`. */
+function onConfirmOpen(open: boolean) {
+	if (!open) cancelDelete()
+}
+
+function cancelDelete() {
+	closeConfirm()
+	// The question was asked from the row, so declining it returns there —
+	// without this, focus dies with the popover and the list is unreachable.
+	focusRowSoon(props.rowId)
+}
+
+/** Closing first keeps `update:open` quiet — the prop drives it, so reka emits
+ *  nothing — and `removeSection` owns the focus handoff to the surviving row,
+ *  because this one is about to be gone. */
+function confirmDelete() {
+	closeConfirm()
+	void removeSection(props.section)
+}
+
+/** `DoneFilter`'s held-key guard, verbatim and for its reason: the browser
+ *  synthesises a click from every repeat of an Enter keydown, and the popover
+ *  autofocuses a control on open. */
+function onConfirmKeydown(event: KeyboardEvent) {
+	if (event.repeat && (event.key === 'Enter' || event.key === ' ')) {
+		event.preventDefault()
+	}
+}
 
 /**
  * Moves the roving target onto this row as well as toggling.
@@ -144,11 +204,11 @@ function onKeydown(event: KeyboardEvent) {
 			     port — the first heading at scroll 0 kept only the bottom arc of its
 			     halo. The inset outline is whole wherever the band itself is.
 
-			     **`tabindex="0"` is unconditional: every section band is a Tab stop.**
-			     The grid's Tab order is its sections and nothing else — notes and
-			     their descendants stay at -1 and are reached by arrows, so Tab hops
-			     from section to section and Shift+Tab from a note lands on its own
-			     heading. The roving target still decides where *arrows* resume; the
+			     **`tabindex="0"`: every row in the grid is a Tab stop.** Tab walks
+			     the list row by row, bands and notes alike (user ruling, 2026-08-11,
+			     reversing the sections-only order), while the descendants of every
+			     row stay at -1 and are reached through F2. The roving target still
+			     decides where *arrows* resume; the
 			     grid's focusin handler keeps it in step with any Tab or click, which
 			     is also what makes "click anywhere on the band" focus the section —
 			     the row is click-focusable by its tabindex, and `:focus-visible`
@@ -181,28 +241,40 @@ function onKeydown(event: KeyboardEvent) {
 				tabindex="0"
 				class="focus-inset section-band sticky top-0 z-1 -mx-1 min-w-0 px-1 pt-1 pb-2"
 			>
-				<div
-					role="gridcell"
-					class="flex min-h-(--section-heading-height) min-w-0 items-center gap-2 px-4"
-				>
-					<template v-if="editing">
-						<label :for="`section-rename-${section.id}`" class="sr-only">Section name</label>
-						<input
-							:id="`section-rename-${section.id}`"
-							ref="input"
-							:value="draft"
-							type="text"
-							autocomplete="off"
-							class="panel-field h-6 min-w-0 flex-1 px-1.5 text-label uppercase"
-							@input="setDraft(($event.target as HTMLInputElement).value)"
-							@keydown="onKeydown"
-							@blur="commit"
-							@contextmenu.stop
-						/>
-					</template>
+				<!-- The keyboard Delete's confirmation, anchored to the heading it asks
+				     about. A popover rather than a state of the row for `DoneFilter`'s
+				     reason: the question must name a count of any size without the row
+				     lending it width. The row itself stays exactly what it was — the
+				     root renders nothing and the anchor merges onto the gridcell, so
+				     the grid's aria-required-children contract sees no new child.
+				     Opened only by `NoteList`'s Delete case; the context menu keeps its
+				     own unconfirmed item, which is already a second gesture. Cancel is
+				     first in the DOM *and* takes the autofocus explicitly, so the
+				     destructive control can never be where the opening press lands. -->
+				<Popover :open="confirmingThis" @update:open="onConfirmOpen">
+					<PopoverAnchor as-child>
+						<div
+							role="gridcell"
+							class="flex min-h-(--section-heading-height) min-w-0 items-center gap-2 px-4"
+						>
+							<template v-if="editing">
+								<label :for="`section-rename-${section.id}`" class="sr-only">Section name</label>
+								<input
+									:id="`section-rename-${section.id}`"
+									ref="input"
+									:value="draft"
+									type="text"
+									autocomplete="off"
+									class="panel-field h-6 min-w-0 flex-1 px-1.5 text-label uppercase"
+									@input="setDraft(($event.target as HTMLInputElement).value)"
+									@keydown="onKeydown"
+									@blur="commit"
+									@contextmenu.stop
+								/>
+							</template>
 
-					<template v-else>
-						<!-- The name leads, so the heading starts at the row's own left edge
+							<template v-else>
+								<!-- The name leads, so the heading starts at the row's own left edge
 						     rather than behind a control, and the chevron is pushed to the
 						     far end by the separator rule between them: the two things a
 						     section row can be grabbed by sit at its two extremes, with the
@@ -212,7 +284,7 @@ function onKeydown(event: KeyboardEvent) {
 						     The name shrinks rather than holding its width — with the
 						     chevron at the end of the row, an unshrinkable one would push it
 						     out. The inner `truncate` is what makes that safe. -->
-						<!-- **`-ml-1.5 pl-1.5` nets to zero, and that is the point: the dot is
+								<!-- **`-ml-1.5 pl-1.5` nets to zero, and that is the point: the dot is
 						     placed by the gridcell, the button only decides where the pill's
 						     edge falls.** What lines up is the leading mark of every row in
 						     the panel, and it is measured from the *panel* edge rather than
@@ -230,35 +302,35 @@ function onKeydown(event: KeyboardEvent) {
 						     it symmetric, and the note row carries the same `px-4` on its own
 						     gridcell — anything that changes that number has to come back
 						     here. -->
-						<h2 :id="headingId" class="min-w-0">
-							<button
-								type="button"
-								tabindex="-1"
-								:aria-current="active ? 'true' : undefined"
-								class="hover:bg-surface-hover active:bg-surface-active focus-ring -ml-1.5 flex min-w-0 items-center gap-1.5 rounded-inset py-1 pr-1.5 pl-1.5 transition-colors duration-fast"
-								:class="active ? 'text-accent-text' : 'text-text-secondary'"
-								@click="activate"
-							>
-								<!-- The only one of the three markers that cross-fades: this row is on
-								     screen while it changes, unlike the two inside menus. -->
-								<ActiveMarker
-									:active="active"
-									label="active section"
-									class="transition-opacity duration-fast"
-								>
-									<span
-										class="truncate text-label uppercase"
-										:class="active ? 'font-semibold' : ''"
+								<h2 :id="headingId" class="min-w-0">
+									<button
+										type="button"
+										tabindex="-1"
+										:aria-current="active ? 'true' : undefined"
+										class="hover:bg-surface-hover active:bg-surface-active focus-ring -ml-1.5 flex min-w-0 items-center gap-1.5 rounded-inset py-1 pr-1.5 pl-1.5 transition-colors duration-fast"
+										:class="active ? 'text-accent-text' : 'text-text-secondary'"
+										@click="activate"
 									>
-										{{ section.name }}
-									</span>
-								</ActiveMarker>
-							</button>
-						</h2>
+										<!-- The only one of the three markers that cross-fades: this row is on
+								     screen while it changes, unlike the two inside menus. -->
+										<ActiveMarker
+											:active="active"
+											label="active section"
+											class="transition-opacity duration-fast"
+										>
+											<span
+												class="truncate text-label uppercase"
+												:class="active ? 'font-semibold' : ''"
+											>
+												{{ section.name }}
+											</span>
+										</ActiveMarker>
+									</button>
+								</h2>
 
-						<span aria-hidden="true" class="bg-separator h-px min-w-0 flex-1" />
+								<span aria-hidden="true" class="bg-separator h-px min-w-0 flex-1" />
 
-						<!-- Withdrawn while a query is active rather than rendered inert.
+								<!-- Withdrawn while a query is active rather than rendered inert.
 						     Search already decides what is on screen and overrides collapse
 						     entirely, so a control that rotated its chevron and changed
 						     nothing visible would read as broken. The stored state survives
@@ -276,26 +348,60 @@ function onKeydown(event: KeyboardEvent) {
 						     controls whose expanded areas would make each other unhittable —
 						     does not reach here, since the only thing beside it is an
 						     `aria-hidden` rule. -->
-						<button
-							v-if="collapseEnabled"
-							type="button"
-							tabindex="-1"
-							:aria-expanded="!collapsed"
-							:aria-label="`${collapsed ? 'Expand' : 'Collapse'} ${section.name}`"
-							:title="`${collapsed ? 'Expand' : 'Collapse'} ${section.name}`"
-							class="text-text-disabled hover:bg-surface-hover hover:text-text-secondary focus-ring hit-44 relative grid size-5 shrink-0 place-items-center rounded-inset transition-colors duration-fast"
-							@click="toggle"
-						>
-							<IconLucideChevronRight
-								class="size-3.5 transition-transform duration-fast"
-								:class="collapsed ? '' : 'rotate-90'"
-								aria-hidden="true"
-								focusable="false"
-							/>
-						</button>
-						<span v-else aria-hidden="true" class="size-5 shrink-0" />
-					</template>
-				</div>
+								<button
+									v-if="collapseEnabled"
+									type="button"
+									tabindex="-1"
+									:aria-expanded="!collapsed"
+									:aria-label="`${collapsed ? 'Expand' : 'Collapse'} ${section.name}`"
+									:title="`${collapsed ? 'Expand' : 'Collapse'} ${section.name}`"
+									class="text-text-disabled hover:bg-surface-hover hover:text-text-secondary focus-ring hit-44 relative grid size-5 shrink-0 place-items-center rounded-inset transition-colors duration-fast"
+									@click="toggle"
+								>
+									<IconLucideChevronRight
+										class="size-3.5 transition-transform duration-fast"
+										:class="collapsed ? '' : 'rotate-90'"
+										aria-hidden="true"
+										focusable="false"
+									/>
+								</button>
+								<span v-else aria-hidden="true" class="size-5 shrink-0" />
+							</template>
+						</div>
+					</PopoverAnchor>
+
+					<PopoverContent
+						v-if="portalTo"
+						:to="portalTo"
+						align="start"
+						:collision-boundary="boundary ?? undefined"
+						:collision-padding="8"
+						class="w-64 text-meta"
+						@open-auto-focus="onConfirmAutoFocus"
+						@keydown="onConfirmKeydown"
+					>
+						<p class="text-text-primary">{{ deleteQuestion }}</p>
+						<div class="mt-2 flex items-center justify-end gap-2">
+							<button
+								ref="cancelButton"
+								type="button"
+								data-section-delete-cancel
+								class="panel-button min-h-6 px-2"
+								@click="cancelDelete"
+							>
+								Cancel
+							</button>
+							<button
+								type="button"
+								data-section-delete-confirm
+								class="panel-button text-destructive-text min-h-6 px-2"
+								@click="confirmDelete"
+							>
+								Delete
+							</button>
+						</div>
+					</PopoverContent>
+				</Popover>
 			</div>
 		</ContextMenuTrigger>
 

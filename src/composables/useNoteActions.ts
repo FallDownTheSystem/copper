@@ -19,7 +19,7 @@ import { noteRow, rowNoteId, rowSectionId, sectionRow, takeRow, useSelection } f
 import { useSettings } from './useSettings'
 import { useDeviceShare } from './useDeviceShare'
 import { countMessage, useStatusMessage, type StatusAction } from './useStatusMessage'
-import { useSpace, type MarkdownFormat, type NoteSelection } from './useSpace'
+import { useSpace, type MarkdownFormat, type NoteSelection, type Section } from './useSpace'
 
 const space = useSpace()
 const selection = useSelection()
@@ -383,8 +383,8 @@ function toggleNoteDone(noteId: string) {
  * search the note does not match leaves the same hole, and so does a drag or an
  * Alt+Arrow that carries a note into a folded section.
  *
- * `focusRow` validates nothing, so a key naming no row leaves the grid with no
- * `tabindex="0"` anywhere and unreachable by Tab — the exact failure
+ * `focusRow` validates nothing, so a key naming no row leaves the roving
+ * target on nothing and the arrows with nowhere to resume — the exact failure
  * reconciliation exists to prevent. The section header is rendered whenever the
  * section is, so it is the honest fallback; if even that is filtered away there
  * is nothing to hold and the roving-target watcher owns the outcome.
@@ -450,8 +450,9 @@ function merge() {
 		// leaves that note with no row at all. `select` had already pointed the
 		// roving target at it, and nothing was coming to correct that — `rowIds`
 		// changed while the document was applied, so its watcher had already run and
-		// seen a valid target by the time this code assigned an invalid one. The grid
-		// was left with `tabindex="0"` on nothing and unreachable by Tab.
+		// seen a valid target by the time this code assigned an invalid one. The
+		// roving target named a row that did not exist, and the arrows had nowhere
+		// to resume from.
 		//
 		// The section is read off the *returned* document for the same reason the
 		// survivor is: after a conflict re-apply the merge happened against the
@@ -487,7 +488,7 @@ function merge() {
  * - **From the context menu, focus was never on a row at all.** It was inside the
  *   portalled menu, so the snapshot records no row, and `restoreDom` — which
  *   moves focus solely when the element that *had* it is gone — correctly decides
- *   nothing was lost. The grid was left with its roving `tabindex="0"` on a row
+ *   nothing was lost. The grid was left with its roving target on a row
  *   nothing was focused on, and the next arrow key went nowhere.
  * - **From the keyboard it was, and the test still answers "still connected".**
  *   auto-animate takes a removed row back out of the DOM on its exit animation's
@@ -558,6 +559,47 @@ function deleteNotes() {
 				one: 'Deleted 1 note',
 				many: (count) => `Deleted ${count} notes`,
 			}),
+			UNDO_ACTION,
+		)
+	})
+}
+
+// --- delete a section ----------------------------------------------------------
+
+/**
+ * `Delete section and its notes`, shared by the section context menu and the
+ * keyboard confirm in `SectionHeader`.
+ *
+ * No confirmation dialog *here*: the whole operation is one undo, and an
+ * undoable action reads better as a reversible one than as a question. The
+ * keyboard path asks before calling — a bare Delete is one keypress, where a
+ * menu item is already a second gesture — and both arrive at this same single
+ * step. The chord is not spelled out in the sentence: the pill carries a
+ * button that takes that same one step.
+ *
+ * The count is read before the round trip, because afterwards the section's
+ * notes are gone from the document that would be asked.
+ */
+function removeSection(section: Section) {
+	return serialize(async () => {
+		const count = space.notesInSection(section.id).length
+		const result = await space.deleteSection(section.id)
+		if (!result) return
+
+		// The header row left with the section, and focus may have been on it —
+		// or inside the confirm popover, which unmounts with it. Reconciliation
+		// has already pointed the roving target at the nearest surviving row;
+		// this is the DOM half of following it.
+		const target = selection.focusedId.value
+		if (target !== null) takeRow(target)
+
+		status.setMessage(
+			count === 0
+				? `Deleted “${section.name}”`
+				: countMessage(count, {
+						one: `Deleted “${section.name}” and 1 note`,
+						many: (n) => `Deleted “${section.name}” and ${n} notes`,
+					}),
 			UNDO_ACTION,
 		)
 	})
@@ -1122,6 +1164,7 @@ export function useNoteActions() {
 		moveTo,
 		merge,
 		deleteNotes,
+		removeSection,
 		doneCount,
 		doneTargets,
 		allDoneCount,

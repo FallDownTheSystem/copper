@@ -489,24 +489,104 @@ describe('the grid structure', () => {
 })
 
 describe('the grid tab order', () => {
-	it('puts every section band in the tab order and nothing else', async () => {
+	it('puts every row in the tab order and none of their controls', async () => {
 		const wrapper = await mountPanel()
 
-		// The 2026-08-10 model: Tab hops section to section, arrows travel within.
-		// So every section row is a permanent sequential stop, and no note row is
-		// — not even the focused one, which would wedge itself into the hop.
+		// The 2026-08-11 model, reversing sections-only: every row is a permanent
+		// sequential stop, so Tab walks bands and notes alike.
 		for (const row of wrapper.findAll('[data-section-row]')) {
 			expect(row.attributes('tabindex')).toBe('0')
 		}
 		for (const row of wrapper.findAll('[data-note-row]')) {
-			expect(row.attributes('tabindex')).toBe('-1')
+			expect(row.attributes('tabindex')).toBe('0')
 		}
 
-		// The claim only holds if every interactive descendant is out of the tab
-		// order too.
+		// The rows are the whole order only if every interactive descendant stays
+		// out of it — F2 is the way in to those.
 		for (const button of wrapper.find('[role="grid"]').findAll('button')) {
 			expect(button.attributes('tabindex')).toBe('-1')
 		}
+	})
+
+	it('moves Tab like an arrow, ring and focus together', async () => {
+		// Focus and selection move together on every plain traversal, Tab now
+		// included: a Tab onto a note without the ring would leave two rows
+		// claiming to be where the user is — measured live 2026-08-11, when the
+		// grid left this move to the browser and a flag that a microtask
+		// checkpoint killed before the focus move it was waiting for.
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		await settle(2)
+
+		const grid = wrapper.get('[role="grid"]').element
+		grid.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }))
+		await settle(2)
+
+		expect(selection.focusedId.value).toBe(noteRow('nte_2'))
+		expect(selection.selectedIds.value).toEqual(['nte_2'])
+
+		grid.dispatchEvent(
+			new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }),
+		)
+		await settle(2)
+
+		expect(selection.focusedId.value).toBe(noteRow('nte_1'))
+		expect(selection.selectedIds.value).toEqual(['nte_1'])
+	})
+
+	it('clears the selection when Tab lands on a section band', async () => {
+		// The other half of `landOn`'s rule, applied to the same landing.
+		const wrapper = await mountPanel()
+		selection.select('nte_2')
+		await settle(2)
+
+		wrapper
+			.get('[role="grid"]')
+			.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }))
+		await settle(2)
+
+		expect(selection.focusedId.value).toBe('s:sec_b')
+		expect(selection.selectedIds.value).toEqual([])
+	})
+
+	it('leaves an edge Tab to the browser, selection intact', async () => {
+		// A press at either end is how Tab leaves the grid, so it must stay
+		// unprevented — and the selection survives it, as it survives a click
+		// outside the list.
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		takeRow(sectionRow('sec_a'))
+		await settle(2)
+
+		const press = new KeyboardEvent('keydown', {
+			key: 'Tab',
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		})
+		const proceeded = wrapper.get('[role="grid"]').element.dispatchEvent(press)
+		await settle(2)
+
+		expect(proceeded).toBe(true)
+		expect(selection.focusedId.value).toBe('s:sec_a')
+		expect(selection.selectedIds.value).toEqual(['nte_1'])
+	})
+
+	it('leaves the selection alone when focus arrives without a Tab', async () => {
+		// Ctrl+Arrow's quiet `syncDomFocus` and a plain click land on a row
+		// through the same focusin; neither may write the selection there — the
+		// first is quiet by design, the second selects in its own handler.
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+		await settle(2)
+
+		wrapper
+			.get(`[data-row-id="${noteRow('nte_2')}"]`)
+			.element.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+		await settle(2)
+
+		expect(selection.focusedId.value).toBe(noteRow('nte_2'))
+		expect(selection.selectedIds.value).toEqual(['nte_1'])
 	})
 
 	/**
@@ -535,6 +615,134 @@ describe('the grid tab order', () => {
 		// the stuck outline-color transition, since fixed).
 		const other = wrapper.get(`[data-row-id="${noteRow('nte_2')}"]`)
 		expect(other.classes()).toContain('focus-inset')
+	})
+})
+
+describe('the section delete confirm', () => {
+	function confirmPopover() {
+		return document.querySelector<HTMLElement>('[data-slot="popover-content"]')
+	}
+
+	function pressDelete(wrapper: Awaited<ReturnType<typeof mountPanel>>) {
+		wrapper
+			.get('[role="grid"]')
+			.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))
+	}
+
+	it('asks on a bare Delete and lands focus on Cancel', async () => {
+		const wrapper = await mountPanel()
+		takeRow(sectionRow('sec_a'))
+		await settle(2)
+
+		pressDelete(wrapper)
+		await settle(3)
+
+		const popover = confirmPopover()
+		expect(popover?.textContent).toContain('Delete “Research” and its 2 notes?')
+		// The first press deletes nothing — that is the point of asking.
+		expect(mocks.invoke).not.toHaveBeenCalledWith('delete_section', expect.anything())
+		// The safe control takes the autofocus, so a held or doubled Delete can
+		// never land on the destructive one.
+		expect(document.activeElement).toBe(popover?.querySelector('[data-section-delete-cancel]'))
+	})
+
+	it('deletes the section and its notes on the confirming press', async () => {
+		const wrapper = await mountPanel()
+		takeRow(sectionRow('sec_a'))
+		await settle(2)
+		pressDelete(wrapper)
+		await settle(3)
+
+		mocks.invoke.mockImplementationOnce(async () => ({
+			...SPACE,
+			activeSection: 'sec_b',
+			sections: SPACE.sections.filter((section) => section.id !== 'sec_a'),
+			notes: [],
+		}))
+		confirmPopover()!.querySelector<HTMLElement>('[data-section-delete-confirm]')!.click()
+		await settle(4)
+
+		expect(mocks.invoke).toHaveBeenCalledWith('delete_section', { id: 'sec_a' })
+		expect(confirmPopover()).toBeNull()
+		// One undo covers the section and its notes together.
+		expect(wrapper.text()).toContain('Deleted “Research” and 2 notes')
+		expect(wrapper.get('[data-toast-action]').text()).toBe('Undo')
+		// The header row died with the section; the DOM half of focus follows the
+		// roving target to the nearest surviving row.
+		expect(selection.focusedId.value).toBe('s:sec_b')
+	})
+
+	it('cancels back to the row the question was asked from', async () => {
+		const wrapper = await mountPanel()
+		takeRow(sectionRow('sec_a'))
+		await settle(2)
+		pressDelete(wrapper)
+		await settle(3)
+
+		confirmPopover()!.querySelector<HTMLElement>('[data-section-delete-cancel]')!.click()
+		await settle(3)
+
+		expect(confirmPopover()).toBeNull()
+		expect(mocks.invoke).not.toHaveBeenCalledWith('delete_section', expect.anything())
+		expect(document.activeElement).toBe(wrapper.get('[data-row-id="s:sec_a"]').element)
+	})
+
+	it('leaves Delete to the selection a focused header holds', async () => {
+		// `selectSection` parks focus on the header with the section's notes
+		// selected precisely so the next action takes them (the target rule); the
+		// confirm claims only the bare header, where Delete used to be a no-op.
+		const wrapper = await mountPanel()
+		mocks.invoke.mockImplementation(async (command: string, args?: { ids?: string[] }) => {
+			if (command === 'delete_notes') {
+				return { ...SPACE, notes: SPACE.notes.filter((note) => !args?.ids?.includes(note.id)) }
+			}
+			return baseInvoke(command)
+		})
+		selection.selectSection('sec_a')
+		await settle(2)
+
+		pressDelete(wrapper)
+		await settle(4)
+
+		expect(confirmPopover()).toBeNull()
+		expect(mocks.invoke).toHaveBeenCalledWith('delete_notes', { ids: ['nte_1', 'nte_2'] })
+	})
+
+	it('refuses the last section with a message, not a question', async () => {
+		const wrapper = await mountPanel()
+		await installDocument({ ...SPACE, sections: [SPACE.sections[0]!] })
+		await settle(2)
+		takeRow(sectionRow('sec_a'))
+		await settle(2)
+
+		pressDelete(wrapper)
+		await settle(3)
+
+		expect(confirmPopover()).toBeNull()
+		expect(mocks.invoke).not.toHaveBeenCalledWith('delete_section', expect.anything())
+		expect(wrapper.text()).toContain('The last section cannot be deleted.')
+	})
+
+	it('withdraws the question when the offer changes underneath it', async () => {
+		const wrapper = await mountPanel()
+		takeRow(sectionRow('sec_a'))
+		await settle(2)
+		pressDelete(wrapper)
+		await settle(3)
+		expect(confirmPopover()).not.toBeNull()
+
+		// A capture landing in the section mid-confirm: the count in the question
+		// is no longer the count the press would delete.
+		await installDocument({
+			...SPACE,
+			notes: [
+				...SPACE.notes,
+				{ ...SPACE.notes[0]!, id: 'nte_new', order: 2, body: 'landed mid-confirm' },
+			],
+		})
+		await settle(3)
+
+		expect(confirmPopover()).toBeNull()
 	})
 })
 
@@ -2257,9 +2465,9 @@ describe('collapsible sections', () => {
 		expect(selection.rowIds.value).toEqual(rendered)
 		expect(selection.visibleNoteIds.value).toEqual([])
 		expect(rendered).toContain(selection.focusedId.value)
-		// Every rendered section band is a Tab stop; nothing else is.
+		// Every rendered row is a Tab stop.
 		expect(wrapper.findAll('[data-row-id][tabindex="0"]')).toHaveLength(
-			wrapper.findAll('[data-section-row]').length,
+			wrapper.findAll('[data-row-id]').length,
 		)
 	})
 
@@ -2437,7 +2645,7 @@ describe('collapsible sections', () => {
 		// so focus lands on the destination's header instead of a key naming nothing.
 		expect(selection.focusedId.value).toBe('s:sec_b')
 		expect(wrapper.findAll('[data-row-id][tabindex="0"]')).toHaveLength(
-			wrapper.findAll('[data-section-row]').length,
+			wrapper.findAll('[data-row-id]').length,
 		)
 	})
 
@@ -4276,7 +4484,7 @@ describe('merge and the roving target', () => {
 		expect(wrapper.find('[data-row-id="n:nte_1"]').exists()).toBe(false)
 		expect(selection.focusedId.value).toBe('s:sec_a')
 		expect(wrapper.findAll('[data-row-id][tabindex="0"]').length).toBe(
-			wrapper.findAll('[data-section-row]').length,
+			wrapper.findAll('[data-row-id]').length,
 		)
 	})
 
@@ -4292,7 +4500,7 @@ describe('merge and the roving target', () => {
 
 		expect(selection.focusedId.value).toBe(noteRow('nte_1'))
 		expect(wrapper.findAll('[data-row-id][tabindex="0"]').length).toBe(
-			wrapper.findAll('[data-section-row]').length,
+			wrapper.findAll('[data-row-id]').length,
 		)
 	})
 })

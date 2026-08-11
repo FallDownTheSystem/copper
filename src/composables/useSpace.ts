@@ -46,6 +46,7 @@ import { useNoteEditor } from './useNoteEditor'
 import { useEditorHandoff } from './useEditorHandoff'
 import { useNoteList } from './useNoteList'
 import { useNoteSearch } from './useNoteSearch'
+import { useSectionDelete } from './useSectionDelete'
 import { useSectionEditor } from './useSectionEditor'
 import { useSections } from './useSections'
 import { useSounds } from './useSounds'
@@ -285,6 +286,7 @@ const disclosure = useNoteDisclosure()
 const editor = useNoteEditor()
 const search = useNoteSearch()
 const sectionEditor = useSectionEditor()
+const sectionDelete = useSectionDelete()
 /** Named for the state rather than the module: `sections` below is the
  *  document's own list, and the two are different things. */
 const sectionState = useSections()
@@ -457,6 +459,7 @@ function applyDocument(
 	markdown.pruneCache(next.notes.map((note) => note.id))
 	editor.reconcile(next, identityChanged)
 	sectionEditor.reconcile(next)
+	sectionDelete.reconcile(next)
 
 	// Rust owns handoff reconciliation — it is the only side that knows the temp
 	// path and the baseline bytes — but it has no signal that covers every writer:

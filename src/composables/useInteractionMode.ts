@@ -2,8 +2,8 @@
  * Task-004's `F2` interaction mode, lifted to module scope.
  *
  * Every interactive descendant of a row is `tabindex="-1"` so Tab traverses
- * the section bands and nothing else, which leaves `F2` as the only way to
- * reach the completion circle, `Show more` and rendered links. It lives here rather than inside `NoteList`
+ * the rows themselves and never their controls, which leaves `F2` as the only
+ * way to reach the completion circle, `Show more` and rendered links. It lives here rather than inside `NoteList`
  * because it is a rung of the `Escape` ladder, and that ladder is one ordered
  * handler on the shell — it cannot reach a component-local ref.
  */

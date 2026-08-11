@@ -290,6 +290,7 @@ declare global {
   const useScriptTag: typeof import('@vueuse/core').useScriptTag
   const useScroll: typeof import('@vueuse/core').useScroll
   const useScrollLock: typeof import('@vueuse/core').useScrollLock
+  const useSectionDelete: typeof import('./composables/useSectionDelete').useSectionDelete
   const useSectionEditor: typeof import('./composables/useSectionEditor').useSectionEditor
   const useSections: typeof import('./composables/useSections').useSections
   const useSelection: typeof import('./composables/useSelection').useSelection
@@ -710,6 +711,7 @@ declare module 'vue' {
     readonly useScriptTag: UnwrapRef<typeof import('@vueuse/core')['useScriptTag']>
     readonly useScroll: UnwrapRef<typeof import('@vueuse/core')['useScroll']>
     readonly useScrollLock: UnwrapRef<typeof import('@vueuse/core')['useScrollLock']>
+    readonly useSectionDelete: UnwrapRef<typeof import('./composables/useSectionDelete')['useSectionDelete']>
     readonly useSectionEditor: UnwrapRef<typeof import('./composables/useSectionEditor')['useSectionEditor']>
     readonly useSections: UnwrapRef<typeof import('./composables/useSections')['useSections']>
     readonly useSelection: UnwrapRef<typeof import('./composables/useSelection')['useSelection']>

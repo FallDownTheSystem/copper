@@ -8,24 +8,27 @@ import {
 	scrollRowIntoView,
 } from '@/composables/useSelection'
 
-const { space, sections, activeSection, noteCount, noteById, setActiveSection } = useSpace()
+const { space, sections, activeSection, noteCount, noteById, notesInSection, setActiveSection } =
+	useSpace()
 const {
 	focusedId,
 	focusedNoteId,
 	select,
+	selectedIds,
 	toggle,
 	extendTo,
 	extendFocus,
 	selectAll,
-	clear,
 	focusRow,
 	moveFocus,
 	moveFocusOnly,
 	focusFirst,
 	focusLast,
+	rowIds,
 	visibleGroups,
 } = useSelection()
 const { beginEdit } = useNoteEditor()
+const { beginConfirm } = useSectionDelete()
 const { interactionRowId, enter, reconcile } = useInteractionMode()
 const { hasQuery, resultCount } = useNoteSearch()
 const { setCollapsed, toggleCollapsed, collapseEnabled } = useSections()
@@ -33,6 +36,7 @@ const { filtersByDone } = useNoteList()
 const { toggleDone, toggleNoteDone } = useNoteActions()
 const { dropTarget, isDragging } = useNoteDrag()
 const { setPanelVisible } = usePreviews()
+const { setMessage } = useStatusMessage()
 
 /**
  * The moments a reveal that could not land becomes possible again.
@@ -192,12 +196,17 @@ function onPointerSelect(event: MouseEvent, noteId: string) {
 /**
  * Keeps the roving target pointed at wherever DOM focus actually lands.
  *
- * Two paths put focus on a row without going through the arrow-key handlers:
- * Tab, now that every section band is a sequential stop, and a click anywhere
- * on a band, which focuses it by its own `tabindex`. Both used to leave
- * `focusedId` stale, so the next arrow moved relative to a row the user had
- * visibly left. Idempotent for the handlers' own moves — `takeRow` focuses the
- * row it just recorded, and re-recording the same key is a no-op write.
+ * Two paths put focus on a row without going through the key handlers: a Tab
+ * that *enters* the grid from outside, and a click anywhere on a band, which
+ * focuses it by its own `tabindex`. Both used to leave `focusedId` stale, so
+ * the next arrow moved relative to a row the user had visibly left.
+ * Idempotent for the handlers' own moves — `takeRow` focuses the row it just
+ * recorded, and re-recording the same key is a no-op write.
+ *
+ * Deliberately quiet about the selection: Ctrl+Arrow's `syncDomFocus` and a
+ * click both arrive here, and neither may write it. A Tab *within* the grid
+ * never reaches this handler with work to do — the keydown below moves focus
+ * itself, exactly as the arrows do.
  *
  * **Outside F2 interaction mode, focus never rests on a row's controls.** A
  * click focuses the button it lands on, and the browser re-evaluates
@@ -301,14 +310,31 @@ function onKeydown(event: KeyboardEvent) {
 			event.preventDefault()
 			setCollapsed(sectionId, event.key === 'ArrowLeft')
 			return
-		case 'Tab':
-			// Not prevented: the browser performs the move, and the section bands
-			// are the only sequential stops, so Tab hops section to section. What
-			// this adds is the same rule `landOn` applies to an arrow that leaves a
-			// note — the selection ring must not stay behind on a row the user has
-			// visibly moved away from.
-			clear()
+		case 'Tab': {
+			// Handled like an arrow, not left to the browser: inside the grid the
+			// sequential move is fully determined — every row is a stop and no
+			// control is — so the landing takes `landOn`'s rule directly, ring and
+			// focus moving as one. (A flag read back in `onFocusin` was tried and
+			// cannot work: the microtask checkpoint runs when the keydown listener
+			// returns, *before* the browser's own focus move, so the flag was dead
+			// by the time the arrival was visible — measured live, 2026-08-11, as
+			// a selection ring left behind on the row Tab departed.)
+			//
+			// The browser keeps the two moves that are genuinely its own: a press
+			// at either end of the list, which is how Tab leaves the grid — the
+			// selection deliberately survives that, as it survives a click outside
+			// the list — and any Ctrl/Meta chord, which was never a row hop.
+			if (event.ctrlKey || event.metaKey) return
+			const delta = event.shiftKey ? -1 : 1
+			const rows = rowIds.value
+			const index = focusedId.value ? rows.indexOf(focusedId.value) : -1
+			const next = index + delta
+			if (index === -1 || next < 0 || next >= rows.length) return
+			event.preventDefault()
+			moveFocus(delta)
+			syncDomFocus()
 			return
+		}
 		case 'Home':
 			event.preventDefault()
 			focusFirst()
@@ -318,6 +344,28 @@ function onKeydown(event: KeyboardEvent) {
 			event.preventDefault()
 			focusLast()
 			syncDomFocus()
+			return
+		case 'Delete':
+			// The section half of Delete only. Notes belong to the shell's chord
+			// layer, and so does a focused header with a live selection: the target
+			// rule reads that header as "take the selection" — it is where
+			// `selectSection` deliberately parks focus — so the press must keep
+			// deleting those notes. A bare header claims the key instead: it was a
+			// silent no-op, and it is one keypress from a section and everything in
+			// it, which is why this asks where the menu item does not.
+			if (event.ctrlKey || event.metaKey || event.shiftKey) return
+			if (!sectionId || selectedIds.value.length > 0) return
+			event.preventDefault()
+			if (sections.value.length < 2) {
+				// The store refuses to delete the last section, exactly as the menu
+				// item disables — but a keypress deserves an answer, not a shrug.
+				setMessage('The last section cannot be deleted.')
+				return
+			}
+			beginConfirm(
+				sectionId,
+				notesInSection(sectionId).map((note) => note.id),
+			)
 			return
 		case 'F2':
 			event.preventDefault()

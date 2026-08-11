@@ -163,18 +163,21 @@ function onDoubleClick(event: MouseEvent) {
 			     because in forced colors the transparent outline it declares is
 			     forced visible and is the selected row's only indicator there.
 
-			     **`tabindex="-1"`, unconditionally.** Tab traverses section bands and
-			     nothing else, so a note row is never a sequential stop — not even the
-			     focused one, which would wedge itself into the section-to-section
-			     hop. Arrows land here through `takeRow`, which script-focuses a -1
-			     element; the grid's focusin handler keeps the roving target pointed
-			     at whatever row focus actually reaches. -->
+			     **`tabindex="0"`, unconditionally.** Every row in the grid is a
+			     sequential stop, notes included (user ruling, 2026-08-11, reversing
+			     the sections-only order): Tab walks the list row by row, moved by
+			     `NoteList`'s keydown exactly as an arrow is, so a landing selects
+			     the note. The attribute is what lets a Tab at either end still
+			     enter and leave the grid. The descendants stay at -1 — F2 is still
+			     the way in. Arrows land here through `takeRow`; the grid's focusin
+			     handler keeps the roving target pointed at whatever row focus
+			     actually reaches. -->
 			<div
 				role="row"
 				:data-row-id="rowId"
 				data-note-row
 				:aria-selected="selected"
-				tabindex="-1"
+				tabindex="0"
 				class="note-row group/row rounded-lg"
 				:class="[
 					selected
