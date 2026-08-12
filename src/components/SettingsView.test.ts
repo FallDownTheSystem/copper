@@ -83,6 +83,8 @@ function makeSettings(over: Partial<Settings> = {}): Settings {
 		resizable: false,
 		panelWidth: 440,
 		panelHeight: 760,
+		doneFilter: 'all',
+		sortMode: 'manual',
 		...over,
 	}
 }
@@ -415,9 +417,7 @@ describe('the notes rows', () => {
 		const wrapper = await openSettings()
 
 		expect(
-			segment(wrapper, 'What the Enter key does when writing', 'Submit').attributes(
-				'aria-checked',
-			),
+			segment(wrapper, 'What the Enter key does when writing', 'Submit').attributes('aria-checked'),
 		).toBe('true')
 
 		await segment(wrapper, 'What the Enter key does when writing', 'New line').trigger('click')

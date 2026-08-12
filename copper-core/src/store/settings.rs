@@ -116,6 +116,8 @@ pub struct Settings {
 	pub resizable: bool,
 	pub panel_width: f64,
 	pub panel_height: f64,
+	pub done_filter: String,
+	pub sort_mode: String,
 }
 
 /// Where a fresh note goes inside its section.
@@ -223,6 +225,13 @@ impl Default for Settings {
 			// settings view writes them.
 			panel_width: DEFAULT_PANEL_WIDTH,
 			panel_height: DEFAULT_PANEL_HEIGHT,
+			// The list view as every build so far has opened it: the whole document,
+			// in its own order. These two are the remembered positions of the header's
+			// filter and sort controls, so the defaults are the positions those
+			// controls have always started in — an upgraded install opens on exactly
+			// the view it opened on yesterday.
+			done_filter: "all".to_string(),
+			sort_mode: "manual".to_string(),
 		}
 	}
 }
@@ -298,6 +307,8 @@ struct RawSettings {
 	resizable: Value,
 	panel_width: Value,
 	panel_height: Value,
+	done_filter: Value,
+	sort_mode: Value,
 }
 
 impl RawSettings {
@@ -450,6 +461,14 @@ impl RawSettings {
 			&mut notices,
 		);
 
+		let done_filter = repair_named(
+			self.done_filter,
+			"doneFilter",
+			defaults.done_filter,
+			&mut notices,
+		);
+		let sort_mode = repair_named(self.sort_mode, "sortMode", defaults.sort_mode, &mut notices);
+
 		let mut settings = Settings {
 			recents,
 			active_space,
@@ -472,6 +491,8 @@ impl RawSettings {
 			resizable,
 			panel_width,
 			panel_height,
+			done_filter,
+			sort_mode,
 		};
 		settings.clamp();
 		(settings, notices)
@@ -479,7 +500,8 @@ impl RawSettings {
 }
 
 /// A preference stored as a bare name and narrowed on the frontend — `theme`,
-/// `motion`, `insertionPoint`, `doubleClick`, `neutral`, `accent`.
+/// `motion`, `insertionPoint`, `doubleClick`, `neutral`, `accent`, `doneFilter`,
+/// `sortMode`.
 ///
 /// Only the *type* is repaired here. A `Value::Null` is the ordinary case for a
 /// key written before its feature existed and must stay silent, or an older file
@@ -716,6 +738,12 @@ impl Settings {
 		if let Some(panel_height) = patch.panel_height {
 			self.panel_height = panel_height;
 		}
+		if let Some(done_filter) = patch.done_filter {
+			self.done_filter = done_filter;
+		}
+		if let Some(sort_mode) = patch.sort_mode {
+			self.sort_mode = sort_mode;
+		}
 	}
 }
 
@@ -773,6 +801,13 @@ pub struct SettingsPatch {
 	pub panel_width: Option<f64>,
 	#[serde(default)]
 	pub panel_height: Option<f64>,
+	/// The list header's two controls, remembered rather than configured: no
+	/// native side, no settings row, so the ordinary patch path is the whole
+	/// feature — the same standing `vibrancy` has.
+	#[serde(default)]
+	pub done_filter: Option<String>,
+	#[serde(default)]
+	pub sort_mode: Option<String>,
 }
 
 /// Distinguishes "key absent" from "key present and null".
@@ -1030,7 +1065,8 @@ mod tests {
 			 \"copy\",\n  \"enterKey\": \"submit\",\n  \"alwaysOnTop\": true,\n  \"showCreated\": false,\n  \
 			 \"captureNotifications\": true,\n  \"linkPreviews\": false,\n  \"translucent\": \
 			 false,\n  \"neutral\": \"warm\",\n  \"accent\": \"copper\",\n  \"vibrancy\": 1.0,\n  \
-			 \"resizable\": false,\n  \"panelWidth\": 440.0,\n  \"panelHeight\": 760.0\n}\n"
+			 \"resizable\": false,\n  \"panelWidth\": 440.0,\n  \"panelHeight\": 760.0,\n  \
+			 \"doneFilter\": \"all\",\n  \"sortMode\": \"manual\"\n}\n"
 		);
 	}
 
@@ -1349,6 +1385,76 @@ mod tests {
 		assert!(loaded.settings.capture_notifications);
 		let notice = loaded.notice.expect("repairs must be reported");
 		assert!(notice.contains("captureNotifications"), "{notice}");
+	}
+
+	/// The list-view round's two keys join the guarantee every key added since
+	/// task-012 holds: a `settings.json` written by an earlier build has neither,
+	/// and reading one must be indistinguishable from reading a current file. The
+	/// visible cost of getting these backwards would be every existing install
+	/// opening on a narrowed or re-sorted list because the user updated.
+	#[test]
+	fn a_file_without_the_list_view_keys_reads_as_the_shipped_view() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"theme":"dark","showCreated":true}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(loaded.notice.is_none(), "absence was reported as damage: {:?}", loaded.notice);
+		assert_eq!(siblings(dir.path()), [FILE_NAME], "the file was set aside");
+		assert_eq!(loaded.settings.done_filter, "all", "an absent key must not narrow the list");
+		assert_eq!(loaded.settings.sort_mode, "manual", "an absent key must not re-order the list");
+		// The rest of the file survived rather than being defaulted alongside them.
+		assert_eq!(loaded.settings.theme, "dark");
+		assert!(loaded.settings.show_created);
+	}
+
+	#[test]
+	fn wrong_typed_list_view_values_are_repaired_and_reported() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"doneFilter":7,"sortMode":["newest"]}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert_eq!(loaded.settings.done_filter, "all");
+		assert_eq!(loaded.settings.sort_mode, "manual");
+		let notice = loaded.notice.expect("repairs must be reported");
+		for expected in ["doneFilter", "sortMode"] {
+			assert!(notice.contains(expected), "{expected} unreported in: {notice}");
+		}
+	}
+
+	/// A name nothing recognises is not damage — the frontend collapses it to the
+	/// shipped view on read, exactly as it does for `theme` and the palettes — so
+	/// it must survive the load rather than being repaired here.
+	#[test]
+	fn an_unrecognised_list_view_name_survives_a_load_unreported() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"doneFilter":"finished","sortMode":"alphabetical"}"#);
+
+		let loaded = load(&path);
+
+		assert!(loaded.notice.is_none(), "a name is not a type error: {:?}", loaded.notice);
+		assert_eq!(loaded.settings.done_filter, "finished");
+		assert_eq!(loaded.settings.sort_mode, "alphabetical");
+	}
+
+	#[test]
+	fn a_patch_sets_the_list_view_keys_independently() {
+		let mut settings = Settings::default();
+
+		settings.apply_patch(patch(r#"{"doneFilter":"todo"}"#));
+		assert_eq!(settings.done_filter, "todo");
+		assert_eq!(settings.sort_mode, "manual", "an absent key must leave the stored value alone");
+
+		settings.apply_patch(patch(r#"{"sortMode":"newest"}"#));
+		assert_eq!(settings.done_filter, "todo", "a sort patch must not widen the filter");
+		assert_eq!(settings.sort_mode, "newest");
+
+		settings.apply_patch(patch(r#"{"theme":"dark"}"#));
+		assert_eq!(settings.done_filter, "todo", "a theme patch must not touch the list view");
+		assert_eq!(settings.sort_mode, "newest");
 	}
 
 	#[test]

@@ -61,6 +61,8 @@ function makeSettings(linkPreviews: boolean): Settings {
 		resizable: false,
 		panelWidth: 440,
 		panelHeight: 760,
+		doneFilter: 'all',
+		sortMode: 'manual',
 	}
 }
 

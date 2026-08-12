@@ -81,8 +81,10 @@ const { filtersByDone, passesDoneFilter, createdOf, sortMode } = useNoteList()
  * only the first and `ArrowDown` still stops on the header rows of sections the
  * list has removed from the DOM, and on notes that no longer match.
  *
- * A section with no surviving note is dropped entirely, header included, which is
- * what makes a result's origin visible without a dozen empty headings.
+ * A section a search leaves with no surviving note is dropped entirely, header
+ * included, which is what makes a result's origin visible without a dozen empty
+ * headings. The done filter deliberately does not get the same treatment — see
+ * the walk below.
  *
  * **Collapse is applied in this same walk, and has to be.** `visibleGroups` is
  * what the list renders, so a section filtered out here is one whose rows are not
@@ -118,10 +120,11 @@ const { filtersByDone, passesDoneFilter, createdOf, sortMode } = useNoteList()
  * `todo` hides the done notes and `done` hides the rest, so the rule above now
  * applies to the view the panel opens in: `Ctrl+A` on an ordinary list selects
  * the unfinished notes, which is the set the visible list is offering. A section
- * left with no survivor is dropped header and all under either of them, exactly
- * as a search miss is — a fully-finished section is not a heading worth keeping
- * on screen in a view whose subject is what remains, and `ActiveSectionChip`
- * names where a capture lands whether or not that section has a row here.
+ * left with no survivor keeps its heading under either of them (user ruling
+ * 2026-08-12, reversing the search-miss treatment it used to share): the filter
+ * is a resting view, and a heading is the row that lets a filtered-empty
+ * section be reached and captured into. Only a search miss still drops the
+ * heading.
  *
  * The sort applies to the rows only, exactly as the ranking does, and for the
  * same reason: it is a presentation of the set, and a multi-note copy out of a
@@ -147,10 +150,14 @@ const orders = computed(() => {
 		let members = group.noteIds
 		if (matched) members = members.filter((id) => matched.has(id))
 		if (filtered) members = members.filter((id) => passesDoneFilter(id))
-		// A section with no survivor is dropped entirely, header included — the same
-		// treatment a search miss gets, and what keeps either half of the done filter
-		// from being a wall of empty headings.
-		if ((matched || filtered) && members.length === 0) continue
+		// Only a search drops a section with no survivor. The done filter keeps the
+		// heading (user ruling 2026-08-12): it is the row that lets the section be
+		// reached — focused, activated, captured into — while the filter hides its
+		// notes, and a user who rests in the todo view would otherwise find a
+		// finished section unreachable exactly when they want to add to it. A query
+		// is different: it asks "where is this note", and a heading with no answer
+		// under it is noise.
+		if (matched && members.length === 0) continue
 
 		// **`actionable` is filled before the ranking, and from the unsorted list.**
 		// Its contract is document order — every consumer that acts on several notes

@@ -511,10 +511,12 @@ fn settings_cross_the_boundary_in_camel_case() {
 		"resizable",
 		"panelWidth",
 		"panelHeight",
+		"doneFilter",
+		"sortMode",
 	] {
 		assert!(payload.get(key).is_some(), "get_settings is missing {key}: {payload}");
 	}
-	assert_eq!(payload.as_object().unwrap().len(), 21, "get_settings grew a field");
+	assert_eq!(payload.as_object().unwrap().len(), 23, "get_settings grew a field");
 	assert_eq!(payload["shortcuts"]["capture"], "Shift Shift");
 	assert_eq!(payload["shortcuts"]["summon"], "Ctrl+Shift+Space");
 	// The shipped defaults, which are the whole of "this task changes no
@@ -559,6 +561,11 @@ fn settings_cross_the_boundary_in_camel_case() {
 	assert_eq!(payload["resizable"], false);
 	assert_eq!(payload["panelWidth"], 440.0);
 	assert_eq!(payload["panelHeight"], 760.0);
+	// The list-view round's two keys ship as the positions the header's controls
+	// have always started in, so an upgraded install opens on the view it always
+	// opened on: the whole document, in its own order.
+	assert_eq!(payload["doneFilter"], "all");
+	assert_eq!(payload["sortMode"], "manual");
 }
 
 /// Task-020's two shapes. `link_preview` answers `null` far more often than it

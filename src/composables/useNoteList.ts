@@ -5,22 +5,29 @@
  * document-wide — plus the two facts about the document that `useSelection`'s
  * walk needs in order to apply them.
  *
- * **One-directional, in the same way `useSelection`, `useNoteSearch` and
- * `useSections` are.** It imports no adapter, `invoke`s nothing and never assigns
- * `space`; the document arrives through `rebuild`, called from
- * `useSpace.applyDocument` beside `search.rebuild`. That is what lets
- * `useSelection` read it inside `orders` without a module cycle.
+ * **One-directional over the document, in the same way `useSelection`,
+ * `useNoteSearch` and `useSections` are.** It never assigns `space`; the document
+ * arrives through `rebuild`, called from `useSpace.applyDocument` beside
+ * `search.rebuild`. That is what lets `useSelection` read it inside `orders`
+ * without a module cycle. The one adapter it touches is `useSettings`, and only
+ * for its own two controls — nothing about the *document* flows through it.
  *
  * Module scope, not per-caller: the header's filter and sort controls, the grid's
  * traversal orders and the drag guards all have to be looking at the same state.
  *
- * **Both are view state only**, for the reason `useSections` records about
- * collapse: they live in memory for the session, reset on a space switch, and
- * nothing about either reaches the `.copper` document or `settings.json`. That
- * survived the sort becoming document-wide: a single mode would now fit
- * `settings.json` where a per-section map needed a schema change, but AC12 only
- * asks that it last "as long as the app is running", and a sort that outlived a
- * restart would greet the user with a list whose order they cannot account for.
+ * **Both controls are remembered across launches** (user ruling 2026-08-12),
+ * which reversed the session-only rule this header used to state. The refs here
+ * stay the single source of truth the panel renders from; `settings.json` is
+ * only the memory of them. Values flow out through the setters — each persists
+ * itself via `useSettings.rememberListView`, fire-and-forget — and flow in
+ * exactly once, through `hydrate` at boot. Nothing about either reaches the
+ * `.copper` document: which notes a *reader* is looking at is not a fact about
+ * the notes, and a shared or version-controlled space must not churn because
+ * someone narrowed their view.
+ *
+ * A space switch no longer resets them, for the same ruling: a switch clearing
+ * what a restart preserves would make one control obey two different rules, and
+ * neither value names a section or a note that could go stale with the document.
  *
  * **Why the document data lives here and not in the walk.** `documentGroups` in
  * `useSelection` carries ids only, so neither `done` nor `created` is reachable
@@ -32,7 +39,9 @@
 
 import { parseCreated, type SortMode } from '@/lib/noteTime'
 
-import type { SpaceView } from './useSpace'
+import { useSettings } from './useSettings'
+
+import type { Settings, SpaceView } from './useSpace'
 
 export type { SortMode }
 
@@ -98,9 +107,12 @@ const doneOnly = computed(() => doneFilter.value === 'done')
  * consumer other than the button itself is actually asking.
  *
  * Two of the three states narrow, and they narrow in opposite directions — so
- * "is the done filter on" is no longer answerable by `doneOnly`. Reordering is
- * refused under both, and both drop a section that has nothing left in it; only
- * `all` renders the whole document.
+ * "is the done filter on" is no longer answerable by `doneOnly`. Both keep
+ * every section heading on screen and hide only notes, and both keep
+ * reordering alive (user rulings 2026-08-12): a heading is how an emptied
+ * section is still reached, and a filtered move anchors to its visible
+ * neighbours — `useNoteActions.documentIndex`. Only `all` renders the whole
+ * document.
  */
 const filtersByDone = computed(() => doneFilter.value !== 'all')
 
@@ -144,12 +156,22 @@ function createdOf(noteId: string): number | null {
  *  this. */
 const isSorted = computed(() => sortMode.value !== 'manual')
 
+/** The write half of the controls' memory. Fire-and-forget on purpose: the ref
+ *  has already changed and the panel with it, so there is nothing for a caller
+ *  to await — a failed write costs the *memory* of the position, never the
+ *  position itself, and `rememberListView` logs it. */
+const { rememberListView } = useSettings()
+
 function setSort(mode: SortMode) {
+	if (sortMode.value === mode) return
 	sortMode.value = mode
+	void rememberListView({ sortMode: mode })
 }
 
 function setDoneFilter(next: DoneFilter) {
+	if (doneFilter.value === next) return
 	doneFilter.value = next
+	void rememberListView({ doneFilter: next })
 }
 
 function cycleDoneFilter() {
@@ -189,18 +211,23 @@ function rebuild(space: SpaceView | null) {
 }
 
 /**
- * Space identity changed: both controls were answers about the document that just
- * went away.
+ * The read half of the controls' memory, and deliberately the only one: called
+ * from `useSpace.load` once the file's answer is in, before the first document
+ * lands. Everything after boot flows the other way, through the setters.
  *
- * This is the reset event AC3 asks for. The panel renders every section at once —
- * `activeSection` decides where a capture lands, not what is on screen — so there
- * is no "switch to a section" gesture inside a space for a per-section reset to
- * hang on. A space switch is the real one, and it is already where `useSections`
- * drops collapse.
+ * Narrowed here rather than trusted, the same split `theme` and `motion` use in
+ * `useSettings`: the store repairs a wrong *type*, and a name nothing recognises
+ * collapses to the default on read. Writes nothing back — echoing a repaired
+ * value into the file it just came from is `pullSettings`' anti-pattern.
+ *
+ * `null` restores the defaults, which is what the tests use where they used to
+ * call `reset()`.
  */
-function reset() {
-	doneFilter.value = 'all'
-	sortMode.value = 'manual'
+function hydrate(settings: Pick<Settings, 'doneFilter' | 'sortMode'> | null | undefined) {
+	const filter = settings?.doneFilter
+	doneFilter.value = filter === 'todo' || filter === 'done' ? filter : 'all'
+	const sort = settings?.sortMode
+	sortMode.value = sort === 'oldest' || sort === 'newest' ? sort : 'manual'
 }
 
 export function useNoteList() {
@@ -221,6 +248,6 @@ export function useNoteList() {
 		isSorted,
 		setSort,
 		rebuild,
-		reset,
+		hydrate,
 	}
 }

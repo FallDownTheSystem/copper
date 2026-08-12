@@ -45,6 +45,8 @@ function makeSettings(motion: string): Settings {
 		resizable: false,
 		panelWidth: 440,
 		panelHeight: 760,
+		doneFilter: 'all',
+		sortMode: 'manual',
 	}
 }
 

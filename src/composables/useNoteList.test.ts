@@ -1,9 +1,17 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 import { useNoteList } from './useNoteList'
 import { noteRow, sectionRow, useSelection } from './useSelection'
 import { useNoteSearch } from './useNoteSearch'
 import type { Note, Space } from './useSpace'
+
+// The setters remember themselves through `useSettings`, so this file needs the
+// Tauri boundary stubbed where it needed nothing before. The writes land here
+// and are otherwise ignored: what is *persisted* is `settings.rs`'s contract,
+// and these tests own the view state, not the file.
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(async () => ({})) }))
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
+vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => {} }))
 
 /** Five notes across two sections, deliberately created out of document order so
  *  a sort has something to actually move. `n2` and `n5` are done. */
@@ -35,7 +43,8 @@ const selection = useSelection()
 const search = useNoteSearch()
 
 beforeEach(() => {
-	list.reset()
+	mocks.invoke.mockClear()
+	list.hydrate(null)
 	selection.resetForNewSpace()
 	search.clearQuery()
 	const doc = document2()
@@ -45,7 +54,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-	list.reset()
+	list.hydrate(null)
 	search.clearQuery()
 })
 
@@ -111,10 +120,10 @@ describe('the done filter', () => {
 		expect(selection.selectedIds.value).toEqual(['n1', 'n3', 'n4'])
 	})
 
-	/** A section whose notes are all finished drops out of the todo view header
-	 *  and all — the treatment a search miss gets, applied to the other half of
-	 *  the filter. */
-	it('drops a section with nothing left to do', () => {
+	/** A section whose notes are all finished keeps its heading in the todo view
+	 *  (user ruling 2026-08-12, reversing the search-miss treatment): the heading
+	 *  is how the section is still reached and captured into. Only its notes go. */
+	it('keeps the heading of a section with nothing left to do', () => {
 		const doc = document2()
 		for (const entry of doc.notes) {
 			if (entry.section === 'sec_b') entry.done = true
@@ -123,7 +132,12 @@ describe('the done filter', () => {
 		selection.syncDocument(doc)
 
 		list.setDoneFilter('todo')
-		expect(selection.rowIds.value).toEqual([sectionRow('sec_a'), noteRow('n1'), noteRow('n3')])
+		expect(selection.rowIds.value).toEqual([
+			sectionRow('sec_a'),
+			noteRow('n1'),
+			noteRow('n3'),
+			sectionRow('sec_b'),
+		])
 	})
 
 	/**
@@ -139,17 +153,21 @@ describe('the done filter', () => {
 		expect(selection.selectedIds.value).toEqual(['n2', 'n5'])
 	})
 
-	/** A section with nothing done drops out entirely, header included — the same
-	 *  treatment a search miss gets, and what keeps the done view from being a wall
-	 *  of empty headings. */
-	it('drops a section with no done note, header and all', () => {
+	/** The done view keeps an empty section's heading for the same reason the todo
+	 *  view does — the filter hides notes, never sections. A search is what drops
+	 *  headings. */
+	it('keeps the heading of a section with no done note', () => {
 		const doc = document2()
 		doc.notes = doc.notes.filter((entry) => entry.section === 'sec_a' || !entry.done)
 		list.rebuild(doc)
 		selection.syncDocument(doc)
 
 		list.setDoneFilter('done')
-		expect(selection.rowIds.value).toEqual([sectionRow('sec_a'), noteRow('n2')])
+		expect(selection.rowIds.value).toEqual([
+			sectionRow('sec_a'),
+			noteRow('n2'),
+			sectionRow('sec_b'),
+		])
 	})
 
 	/** AC4. The two are orthogonal in both directions. */
@@ -164,13 +182,27 @@ describe('the done filter', () => {
 		expect(selection.visibleNoteIds.value).toEqual(['n2', 'n5'])
 	})
 
-	/** AC3, restated against the event that actually exists: the panel renders
-	 *  every section at once, so a space switch — not a section change — is what
-	 *  drops the filter. */
-	it('drops back to the default view when the space is replaced', () => {
-		list.setDoneFilter('done')
-		list.reset()
+	/** AC3's space-switch reset is gone with the controls' memory (user ruling
+	 *  2026-08-12): the filter is an app-wide remembered preference now, and the
+	 *  only thing that moves it besides the button is `hydrate`, at boot. Narrowed
+	 *  by name on the way in, the same split `theme` uses. */
+	it('starts where the file remembers, narrowed by name', () => {
+		list.hydrate({ doneFilter: 'todo', sortMode: 'manual' })
+		expect(list.doneFilter.value).toBe('todo')
+		list.hydrate({ doneFilter: 'finished', sortMode: 'manual' })
 		expect(list.doneFilter.value).toBe('all')
+	})
+
+	/** The write half of the memory: a change remembers itself, one key wide, and
+	 *  a press that changes nothing writes nothing. */
+	it('remembers a change through the settings surface', () => {
+		list.setDoneFilter('done')
+		expect(mocks.invoke).toHaveBeenCalledWith('update_settings', {
+			patch: { doneFilter: 'done' },
+		})
+		mocks.invoke.mockClear()
+		list.setDoneFilter('done')
+		expect(mocks.invoke).not.toHaveBeenCalled()
 	})
 
 	/** A capture landing while the user reviews done notes is not a change of
@@ -299,10 +331,18 @@ describe('sort', () => {
 		expect(selection.visibleNoteIds.value.slice(0, 4)).toEqual(['n2', 'n3', 'n1', 'n6'])
 	})
 
-	it('drops the mode when the space is replaced', () => {
-		list.setSort('newest')
-		list.reset()
+	/** The sort's half of the same memory: hydrated by name at boot, remembered
+	 *  one key wide on change. */
+	it('starts where the file remembers, and remembers a change', () => {
+		list.hydrate({ doneFilter: 'all', sortMode: 'newest' })
+		expect(list.sortMode.value).toBe('newest')
+		list.hydrate({ doneFilter: 'all', sortMode: 'alphabetical' })
 		expect(list.sortMode.value).toBe('manual')
+
+		list.setSort('oldest')
+		expect(mocks.invoke).toHaveBeenCalledWith('update_settings', {
+			patch: { sortMode: 'oldest' },
+		})
 	})
 
 	/**

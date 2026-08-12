@@ -275,6 +275,12 @@ async function baseInvoke(command: string, args?: Record<string, unknown>) {
 	if (command === 'get_active_space') return SPACE
 	if (command === 'get_status') return STATUS
 	if (command === 'get_settings') return settingsPayload
+	// The list header's controls remember themselves through this on every
+	// change; the store's answer is the merged file.
+	if (command === 'update_settings') {
+		settingsPayload = { ...settingsPayload, ...(args?.patch as Record<string, unknown>) }
+		return settingsPayload
+	}
 	if (command === 'get_shortcut_state') return SHORTCUTS
 	if (command === 'get_autostart_enabled') return false
 	if (command === 'get_share_config') return SHARE_CONFIG
@@ -359,8 +365,9 @@ afterEach(async () => {
 	sections.reset()
 	// Module-scoped for the same reason, and with two ways to break the next test:
 	// a done filter left on empties its list, and a sort left set withdraws every
-	// drag handle it goes looking for.
-	list.reset()
+	// drag handle it goes looking for. `hydrate(null)` is the defaults — the
+	// space-switch reset this used to lean on is gone with the controls' memory.
+	list.hydrate(null)
 	selection.clear()
 	// Interaction mode belongs on that list for the same reason and was missing
 	// from it: with a row still in the mode, the grid's key handler declines every
@@ -533,9 +540,7 @@ describe('the grid tab order', () => {
 		expect(selection.focusedId.value).toBe(noteRow('nte_2'))
 		expect(selection.selectedIds.value).toEqual(['nte_2'])
 
-		grid.dispatchEvent(
-			new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }),
-		)
+		grid.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }))
 		await settle(2)
 
 		expect(selection.focusedId.value).toBe(noteRow('nte_1'))
@@ -652,6 +657,25 @@ describe('the section delete confirm', () => {
 		// The safe control takes the autofocus, so a held or doubled Delete can
 		// never land on the destructive one.
 		expect(document.activeElement).toBe(popover?.querySelector('[data-section-delete-cancel]'))
+	})
+
+	/** Ctrl+D is Delete's alias, and the section half answers it too — an alias
+	 *  that deleted notes but not sections would be two keys that agree everywhere
+	 *  except on a heading. */
+	it('asks on Ctrl+D exactly as on a bare Delete', async () => {
+		const wrapper = await mountPanel()
+		takeRow(sectionRow('sec_a'))
+		await settle(2)
+
+		wrapper
+			.get('[role="grid"]')
+			.element.dispatchEvent(
+				new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, bubbles: true }),
+			)
+		await settle(3)
+
+		expect(confirmPopover()?.textContent).toContain('Delete “Research” and its 2 notes?')
+		expect(mocks.invoke).not.toHaveBeenCalledWith('delete_section', expect.anything())
 	})
 
 	it('deletes the section and its notes on the confirming press', async () => {
@@ -1045,13 +1069,11 @@ describe('the header drag region', () => {
 
 		expect(header.attributes('data-tauri-drag-region')).toBeDefined()
 		// Both rows: the search row's gaps and the chip row's, the strip included.
-		expect(wrapper.findAll('header div[data-tauri-drag-region]').length).toBeGreaterThanOrEqual(
-			3,
-		)
+		expect(wrapper.findAll('header div[data-tauri-drag-region]').length).toBeGreaterThanOrEqual(3)
 		// No control claims it — that is the half that makes them clickable.
-		expect(
-			wrapper.find('header :is(button, input, a)[data-tauri-drag-region]').exists(),
-		).toBe(false)
+		expect(wrapper.find('header :is(button, input, a)[data-tauri-drag-region]').exists()).toBe(
+			false,
+		)
 	})
 })
 
@@ -1808,6 +1830,23 @@ describe('focus after a delete', () => {
 		expect(document.activeElement).toBe(rowElementOf(wrapper, 'nte_2'))
 	})
 
+	/** Ctrl+D is Delete's alias (user ruling 2026-08-12) — the same chord entry,
+	 *  so the same shell handler and the same landing. */
+	it('answers Ctrl+D exactly as Delete', async () => {
+		const wrapper = await mountWithThree()
+		selection.select('nte_2')
+		takeRow(noteRow('nte_2'))
+		await settle(2)
+
+		await wrapper
+			.get(`[data-row-id="${noteRow('nte_2')}"]`)
+			.trigger('keydown', { key: 'd', ctrlKey: true })
+		await settle(5)
+
+		expect(mocks.invoke).toHaveBeenCalledWith('delete_notes', { ids: ['nte_2'] })
+		expect(document.activeElement).toBe(rowElementOf(wrapper, 'nte_3'))
+	})
+
 	/**
 	 * The path that had no focus at all. A delete from the context menu has DOM
 	 * focus inside the portalled menu rather than on the row, so `restoreDom` —
@@ -2149,9 +2188,7 @@ describe('a pinned section heading', () => {
 				const { ids, done } = args as { ids: string[]; done: boolean }
 				return {
 					...SPACE,
-					notes: SPACE.notes.map((note) =>
-						ids.includes(note.id) ? { ...note, done } : note,
-					),
+					notes: SPACE.notes.map((note) => (ids.includes(note.id) ? { ...note, done } : note)),
 				}
 			}
 			return baseInvoke(command)
@@ -2733,7 +2770,9 @@ describe('collapsible sections', () => {
 		selection.select('nte_1')
 		await settle(2)
 
-		await wrapper.get('[data-row-id="n:nte_2"] button[aria-label="Mark as not done"]').trigger('click')
+		await wrapper
+			.get('[data-row-id="n:nte_2"] button[aria-label="Mark as not done"]')
+			.trigger('click')
 		await settle(3)
 
 		expect(selection.selectedIds.value).toEqual([])
@@ -2748,7 +2787,9 @@ describe('collapsible sections', () => {
 		selection.extendTo('nte_2')
 		await settle(2)
 
-		await wrapper.get('[data-row-id="n:nte_2"] button[aria-label="Mark as not done"]').trigger('click')
+		await wrapper
+			.get('[data-row-id="n:nte_2"] button[aria-label="Mark as not done"]')
+			.trigger('click')
 		await settle(3)
 
 		expect(selection.selectedIds.value).toEqual(['nte_1', 'nte_2'])
@@ -4470,6 +4511,100 @@ describe('reordering', () => {
 			expect(selection.selectedIds.value).toEqual(['nte_2'])
 		})
 	})
+
+	/**
+	 * Reordering works under the done filter (user ruling 2026-08-12): the filter
+	 * hides notes but never reorders them, so a move anchors to its nearest
+	 * *visible* neighbour and lands directly beside it in document order — the
+	 * hidden notes in between stay exactly where they are.
+	 */
+	describe('under the done filter', () => {
+		/** Four notes in one section, the two done ones placed so a bare count of
+		 *  visible rows and the anchor rule disagree about where a move lands. In
+		 *  the todo view only `nte_2` and `nte_4` are on screen. */
+		const FILTERED: Space = {
+			...SPACE,
+			notes: ['nte_1', 'nte_2', 'nte_3', 'nte_4'].map((id, order) => ({
+				id,
+				section: 'sec_a',
+				order,
+				done: id === 'nte_1' || id === 'nte_3',
+				body: id,
+				created: '2026-08-05T00:00:00Z',
+				updated: '2026-08-05T00:00:00Z',
+			})),
+		}
+
+		async function mountFiltered() {
+			const wrapper = await mountPanel()
+			const store = installReorderingStore(FILTERED)
+			await space.refresh()
+			list.setDoneFilter('todo')
+			await settle(3)
+			return { wrapper, store }
+		}
+
+		it('keeps the drag handle on the narrowed view', async () => {
+			const { wrapper } = await mountFiltered()
+			expect(wrapper.find('[data-drag-handle]').exists()).toBe(true)
+		})
+
+		it('drops a note directly beside its visible neighbour, hidden notes staying put', async () => {
+			const { store } = await mountFiltered()
+
+			// The drop slot above `nte_2` — visible index 0. A bare count of 0
+			// would land `nte_4` above the hidden `nte_1` too; the anchor rule
+			// lands it directly before the row it was dropped against.
+			await actions.finishDrag('nte_4', 'sec_a', 0)
+			await settle(3)
+
+			expect(store.calls).toEqual([{ ids: ['nte_4'], section: 'sec_a', index: 1 }])
+			expect(store.order('sec_a')).toEqual(['nte_1', 'nte_4', 'nte_2', 'nte_3'])
+		})
+
+		it('hops Alt+Arrow past the visible neighbour, never past a hidden note', async () => {
+			const { wrapper, store } = await mountFiltered()
+
+			takeRow(noteRow('nte_2'))
+			await settle(2)
+			await wrapper.get('[role="grid"]').trigger('keydown', { key: 'ArrowDown', altKey: true })
+			await settle(4)
+
+			// One press hops past `nte_4`, the next *visible* note, landing
+			// directly after it. Hopping the hidden `nte_3` — the old
+			// document-count arithmetic — would have changed nothing on screen.
+			expect(store.calls).toEqual([{ ids: ['nte_2'], section: 'sec_a', index: 3 }])
+			expect(store.order('sec_a')).toEqual(['nte_1', 'nte_3', 'nte_4', 'nte_2'])
+			expect(wrapper.text()).not.toContain('Show all notes to reorder them.')
+		})
+
+		it('treats a drop back into the same visible slot as a no-op', async () => {
+			const { store } = await mountFiltered()
+
+			// `nte_4`'s own slot: below `nte_2`, visible index 1. The document
+			// offers an invisible move — across the hidden `nte_3` — but the
+			// gesture never expressed one, so nothing may reach the store.
+			await actions.finishDrag('nte_4', 'sec_a', 1)
+			await settle(3)
+
+			expect(store.calls).toEqual([])
+		})
+
+		it('crosses into the next section when the view shows nothing left to hop', async () => {
+			const { wrapper, store } = await mountFiltered()
+
+			takeRow(noteRow('nte_4'))
+			await settle(2)
+			await wrapper.get('[role="grid"]').trigger('keydown', { key: 'ArrowDown', altKey: true })
+			await settle(4)
+
+			// Below `nte_4` the todo view shows nothing left to hop, so the block
+			// crosses into `sec_b`, entering at the top — exactly as it would with
+			// no filter on.
+			expect(store.calls).toEqual([{ ids: ['nte_4'], section: 'sec_b', index: 0 }])
+			expect(store.order('sec_b')).toEqual(['nte_4'])
+		})
+	})
 })
 
 /**
@@ -5235,7 +5370,7 @@ describe('the done filter', () => {
 	/** The file's outer hook opens every other test in `all`; these are the cases
 	 *  that are about the filter, so they start where the panel really does. */
 	beforeEach(() => {
-		list.reset()
+		list.hydrate(null)
 	})
 
 	/**
@@ -5516,31 +5651,21 @@ describe('the done filter', () => {
 	})
 
 	/**
-	 * The todo view narrows, so it is refused for the reason the done view is: an
-	 * index read off a list missing every finished note is not the index
-	 * `reorder_note` counts. With `all` back as the default this is no longer the
-	 * resting state's cost — but either narrowed view still asks for the `All`
-	 * view first, and the message says so.
+	 * Reordering stays alive in the narrowed views (user ruling 2026-08-12,
+	 * reversing the refusal this test used to pin): the filter hides notes but
+	 * never reorders them, and a move anchors to its visible neighbours — the
+	 * mechanics live with the reordering suite's own 'under the done filter'
+	 * block. Here, only the view's surface: the grip stays through the cycle.
 	 */
-	it('refuses both reorder paths in the todo view as well', async () => {
+	it('keeps the drag handle through every filter state', async () => {
 		const wrapper = await mountPanel()
-		// The resting view is the whole document, so reordering is available.
 		expect(wrapper.find('[data-drag-handle]').exists()).toBe(true)
 
 		list.setDoneFilter('todo')
 		await settle(2)
-		expect(wrapper.find('[data-drag-handle]').exists()).toBe(false)
+		expect(wrapper.find('[data-drag-handle]').exists()).toBe(true)
 
-		takeRow(noteRow('nte_1'))
-		await settle(2)
-		await wrapper.get('[role="grid"]').trigger('keydown', { key: 'ArrowDown', altKey: true })
-		await settle(3)
-
-		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_notes', expect.anything())
-		expect(wrapper.text()).toContain('Show all notes to reorder them.')
-
-		// And it comes back with the view.
-		list.setDoneFilter('all')
+		list.setDoneFilter('done')
 		await settle(2)
 		expect(wrapper.find('[data-drag-handle]').exists()).toBe(true)
 	})
@@ -5825,35 +5950,22 @@ describe('sort', () => {
 	})
 
 	/**
-	 * The done filter is the third reason reordering is refused, and it was missed
-	 * when the filter was added.
-	 *
-	 * The reason is the search branch's, verbatim: a done-only list omits every
-	 * unfinished note between two done ones, so an index read off the rendered rows
-	 * is not the index `reorder_note` takes. Both paths have to refuse — the grip
-	 * for the pointer, `reorderBlocked` for the keyboard and for anything that
-	 * slips past the grip.
+	 * The sort and the search are the two conditions left refusing reordering —
+	 * the done filter reorders by visible anchor since the 2026-08-12 ruling —
+	 * and the refusal covers every path: the grip is gone for the pointer,
+	 * `reorderBlocked` answers the keyboard, and the commit itself refuses in
+	 * case a drag is ever started some other way.
 	 */
-	it('refuses both reorder paths while the done filter is on', async () => {
+	it('refuses the drag commit itself while a sort is active', async () => {
 		const wrapper = await mountPanel()
-		list.setDoneFilter('done')
+		list.setSort('newest')
 		await settle(3)
 
-		// The pointer path: no handle, so there is nothing to start a drag from.
-		expect(wrapper.find('[data-drag-handle]').exists()).toBe(false)
-
-		// The keyboard path.
-		takeRow(noteRow('nte_2'))
-		await settle(2)
-		await wrapper.get('[role="grid"]').trigger('keydown', { key: 'ArrowDown', altKey: true })
-		await settle(3)
-		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_notes', expect.anything())
-		expect(wrapper.text()).toContain('Show all notes to reorder them.')
-
-		// And the commit itself, in case a drag is ever started some other way.
 		await actions.finishDrag('nte_2', 'sec_a', 0)
 		await settle(3)
+
 		expect(mocks.invoke).not.toHaveBeenCalledWith('reorder_notes', expect.anything())
+		expect(wrapper.text()).toContain('Set the sort to Manual to reorder notes.')
 	})
 
 	/**

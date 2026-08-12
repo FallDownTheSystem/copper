@@ -46,7 +46,7 @@ const GROUPS = computed<Group[]>(() => [
 			{ action: 'Copy', chords: [CHORDS.copy.display] },
 			{ action: 'Copy as list', chords: [CHORDS.copyAsList.display] },
 			{ action: 'Merge notes', chords: [CHORDS.merge.display] },
-			{ action: 'Delete', chords: [CHORDS.remove.display] },
+			{ action: 'Delete', chords: [CHORDS.remove.display, CHORDS.remove.alias] },
 			{ action: 'Move the note', chords: [CHORDS.reorderUp.display, CHORDS.reorderDown.display] },
 			// `useInteractionMode`'s key. "Buttons and links" is the row's own scope:
 			// F2 hands focus to the controls inside the note.
@@ -62,7 +62,10 @@ const GROUPS = computed<Group[]>(() => [
 			{ action: 'Make it the active section', chords: ['Enter'] },
 			{ action: 'Collapse or expand, by direction', chords: ['←', '→'] },
 			// `NoteList`'s Delete case: asks first, in the header's popover.
-			{ action: 'Delete the section and its notes', chords: [CHORDS.remove.display] },
+			{
+				action: 'Delete the section and its notes',
+				chords: [CHORDS.remove.display, CHORDS.remove.alias],
+			},
 			{
 				action: 'Move the section',
 				chords: [CHORDS.reorderUp.display, CHORDS.reorderDown.display],

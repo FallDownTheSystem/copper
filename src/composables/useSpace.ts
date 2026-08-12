@@ -142,6 +142,12 @@ export type Settings = {
 	 *  until the next launch. The store repairs 360–1200 and 480–1600. */
 	panelWidth: number
 	panelHeight: number
+	/** `'todo' | 'done' | 'all'` and `'manual' | 'oldest' | 'newest'` — the list
+	 *  header's two controls, remembered across launches. Narrowed in
+	 *  `useNoteList.hydrate` for the same reason `theme` and `motion` are narrowed
+	 *  in `useSettings`. */
+	doneFilter: string
+	sortMode: string
 }
 
 /**
@@ -425,11 +431,12 @@ function applyDocument(
 		// Collapse and the switcher are document-scoped: section ids mean something
 		// else now, and an open switcher is closed rather than re-pointed.
 		sectionState.reset()
-		// The done filter and the per-section sorts go with them, and for the same
-		// reason: both are questions asked about the document that has just been
-		// replaced. This is the reset AC3 asks for — a space switch is the only
-		// gesture inside the panel that changes which sections exist.
-		listState.reset()
+		// The done filter and the sort deliberately do NOT reset here, where they
+		// once did. Both are app-wide remembered preferences now — they live in
+		// `settings.json` and survive a restart — and a space switch clearing what a
+		// restart preserves would make the same control obey two different rules.
+		// Neither names a section or a note, so nothing about them goes stale with
+		// the document.
 	} else {
 		// Before the assignment, so a section revealed by a new note is on screen for
 		// the same flush the scroll pin measures. After it, `previous` is gone and
@@ -639,7 +646,15 @@ async function load() {
 	])
 
 	if (status.status === 'fulfilled') storeStatus.value = status.value
-	if (nextSettings.status === 'fulfilled') settings.value = nextSettings.value
+	if (nextSettings.status === 'fulfilled') {
+		settings.value = nextSettings.value
+		// The one hydration the list view gets: the file's remembered filter and
+		// sort become the controls' starting positions, before `applyDocument`
+		// below builds the orders they narrow. Every later change flows the other
+		// way — the setters persist themselves — so re-running `load` (retry) can
+		// only reapply values the setters already wrote.
+		listState.hydrate(nextSettings.value)
+	}
 
 	// An event may have installed a document while this pull was outstanding. If
 	// so the panel has something real to show, and replacing it with the fatal

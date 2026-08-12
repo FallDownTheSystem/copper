@@ -1,9 +1,11 @@
 <script setup lang="ts">
 /**
- * The done filter with nothing left on screen — the filter's counterpart to
- * `SearchEmptyState`, and mounted for the same reason: the list renders no
- * section at all when nothing survives, so without this the panel would go blank
- * and look broken rather than answered.
+ * The done filter with no note left on screen — the filter's counterpart to
+ * `SearchEmptyState`. The section headings stay on screen under the filter
+ * (user ruling 2026-08-12), so the panel no longer goes blank — but a column of
+ * bare headings answers "where did my notes go" no better than a blank did, and
+ * this line under them is what says the filter, not the document, is why they
+ * are empty.
  *
  * **Both narrowing states land here, and they are opposite emptinesses.** The
  * done view is empty when nothing has been finished; the default view is empty

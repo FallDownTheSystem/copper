@@ -550,6 +550,30 @@ function patchSettings(scope: PreferenceScope, patch: Partial<Settings>): Promis
 	)
 }
 
+/**
+ * The list header's two controls, remembered rather than configured.
+ *
+ * Not `patchSettings`, because that shape is built around a settings *row*: a
+ * `PreferenceScope` to hang an error message on, and a palette entry the scope
+ * union demands. These two have neither — their whole surface is the header
+ * control that already changed on screen before this write was issued — so a
+ * failure has nowhere to render and changes nothing the user can see. It is
+ * logged and the control keeps the position the user put it in; only the
+ * *memory* of it is lost until the next change lands.
+ *
+ * Under `settingsWrites` all the same: this writes the ref every other settings
+ * answer writes, so it has to lose to a newer answer by the same rule.
+ */
+async function rememberListView(patch: { doneFilter?: string; sortMode?: string }): Promise<void> {
+	const write = settingsWrites.issue()
+	try {
+		const value = await invoke<Settings>('update_settings', { patch })
+		if (settingsWrites.settle(write)) settings.value = value
+	} catch (error) {
+		console.error('[copper] could not remember the list view', error)
+	}
+}
+
 function setSounds(enabled: boolean): Promise<boolean> {
 	return patchSettings('sounds', { sounds: enabled })
 }
@@ -815,6 +839,7 @@ export function useSettings() {
 		dispose,
 		refresh,
 		setTheme,
+		rememberListView,
 		setSounds,
 		setMotion,
 		setInsertionPoint,

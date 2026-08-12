@@ -12,6 +12,10 @@
 export type Chord = {
 	/** What the menu shows, right-aligned. */
 	display: string
+	/** A second chord that fires the same action. The menus keep teaching
+	 *  `display` — one hint per action — so an alias surfaces only where every
+	 *  chord is listed, in `ShortcutReference`. */
+	alias?: string
 	matches: (event: KeyboardEvent) => boolean
 }
 
@@ -76,9 +80,19 @@ export const CHORDS = {
 		display: 'Ctrl+Enter',
 		matches: (event) => ctrl(event) && !event.shiftKey && event.key === 'Enter',
 	},
+	/**
+	 * Two chords, one action (user ruling 2026-08-12). Delete stays the primary —
+	 * it is what the menus teach — and Ctrl+D is the alias for a hand already on
+	 * the letter block, where the Delete key is a reach. `redo` set the precedent
+	 * for a two-chord entry; this one carries its second chord as `alias` because
+	 * the reference lists both while the menus show one.
+	 */
 	remove: {
 		display: 'Delete',
-		matches: (event) => event.key === 'Delete' && !ctrl(event) && !event.shiftKey,
+		alias: 'Ctrl+D',
+		matches: (event) =>
+			(event.key === 'Delete' && !ctrl(event) && !event.shiftKey) ||
+			(ctrl(event) && !event.shiftKey && letter(event, 'd')),
 	},
 	/**
 	 * The keyboard equivalent of a drag: a note travels through its list, a

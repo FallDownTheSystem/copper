@@ -26,6 +26,7 @@ const {
 	focusLast,
 	rowIds,
 	visibleGroups,
+	actionableNoteIds,
 } = useSelection()
 const { beginEdit } = useNoteEditor()
 const { beginConfirm } = useSectionDelete()
@@ -137,13 +138,20 @@ const noMatches = computed(() => hasQuery.value && resultCount.value === 0)
  * that filters, and `PanelShell` already answers that case with "No notes yet" —
  * so without this the empty space would be explained twice, once correctly and
  * once by a filter that is not the reason.
+ *
+ * **`actionableNoteIds`, not `renderedSections`.** The filter keeps every
+ * heading on screen now (user ruling 2026-08-12), so the section count never
+ * reaches zero under it — the question is whether any *note* survived the
+ * filter, document-wide. And not the rendered note rows either: `actionable`
+ * counts survivors folded away inside a collapsed section, whose emptiness is
+ * the fold's and not the filter's to explain.
  */
 const filteredEmpty = computed(
 	() =>
 		filtersByDone.value &&
 		!noMatches.value &&
 		noteCount.value > 0 &&
-		renderedSections.value.length === 0,
+		actionableNoteIds.value.length === 0,
 )
 
 /** The roving target has to actually hold DOM focus, or arrow navigation moves
@@ -346,14 +354,20 @@ function onKeydown(event: KeyboardEvent) {
 			syncDomFocus()
 			return
 		case 'Delete':
-			// The section half of Delete only. Notes belong to the shell's chord
-			// layer, and so does a focused header with a live selection: the target
-			// rule reads that header as "take the selection" — it is where
-			// `selectSection` deliberately parks focus — so the press must keep
-			// deleting those notes. A bare header claims the key instead: it was a
-			// silent no-op, and it is one keypress from a section and everything in
-			// it, which is why this asks where the menu item does not.
-			if (event.ctrlKey || event.metaKey || event.shiftKey) return
+		case 'd':
+		case 'D':
+			// The section half of the remove chord only — both of its spellings,
+			// which is why the matcher decides and not a modifier test: Ctrl+D is
+			// Delete's alias, and an alias that deleted notes but not sections
+			// would be two keys that agree everywhere except here. Notes belong to
+			// the shell's chord layer, and so does a focused header with a live
+			// selection: the target rule reads that header as "take the selection"
+			// — it is where `selectSection` deliberately parks focus — so the press
+			// must keep deleting those notes. A bare header claims the chord
+			// instead: it was a silent no-op, and it is one keypress from a section
+			// and everything in it, which is why this asks where the menu item does
+			// not.
+			if (!CHORDS.remove.matches(event)) return
 			if (!sectionId || selectedIds.value.length > 0) return
 			event.preventDefault()
 			if (sections.value.length < 2) {

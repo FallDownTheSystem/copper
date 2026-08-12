@@ -744,47 +744,38 @@ function purgeDone(targets: () => string[]) {
 // --- reorder -----------------------------------------------------------------
 
 /**
- * Reordering is refused for three reasons, and all of them are arithmetic rather
- * than taste.
+ * Reordering is refused for two reasons, and both are arithmetic rather than
+ * taste: under either, the rendered order is a *permutation* of the document's.
  *
- * **A search** leaves the rendered list a *subset* of its section, so an index
- * read off it means something different from the `index` `reorder_note` takes,
- * which counts positions in the whole section. Dropping a note between two
- * matches would silently move it somewhere else entirely.
+ * **A search** ranks its matches within each section, so the rendered order is
+ * not the document's — a drop between two results names a position the ranking
+ * invented, and the position it would write is one the ranking immediately
+ * re-presents in its own order.
  *
- * **The done filter, in either of the two states that narrow** — which is now the
- * default one as well as the done view. The subset reasoning above transfers
- * verbatim: a done-only list omits every unfinished note between two done ones,
- * so dropping a note "between" them lands it wherever those omitted notes happen
- * to leave the count, and the default view has the same hole with the halves
- * swapped. That this was missed when the filter was added is the point of stating
- * the reason as arithmetic — *any* narrowing of the rendered rows breaks the
- * index, so a new one has to join this guard rather than be judged on its own,
- * which is why the condition asks `filtersByDone` and not which half is showing.
+ * **A non-manual sort** is the plainest form: the rendered order is computed,
+ * so a drop index means nothing at all — and the position it would write is one
+ * the sort immediately overrules on the next render, which reads as a drag that
+ * silently sprang back.
  *
- * **A non-manual sort** is the stronger form again: the rendered order is a
- * *permutation* of the section, so a drop index means nothing at all — and the
- * position it would write is one the sort immediately overrules on the next
- * render, which reads as a drag that silently sprang back.
+ * **The done filter used to be a third reason and deliberately is not any more**
+ * (user ruling 2026-08-12). It narrows the rows but never reorders them, and the
+ * drop math stopped reading a bare count off the rendered list: a move now
+ * anchors to its nearest *visible* neighbour and lands directly beside it in
+ * document order — `finishDrag` and `moveFocusedBy` carry the arithmetic — so
+ * the hidden notes between two visible ones cannot shift the landing; they
+ * simply stay where they are. A resting view the user works in stays
+ * reorderable; the two transient presentations above do not.
  *
- * All three take no argument, because none of them is per-section: each narrows
- * or permutes every group at once. The sort used to be the exception and had to be
- * asked about both ends of a move — an Alt+Arrow out of a manual section into a
- * sorted one is still a reorder whose destination index is meaningless — which is
- * why callers passed the sections they were about to touch. One document-wide mode
- * makes both ends the same answer, so a single check at the top of a move now
- * covers a destination the caller has not even resolved yet.
+ * Both conditions take no argument, because neither is per-section: each
+ * permutes every group at once, so a single check at the top of a move covers a
+ * destination the caller has not even resolved yet.
  *
- * The drag grip is hidden under all three conditions, so this guards the keyboard
+ * The drag grip is hidden under both conditions, so this guards the keyboard
  * path and anything that slips past that.
  */
 function reorderBlocked(): boolean {
 	if (search.hasQuery.value) {
 		status.setMessage('Clear the search to reorder notes.')
-		return true
-	}
-	if (list.filtersByDone.value) {
-		status.setMessage('Show all notes to reorder them.')
 		return true
 	}
 	if (list.isSorted.value) {
@@ -796,13 +787,11 @@ function reorderBlocked(): boolean {
 	return false
 }
 
-/** The same three conditions as `reorderBlocked` above, without its message: the
+/** The same two conditions as `reorderBlocked` above, without its message: the
  *  note menu disables its Move up / Move down rows instead of letting them fire
  *  and toast. The refusal messages stay with the paths that have no UI to grey
  *  out — the chord and the drag. */
-const canReorder = computed(
-	() => !search.hasQuery.value && !list.filtersByDone.value && !list.isSorted.value,
-)
+const canReorder = computed(() => !search.hasQuery.value && !list.isSorted.value)
 
 /**
  * The notes a move gesture carries: the whole selection when the note the
@@ -812,11 +801,12 @@ const canReorder = computed(
  * agree about what "move" means over a multi-selection.
  *
  * Document order, off `actionableNoteIds` like every batch action. That order
- * is narrowed by a query and by the done filter — but every caller here sits
- * behind `reorderBlocked`, which refuses both, so what this answers is the
- * document's own order. Collapse deliberately does not narrow it: folding a
- * section shut never narrowed what an action targets, so a selected note in a
- * folded section travels with the block.
+ * is narrowed by a query — refused behind `reorderBlocked` — and by the done
+ * filter, where the narrowing is exactly right: the block a filtered move
+ * carries is the selection the user can see, which is all the selection there
+ * is under it. Collapse deliberately does not narrow it: folding a section
+ * shut never narrowed what an action targets, so a selected note in a folded
+ * section travels with the block.
  */
 function movedIds(anchorId: string): string[] {
 	if (!selection.isSelected(anchorId)) return [anchorId]
@@ -847,6 +837,65 @@ function blockUnmoved(ids: string[], sectionId: string, index: number): boolean 
 	return after.every((id, position) => id === group[position])
 }
 
+/** The target section's rendered rows, in render order — the list the drag's
+ *  geometry measured and the one an Alt+Arrow hop is a statement about. A
+ *  collapsed section publishes an empty list, exactly as it renders no rows. */
+function visibleIn(sectionId: string): readonly string[] {
+	return selection.visibleGroups.value.find((group) => group.sectionId === sectionId)?.noteIds ?? []
+}
+
+/**
+ * Where a slot between rendered rows sits in the document — the index
+ * `reorder_notes` takes, which counts the target section with the carried
+ * block removed.
+ *
+ * Resolved through the rows *around* the slot rather than by counting rows
+ * above it: under the done filter (user ruling 2026-08-12) the rendered list
+ * is a subset of the section, so a bare count lands wherever the hidden notes
+ * leave it. Anchoring instead — directly after the nearest visible non-carried
+ * row above the slot, directly before the nearest below when nothing visible
+ * is above — puts the block exactly beside the row the user dropped it
+ * against, and the hidden notes between two visible ones stay exactly where
+ * they are. With nothing narrowing the view this resolves to the same index
+ * the old subtraction computed, so one rule serves every view.
+ *
+ * `null` when the section shows no rows at all (empty, filtered empty, or
+ * collapsed): a rowless section offers no anchor, so the caller keeps its
+ * incoming index as document coordinates. From real drag geometry that index
+ * is always 0 — the top, which is where the indicator paints — and a direct
+ * caller's nonzero index keeps meaning what `reorder_notes` says it means,
+ * which is what lets a same-place drop into a collapsed section stay the no-op
+ * it is.
+ */
+function documentIndex(
+	sectionId: string,
+	visible: readonly string[],
+	slot: number,
+	carried: ReadonlySet<string>,
+): number | null {
+	let above: string | null = null
+	for (let i = slot - 1; i >= 0; i--) {
+		const id = visible[i]!
+		if (!carried.has(id)) {
+			above = id
+			break
+		}
+	}
+	let below: string | null = null
+	for (let i = slot; i < visible.length; i++) {
+		const id = visible[i]!
+		if (!carried.has(id)) {
+			below = id
+			break
+		}
+	}
+
+	const remaining = space.notesInSection(sectionId).filter((entry) => !carried.has(entry.id))
+	if (above !== null) return remaining.findIndex((entry) => entry.id === above) + 1
+	if (below !== null) return remaining.findIndex((entry) => entry.id === below)
+	return null
+}
+
 /**
  * Commits a completed drag — of the focused block, not only of the grabbed row.
  *
@@ -856,10 +905,9 @@ function blockUnmoved(ids: string[], sectionId: string, index: number): boolean 
  * time the DOM still holds the *old* order and reading it would compute a no-op
  * every time. `useNoteDrag` resolves the destination from geometry instead.
  *
- * That geometry counts its index over the target's rows with only the *dragged*
- * note excluded, while `reorder_notes` interprets it with the whole block
- * removed — so every other carried note above the drop point is subtracted
- * here, translating between the two coordinate systems.
+ * That geometry counts its slot over the target's rendered rows with only the
+ * *dragged* note excluded; `documentIndex` resolves the slot to the index
+ * `reorder_notes` takes, anchored to the slot's visible neighbours.
  */
 function finishDrag(noteId: string, sectionId: string, index: number) {
 	return serialize(async () => {
@@ -869,8 +917,21 @@ function finishDrag(noteId: string, sectionId: string, index: number) {
 
 		const ids = movedIds(noteId)
 		const carried = new Set(ids)
-		const others = space.notesInSection(sectionId).filter((entry) => entry.id !== noteId)
-		const at = index - others.slice(0, index).filter((entry) => carried.has(entry.id)).length
+		const visible = visibleIn(sectionId).filter((id) => id !== noteId)
+		const slot = Math.min(index, visible.length)
+
+		// A drop that changes nothing the user can see commits nothing. The
+		// document-level check below cannot answer this under the done filter:
+		// putting a note back into its own visible slot could still carry it
+		// across the hidden notes beside it — a change the gesture never
+		// expressed, invisible on screen, and a surprise waiting in the file.
+		if (ids.length === 1 && note.section === sectionId) {
+			const current = visibleIn(sectionId)
+			const after = [...visible.slice(0, slot), noteId, ...visible.slice(slot)]
+			if (after.every((id, position) => id === current[position])) return
+		}
+
+		const at = documentIndex(sectionId, visible, slot, carried) ?? index
 
 		// A drag that changed nothing must not push an undo entry.
 		if (blockUnmoved(ids, sectionId, at)) return
@@ -899,10 +960,9 @@ function finishDrag(noteId: string, sectionId: string, index: number) {
  * On a section header the same chord carries the whole section instead — the
  * same move as the section menu's Move up / Move down, with the same
  * index-after-removal semantics. That branch deliberately skips
- * `reorderBlocked`: those refusals exist because a narrowed or permuted *note*
- * view disagrees with the document about where an index lands, and no sort,
- * filter or query ever reorders the headers — section order is document order
- * in every view.
+ * `reorderBlocked`: those refusals exist because a searched or sorted *note*
+ * view is a permutation of the document, and no sort or query ever reorders
+ * the headers — section order is document order in every view.
  */
 function moveFocusedBy(delta: number) {
 	// Positions are read inside the queue, so a held Alt+Down sees where the note
@@ -933,36 +993,48 @@ function moveFocusedBy(delta: number) {
 		const ids = movedIds(noteId)
 		const carried = new Set(ids)
 
-		// Everything is counted over the notes the block leaves behind, because
-		// that is the list `reorder_notes` interprets its index against. `before`
-		// is how many of them sit above the focused note in its own section — the
-		// block's index-after-removal — and one step is one hop over the nearest
-		// remaining note. Counted off the *document* rather than off the visible
-		// walk, which publishes an empty list for a collapsed section; reordering
-		// is refused outright under a query, the done filter and a sort, so the
-		// document is never a filtered subset here.
-		const group = space.notesInSection(note.section)
-		const at = group.findIndex((entry) => entry.id === noteId)
-		const before = group.slice(0, at).filter((entry) => !carried.has(entry.id)).length
-		const remaining = group.filter((entry) => !carried.has(entry.id)).length
+		// One step is one hop over the nearest *visible* non-carried note, and the
+		// block lands directly beside it in document order. Under the done filter
+		// (user ruling 2026-08-12) that is what makes the hop mean what the screen
+		// shows: the hidden notes between the block and its visible neighbour stay
+		// where they are, instead of the block shuffling invisibly past one of
+		// them per press. With nothing narrowing the view the nearest visible note
+		// IS the nearest remaining note, so this is the same hop it always was.
+		// The focused note always has a row, so it is always in this list.
+		const visible = visibleIn(note.section)
+		const at = visible.indexOf(noteId)
+		const step = delta > 0 ? 1 : -1
+		let neighbour: string | null = null
+		for (let i = at + step; at !== -1 && i >= 0 && i < visible.length; i += step) {
+			const id = visible[i]!
+			if (!carried.has(id)) {
+				neighbour = id
+				break
+			}
+		}
 
 		let sectionId = note.section
-		let index = delta > 0 ? before + 1 : before - 1
+		let index: number
 
-		// No remaining note left to hop in the direction of travel: the block
-		// crosses into the neighbouring section, entering at the near end —
-		// from above it lands at the top, from below at the bottom.
-		if (delta > 0 ? before >= remaining : before === 0) {
+		if (neighbour === null) {
+			// No visible note left to hop in the direction of travel: the block
+			// crosses into the neighbouring section, entering at the near end —
+			// from above it lands at the top, from below at the bottom.
 			const sections = space.sections.value
 			const here = sections.findIndex((entry) => entry.id === note.section)
-			const neighbour = sections[here + delta]
-			if (!neighbour) return
-			sectionId = neighbour.id
+			const next = sections[here + delta]
+			if (!next) return
+			sectionId = next.id
 			index =
 				delta > 0
 					? 0
-					: space.notesInSection(neighbour.id).filter((entry) => !carried.has(entry.id))
-							.length
+					: space.notesInSection(next.id).filter((entry) => !carried.has(entry.id)).length
+		} else {
+			// `remaining` — the section with the carried block removed — is the list
+			// `reorder_notes` interprets its index against.
+			const remaining = space.notesInSection(sectionId).filter((entry) => !carried.has(entry.id))
+			const pos = remaining.findIndex((entry) => entry.id === neighbour)
+			index = delta > 0 ? pos + 1 : pos
 		}
 
 		if (!space.applied(await space.reorderNotes(ids, sectionId, index))) return
