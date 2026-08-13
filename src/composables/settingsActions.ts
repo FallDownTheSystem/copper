@@ -58,6 +58,7 @@ export function settingsActions(): PaletteAction[] {
 		insertionPoint,
 		doubleClickAction,
 		enterKeyAction,
+		doneOnCopy,
 		alwaysOnTop,
 		showCreated,
 		captureNotifications,
@@ -76,6 +77,7 @@ export function settingsActions(): PaletteAction[] {
 		setInsertionPoint,
 		setDoubleClick,
 		setEnterKey,
+		setDoneOnCopy,
 		setShowCreated,
 		setCaptureNotifications,
 		setLinkPreviews,
@@ -138,6 +140,12 @@ export function settingsActions(): PaletteAction[] {
 				write('enterKey', () =>
 					setEnterKey(enterKeyAction.value === 'newline' ? 'submit' : 'newline'),
 				),
+		},
+		doneOnCopy: {
+			id: 'done-on-copy',
+			label: 'Mark as done when copied',
+			value: onOff(doneOnCopy.value),
+			run: () => write('doneOnCopy', () => setDoneOnCopy(!doneOnCopy.value)),
 		},
 		showCreated: {
 			id: 'show-created',

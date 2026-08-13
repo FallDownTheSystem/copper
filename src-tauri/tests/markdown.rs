@@ -317,18 +317,41 @@ fn the_format_vocabulary_matches_the_cli_flag() {
 }
 
 #[test]
-fn a_rendering_crosses_the_boundary_as_text_and_count() {
+fn a_rendering_crosses_the_boundary_as_text_count_and_ids() {
 	let payload = serde_json::to_value(RenderedNotes {
 		text: "# Research".into(),
 		count: 0,
+		ids: vec![],
 	})
 	.unwrap();
 
 	assert_eq!(payload["text"], "# Research");
 	assert_eq!(payload["count"], 0);
+	assert_eq!(payload["ids"], serde_json::json!([]));
 	assert_eq!(
 		payload.as_object().unwrap().len(),
-		2,
+		3,
 		"render_notes_markdown grew a field"
 	);
+}
+
+/// The ids are the rendered set in the order the text used, whatever order the
+/// selection arrived in — they exist so `doneOnCopy` marks exactly what went to
+/// the clipboard, and a set resolved a second time on the frontend could not
+/// promise that.
+#[test]
+fn a_rendering_names_the_notes_it_rendered_in_document_order() {
+	let rendered = markdown(NoteSelection::Document);
+	assert_eq!(
+		rendered.ids,
+		["nte_00000001", "nte_00000002", "nte_00000003"]
+	);
+
+	let rendered = markdown(ids(&["nte_00000003", "nte_00000001"]));
+	assert_eq!(rendered.ids, ["nte_00000001", "nte_00000003"]);
+
+	let rendered = markdown(NoteSelection::Section {
+		id: "sec_00000003".into(),
+	});
+	assert_eq!(rendered.ids, Vec::<String>::new());
 }

@@ -16,7 +16,7 @@ const emit = defineEmits<{
 	toggleDone: [noteId: string]
 }>()
 
-const { noteById, listAnimated, noteCount } = useSpace()
+const { noteById, listAnimated, noteCount, countsInSection } = useSpace()
 const { isCollapsed } = useSections()
 const { isDragging } = useNoteDrag()
 const { hasQuery } = useNoteSearch()
@@ -27,6 +27,12 @@ const { hasQuery } = useNoteSearch()
  *  `useSelection` filters them out of the one walk the list is rendered from —
  *  so this only decides what stands in their place. */
 const collapsed = computed(() => isCollapsed(props.section.id))
+
+/** Empty in the *document*, not merely in the view. `noteIds` is the filtered
+ *  rendering, and the done filter can hide every note a section holds — hidden
+ *  notes are not absent, and the bare heading is that state's honest rendering.
+ *  Only a section that truly holds nothing gets the placeholder below. */
+const sectionEmpty = computed(() => countsInSection(props.section.id).total === 0)
 
 /**
  * The document's order is the only order there is.
@@ -115,19 +121,22 @@ const { moveClass, onEnter, onLeave, onEnterCancelled, onLeaveCancelled } = useL
 			@toggle-done="emit('toggleDone', note.id)"
 		/>
 
-		<!-- Only the *active* empty section says so, and never while it is merely
-		     collapsed: the notes are there, they are folded away. The general empty
-		     state is additive; the headers stay visible either way, because hiding
-		     where a capture will land is worst exactly when the list is empty.
+		<!-- Every empty section says so, active or not (user ruling 2026-08-13) —
+		     but never while it is merely collapsed: the notes are there, they are
+		     folded away. And never for a section the done filter emptied:
+		     `sectionEmpty` reads the document, so a filtered-away section keeps
+		     its bare heading rather than a false "yet". The headers stay visible
+		     either way, because hiding where a capture will land is worst exactly
+		     when the list is empty.
 
 		     The `noteCount`/`hasQuery` pair stands this line down while the shell's
 		     EmptyState card is on screen — its condition, mirrored. On a fresh space
 		     the card already names the destination section, and the same fact twice
 		     at the single most important first-impression moment read as a stutter.
 		     With notes elsewhere in the document the card never renders, and this
-		     line is the only thing that says the *active* section is empty. -->
+		     line is the only thing that says an empty section is empty. -->
 		<div
-			v-if="noteIds.length === 0 && active && !collapsed && (noteCount > 0 || hasQuery)"
+			v-if="sectionEmpty && !collapsed && (noteCount > 0 || hasQuery)"
 			key="empty"
 			role="row"
 		>

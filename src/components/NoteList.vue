@@ -172,14 +172,21 @@ function syncDomFocus() {
 }
 
 /**
- * Activation unfolds a folded section (user ruling, 2026-08-10): choosing a
- * section as the capture target implies wanting to see it, so the "open it"
- * half lives on Enter and the name click — the deliberate gestures — while
- * Space stays a pure fold toggle. Guarded so an activation during a search
- * does not silently rewrite the stored fold state the query is overriding.
+ * Activation unfolds a folded section (user ruling, 2026-08-10) and folds the
+ * one being left (user ruling, 2026-08-13): choosing a section as the capture
+ * target implies wanting to see it — and arriving somewhere implies leaving
+ * where you were, so the previously active section closes as the chosen one
+ * opens. Both halves live on Enter and the name click — the deliberate
+ * gestures — while Space stays a pure fold toggle. Guarded so an activation
+ * during a search does not silently rewrite the stored fold state the query
+ * is overriding.
  */
 function activateSection(id: string) {
-	if (collapseEnabled.value) setCollapsed(id, false)
+	if (collapseEnabled.value) {
+		const previous = activeSection.value
+		if (previous !== null && previous !== id) setCollapsed(previous, true)
+		setCollapsed(id, false)
+	}
 	void setActiveSection(id)
 }
 

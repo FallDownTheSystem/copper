@@ -97,6 +97,7 @@ export type PreferenceScope =
 	| 'insertionPoint'
 	| 'doubleClick'
 	| 'enterKey'
+	| 'doneOnCopy'
 	| 'alwaysOnTop'
 	| 'showCreated'
 	| 'captureNotifications'
@@ -215,6 +216,11 @@ const doubleClickAction = computed<DoubleClickAction>(() =>
 const enterKeyAction = computed<EnterKeyAction>(() =>
 	settings.value?.enterKey === 'newline' ? 'newline' : 'submit',
 )
+
+/** Off unless the file says otherwise, the same way round as `sounds`: copying
+ *  has never marked anything, and an unreadable or older `settings.json` must
+ *  not be the moment notes start leaving the list because they were copied. */
+const doneOnCopy = computed(() => settings.value?.doneOnCopy === true)
 
 /** On unless the file explicitly says otherwise — the opposite default to
  *  `sounds`, because this one describes the band the window is created in and an
@@ -470,6 +476,7 @@ const rowWrites: Record<SettingsScope, Generation> = {
 	insertionPoint: generations(),
 	doubleClick: generations(),
 	enterKey: generations(),
+	doneOnCopy: generations(),
 	alwaysOnTop: generations(),
 	showCreated: generations(),
 	captureNotifications: generations(),
@@ -592,6 +599,14 @@ function setDoubleClick(action: DoubleClickAction): Promise<boolean> {
 
 function setEnterKey(action: EnterKeyAction): Promise<boolean> {
 	return patchSettings('enterKey', { enterKey: action })
+}
+
+/** Through the patch like `sounds`: the marking happens in `useNoteActions`
+ *  after a clipboard write, so there is no native state to apply here and a
+ *  dedicated command would be a pass-through to the writer that already
+ *  exists. */
+function setDoneOnCopy(enabled: boolean): Promise<boolean> {
+	return patchSettings('doneOnCopy', { doneOnCopy: enabled })
 }
 
 function setShowCreated(enabled: boolean): Promise<boolean> {
@@ -823,6 +838,7 @@ export function useSettings() {
 		insertionPoint,
 		doubleClickAction,
 		enterKeyAction,
+		doneOnCopy,
 		alwaysOnTop,
 		showCreated,
 		captureNotifications,
@@ -845,6 +861,7 @@ export function useSettings() {
 		setInsertionPoint,
 		setDoubleClick,
 		setEnterKey,
+		setDoneOnCopy,
 		setShowCreated,
 		setCaptureNotifications,
 		setLinkPreviews,

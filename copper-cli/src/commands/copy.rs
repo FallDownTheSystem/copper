@@ -50,7 +50,7 @@ fn select<'a>(space: &'a Space, args: &CopyArgs) -> Result<Vec<&'a Note>> {
 		return Ok(space
 			.notes
 			.iter()
-			.filter(|note| wanted.iter().any(|id| *id == note.id))
+			.filter(|note| wanted.contains(&note.id))
 			.collect());
 	}
 
@@ -112,7 +112,7 @@ fn grouped<'a>(space: &'a Space, selected: &[&'a Note]) -> Vec<MarkdownSection<'
 				.filter(|note| note.section == section.id)
 				.map(|note| (note.done, note.body.as_str()))
 				.collect();
-			(!notes.is_empty()).then(|| MarkdownSection {
+			(!notes.is_empty()).then_some(MarkdownSection {
 				name: section.name.as_str(),
 				notes,
 			})

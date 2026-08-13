@@ -71,7 +71,7 @@ pub enum MarkdownFormat {
 	Markdown,
 }
 
-/// The rendering, and how many notes went into it.
+/// The rendering, how many notes went into it, and which ones they were.
 ///
 /// `count` rather than a bare string, and it is not a convenience. The frontend
 /// suppresses a copy of nothing and reports "Copied N notes", and computing that
@@ -80,13 +80,20 @@ pub enum MarkdownFormat {
 /// moved since. Returning it makes the number and the text one answer about one
 /// document instead of two answers about possibly different ones.
 ///
-/// Both field names are single words, so the camelCase conversion Tauri applies
+/// `ids` exists for the same reason, one setting later: `doneOnCopy` marks the
+/// copied notes done, and re-resolving a section or document scope on the
+/// frontend could name a note the render never saw. The ids are the rendered
+/// set, in the document order the text used, so what gets marked is exactly
+/// what went to the clipboard.
+///
+/// Every field name is a single word, so the camelCase conversion Tauri applies
 /// to results is a no-op — the same rule `store/commands.rs` holds its
 /// parameters to.
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct RenderedNotes {
 	pub text: String,
 	pub count: usize,
+	pub ids: Vec<String>,
 }
 
 /// The command's whole body, given a store.
@@ -118,8 +125,22 @@ pub fn render(
 	selection: &NoteSelection,
 	format: MarkdownFormat,
 ) -> Reply<RenderedNotes> {
-	let sections = resolve(space, selection)?;
-	let count = sections.iter().map(|section| section.notes.len()).sum();
+	let resolved = resolve(space, selection)?;
+	let sections: Vec<MarkdownSection> = resolved
+		.iter()
+		.map(|section| MarkdownSection {
+			name: section.name,
+			notes: section
+				.notes
+				.iter()
+				.map(|note| (note.done, note.body.as_str()))
+				.collect(),
+		})
+		.collect();
+	let ids: Vec<String> = resolved
+		.iter()
+		.flat_map(|section| section.notes.iter().map(|note| note.id.clone()))
+		.collect();
 
 	let text = match format {
 		MarkdownFormat::Bodies => copy_markdown(&bodies(&sections)),
@@ -127,7 +148,7 @@ pub fn render(
 		MarkdownFormat::Markdown => section_markdown(&sections),
 	};
 
-	Ok(RenderedNotes { text, count })
+	Ok(RenderedNotes { text, count: ids.len(), ids })
 }
 
 /// The selection as sections and notes, always in canonical document order.
@@ -150,7 +171,7 @@ pub fn render(
 /// deliberate: `Document` and `Section` keep them, so a heading says "this
 /// section exists and is empty"; `Ids` drops them, so copying two notes out of
 /// one section produces one heading rather than the document's whole outline.
-fn resolve<'a>(space: &'a Space, selection: &NoteSelection) -> Reply<Vec<MarkdownSection<'a>>> {
+fn resolve<'a>(space: &'a Space, selection: &NoteSelection) -> Reply<Vec<ResolvedSection<'a>>> {
 	match selection {
 		NoteSelection::Document => Ok(group(space, |_| true)),
 
@@ -160,7 +181,7 @@ fn resolve<'a>(space: &'a Space, selection: &NoteSelection) -> Reply<Vec<Markdow
 				.iter()
 				.find(|section| &section.id == id)
 				.ok_or_else(|| StoreError::NotFound(format!("no such section: {id}")))?;
-			Ok(vec![MarkdownSection {
+			Ok(vec![ResolvedSection {
 				name: section.name.as_str(),
 				notes: notes_of(space, &section.id, |_| true),
 			}])
@@ -172,36 +193,44 @@ fn resolve<'a>(space: &'a Space, selection: &NoteSelection) -> Reply<Vec<Markdow
 					return Err(StoreError::NotFound(format!("no such note: {id}")));
 				}
 			}
-			let mut sections = group(space, |note| ids.iter().any(|id| *id == note.id));
+			let mut sections = group(space, |note| ids.contains(&note.id));
 			sections.retain(|section| !section.notes.is_empty());
 			Ok(sections)
 		}
 	}
 }
 
+/// A resolved section, still holding the notes themselves rather than the
+/// `(done, body)` pairs the renderer wants — [`render`] projects those out, and
+/// keeps the ids for [`RenderedNotes::ids`] from the same walk. One resolution
+/// feeding both is what makes "the marked set is the rendered set" structural.
+struct ResolvedSection<'a> {
+	name: &'a str,
+	notes: Vec<&'a Note>,
+}
+
 /// Every section, carrying whichever of its notes the predicate keeps.
-fn group<'a>(space: &'a Space, wanted: impl Fn(&Note) -> bool) -> Vec<MarkdownSection<'a>> {
+fn group<'a>(space: &'a Space, wanted: impl Fn(&Note) -> bool) -> Vec<ResolvedSection<'a>> {
 	space
 		.sections
 		.iter()
-		.map(|section| MarkdownSection {
+		.map(|section| ResolvedSection {
 			name: section.name.as_str(),
 			notes: notes_of(space, &section.id, &wanted),
 		})
 		.collect()
 }
 
-/// One section's notes, in document order, as the renderer wants them.
+/// One section's notes, in document order.
 fn notes_of<'a>(
 	space: &'a Space,
 	section: &str,
 	wanted: impl Fn(&Note) -> bool,
-) -> Vec<(bool, &'a str)> {
+) -> Vec<&'a Note> {
 	space
 		.notes
 		.iter()
 		.filter(|note| note.section == section && wanted(note))
-		.map(|note| (note.done, note.body.as_str()))
 		.collect()
 }
 

@@ -105,6 +105,7 @@ pub struct Settings {
 	pub insertion_point: String,
 	pub double_click: String,
 	pub enter_key: String,
+	pub done_on_copy: bool,
 	pub always_on_top: bool,
 	pub show_created: bool,
 	pub capture_notifications: bool,
@@ -170,6 +171,10 @@ impl Default for Settings {
 			// composer has always had). "newline" is the inverse for users who
 			// write multi-line notes more often than they capture.
 			enter_key: "submit".to_string(),
+			// Off, like `sounds`: copying has never marked anything, and an
+			// unreadable or older `settings.json` must not be the moment notes start
+			// leaving the list because they were copied.
+			done_on_copy: false,
 			// The band the window was born in (`alwaysOnTop` in `tauri.conf.json`).
 			// Defaulting to `false` would change what every existing install does on
 			// its first launch after an upgrade, over a setting nobody had asked for.
@@ -296,6 +301,7 @@ struct RawSettings {
 	insertion_point: Value,
 	double_click: Value,
 	enter_key: Value,
+	done_on_copy: Value,
 	always_on_top: Value,
 	show_created: Value,
 	capture_notifications: Value,
@@ -380,6 +386,12 @@ impl RawSettings {
 		let theme = repair_named(self.theme, "theme", defaults.theme, &mut notices);
 
 		let sounds = repair_flag(self.sounds, "sounds", defaults.sounds, &mut notices);
+		let done_on_copy = repair_flag(
+			self.done_on_copy,
+			"doneOnCopy",
+			defaults.done_on_copy,
+			&mut notices,
+		);
 		let always_on_top = repair_flag(
 			self.always_on_top,
 			"alwaysOnTop",
@@ -480,6 +492,7 @@ impl RawSettings {
 			insertion_point,
 			double_click,
 			enter_key,
+			done_on_copy,
 			always_on_top,
 			show_created,
 			capture_notifications,
@@ -699,6 +712,9 @@ impl Settings {
 		if let Some(enter_key) = patch.enter_key {
 			self.enter_key = enter_key;
 		}
+		if let Some(done_on_copy) = patch.done_on_copy {
+			self.done_on_copy = done_on_copy;
+		}
 		if let Some(always_on_top) = patch.always_on_top {
 			self.always_on_top = always_on_top;
 		}
@@ -768,6 +784,8 @@ pub struct SettingsPatch {
 	pub double_click: Option<String>,
 	#[serde(default)]
 	pub enter_key: Option<String>,
+	#[serde(default)]
+	pub done_on_copy: Option<bool>,
 	#[serde(default)]
 	pub always_on_top: Option<bool>,
 	#[serde(default)]
@@ -1062,7 +1080,8 @@ mod tests {
 			 \"shortcuts\": {\n    \"capture\": \"Shift Shift\",\n    \"summon\": \
 			 \"Ctrl+Shift+Space\"\n  },\n  \"theme\": \"system\",\n  \"sounds\": false,\n  \
 			 \"motion\": \"auto\",\n  \"insertionPoint\": \"bottom\",\n  \"doubleClick\": \
-			 \"copy\",\n  \"enterKey\": \"submit\",\n  \"alwaysOnTop\": true,\n  \"showCreated\": false,\n  \
+			 \"copy\",\n  \"enterKey\": \"submit\",\n  \"doneOnCopy\": false,\n  \"alwaysOnTop\": \
+			 true,\n  \"showCreated\": false,\n  \
 			 \"captureNotifications\": true,\n  \"linkPreviews\": false,\n  \"translucent\": \
 			 false,\n  \"neutral\": \"warm\",\n  \"accent\": \"copper\",\n  \"vibrancy\": 1.0,\n  \
 			 \"resizable\": false,\n  \"panelWidth\": 440.0,\n  \"panelHeight\": 760.0,\n  \
@@ -1385,6 +1404,52 @@ mod tests {
 		assert!(loaded.settings.capture_notifications);
 		let notice = loaded.notice.expect("repairs must be reported");
 		assert!(notice.contains("captureNotifications"), "{notice}");
+	}
+
+	/// The copy round's key takes the `showCreated` shape — an absent key reads as
+	/// *off* without a notice. Getting this backwards would make copying start
+	/// clearing notes for every existing install the first time it upgraded, over
+	/// a setting nobody had touched.
+	#[test]
+	fn a_file_without_the_done_on_copy_key_reads_as_off_without_a_notice() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"theme":"dark","showCreated":true}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(loaded.notice.is_none(), "absence was reported as damage: {:?}", loaded.notice);
+		assert_eq!(siblings(dir.path()), [FILE_NAME], "the file was set aside");
+		assert!(!loaded.settings.done_on_copy, "a copy must not start marking notes done");
+		// The rest of the file survived rather than being defaulted alongside it.
+		assert_eq!(loaded.settings.theme, "dark");
+		assert!(loaded.settings.show_created);
+	}
+
+	#[test]
+	fn a_wrong_typed_done_on_copy_is_repaired_to_off_and_reported() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"doneOnCopy":"always"}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(!loaded.settings.done_on_copy);
+		let notice = loaded.notice.expect("repairs must be reported");
+		assert!(notice.contains("doneOnCopy"), "{notice}");
+	}
+
+	#[test]
+	fn a_patch_sets_done_on_copy_without_touching_its_neighbours() {
+		let mut settings = Settings::default();
+
+		settings.apply_patch(patch(r#"{"doneOnCopy":true}"#));
+		assert!(settings.done_on_copy);
+		assert!(settings.capture_notifications, "an absent key must leave the stored value alone");
+
+		settings.apply_patch(patch(r#"{"showCreated":true}"#));
+		assert!(settings.done_on_copy, "a showCreated patch must not turn the copy rule off");
+		assert!(settings.show_created);
 	}
 
 	/// The list-view round's two keys join the guarantee every key added since

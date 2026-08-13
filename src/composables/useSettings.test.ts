@@ -31,6 +31,7 @@ const SETTINGS = {
 	insertionPoint: 'bottom',
 	doubleClick: 'copy',
 	enterKey: 'submit',
+	doneOnCopy: false,
 	alwaysOnTop: true,
 	showCreated: false,
 	captureNotifications: true,

@@ -212,6 +212,7 @@ function defaultSettings() {
 		insertionPoint: 'bottom',
 		doubleClick: 'copy',
 		enterKey: 'submit',
+		doneOnCopy: false,
 		alwaysOnTop: true,
 		showCreated: false,
 	}
@@ -242,9 +243,11 @@ function renderedNotes(args: Record<string, unknown> | undefined) {
 				'baseInvoke(command, args)',
 		)
 	}
+	const notes = selectedNotes(args.selection as NoteSelection)
 	return {
 		text: JSON.stringify(args),
-		count: selectedNotes(args.selection as NoteSelection).length,
+		count: notes.length,
+		ids: notes.map((note) => note.id),
 	}
 }
 
@@ -1515,6 +1518,78 @@ describe('copy', () => {
 		expect(wrapper.text()).toContain('Copied 2 notes')
 	})
 
+	/**
+	 * The `doneOnCopy` setting, end to end: a successful copy also marks the
+	 * copied notes done, in one `set_notes_done` call, and the one toast carries
+	 * both facts and the undo for the store step.
+	 */
+	describe('with mark-as-done-when-copied on', () => {
+		async function enable() {
+			settingsPayload = { ...defaultSettings(), doneOnCopy: true }
+			await settings.refresh()
+		}
+
+		it('marks the copied notes done, skipping the ones that already are', async () => {
+			const wrapper = await mountPanel()
+			await enable()
+			selection.select('nte_1')
+			selection.extendTo('nte_2')
+
+			await actions.copyNotes()
+			await settle(4)
+
+			// `nte_2` is already done, so re-marking it would push a snapshot whose
+			// undo restores nothing visible.
+			expect(mocks.invoke).toHaveBeenCalledWith('set_notes_done', {
+				ids: ['nte_1'],
+				done: true,
+			})
+			expect(wrapper.text()).toContain('Copied 2 notes and moved them to Done')
+			expect(wrapper.text()).toContain('Undo')
+		})
+
+		it('says only that it copied when everything copied was already done', async () => {
+			const wrapper = await mountPanel()
+			await enable()
+			selection.select('nte_2')
+
+			await actions.copyNotes()
+			await settle(4)
+
+			expect(mocks.invoke).not.toHaveBeenCalledWith('set_notes_done', expect.anything())
+			expect(wrapper.text()).toContain('Copied 1 note')
+			expect(wrapper.text()).not.toContain('moved it to Done')
+		})
+
+		it('marks nothing when the clipboard write fails', async () => {
+			const wrapper = await mountPanel()
+			await enable()
+			selection.select('nte_1')
+			mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+				if (command === 'clipboard_write_text') throw new Error('denied')
+				return baseInvoke(command, args)
+			})
+
+			await actions.copyNotes()
+			await settle(4)
+
+			// A copy that never landed must not clear the note it failed to carry.
+			expect(mocks.invoke).not.toHaveBeenCalledWith('set_notes_done', expect.anything())
+			expect(wrapper.text()).toContain("Couldn't write to the clipboard.")
+		})
+	})
+
+	it('leaves the copied notes alone while the setting is off', async () => {
+		const wrapper = await mountPanel()
+		selection.select('nte_1')
+
+		await actions.copyNotes()
+		await settle(4)
+
+		expect(mocks.invoke).not.toHaveBeenCalledWith('set_notes_done', expect.anything())
+		expect(wrapper.text()).toContain('Copied 1 note')
+	})
+
 	it('leaves a live text selection to the native copy', async () => {
 		const wrapper = await mountPanel()
 		selection.select('nte_1')
@@ -2594,6 +2669,47 @@ describe('the section switcher', () => {
 	}, 30_000)
 })
 
+/**
+ * The "No notes in this section yet." placeholder. Under every truly empty
+ * section, active or not (user ruling 2026-08-13) — but only *truly* empty:
+ * a section the done filter emptied keeps its bare heading, because its notes
+ * are hidden, not absent.
+ */
+describe('the empty-section line', () => {
+	it('shows under an empty section that is not the active one', async () => {
+		const wrapper = await mountPanel()
+
+		// `sec_a` is active; `Inbox` (sec_b) holds nothing.
+		expect(wrapper.find('[data-section-id="sec_b"]').text()).toContain(
+			'No notes in this section yet.',
+		)
+	})
+
+	it('stays off a section the done filter emptied', async () => {
+		const allDone: Space = {
+			...SPACE,
+			notes: [{ ...SPACE.notes[0]!, id: 'nte_9', section: 'sec_b', done: true }],
+		}
+		mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+			if (command === 'get_active_space') return allDone
+			return baseInvoke(command, args)
+		})
+		const wrapper = await mountPanel()
+		await space.refresh()
+		list.setDoneFilter('todo')
+		await settle(3)
+
+		// `sec_b`'s one note is done and hidden; the heading stays bare. `sec_a`
+		// holds nothing at all now, so it carries the line.
+		expect(wrapper.find('[data-section-id="sec_b"]').text()).not.toContain(
+			'No notes in this section yet.',
+		)
+		expect(wrapper.find('[data-section-id="sec_a"]').text()).toContain(
+			'No notes in this section yet.',
+		)
+	})
+})
+
 describe('collapsible sections', () => {
 	function disclosure(wrapper: Awaited<ReturnType<typeof mountPanel>>, name: string) {
 		return wrapper.find(
@@ -2613,8 +2729,12 @@ describe('collapsible sections', () => {
 		// is still where a capture lands.
 		expect(wrapper.find('[data-row-id="s:sec_a"]').exists()).toBe(true)
 		expect(disclosure(wrapper, 'Research').attributes('aria-expanded')).toBe('false')
-		// Not the empty-section line — the notes are folded away, not absent.
-		expect(wrapper.text()).not.toContain('No notes in this section yet.')
+		// Not the empty-section line — the notes are folded away, not absent. The
+		// assertion is scoped to this section: `Inbox` below it holds nothing and
+		// carries the line legitimately.
+		expect(wrapper.find('[data-section-id="sec_a"]').text()).not.toContain(
+			'No notes in this section yet.',
+		)
 
 		await disclosure(wrapper, 'Research').trigger('click')
 		await settle(3)
@@ -2728,6 +2848,24 @@ describe('collapsible sections', () => {
 		await settle(3)
 		expect(mocks.invoke).toHaveBeenCalledWith('set_active_section', { id: 'sec_a' })
 		expect(wrapper.findAll('[data-row-id^="n:"]')).toHaveLength(2)
+	})
+
+	it('folds the section being left when another becomes active', async () => {
+		// The 2026-08-13 ruling: activation is arrival, and arriving somewhere
+		// implies leaving where you were — the previously active section folds as
+		// the chosen one unfolds.
+		const wrapper = await mountPanel()
+		takeRow(sectionRow('sec_b'))
+		await settle(2)
+
+		await wrapper.get('[role="grid"]').trigger('keydown', { key: 'Enter' })
+		await settle(3)
+
+		expect(mocks.invoke).toHaveBeenCalledWith('set_active_section', { id: 'sec_b' })
+		// `sec_a` was the active section; its two notes are now folded away, and
+		// its header remains as the way back.
+		expect(wrapper.findAll('[data-row-id^="n:"]')).toHaveLength(0)
+		expect(wrapper.find('[data-row-id="s:sec_a"]').exists()).toBe(true)
 	})
 
 	it('hands focus back to the row when a click lands it on a row control', async () => {

@@ -500,6 +500,7 @@ fn settings_cross_the_boundary_in_camel_case() {
 		"insertionPoint",
 		"doubleClick",
 		"enterKey",
+		"doneOnCopy",
 		"alwaysOnTop",
 		"showCreated",
 		"captureNotifications",
@@ -516,7 +517,7 @@ fn settings_cross_the_boundary_in_camel_case() {
 	] {
 		assert!(payload.get(key).is_some(), "get_settings is missing {key}: {payload}");
 	}
-	assert_eq!(payload.as_object().unwrap().len(), 23, "get_settings grew a field");
+	assert_eq!(payload.as_object().unwrap().len(), 24, "get_settings grew a field");
 	assert_eq!(payload["shortcuts"]["capture"], "Shift Shift");
 	assert_eq!(payload["shortcuts"]["summon"], "Ctrl+Shift+Space");
 	// The shipped defaults, which are the whole of "this task changes no
@@ -530,6 +531,9 @@ fn settings_cross_the_boundary_in_camel_case() {
 	// that one matrix to the inline editor (user ruling 2026-08-11), so the
 	// default is the behaviour the capture line already had.
 	assert_eq!(payload["enterKey"], "submit");
+	// Copying has never marked anything done, so the switch ships off and an
+	// upgraded install keeps the copy it always had.
+	assert_eq!(payload["doneOnCopy"], false);
 	// Task-014's pin ships on, matching the `alwaysOnTop` the window is created
 	// with: the setting exists to let the user turn the band off, not to change
 	// what an upgraded install does before they touch it.

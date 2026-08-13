@@ -34,6 +34,7 @@ function makeSettings(motion: string): Settings {
 		insertionPoint: 'bottom',
 		doubleClick: 'copy',
 		enterKey: 'submit',
+		doneOnCopy: false,
 		alwaysOnTop: true,
 		showCreated: false,
 		captureNotifications: true,

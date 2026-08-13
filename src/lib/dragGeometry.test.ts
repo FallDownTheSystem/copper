@@ -67,7 +67,7 @@ describe('resolveDrop', () => {
 		const empty: DragLayout = {
 			sections: [
 				{ sectionId: 'sec_a', top: 0, bottom: 100, contentTop: 16 },
-				// Taller than its header, because an empty *active* section renders a
+				// Taller than its header, because an empty section renders a
 				// "No notes in this section yet." row underneath it.
 				{ sectionId: 'sec_b', top: 124, bottom: 170, contentTop: 140 },
 			],

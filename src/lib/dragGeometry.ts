@@ -92,10 +92,9 @@ function indicatorFor(rows: readonly DragRow[], index: number, section: DragSect
 	if (after) return after.top - 2
 	if (before) return before.bottom + 2
 	// An empty section has no row to sit beside, so the line goes just under its
-	// header — where the note will actually land. Not `bottom`: an empty *active*
-	// section renders a "No notes in this section yet." row, and a line drawn under
-	// that promises the note will arrive below a placeholder it is about to
-	// replace.
+	// header — where the note will actually land. Not `bottom`: an empty section
+	// renders a "No notes in this section yet." row, and a line drawn under that
+	// promises the note will arrive below a placeholder it is about to replace.
 	return section.contentTop + 2
 }
 

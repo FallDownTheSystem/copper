@@ -23,7 +23,6 @@ declare global {
   const VIBRANCY_DIAL_STEP: typeof import('./composables/useSettings').VIBRANCY_DIAL_STEP
   const VIBRANCY_MAX: typeof import('./composables/useSettings').VIBRANCY_MAX
   const VIBRANCY_MIN: typeof import('./composables/useSettings').VIBRANCY_MIN
-  const VIBRANCY_STEP: typeof import('./composables/useSettings').VIBRANCY_STEP
   const applied: typeof import('./composables/useSpace').applied
   const asyncComputed: typeof import('@vueuse/core').asyncComputed
   const autoResetRef: typeof import('@vueuse/core').autoResetRef

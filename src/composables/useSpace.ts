@@ -104,6 +104,10 @@ export type Settings = {
 	insertionPoint: string
 	doubleClick: string
 	enterKey: string
+	/** Whether a successful copy also marks the copied notes done. A behavior
+	 *  switch rather than a display one: `useNoteActions` reads it after every
+	 *  clipboard write. */
+	doneOnCopy: boolean
 	/** Whether the panel window sits in the topmost band. A genuine boolean,
 	 *  unlike the four above — there is nothing for a name to say here. */
 	alwaysOnTop: boolean
@@ -215,8 +219,10 @@ export type NoteSelection =
 export type MarkdownFormat = 'bodies' | 'list' | 'markdown'
 
 /** `count` is what the server selected, never what this side counted: the toast
- *  and the text then describe one document rather than two. */
-export type RenderedNotes = { text: string; count: number }
+ *  and the text then describe one document rather than two. `ids` is the same
+ *  guarantee for `doneOnCopy` — the notes that get marked are the notes the
+ *  render actually put in the text, in its order, not a second resolution. */
+export type RenderedNotes = { text: string; count: number; ids: string[] }
 
 /** The *initial* pull only. Named `loadState`, not `status`: task-003 already
  *  owns `get_status`/`StoreStatus` and the collision reads as the same thing. */

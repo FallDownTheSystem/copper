@@ -43,6 +43,7 @@ const {
 	insertionPoint,
 	doubleClickAction,
 	enterKeyAction,
+	doneOnCopy,
 	alwaysOnTop,
 	showCreated,
 	captureNotifications,
@@ -63,6 +64,7 @@ const {
 	setInsertionPoint,
 	setDoubleClick,
 	setEnterKey,
+	setDoneOnCopy,
 	setShowCreated,
 	setCaptureNotifications,
 	setLinkPreviews,
@@ -101,6 +103,7 @@ const motionError = errorFor('motion')
 const insertionError = errorFor('insertionPoint')
 const doubleClickError = errorFor('doubleClick')
 const enterKeyError = errorFor('enterKey')
+const doneOnCopyError = errorFor('doneOnCopy')
 const alwaysOnTopError = errorFor('alwaysOnTop')
 const showCreatedError = errorFor('showCreated')
 const captureNotificationsError = errorFor('captureNotifications')
@@ -781,6 +784,27 @@ const summonNote = computed(() => {
 						label="What the Enter key does when writing"
 						:error-id="errorId"
 						@update:model-value="setEnterKey"
+					/>
+				</SettingsRow>
+
+				<!-- Under Notes rather than a section of its own (user ruling
+				     2026-08-13): one switch is not a section, and the row it belongs
+				     beside is the one that already explains what "Copy" means. It
+				     covers every copy affordance — the chords, the menus, the Markdown
+				     exports — because a rule that held for some copies would be a
+				     matrix nobody could keep in their head. -->
+				<SettingsRow
+					v-slot="{ errorId }"
+					label="Mark as done when copied"
+					description="Copying notes also moves them to Done, so capturing and clearing them is one step."
+					label-for="done-on-copy"
+					:error="doneOnCopyError"
+				>
+					<SettingsSwitch
+						id="done-on-copy"
+						:model-value="doneOnCopy"
+						:error-id="errorId"
+						@update:model-value="setDoneOnCopy"
 					/>
 				</SettingsRow>
 

@@ -72,6 +72,7 @@ function makeSettings(over: Partial<Settings> = {}): Settings {
 		insertionPoint: 'bottom',
 		doubleClick: 'copy',
 		enterKey: 'submit',
+		doneOnCopy: false,
 		alwaysOnTop: true,
 		showCreated: false,
 		captureNotifications: true,
@@ -451,6 +452,34 @@ describe('the notes rows', () => {
 		expect(
 			segment(wrapper, 'What double-clicking a note does', 'Copy').attributes('aria-checked'),
 		).toBe('true')
+	})
+})
+
+/**
+ * The mark-as-done-when-copied switch. The behavior it turns on lives in
+ * `useNoteActions` and is asserted in `PanelShell.test.ts`; what this view owns
+ * is the row itself and the one-key patch it writes.
+ */
+describe('the done-on-copy switch', () => {
+	it('ships off, so copying keeps meaning what it always has', async () => {
+		const wrapper = await openSettings()
+		expect(wrapper.get('#done-on-copy').attributes('aria-checked')).toBe('false')
+	})
+
+	it('reflects a stored true', async () => {
+		const wrapper = await openSettings({ doneOnCopy: true })
+		expect(wrapper.get('#done-on-copy').attributes('aria-checked')).toBe('true')
+	})
+
+	/** One key wide, like every other row here, so writing this one cannot clear
+	 *  the preference beside it. */
+	it('writes only its own key', async () => {
+		const wrapper = await openSettings()
+
+		await wrapper.get('#done-on-copy').trigger('click')
+		await flush()
+
+		expect(patchesSent()).toEqual([{ doneOnCopy: true }])
 	})
 })
 

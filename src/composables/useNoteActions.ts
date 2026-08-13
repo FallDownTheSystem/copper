@@ -133,28 +133,56 @@ function serialize<T>(run: () => Promise<T>): Promise<T> {
 // --- copy --------------------------------------------------------------------
 
 /**
- * The one clipboard write every copy affordance ends in, message included.
+ * The one clipboard write every copy affordance ends in. The toast is `copy`'s,
+ * not this function's, because what it says depends on whether `doneOnCopy`
+ * moved anything — a fact settled after the write.
  *
- * `count` is what the toast says rather than what the text contains, so a
- * document-wide copy reports notes and not sections.
- *
- * A copy of no notes writes nothing and says nothing, whichever scope produced
- * it. Section headings alone are not worth putting on the clipboard, and
- * replacing whatever was there with them would be a small theft.
+ * A copy of no notes writes nothing and reports `false`, whichever scope
+ * produced it. Section headings alone are not worth putting on the clipboard,
+ * and replacing whatever was there with them would be a small theft.
  */
-async function writeCopy(text: string, count: number) {
-	if (count === 0) return
+async function writeCopy(text: string, count: number): Promise<boolean> {
+	if (count === 0) return false
 	const written = await clipboard.writeText(text)
 	if (!written) {
 		status.setError("Couldn't write to the clipboard.")
-		return
+		return false
 	}
-	status.setMessage(
-		countMessage(count, {
-			one: 'Copied 1 note',
-			many: (n) => `Copied ${n} notes`,
-		}),
-	)
+	return true
+}
+
+/**
+ * `doneOnCopy`'s whole mechanism: after a successful clipboard write, the
+ * copied notes that are not already done become done.
+ *
+ * The ids are the render's rather than a second resolution of the scope,
+ * because a section or document copy re-resolved here could mark a note the
+ * text never held — the exact disagreement `RenderedNotes.count` already
+ * exists to prevent.
+ *
+ * Filtered against the live document inside the queue, so a note that was
+ * already done is not "moved" again — a no-op `set_notes_done` would still
+ * push an undo snapshot — and a note deleted since the render is skipped
+ * rather than failing the batch. The filtering is also what the return value
+ * means: `true` only when something actually moved, which is what decides
+ * whether `copy`'s toast mentions Done and carries Undo.
+ *
+ * In the same queue as every other mutation, and the same focus handoff as
+ * `applyDone`: in the default view the marked rows vanish, and one of them may
+ * hold focus.
+ */
+function markCopiedDone(ids: string[]): Promise<boolean> {
+	if (!settings.doneOnCopy.value) return Promise.resolve(false)
+	return serialize(async () => {
+		const fresh = ids.filter((id) => space.noteById(id)?.done === false)
+		if (fresh.length === 0) return false
+
+		const held = domFocusHolder() ?? selection.focusedNoteId.value
+		if (!space.applied(await space.setNotesDone(fresh, true))) return false
+
+		handFocusOnVanished(held)
+		return true
+	})
 }
 
 /**
@@ -175,6 +203,12 @@ async function writeCopy(text: string, count: number) {
  * The argument is `scope` rather than `selection`, which is what the command
  * calls it: `selection` is already `useSelection()` at module scope in this
  * file, and a parameter of that name would shadow it inside every copy.
+ *
+ * One toast whatever `doneOnCopy` says, set once, after both halves have
+ * settled. Letting the write and the marking each report would flash "Copied 2
+ * notes" for the length of one IPC hop and then replace it — two pills for one
+ * gesture, in a file whose rule is one action, one toast. Undo rides only the
+ * marking, because only the marking is a store step; the clipboard has no undo.
  */
 async function copy(scope: NoteSelection, format: MarkdownFormat) {
 	const rendered = await space.renderNotesMarkdown(scope, format)
@@ -182,7 +216,24 @@ async function copy(scope: NoteSelection, format: MarkdownFormat) {
 		status.setError("Couldn't copy those notes.")
 		return
 	}
-	await writeCopy(rendered.text, rendered.count)
+	if (!(await writeCopy(rendered.text, rendered.count))) return
+
+	const moved = await markCopiedDone(rendered.ids)
+	status.setMessage(
+		countMessage(
+			rendered.count,
+			moved
+				? {
+						one: 'Copied 1 note and moved it to Done',
+						many: (n) => `Copied ${n} notes and moved them to Done`,
+					}
+				: {
+						one: 'Copied 1 note',
+						many: (n) => `Copied ${n} notes`,
+					},
+		),
+		moved ? UNDO_ACTION : undefined,
+	)
 }
 
 function copyNotes() {
