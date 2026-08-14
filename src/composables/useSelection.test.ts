@@ -398,6 +398,59 @@ describe('the scroll anchor', () => {
 		expect(selection.snapshot().scroll).toEqual({ kind: 'bottom' })
 	})
 
+	/**
+	 * Activating a section folds the one being left while the chosen one unfolds,
+	 * and the fold keeps the leaving rows in flow while their height animates to
+	 * zero — so mid-fold the region is transiently taller than both its settled
+	 * selves. A `bottom` captured from a region with no overflow is a phantom:
+	 * the reader is at 0 because there is nowhere else to be, and restoring that
+	 * anchor pinned the region to the transient bottom every frame, shoving the
+	 * top sections off screen and easing back as the fold drained (the
+	 * section-activation flicker, 2026-08-14).
+	 */
+	it('records no anchor for a region with no overflow, so nothing pins through a fold', () => {
+		const metrics = { scrollTop: 0, scrollHeight: 120, clientHeight: 120 }
+		mountRegion(metrics)
+
+		const snapshot = selection.snapshot()
+		expect(snapshot.scroll).toBeNull()
+
+		// The fold's transient extra height. With no anchor there is nothing to
+		// restore, and the region stays where the reader was.
+		metrics.scrollHeight = 260
+		selection.restoreDom(snapshot)
+		expect(metrics.scrollTop).toBe(0)
+	})
+
+	/**
+	 * The fitting-region guard above runs at capture time — but a section
+	 * activation's snapshot runs when the store answers, milliseconds into the
+	 * fold, when the leaving rows' transient height gives the region phantom
+	 * overflow. The capture then cannot tell a phantom from a real bottom and
+	 * falls back to the latch, which a region that has never scrolled holds
+	 * vacuously true. The restore is where the lie is provable: a reader
+	 * genuinely at the end of an overflowing region has `scrollTop > 0`, so a
+	 * bottom anchor arriving at `scrollTop 0` with overflow on screen must be
+	 * refused — pinning it chased the phantom bottom down frame by frame as the
+	 * fold drained (the flicker's second head, 2026-08-14).
+	 */
+	it('refuses a bottom restore that the scroll position disproves', () => {
+		// The settled pre-click state: the list fits, which arms the latch — a
+		// region with no overflow reads as "at the bottom".
+		const metrics = { scrollTop: 0, scrollHeight: 629, clientHeight: 629 }
+		mountRegion(metrics)
+		expect(selection.snapshot().scroll).toBeNull()
+
+		// The fold's transient height, present by the time the store answers and
+		// the activation's own snapshot runs.
+		metrics.scrollHeight = 860
+		const snapshot = selection.snapshot()
+		expect(snapshot.scroll).toEqual({ kind: 'bottom' })
+
+		selection.restoreDom(snapshot)
+		expect(metrics.scrollTop).toBe(0)
+	})
+
 	it('keeps the pin when the composer grows under the region', () => {
 		// The defect this exists for, measured in a real browser: typing into the
 		// composer expands it, which shrinks the scroll region by the same amount
@@ -787,6 +840,36 @@ describe('revealing a row', () => {
 		flushReveal()
 
 		expect(shown.calls).toEqual([])
+	})
+
+	/**
+	 * Activating a section folds the one being left while the chosen one unfolds,
+	 * and the fold keeps the leaving rows in flow while their height animates to
+	 * zero — so for those 150ms the list is taller than it will be. A reveal
+	 * landing inside that window scrolls into height that is about to vanish, and
+	 * the region clamps the overshoot back in one frame: the activation flicker
+	 * (2026-08-14). So a reveal waits out the region's running motions and lands
+	 * on the settled layout.
+	 */
+	it('waits out a running motion and lands once it settles', async () => {
+		const list = mountList(120)
+		let finish!: () => void
+		const finished = new Promise<void>((resolve) => {
+			finish = resolve
+		})
+		let running = true
+		list.region.getAnimations = (() => [
+			{ playState: running ? 'running' : 'finished', timeline: null, finished },
+		]) as unknown as typeof list.region.getAnimations
+
+		revealRow(noteRow('n2'))
+		expect(list.calls).toEqual([])
+
+		running = false
+		finish()
+		await new Promise((resolve) => setTimeout(resolve))
+
+		expect(list.calls).toEqual([{ block: 'nearest' }])
 	})
 
 	/** The row key names a note in a document nobody is looking at any more, and

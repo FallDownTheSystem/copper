@@ -680,7 +680,8 @@ function snapshot(): SelectionSnapshot {
 /** A couple of pixels of slack. At a fractional device pixel ratio the three
  *  metrics do not cancel exactly, so a region genuinely scrolled to its end
  *  reports a sub-pixel remainder. A region too short to scroll reports zero and
- *  counts as at the bottom, which is correct: pinning it is a no-op. */
+ *  counts as at the bottom — harmless here, because `captureScroll` refuses to
+ *  record an anchor for a region with no overflow at all. */
 const BOTTOM_SLACK = 2
 
 function atBottom(region: HTMLElement) {
@@ -710,9 +711,22 @@ function captureScroll(): ScrollAnchor | null {
 	const region = scrollRegion()
 	if (!region) return null
 
-	// Tested first, and it has to be: the note anchor below would hold the list
-	// exactly where it is, which is right for a reader who has scrolled up and
-	// wrong for one sitting at the end watching their own captures land.
+	// **A region with no overflow has no scroll position worth keeping.** The
+	// reader is at 0 because there is nowhere else to be — `atBottom` reads true,
+	// but that bottom is a phantom, and restoring it is not the no-op it looks
+	// like: activating a section folds one section while another unfolds, the
+	// leaving rows keep their height mid-fold, and the region is transiently
+	// taller than either settled layout. `pinToBottom` re-asserting that phantom
+	// bottom every frame shoved the top sections off screen and eased back with
+	// the clamp as the fold drained (the section-activation flicker, 2026-08-14).
+	// A document that grows past the viewport is the reveal's job to show, not a
+	// restore's.
+	if (region.scrollHeight - region.clientHeight <= BOTTOM_SLACK) return null
+
+	// Tested first among the anchors, and it has to be: the note anchor below
+	// would hold the list exactly where it is, which is right for a reader who
+	// has scrolled up and wrong for one sitting at the end watching their own
+	// captures land.
 	if (isStuckToBottom(region)) return { kind: 'bottom' }
 
 	// One DOM query for the whole walk. `rowElement` re-queries every row on each
@@ -894,6 +908,18 @@ function restoreScroll(anchor: ScrollAnchor) {
 	if (!region) return
 
 	if (anchor.kind === 'bottom') {
+		// **A bottom the geometry cannot corroborate is a phantom, and pinning to
+		// it is the section-activation flicker (2026-08-14).** The `snapshot` this
+		// anchor came from runs when the store answers — milliseconds into the
+		// fold a section activation starts — so its own no-overflow guard can be
+		// defeated by the fold's transient height, and the anchor then rests on
+		// the `stuckToBottom` latch alone, which a region that has never scrolled
+		// holds vacuously true. The test is at this end because this moment knows
+		// what the capture could not: a reader genuinely parked at the end of an
+		// overflowing region has `scrollTop > 0`. At zero with overflow on screen,
+		// the latch is lying, and the pin would chase the phantom bottom down
+		// frame by frame as the fold drains.
+		if (region.scrollTop <= BOTTOM_SLACK && !atBottom(region)) return
 		pinToBottom(region)
 		return
 	}
@@ -941,14 +967,13 @@ export function revealRow(key: string, block: ScrollLogicalPosition = 'nearest')
 /**
  * **Instant, never smooth, and that is not a reduced-motion compromise.**
  *
- * A smooth scroll runs over frames, and both of the things it would have to run
- * against are hostile. The list is still growing when this fires — the list
- * transition unfolds an inserted row over 150ms and `pinToBottom` exists because
- * that growth moves the target — so an animated scroll would be chasing a
- * position that is still moving. And in a hidden window frames are throttled or stopped
- * altogether, so the one case this feature is *for* is the case where a smooth
- * scroll would be left half-finished. An instant scroll satisfies
- * `prefers-reduced-motion` by having nothing to reduce.
+ * A smooth scroll runs over frames, and in a hidden window frames are throttled
+ * or stopped altogether — so the one case this feature is *for* is the case
+ * where a smooth scroll would be left half-finished. An instant scroll satisfies
+ * `prefers-reduced-motion` by having nothing to reduce. And it never has a
+ * moving target to chase: the motion guard below holds the flush until the list
+ * transition's folds have finished, so the jump lands on geometry that is done
+ * changing.
  */
 export function flushReveal() {
 	const wanted = pendingReveal
@@ -984,12 +1009,42 @@ export function flushReveal() {
 		return
 	}
 
+	// **A scroll computed against a moving layout lands where the layout will not
+	// be.** The fold transition keeps a collapsing section's rows in flow while
+	// their height animates to zero, so mid-fold the list is transiently taller
+	// than its settled self — `scrollIntoView` happily spends that phantom height,
+	// and when the rows finish leaving, the region clamps the overshoot back in
+	// one frame (the section-activation flicker, 2026-08-14). Kept pending,
+	// exactly like a hidden region: the reader's own gesture can still expire it,
+	// and the retry lands on geometry that has stopped moving.
+	const motions = runningMotions(region)
+	if (motions.length > 0) {
+		flushRevealWhenSettled(motions)
+		return
+	}
+
 	pendingReveal = null
 	// Anything else the pin is doing is now wrong: it would drag the list back to
 	// the bottom over the next frames and undo this. Clearing the flag stops its
 	// settle loop at the next frame rather than racing it.
 	pinning = false
 	scrollRowIntoView(element, wanted.block)
+}
+
+/** One settle-watch at a time: every waiter funnels back through `flushReveal`,
+ *  which re-reads the world from scratch — including any motion that started
+ *  while this one waited — so a second watcher could only duplicate the retry. */
+let settling = false
+
+/** `allSettled` rather than `all`: a cancelled animation rejects `finished`,
+ *  and a cancellation is just another way for the layout to stop moving. */
+function flushRevealWhenSettled(motions: Animation[]) {
+	if (settling) return
+	settling = true
+	void Promise.allSettled(motions.map((motion) => motion.finished)).then(() => {
+		settling = false
+		flushReveal()
+	})
 }
 
 /** Space identity changed: ids mean something else now, so nothing carries. */
