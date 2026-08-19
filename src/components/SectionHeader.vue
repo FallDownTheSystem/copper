@@ -59,6 +59,14 @@ const deleteQuestion = computed(() => {
 
 const cancelButton = useTemplateRef<HTMLButtonElement>('cancelButton')
 
+/** The delete-confirm popover's anchor, handed over by reference — the template
+ *  records why it cannot be an `as-child` wrapper. On the row root rather than
+ *  the gridcell, because the gridcell is `ContextMenuTrigger`'s as-child target
+ *  and reka's `Slot` *deletes* the target vnode's `ref` before merging props —
+ *  a ref there stays null forever, and an anchorless popover opens at the
+ *  popper's off-screen placeholder. */
+const rowEl = useTemplateRef<HTMLElement>('rowEl')
+
 /** Reka's own default is the first tabbable, which the DOM order below already
  *  makes the Cancel button — stated explicitly so the safe landing does not
  *  depend on markup order staying put. A held Delete cannot confirm: focus
@@ -170,6 +178,7 @@ function onKeydown(event: KeyboardEvent) {
 
 <template>
 	<div
+		ref="rowEl"
 		role="row"
 		:data-row-id="rowId"
 		data-section-row
@@ -190,8 +199,11 @@ function onKeydown(event: KeyboardEvent) {
 		     the same constraint `NoteCard` documents: a `<TransitionGroup>` child
 		     must resolve to a single element root, and reka-ui's renderless chain
 		     (`PopperRoot` renders a slot fragment) can never be one. So the whole
-		     `ContextMenu` lives inside the row, its trigger merged onto the gridcell
-		     alongside the delete popover's anchor. The band's own `px-1 pt-1 pb-2`
+		     `ContextMenu` lives inside the row, its trigger merged onto the gridcell,
+		     with the delete popover anchored to the row by reference (the popover's
+		     own comment says why it must be a reference and why the `Popover` wraps
+		     the `ContextMenu` rather than sitting inside it). The
+		     band's own `px-1 pt-1 pb-2`
 		     sliver falls outside the trigger; a right-click there hits the row and
 		     opens no menu, which is the cost of the row animating at all.
 
@@ -272,21 +284,34 @@ function onKeydown(event: KeyboardEvent) {
 		     inherits, since the rows vanish at the band's bottom edge. The 4px
 		     above is only breathing room, keeping the pinned row off the text
 		     scrolling past. -->
-		<ContextMenu>
-			<!-- The keyboard Delete's confirmation, anchored to the heading it asks
-			     about. A popover rather than a state of the row for `DoneFilter`'s
-			     reason: the question must name a count of any size without the row
-			     lending it width. The row itself stays exactly what it was — the
-			     root renders nothing and the anchor merges onto the gridcell, so
-			     the grid's aria-required-children contract sees no new child.
-			     Opened only by `NoteList`'s Delete case; the context menu keeps its
-			     own unconfirmed item, which is already a second gesture. Cancel is
-			     first in the DOM *and* takes the autofocus explicitly, so the
-			     destructive control can never be where the opening press lands. -->
-			<Popover :open="confirmingThis" @update:open="onConfirmOpen">
+		<!-- The keyboard Delete's confirmation, anchored to the heading it asks
+		     about. A popover rather than a state of the row for `DoneFilter`'s
+		     reason: the question must name a count of any size without the row
+		     lending it width. The row itself stays exactly what it was — the
+		     root renders nothing and the anchor arrives by reference, so the
+		     grid's aria-required-children contract sees no new child.
+		     Opened only by `NoteList`'s Delete case; the context menu keeps its
+		     own unconfirmed item, which is already a second gesture. Cancel is
+		     first in the DOM *and* takes the autofocus explicitly, so the
+		     destructive control can never be where the opening press lands.
+
+		     **The `Popover` must wrap the `ContextMenu`, and the anchor must be
+		     the `reference` prop rather than an `as-child` wrapper on the cell.**
+		     Every reka popper finds its anchor by injecting the *nearest* popper
+		     root above it, and `ContextMenuTrigger` registers the right-click
+		     point through exactly such an internal anchor. With the `Popover`
+		     between the menu root and its trigger, that point landed in the
+		     popover's context; the menu's own context never received an anchor,
+		     so the menu opened unpositioned at its off-screen placeholder — an
+		     invisible open layer whose only effect was to swallow the next
+		     click. The same nearest-root rule is why the popover's anchor sits
+		     outside the `ContextMenu` and names the row by reference: wrapped
+		     around the cell, it would hand the popover's anchor to the menu's
+		     context in mirror image. -->
+		<Popover :open="confirmingThis" @update:open="onConfirmOpen">
+			<ContextMenu>
 				<ContextMenuTrigger as-child>
-					<PopoverAnchor as-child>
-						<!-- **`pl-1.5`, deliberately off the leading-mark column.** The heading
+					<!-- **`pl-1.5`, deliberately off the leading-mark column.** The heading
 						     used to pay `px-4` so its dot sat on the 20px line the search
 						     magnifier and the completion box share; the user reversed that
 						     (2026-08-11): a heading *outdented* from the notes under it reads
@@ -297,28 +322,28 @@ function onKeydown(event: KeyboardEvent) {
 						     scrollbar's overflow share (`--row-inset-comp`), which is what
 						     keeps the chevron exactly where every other trailing control
 						     sits whether or not the list scrolls. -->
-						<div
-							role="gridcell"
-							class="flex min-h-(--section-heading-height) min-w-0 items-center gap-2 pr-[calc(--spacing(4)-var(--row-inset-comp,0px))] pl-1.5"
-						>
-							<template v-if="editing">
-								<label :for="`section-rename-${section.id}`" class="sr-only">Section name</label>
-								<input
-									:id="`section-rename-${section.id}`"
-									ref="input"
-									:value="draft"
-									type="text"
-									autocomplete="off"
-									class="panel-field h-6 min-w-0 flex-1 px-1.5 text-label uppercase"
-									@input="setDraft(($event.target as HTMLInputElement).value)"
-									@keydown="onKeydown"
-									@blur="commit"
-									@contextmenu.stop
-								/>
-							</template>
+					<div
+						role="gridcell"
+						class="flex min-h-(--section-heading-height) min-w-0 items-center gap-2 pr-[calc(--spacing(4)-var(--row-inset-comp,0px))] pl-1.5"
+					>
+						<template v-if="editing">
+							<label :for="`section-rename-${section.id}`" class="sr-only">Section name</label>
+							<input
+								:id="`section-rename-${section.id}`"
+								ref="input"
+								:value="draft"
+								type="text"
+								autocomplete="off"
+								class="panel-field h-6 min-w-0 flex-1 px-1.5 text-label uppercase"
+								@input="setDraft(($event.target as HTMLInputElement).value)"
+								@keydown="onKeydown"
+								@blur="commit"
+								@contextmenu.stop
+							/>
+						</template>
 
-							<template v-else>
-								<!-- The name leads, so the heading starts at the row's own left edge
+						<template v-else>
+							<!-- The name leads, so the heading starts at the row's own left edge
 						     rather than behind a control, and the chevron is pushed to the
 						     far end by the separator rule between them: the two things a
 						     section row can be grabbed by sit at its two extremes, with the
@@ -328,7 +353,7 @@ function onKeydown(event: KeyboardEvent) {
 						     The name shrinks rather than holding its width — with the
 						     chevron at the end of the row, an unshrinkable one would push it
 						     out. The inner `truncate` is what makes that safe. -->
-								<!-- **`-ml-1.5 pl-1.5` nets to zero: the dot is placed by the
+							<!-- **`-ml-1.5 pl-1.5` nets to zero: the dot is placed by the
 						     gridcell, the button only decides where the pill's edge falls.**
 						     The heading no longer sits on the leading-mark column the search
 						     magnifier and the completion box share — the gridcell above
@@ -337,52 +362,52 @@ function onKeydown(event: KeyboardEvent) {
 						     surface symmetric around it, where carrying the inset on the
 						     button alone would leave more room on the dot's left than
 						     `pr-1.5` leaves on its right. -->
-								<h2 :id="headingId" class="min-w-0">
-									<button
-										type="button"
-										tabindex="-1"
-										:aria-current="active ? 'true' : undefined"
-										class="section-title hover:bg-surface-hover active:bg-surface-active focus-ring relative -ml-1.5 flex min-w-0 items-center gap-1.5 rounded-inset py-1 pr-1.5 pl-1.5 transition-colors duration-fast"
-										:class="active ? 'text-accent-text' : 'text-text-secondary'"
-										@click="activate"
-									>
-										<!-- The only one of the three markers that cross-fades: this row is on
+							<h2 :id="headingId" class="min-w-0">
+								<button
+									type="button"
+									tabindex="-1"
+									:aria-current="active ? 'true' : undefined"
+									class="section-title hover:bg-surface-hover active:bg-surface-active focus-ring relative -ml-1.5 flex min-w-0 items-center gap-1.5 rounded-inset py-1 pr-1.5 pl-1.5 transition-colors duration-fast"
+									:class="active ? 'text-accent-text' : 'text-text-secondary'"
+									@click="activate"
+								>
+									<!-- The only one of the three markers that cross-fades: this row is on
 								     screen while it changes, unlike the two inside menus. -->
-										<ActiveMarker
-											:active="active"
-											label="active section"
-											class="transition-opacity duration-fast"
+									<ActiveMarker
+										:active="active"
+										label="active section"
+										class="transition-opacity duration-fast"
+									>
+										<span
+											class="truncate text-label uppercase"
+											:class="active ? 'font-semibold' : ''"
 										>
-											<span
-												class="truncate text-label uppercase"
-												:class="active ? 'font-semibold' : ''"
-											>
-												{{ section.name }}
-											</span>
-										</ActiveMarker>
+											{{ section.name }}
+										</span>
+									</ActiveMarker>
 
-										<!-- After the name and inside its pill, so the two never separate
+									<!-- After the name and inside its pill, so the two never separate
 								     when the name truncates — the count is the part that must stay
 								     readable, which is why it is the `shrink-0` of the pair.
 								     `text-text-secondary` in both states: on an active heading the
 								     accent stays the name's alone, so the count reads as annotation
 								     rather than as more name. -->
-										<template v-if="counts.total > 0">
-											<span
-												aria-hidden="true"
-												data-section-counts
-												class="text-text-secondary shrink-0 text-label tabular-nums"
-											>
-												{{ counts.done }}/{{ counts.total }}
-											</span>
-											<span class="sr-only">{{ spokenCounts }}</span>
-										</template>
-									</button>
-								</h2>
+									<template v-if="counts.total > 0">
+										<span
+											aria-hidden="true"
+											data-section-counts
+											class="text-text-secondary shrink-0 text-label tabular-nums"
+										>
+											{{ counts.done }}/{{ counts.total }}
+										</span>
+										<span class="sr-only">{{ spokenCounts }}</span>
+									</template>
+								</button>
+							</h2>
 
-								<span aria-hidden="true" class="bg-separator h-px min-w-0 flex-1" />
+							<span aria-hidden="true" class="bg-separator h-px min-w-0 flex-1" />
 
-								<!-- Withdrawn while a query is active rather than rendered inert.
+							<!-- Withdrawn while a query is active rather than rendered inert.
 						     Search already decides what is on screen and overrides collapse
 						     entirely, so a control that rotated its chevron and changed
 						     nothing visible would read as broken. The stored state survives
@@ -400,64 +425,67 @@ function onKeydown(event: KeyboardEvent) {
 						     controls whose expanded areas would make each other unhittable —
 						     does not reach here, since the only thing beside it is an
 						     `aria-hidden` rule. -->
-								<button
-									v-if="collapseEnabled"
-									type="button"
-									tabindex="-1"
-									:aria-expanded="!collapsed"
-									:aria-label="`${collapsed ? 'Expand' : 'Collapse'} ${section.name}`"
-									:title="`${collapsed ? 'Expand' : 'Collapse'} ${section.name}`"
-									class="text-text-disabled hover:bg-surface-hover hover:text-text-secondary focus-ring hit-44 relative grid size-5 shrink-0 place-items-center rounded-inset transition-colors duration-fast"
-									@click="toggle"
-								>
-									<IconLucideChevronRight
-										class="size-3.5 transition-transform duration-fast"
-										:class="collapsed ? '' : 'rotate-90'"
-										aria-hidden="true"
-										focusable="false"
-									/>
-								</button>
-								<span v-else aria-hidden="true" class="size-5 shrink-0" />
-							</template>
-						</div>
-					</PopoverAnchor>
+							<button
+								v-if="collapseEnabled"
+								type="button"
+								tabindex="-1"
+								:aria-expanded="!collapsed"
+								:aria-label="`${collapsed ? 'Expand' : 'Collapse'} ${section.name}`"
+								:title="`${collapsed ? 'Expand' : 'Collapse'} ${section.name}`"
+								class="text-text-disabled hover:bg-surface-hover hover:text-text-secondary focus-ring hit-44 relative grid size-5 shrink-0 place-items-center rounded-inset transition-colors duration-fast"
+								@click="toggle"
+							>
+								<IconLucideChevronRight
+									class="size-3.5 transition-transform duration-fast"
+									:class="collapsed ? '' : 'rotate-90'"
+									aria-hidden="true"
+									focusable="false"
+								/>
+							</button>
+							<span v-else aria-hidden="true" class="size-5 shrink-0" />
+						</template>
+					</div>
 				</ContextMenuTrigger>
 
-				<PopoverContent
-					v-if="portalTo"
-					:to="portalTo"
-					align="start"
-					:collision-boundary="boundary ?? undefined"
-					:collision-padding="8"
-					class="w-64 text-meta"
-					@open-auto-focus="onConfirmAutoFocus"
-					@keydown="onConfirmKeydown"
-				>
-					<p class="text-text-primary">{{ deleteQuestion }}</p>
-					<div class="mt-2 flex items-center justify-end gap-2">
-						<button
-							ref="cancelButton"
-							type="button"
-							data-section-delete-cancel
-							class="panel-button min-h-6 px-2"
-							@click="cancelDelete"
-						>
-							Cancel
-						</button>
-						<button
-							type="button"
-							data-section-delete-confirm
-							class="panel-button text-destructive-text min-h-6 px-2"
-							@click="confirmDelete"
-						>
-							Delete
-						</button>
-					</div>
-				</PopoverContent>
-			</Popover>
+				<SectionContextMenu :section="section" />
+			</ContextMenu>
 
-			<SectionContextMenu :section="section" />
-		</ContextMenu>
+			<!-- `as="template"`, so no element lands between the row and its cells;
+			     the anchor is the row itself — see `rowEl` for why not the cell. -->
+			<PopoverAnchor as="template" :reference="rowEl ?? undefined" />
+
+			<PopoverContent
+				v-if="portalTo"
+				:to="portalTo"
+				align="start"
+				:collision-boundary="boundary ?? undefined"
+				:collision-padding="8"
+				class="w-64 text-meta"
+				@open-auto-focus="onConfirmAutoFocus"
+				@keydown="onConfirmKeydown"
+			>
+				<p class="text-text-primary">{{ deleteQuestion }}</p>
+				<div class="mt-2 flex items-center justify-end gap-2">
+					<button
+						ref="cancelButton"
+						type="button"
+						data-section-delete-cancel
+						class="panel-button min-h-6 px-2"
+						@click="cancelDelete"
+					>
+						Cancel
+					</button>
+					<button
+						type="button"
+						data-section-delete-confirm
+						class="panel-button text-destructive-text min-h-6 px-2"
+						@click="confirmDelete"
+					>
+						Delete
+					</button>
+				</div>
+			</PopoverContent>
+		</Popover>
 	</div>
 </template>
 
