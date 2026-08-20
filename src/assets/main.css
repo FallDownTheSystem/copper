@@ -915,12 +915,24 @@ html:not(.translucent) {
    `backdrop-filter` cannot frost what is behind the window (see the panel
    surface note above). So the *content* yields instead: every non-heading row
    runs a scroll-driven `clip-path` keyframe on its own `view()` timeline,
-   pinned to the `exit` range of a scrollport inset by the band's height —
-   heading plus its `pt-1 pb-2`, the `+ 12px`. Progress through `exit` is
-   linear in scroll and so is the keyframe, so the cut tracks the band's bottom
-   edge pixel-exactly: a row is erased precisely as far as it has passed under
-   the line, and the heading needs no background because nothing legible ever
-   reaches it. The reduced-motion blocks above are no threat — on a view
+   pinned to the `exit-crossing` range of a scrollport inset by the band's
+   height — heading plus its `pt-1 pb-2`, the `+ 12px`. Progress through
+   `exit-crossing` is linear in scroll and so is the keyframe, so the cut
+   tracks the band's bottom edge pixel-exactly: a row is erased precisely as
+   far as it has passed under the line, and the heading needs no background
+   because nothing legible ever reaches it.
+
+   **`exit-crossing`, never `exit`.** The two ranges coincide for a row
+   shorter than the inset scrollport, and `exit` is how this shipped — but
+   `exit` begins at `contain 100%`, and `contain` changes meaning for a row
+   *taller* than the scrollport (any note expanded past the panel's height):
+   it becomes "fully covers", so `exit` stays clamped at 0% until the row's
+   *bottom* edge reaches the scrollport's *bottom*. The whole overrun slid
+   under the band with `inset(0)` and the note's text painted straight
+   through the pinned heading. `exit-crossing` is defined edge-to-edge — top
+   border edge crosses the line to bottom border edge crosses the line — at
+   every subject height, which is the only reading the pixel-exact cut above
+   actually relies on. The reduced-motion blocks above are no threat — on a view
    timeline their forced 0.01ms duration remaps onto the whole range (verified
    live), and the clip is scroll-synced geometry, never motion, in any case.
 
@@ -979,7 +991,7 @@ html:not(.translucent) {
 	.translucent [role='row']:not([data-section-row]):not([data-dragging]):not([data-settling]) {
 		animation: copper-row-clip linear both;
 		animation-timeline: view(block calc(var(--section-heading-height) + 12px) 0px);
-		animation-range: exit;
+		animation-range: exit-crossing;
 	}
 }
 
