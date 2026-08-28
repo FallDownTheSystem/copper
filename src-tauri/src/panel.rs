@@ -797,9 +797,10 @@ fn with_panel<M: Manager<tauri::Wry>>(
 	}
 }
 
-/// Brings a hidden panel back, checking first that it can be seen.
+/// Brings the panel to the user, checking first that it can be seen.
 ///
-/// **The one reveal-from-hidden path.** Placement has to be validated here rather
+/// **The one reveal path** — from hidden, from minimized, and for the unpinned
+/// panel buried under other windows. Placement has to be validated here rather
 /// than at each caller: a display unplugged while Copper was hidden leaves the
 /// saved position pointing at nothing, and a reveal that skipped the check would
 /// bring the panel back where the user cannot reach it — with the tray, the
@@ -837,14 +838,23 @@ pub async fn hide_panel(app: AppHandle) {
 /// could not be reached. The tray's left-click **and** the summon chord, kept
 /// here so that the window lookup stays in the module that owns the window.
 ///
-/// **Two states, deliberately — visible means hide, whatever holds focus.** The
-/// chord spent a while as a three-state toggle that raised a
+/// **Two states while pinned — visible means hide, whatever holds focus.** The
+/// chord spent a while as an unconditional three-state toggle that raised a
 /// visible-but-unfocused panel instead of hiding it, reasoning that the user
 /// was reaching for a panel buried under other windows. That reading loses to
-/// the panel's actual life: it ships always-on-top, so it is never buried —
+/// the pinned panel's actual life: always-on-top means it is never buried —
 /// visible-but-unfocused is its *resting* state while the user types elsewhere,
 /// and the raise turned "go away" into a chord that had to be pressed twice. A
 /// user who can see the panel and presses the chord is dismissing it.
+///
+/// **Unpinned, the burial reading wins.** Without always-on-top the panel drops
+/// behind whatever the user clicks into, so visible-but-unfocused there means
+/// "somewhere back behind this" rather than "resting in view" — and hiding a
+/// panel the user cannot see turns the summon into a chord that has to be
+/// pressed twice. So an unpinned, unfocused panel is raised and focused; only
+/// a focused one is dismissed. A failed focus query counts as focused, so the
+/// chord degrades to the plain toggle rather than to a dismissal that stopped
+/// working.
 ///
 /// The hidden case is also where placement is checked, so a panel left on a
 /// monitor that has since been unplugged comes back somewhere reachable instead
@@ -852,6 +862,10 @@ pub async fn hide_panel(app: AppHandle) {
 pub fn toggle_or_log<M: Manager<tauri::Wry>>(app: &M) {
 	with_panel(app, "toggle", |window| {
 		if is_visible(window) {
+			if !pinned() && !window.is_focused().unwrap_or(true) {
+				crate::capture::panel_revealed_by_user(app);
+				return reveal_reachable(window);
+			}
 			hide(window)
 		} else {
 			// Only the reveal branch. Telling capture the user opened the panel when
