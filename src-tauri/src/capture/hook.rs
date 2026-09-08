@@ -16,8 +16,9 @@
 //! non-blocking channel send.
 //!
 //! What it costs, stated honestly rather than as a slogan, because a claim of
-//! "nothing at all" invites the next reader to add something: three relaxed
-//! atomic loads on every event — one mute flag and one selector per recogniser;
+//! "nothing at all" invites the next reader to add something: four relaxed
+//! atomic loads on an unpaused event — Game mode, recording mute, and one
+//! selector per recogniser;
 //! one `MapVirtualKeyW` on the generic two-sided modifier codes only, which
 //! remappers produce and ordinary keyboards do not, and which the two recognisers
 //! resolve **once between them** rather than once each; and on the key-up that
@@ -409,6 +410,18 @@ static WATCHED_SUMMON: AtomicU8 = AtomicU8::new(ModifierFamily::Off as u8);
 /// opened ends itself.
 static MUTED: AtomicBool = AtomicBool::new(false);
 
+/// The low bit pauses double-taps; the remaining bits record transitions so a
+/// pause that begins and ends between key events still breaks a partial gesture.
+/// Independent of recording's mute: closing a recorder must not end Game mode.
+static GAME_MODE: AtomicU64 = AtomicU64::new(0);
+
+pub fn set_game_mode(enabled: bool) {
+	let _ = GAME_MODE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |revision| {
+		((revision & 1 != 0) != enabled).then(|| revision.wrapping_add(1))
+	});
+}
+
+
 fn selector(role: TriggerRole) -> &'static AtomicU8 {
 	match role {
 		TriggerRole::Capture => &WATCHED_CAPTURE,
@@ -727,6 +740,7 @@ impl Recogniser {
 struct HookState {
 	capture: Recogniser,
 	summon: Recogniser,
+	game_mode_revision: u64,
 	tx: Sender<Trigger>,
 	/// One capture in flight at a time. A bounded channel does not express this:
 	/// once the worker receives, the slot is free again and a second trigger
@@ -743,6 +757,17 @@ struct HookState {
 	/// double-clicked is open. A summon writes nothing, so it has nothing to land
 	/// in the wrong place.
 	armed: Arc<AtomicBool>,
+}
+
+impl HookState {
+	fn game_mode_paused(&mut self, revision: u64) -> bool {
+		if self.game_mode_revision != revision {
+			self.capture.machine.reset();
+			self.summon.machine.reset();
+			self.game_mode_revision = revision;
+		}
+		revision & 1 != 0
+	}
 }
 
 thread_local! {
@@ -809,6 +834,12 @@ unsafe extern "system" fn keyboard_proc(ncode: i32, wparam: WPARAM, lparam: LPAR
 				let Some(state) = borrow.as_mut() else {
 					return;
 				};
+
+				// Only double-taps pass through this hook. Explicit chords keep their
+				// own dispatch, and the liveness probe above still reaches the watchdog.
+				if state.game_mode_paused(GAME_MODE.load(Ordering::Relaxed)) {
+					return;
+				}
 
 				// A recording session is open, so neither binding may fire. Both
 				// machines are reset rather than merely ignored: a half-finished
@@ -1064,6 +1095,7 @@ pub fn install(
 				*cell.borrow_mut() = Some(HookState {
 					capture: Recogniser::new(watched(TriggerRole::Capture)),
 					summon: Recogniser::new(watched(TriggerRole::Summon)),
+					game_mode_revision: GAME_MODE.load(Ordering::Relaxed),
 					tx,
 					in_flight,
 					armed,
@@ -1624,6 +1656,45 @@ mod tests {
 		assert_eq!(ModifierFamily::from_code(9), ModifierFamily::Off);
 	}
 
+	#[test]
+	fn game_mode_transitions_reset_both_partial_gestures_without_changing_bindings() {
+		let capture = WatchedTrigger::unsided(ModifierFamily::Shift);
+		let summon = WatchedTrigger::unsided(ModifierFamily::Control);
+		let (tx, _) = mpsc::channel();
+		let mut state = HookState {
+			capture: Recogniser::new(capture),
+			summon: Recogniser::new(summon),
+			game_mode_revision: 0,
+			tx,
+			in_flight: Arc::new(AtomicBool::new(false)),
+			armed: Arc::new(AtomicBool::new(true)),
+		};
+
+		for revision in [1, 2, 4] {
+			for (recogniser, binding, key) in
+				[(&mut state.capture, capture, VK_LSHIFT), (&mut state.summon, summon, VK_LCONTROL)]
+			{
+				assert!(!recogniser.feed(binding, key, DOWN, 0, NO_RESOLUTION));
+				assert!(!recogniser.feed(binding, key, UP, 40, NO_RESOLUTION));
+			}
+			assert_eq!(state.game_mode_paused(revision), revision & 1 != 0);
+			assert_eq!(state.capture.machine.state, State::Idle);
+			assert_eq!(state.summon.machine.state, State::Idle);
+		}
+
+		for (recogniser, binding, key) in
+			[(&mut state.capture, capture, VK_LSHIFT), (&mut state.summon, summon, VK_LCONTROL)]
+		{
+			let fired = two_taps(key, key)
+				.into_iter()
+				.filter(|(vk, is_up, time)| {
+					recogniser.feed(binding, *vk, *is_up, *time, NO_RESOLUTION)
+				})
+				.count();
+			assert_eq!(fired, 1);
+		}
+	}
+
 	// --- the callback itself ---------------------------------------------------
 	// `HOOK_STATE` is thread-local, so a test can install its own and drive the
 	// real `keyboard_proc` over a synthetic event. Everything below runs on one
@@ -1641,6 +1712,7 @@ mod tests {
 			*cell.borrow_mut() = Some(HookState {
 				capture: Recogniser::new(watched(TriggerRole::Capture)),
 				summon: Recogniser::new(watched(TriggerRole::Summon)),
+				game_mode_revision: GAME_MODE.load(Ordering::Relaxed),
 				tx,
 				in_flight: Arc::new(AtomicBool::new(false)),
 				armed: Arc::new(AtomicBool::new(true)),
@@ -1733,6 +1805,23 @@ mod tests {
 		mute(false);
 		assert_eq!(feed(0, VK_LSHIFT, WM_KEYDOWN).0, 0);
 		assert!(!machine_is_idle(), "unmuting must let a sequence open again");
+
+		set_game_mode(true);
+		for (_, is_up, _) in two_taps(VK_LSHIFT, VK_LSHIFT) {
+			let message = if is_up { WM_KEYUP } else { WM_KEYDOWN };
+			assert_eq!(feed(0, VK_LSHIFT, message).0, 0, "Game mode must pass keys on");
+			assert!(machine_is_idle(), "Game mode must not open a double-tap sequence");
+		}
+		mute(true);
+		mute(false);
+		assert_eq!(feed(0, VK_LSHIFT, WM_KEYDOWN).0, 0);
+		assert!(machine_is_idle(), "closing a recorder must not end Game mode");
+		PROBE_SEEN_MS.store(NEVER, Ordering::Relaxed);
+		assert_ne!(feed(PROBE_SIGNATURE, VK_F24, WM_KEYDOWN).0, 0);
+		assert_ne!(probe_stamp(), NEVER, "Game mode must not blind the watchdog");
+		set_game_mode(false);
+		assert_eq!(feed(0, VK_LSHIFT, WM_KEYDOWN).0, 0);
+		assert!(!machine_is_idle(), "double-taps must resume after Game mode");
 
 		assert!(
 			triggers.try_recv().is_err(),

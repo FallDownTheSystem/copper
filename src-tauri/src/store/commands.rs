@@ -105,8 +105,19 @@ pub async fn get_settings(state: State<'_, SharedStore>) -> Reply<Settings> {
 /// frontend's writer and Phase 7's are literally the same call.
 #[tauri::command]
 pub async fn update_settings(patch: SettingsPatch, state: State<'_, SharedStore>) -> Reply<Settings> {
-	store::patch_settings(&state, patch)
+	apply_settings_patch(&state, patch)
 }
+
+fn apply_settings_patch(shared: &SharedStore, patch: SettingsPatch) -> Reply<Settings> {
+	let mut guard = lock(shared);
+	let settings = guard.update_settings(patch)?;
+	// Keep the mirror under the writer's lock so concurrent patches cannot apply
+	// an older pause state after a newer one. A failed save changes neither state.
+	crate::capture::set_game_mode(settings.game_mode);
+	Ok(settings)
+}
+
+
 
 #[tauri::command]
 pub async fn get_status(state: State<'_, SharedStore>) -> Reply<StoreStatus> {
@@ -421,7 +432,7 @@ pub fn append_capture(app: &AppHandle, body: &str) -> Reply<Landed> {
 /// Phase 7's settings writer, taking the handle it already has.
 pub fn patch_settings(app: &AppHandle, patch: SettingsPatch) -> Reply<Settings> {
 	let state = app.state::<SharedStore>();
-	store::patch_settings(&state, patch)
+	apply_settings_patch(&state, patch)
 }
 
 /// The settings as Phase 7's startup steps read them, without a command round

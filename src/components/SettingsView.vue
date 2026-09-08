@@ -46,6 +46,7 @@ const {
 	doneOnCopy,
 	alwaysOnTop,
 	showCreated,
+	showGameMode,
 	captureNotifications,
 	linkPreviews,
 	translucent,
@@ -66,6 +67,7 @@ const {
 	setEnterKey,
 	setDoneOnCopy,
 	setShowCreated,
+	setShowGameMode,
 	setCaptureNotifications,
 	setLinkPreviews,
 	setAlwaysOnTop,
@@ -106,6 +108,7 @@ const enterKeyError = errorFor('enterKey')
 const doneOnCopyError = errorFor('doneOnCopy')
 const alwaysOnTopError = errorFor('alwaysOnTop')
 const showCreatedError = errorFor('showCreated')
+const showGameModeError = errorFor('showGameMode')
 const captureNotificationsError = errorFor('captureNotifications')
 const linkPreviewsError = errorFor('linkPreviews')
 const translucentError = errorFor('translucent')
@@ -736,6 +739,21 @@ const summonNote = computed(() => {
 				<!-- Outside the `v-if`: the in-panel chords it lists are live whether or
 				     not Rust has answered for the two global rows above. -->
 				<ShortcutReference />
+
+				<SettingsRow
+					v-slot="{ errorId }"
+					label="Game mode button"
+					description="Show a button that pauses double-tap shortcuts."
+					label-for="show-game-mode"
+					:error="showGameModeError"
+				>
+					<SettingsSwitch
+						id="show-game-mode"
+						:model-value="showGameMode"
+						:error-id="errorId"
+						@update:model-value="setShowGameMode"
+					/>
+				</SettingsRow>
 			</SettingsSection>
 
 			<!-- Below Shortcuts because both are about capturing: the row above says

@@ -109,6 +109,8 @@ pub struct Settings {
 	pub always_on_top: bool,
 	pub show_created: bool,
 	pub capture_notifications: bool,
+	pub show_game_mode: bool,
+	pub game_mode: bool,
 	pub link_previews: bool,
 	pub translucent: bool,
 	pub neutral: String,
@@ -191,6 +193,8 @@ impl Default for Settings {
 			// off because it adds noise to a path that already has a surface; this
 			// ships on because it *is* the surface.
 			capture_notifications: true,
+			show_game_mode: false,
+			game_mode: false,
 			// Off, and this is the one default in the file that is not about
 			// preserving what an earlier build did — there was no earlier behaviour to
 			// preserve. It ships off because turning it on is the only setting in
@@ -305,6 +309,8 @@ struct RawSettings {
 	always_on_top: Value,
 	show_created: Value,
 	capture_notifications: Value,
+	show_game_mode: Value,
+	game_mode: Value,
 	link_previews: Value,
 	translucent: Value,
 	neutral: Value,
@@ -410,6 +416,18 @@ impl RawSettings {
 			defaults.capture_notifications,
 			&mut notices,
 		);
+		let show_game_mode = repair_flag(
+			self.show_game_mode,
+			"showGameMode",
+			defaults.show_game_mode,
+			&mut notices,
+		);
+		let game_mode = repair_flag(
+			self.game_mode,
+			"gameMode",
+			defaults.game_mode,
+			&mut notices,
+		);
 		// Repaired to `false` like every other unreadable value here, and that
 		// direction is not incidental: a `"linkPreviews": "yes"` someone hand-edited
 		// must not be read as consent to start fetching.
@@ -496,6 +514,8 @@ impl RawSettings {
 			always_on_top,
 			show_created,
 			capture_notifications,
+			show_game_mode,
+			game_mode,
 			link_previews,
 			translucent,
 			neutral,
@@ -507,6 +527,7 @@ impl RawSettings {
 			done_filter,
 			sort_mode,
 		};
+		settings.enforce_game_mode_visibility();
 		settings.clamp();
 		(settings, notices)
 	}
@@ -627,6 +648,13 @@ fn repair_shortcuts(raw: Value, notices: &mut Vec<String>) -> Shortcuts {
 }
 
 impl Settings {
+	/// Hiding the control exits pause so shortcuts resume.
+	fn enforce_game_mode_visibility(&mut self) {
+		if !self.show_game_mode {
+			self.game_mode = false;
+		}
+	}
+
 	/// Puts `active_space` back in range. Called after every load and after any
 	/// change to `recents`.
 	fn clamp(&mut self) {
@@ -724,6 +752,12 @@ impl Settings {
 		if let Some(capture_notifications) = patch.capture_notifications {
 			self.capture_notifications = capture_notifications;
 		}
+		if let Some(show_game_mode) = patch.show_game_mode {
+			self.show_game_mode = show_game_mode;
+		}
+		if let Some(game_mode) = patch.game_mode {
+			self.game_mode = game_mode;
+		}
 		if let Some(link_previews) = patch.link_previews {
 			self.link_previews = link_previews;
 		}
@@ -760,6 +794,7 @@ impl Settings {
 		if let Some(sort_mode) = patch.sort_mode {
 			self.sort_mode = sort_mode;
 		}
+		self.enforce_game_mode_visibility();
 	}
 }
 
@@ -792,6 +827,10 @@ pub struct SettingsPatch {
 	pub show_created: Option<bool>,
 	#[serde(default)]
 	pub capture_notifications: Option<bool>,
+	#[serde(default)]
+	pub show_game_mode: Option<bool>,
+	#[serde(default)]
+	pub game_mode: Option<bool>,
 	#[serde(default)]
 	pub link_previews: Option<bool>,
 	/// Reachable through the patch as well as through `set_translucency`, which is
@@ -1082,7 +1121,7 @@ mod tests {
 			 \"motion\": \"auto\",\n  \"insertionPoint\": \"bottom\",\n  \"doubleClick\": \
 			 \"copy\",\n  \"enterKey\": \"submit\",\n  \"doneOnCopy\": false,\n  \"alwaysOnTop\": \
 			 true,\n  \"showCreated\": false,\n  \
-			 \"captureNotifications\": true,\n  \"linkPreviews\": false,\n  \"translucent\": \
+			 \"captureNotifications\": true,\n  \"showGameMode\": false,\n  \"gameMode\": false,\n  \"linkPreviews\": false,\n  \"translucent\": \
 			 false,\n  \"neutral\": \"warm\",\n  \"accent\": \"copper\",\n  \"vibrancy\": 1.0,\n  \
 			 \"resizable\": false,\n  \"panelWidth\": 440.0,\n  \"panelHeight\": 760.0,\n  \
 			 \"doneFilter\": \"all\",\n  \"sortMode\": \"manual\"\n}\n"
@@ -1548,6 +1587,93 @@ mod tests {
 		);
 		assert!(settings.show_created);
 	}
+
+	#[test]
+	fn a_file_without_the_game_mode_keys_reads_as_off_without_a_notice() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"theme":"dark","captureNotifications":true}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(loaded.notice.is_none(), "absence was reported as damage: {:?}", loaded.notice);
+		assert_eq!(siblings(dir.path()), [FILE_NAME], "the file was set aside");
+		assert!(!loaded.settings.show_game_mode);
+		assert!(!loaded.settings.game_mode);
+		assert_eq!(loaded.settings.theme, "dark");
+	}
+
+	#[test]
+	fn wrong_typed_game_mode_values_are_repaired_and_reported() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"showGameMode":"yes","gameMode":7}"#);
+
+		let loaded = load(&path);
+
+		assert_eq!(loaded.origin, Origin::Loaded);
+		assert!(!loaded.settings.show_game_mode);
+		assert!(!loaded.settings.game_mode);
+		let notice = loaded.notice.expect("repairs must be reported");
+		for expected in ["showGameMode", "gameMode"] {
+			assert!(notice.contains(expected), "{expected} unreported in: {notice}");
+		}
+	}
+
+	#[test]
+	fn game_mode_fields_round_trip_through_disk() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join(FILE_NAME);
+		let mut settings = Settings::default();
+		settings.show_game_mode = true;
+		settings.game_mode = true;
+
+		save(&path, &settings).unwrap();
+		let loaded = load(&path);
+
+		assert!(loaded.notice.is_none());
+		assert_eq!(loaded.settings, settings);
+	}
+
+	#[test]
+	fn showing_game_mode_allows_an_active_pause() {
+		let mut settings = Settings::default();
+
+		settings.apply_patch(patch(r#"{"showGameMode":true,"gameMode":true}"#));
+
+		assert!(settings.show_game_mode);
+		assert!(settings.game_mode);
+	}
+
+	#[test]
+	fn hiding_game_mode_clears_an_active_pause() {
+		let mut settings = Settings {
+			show_game_mode: true,
+			game_mode: true,
+			..Default::default()
+		};
+
+		settings.apply_patch(patch(r#"{"showGameMode":false}"#));
+
+		assert!(!settings.show_game_mode);
+		assert!(!settings.game_mode);
+	}
+
+	#[test]
+	fn game_mode_true_while_hidden_stays_off() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = write(dir.path(), r#"{"showGameMode":false,"gameMode":true}"#);
+
+		let loaded = load(&path);
+
+		assert!(loaded.notice.is_none());
+		assert!(!loaded.settings.show_game_mode);
+		assert!(!loaded.settings.game_mode);
+
+		let mut settings = Settings::default();
+		settings.apply_patch(patch(r#"{"gameMode":true}"#));
+		assert!(!settings.game_mode);
+	}
+
 
 	/// The pin joins `sounds`, `motion` and task-013's two keys in the same
 	/// guarantee — with the twist that its default is `true`, so an absent key must

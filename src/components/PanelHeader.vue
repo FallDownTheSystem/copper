@@ -17,8 +17,15 @@ const { query, hasQuery, clearQuery } = useNoteSearch()
  * something you want while the panel is in the way, and having to open Settings
  * to do it means covering the thing you were trying to see.
  */
-const { alwaysOnTop, setAlwaysOnTop, errorFor } = useSettings()
+const { alwaysOnTop, setAlwaysOnTop, showGameMode, gameMode, setGameMode, errorFor } = useSettings()
 const pinError = errorFor('alwaysOnTop')
+const gameModeError = errorFor('gameMode')
+const gameModePending = ref(false)
+const gameModeTitle = computed(() =>
+	gameMode.value
+		? 'Game mode on: double-tap shortcuts paused. Click to resume.'
+		: 'Game mode off: click to pause double-tap shortcuts.',
+)
 const { reportActionError, clearActionError } = useSpace()
 
 /**
@@ -40,6 +47,18 @@ async function togglePin() {
 	clearActionError('list')
 	if (await setAlwaysOnTop(!alwaysOnTop.value)) return
 	reportActionError('list', pinError.value ?? 'Copper could not change the always-on-top setting.')
+}
+
+async function toggleGameMode() {
+	if (gameModePending.value) return
+	gameModePending.value = true
+	clearActionError('list')
+	try {
+		if (await setGameMode(!gameMode.value)) return
+		reportActionError('list', gameModeError.value ?? 'Copper could not change Game mode.')
+	} finally {
+		gameModePending.value = false
+	}
 }
 
 /** Forwarded from the section heading to the composer, which is the only place
@@ -185,6 +204,24 @@ defineExpose({ focusSearch, query })
 					focusable="false"
 				/>
 				<IconLucidePinOff v-else class="size-4" aria-hidden="true" focusable="false" />
+			</button>
+
+			<button
+				v-if="showGameMode"
+				type="button"
+				class="icon-button shrink-0 aria-pressed:ring-accent-ring aria-pressed:ring-1 aria-pressed:ring-inset"
+				:aria-pressed="gameMode"
+				aria-label="Game mode"
+				:title="gameModeTitle"
+				:disabled="gameModePending"
+				@click="toggleGameMode"
+			>
+				<IconLucideGamepad2
+					class="size-4"
+					:class="gameMode ? 'text-accent-text' : ''"
+					aria-hidden="true"
+					focusable="false"
+				/>
 			</button>
 
 			<PanelMenu />

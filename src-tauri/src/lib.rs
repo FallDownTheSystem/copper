@@ -368,6 +368,7 @@ pub fn run() {
 			// failure arriving before then would reveal an empty panel.
 			// Before `start_capture`, so the first double-tap after launch is judged
 			// against the user's binding rather than the compiled-in default.
+			capture::set_game_mode(core_store::lock(&shared).settings().game_mode);
 			shortcuts::prepare_capture(app.handle());
 			app.manage(capture::CaptureState(Mutex::new(capture::start_capture(
 				app.handle(),

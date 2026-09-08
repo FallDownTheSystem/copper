@@ -115,6 +115,9 @@ export type Settings = {
 	 *  task-003. A display preference only — nothing about it changes what is
 	 *  written. */
 	showCreated: boolean
+	showGameMode: boolean
+	/** Pauses double-tap shortcuts without changing their saved bindings. */
+	gameMode: boolean
 	/** Whether a capture that lands while the panel is hidden fires a Windows
 	 *  notification. Read and acted on entirely in Rust — the panel only renders
 	 *  the switch. */

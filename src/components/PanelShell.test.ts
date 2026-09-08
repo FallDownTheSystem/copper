@@ -215,6 +215,8 @@ function defaultSettings() {
 		doneOnCopy: false,
 		alwaysOnTop: true,
 		showCreated: false,
+		showGameMode: false,
+		gameMode: false,
 	}
 }
 
@@ -1590,6 +1592,61 @@ describe('copy', () => {
 		expect(wrapper.text()).toContain('Copied 1 note')
 	})
 
+	it.each(['shiftKey', 'ctrlKey', 'metaKey'] as const)(
+		'owns a %s item-selection press instead of native text selection',
+		async (modifier) => {
+			const wrapper = await mountPanel()
+			await wrapper.find('[data-row-id="n:nte_1"] .note-prose').trigger('click')
+
+			const range = document.createRange()
+			range.selectNodeContents(wrapper.find('.note-prose').element)
+			window.getSelection()?.removeAllRanges()
+			window.getSelection()?.addRange(range)
+
+			const body = wrapper.find('[data-row-id="n:nte_2"] .note-prose')
+			const press = new MouseEvent('mousedown', {
+				bubbles: true,
+				cancelable: true,
+				button: 0,
+				[modifier]: true,
+			})
+			body.element.dispatchEvent(press)
+			expect(press.defaultPrevented).toBe(true)
+			expect(window.getSelection()?.toString()).toBe('')
+			expect(document.activeElement).toBe(body.element.closest('[data-note-row]'))
+
+			await body.trigger('click', { [modifier]: true })
+			expect(selection.selectedIds.value).toEqual(['nte_1', 'nte_2'])
+			await body.trigger('keydown', { key: 'c', ctrlKey: true })
+			await settle(4)
+			expect(mocks.invoke).toHaveBeenCalledWith('clipboard_write_text', expect.anything())
+		},
+	)
+
+	it('leaves plain text presses available for native text selection', async () => {
+		const wrapper = await mountPanel()
+		const body = wrapper.find('.note-prose')
+		const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 })
+		body.element.dispatchEvent(press)
+		expect(press.defaultPrevented).toBe(false)
+	})
+
+	it('leaves Shift-click text selection inside the note editor alone', async () => {
+		const wrapper = await mountPanel()
+		editor.beginEdit(SPACE, SPACE.notes[0]!)
+		await settle(2)
+		const field = wrapper.get('textarea[aria-label="Edit note"]')
+		const press = new MouseEvent('mousedown', {
+			bubbles: true,
+			cancelable: true,
+			button: 0,
+			shiftKey: true,
+		})
+		field.element.dispatchEvent(press)
+		expect(press.defaultPrevented).toBe(false)
+		expect(document.activeElement).toBe(field.element)
+	})
+
 	it('leaves a live text selection to the native copy', async () => {
 		const wrapper = await mountPanel()
 		selection.select('nte_1')
@@ -1607,6 +1664,64 @@ describe('copy', () => {
 		expect(renderCalls()).toHaveLength(0)
 		expect(mocks.invoke).not.toHaveBeenCalledWith('clipboard_write_text', expect.anything())
 		window.getSelection()?.removeAllRanges()
+	})
+})
+
+describe('Game mode', () => {
+	it('keeps the header button hidden by default', async () => {
+		const wrapper = await mountPanel()
+		await settings.refresh()
+		expect(wrapper.find('button[aria-label="Game mode"]').exists()).toBe(false)
+	})
+
+	it('toggles the persisted pause without changing shortcut bindings', async () => {
+		const wrapper = await mountPanel()
+		settingsPayload = { ...settingsPayload, showGameMode: true }
+		await settings.refresh()
+		await settle(2)
+		const button = wrapper.get('button[aria-label="Game mode"]')
+		expect(button.attributes('aria-pressed')).toBe('false')
+
+		await button.trigger('click')
+		await settle(4)
+		expect(mocks.invoke).toHaveBeenCalledWith('update_settings', { patch: { gameMode: true } })
+		expect(button.attributes('aria-pressed')).toBe('true')
+		expect(button.attributes('title')).toContain('double-tap shortcuts paused')
+
+		await button.trigger('click')
+		await settle(4)
+		expect(mocks.invoke).toHaveBeenCalledWith('update_settings', { patch: { gameMode: false } })
+		expect(button.attributes('aria-pressed')).toBe('false')
+	})
+
+	it('restores an active pause from settings and removes a disabled control', async () => {
+		const wrapper = await mountPanel()
+		settingsPayload = { ...settingsPayload, showGameMode: true, gameMode: true }
+		await settings.refresh()
+		await settle(2)
+		expect(wrapper.get('button[aria-label="Game mode"]').attributes('aria-pressed')).toBe('true')
+
+		settingsPayload = { ...settingsPayload, showGameMode: false, gameMode: false }
+		await settings.refresh()
+		await settle(2)
+		expect(wrapper.find('button[aria-label="Game mode"]').exists()).toBe(false)
+		expect(settings.gameMode.value).toBe(false)
+	})
+
+	it('reports a failed save without claiming Game mode is active', async () => {
+		const wrapper = await mountPanel()
+		settingsPayload = { ...settingsPayload, showGameMode: true }
+		await settings.refresh()
+		await settle(2)
+		mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+			if (command === 'update_settings') throw { kind: 'io', message: 'Settings are read-only.' }
+			return baseInvoke(command, args)
+		})
+
+		await wrapper.get('button[aria-label="Game mode"]').trigger('click')
+		await settle(4)
+		expect(wrapper.get('button[aria-label="Game mode"]').attributes('aria-pressed')).toBe('false')
+		expect(wrapper.text()).toContain('Settings are read-only.')
 	})
 })
 

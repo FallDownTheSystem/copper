@@ -53,6 +53,8 @@ function makeSettings(linkPreviews: boolean): Settings {
 		doneOnCopy: false,
 		alwaysOnTop: true,
 		showCreated: false,
+		showGameMode: false,
+		gameMode: false,
 		captureNotifications: true,
 		linkPreviews,
 		translucent: false,

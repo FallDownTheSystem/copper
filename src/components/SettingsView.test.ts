@@ -75,6 +75,8 @@ function makeSettings(over: Partial<Settings> = {}): Settings {
 		doneOnCopy: false,
 		alwaysOnTop: true,
 		showCreated: false,
+		showGameMode: false,
+		gameMode: false,
 		captureNotifications: true,
 		linkPreviews: false,
 		translucent: false,
@@ -177,6 +179,29 @@ function patchesSent() {
 beforeEach(() => {
 	mocks.invoke.mockReset()
 	mocks.openUrl.mockReset()
+})
+
+describe('the Game mode button setting', () => {
+	it('ships hidden and exposes the control through a single-key patch', async () => {
+		const wrapper = await openSettings()
+		const control = wrapper.get('#show-game-mode')
+		expect(control.attributes('role')).toBe('switch')
+		expect(control.attributes('aria-checked')).toBe('false')
+		expect(wrapper.get('label[for="show-game-mode"]').text()).toBe('Game mode button')
+
+		await control.trigger('click')
+		await flush()
+
+		expect(patchesSent()).toEqual([{ showGameMode: true }])
+		expect(control.attributes('aria-checked')).toBe('true')
+	})
+
+	it('lets the user hide the control again', async () => {
+		const wrapper = await openSettings({ showGameMode: true })
+		await wrapper.get('#show-game-mode').trigger('click')
+		await flush()
+		expect(patchesSent()).toEqual([{ showGameMode: false }])
+	})
 })
 
 describe('the sound and motion rows', () => {

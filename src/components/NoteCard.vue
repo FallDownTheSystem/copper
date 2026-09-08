@@ -95,6 +95,21 @@ function onContextMenu() {
 	if (!selected.value) select(props.note.id)
 }
 
+/** Modified row presses belong to item selection, not the browser's text range.
+ *  Plain presses still allow text drags; embedded controls keep their own gestures. */
+function onMouseDown(event: MouseEvent) {
+	if (event.button !== 0 || !(event.shiftKey || event.ctrlKey || event.metaKey)) return
+	const target = event.target as Element | null
+	if (target?.closest('button, a[href], input, textarea, [contenteditable], [data-drag-handle]'))
+		return
+
+	event.preventDefault()
+	window.getSelection()?.removeAllRanges()
+	// Cancelling the press also cancels native focus, but the row must still own
+	// the next keyboard action without changing the selection's range anchor.
+	;(event.currentTarget as HTMLElement).focus({ preventScroll: true })
+}
+
 /**
  * A completed drag ends with the pointer going down and up on the grip, which is
  * a `click` by every definition the browser has — and the grip sits inside the
@@ -145,6 +160,7 @@ function onDoubleClick(event: MouseEvent) {
 				: 'focus-inset',
 			'hover:bg-surface-hover transition-colors duration-fast',
 		]"
+		@mousedown="onMouseDown"
 		@click="emit('pointerSelect', $event)"
 		@dblclick="onDoubleClick"
 		@contextmenu="onContextMenu"

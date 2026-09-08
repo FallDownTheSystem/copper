@@ -61,6 +61,8 @@ export function settingsActions(): PaletteAction[] {
 		doneOnCopy,
 		alwaysOnTop,
 		showCreated,
+		showGameMode,
+		gameMode,
 		captureNotifications,
 		linkPreviews,
 		translucent,
@@ -79,6 +81,8 @@ export function settingsActions(): PaletteAction[] {
 		setEnterKey,
 		setDoneOnCopy,
 		setShowCreated,
+		setShowGameMode,
+		setGameMode,
 		setCaptureNotifications,
 		setLinkPreviews,
 		setAlwaysOnTop,
@@ -147,6 +151,20 @@ export function settingsActions(): PaletteAction[] {
 			value: onOff(doneOnCopy.value),
 			run: () => write('doneOnCopy', () => setDoneOnCopy(!doneOnCopy.value)),
 		},
+		showGameMode: {
+			id: 'show-game-mode',
+			label: 'Game mode button',
+			value: onOff(showGameMode.value),
+			run: () => write('showGameMode', () => setShowGameMode(!showGameMode.value)),
+		},
+		gameMode: showGameMode.value
+			? {
+					id: 'game-mode',
+					label: 'Game mode',
+					value: onOff(gameMode.value),
+					run: () => write('gameMode', () => setGameMode(!gameMode.value)),
+				}
+			: [],
 		showCreated: {
 			id: 'show-created',
 			label: 'Date added',

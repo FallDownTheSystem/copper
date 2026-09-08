@@ -100,6 +100,8 @@ export type PreferenceScope =
 	| 'doneOnCopy'
 	| 'alwaysOnTop'
 	| 'showCreated'
+	| 'showGameMode'
+	| 'gameMode'
 	| 'captureNotifications'
 	| 'linkPreviews'
 	| 'translucent'
@@ -232,6 +234,8 @@ const alwaysOnTop = computed(() => settings.value?.alwaysOnTop !== false)
  *  unreadable or older `settings.json` leaves the cards looking exactly as they
  *  did rather than adding a line nobody asked for. */
 const showCreated = computed(() => settings.value?.showCreated === true)
+const showGameMode = computed(() => settings.value?.showGameMode === true)
+const gameMode = computed(() => showGameMode.value && settings.value?.gameMode === true)
 
 /** On unless the file explicitly says otherwise — `alwaysOnTop`'s shape rather
  *  than `showCreated`'s, because this one is the only feedback a capture into a
@@ -479,6 +483,8 @@ const rowWrites: Record<SettingsScope, Generation> = {
 	doneOnCopy: generations(),
 	alwaysOnTop: generations(),
 	showCreated: generations(),
+	showGameMode: generations(),
+	gameMode: generations(),
 	captureNotifications: generations(),
 	linkPreviews: generations(),
 	translucent: generations(),
@@ -611,6 +617,14 @@ function setDoneOnCopy(enabled: boolean): Promise<boolean> {
 
 function setShowCreated(enabled: boolean): Promise<boolean> {
 	return patchSettings('showCreated', { showCreated: enabled })
+}
+
+function setShowGameMode(enabled: boolean): Promise<boolean> {
+	return patchSettings('showGameMode', { showGameMode: enabled })
+}
+
+function setGameMode(enabled: boolean): Promise<boolean> {
+	return patchSettings('gameMode', { gameMode: enabled })
 }
 
 /** Through the patch and not a command of its own, like `sounds` and unlike
@@ -841,6 +855,8 @@ export function useSettings() {
 		doneOnCopy,
 		alwaysOnTop,
 		showCreated,
+		showGameMode,
+		gameMode,
 		captureNotifications,
 		linkPreviews,
 		translucent,
@@ -863,6 +879,8 @@ export function useSettings() {
 		setEnterKey,
 		setDoneOnCopy,
 		setShowCreated,
+		setShowGameMode,
+		setGameMode,
 		setCaptureNotifications,
 		setLinkPreviews,
 		setAlwaysOnTop,

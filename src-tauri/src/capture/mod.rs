@@ -93,7 +93,7 @@ pub const CAPTURE_CASCADE: [CaptureStrategy; 2] =
 /// `tauri-plugin-global-shortcut` and delivered through [`request_capture`] or
 /// the summon handler. [`mute`] stands both down for the length of a shortcut
 /// recording session.
-pub use hook::{mute, watch, KeySide, ModifierFamily, TriggerRole, WatchedTrigger};
+pub use hook::{mute, set_game_mode, watch, KeySide, ModifierFamily, TriggerRole, WatchedTrigger};
 
 /// How long the clipboard fallback waits for the sequence number to reach its
 /// expected next value after the injected `Ctrl+C`.
