@@ -39,6 +39,7 @@ import { errorMessage } from '@/lib/rustError'
 import { createStartup } from '@/lib/startup'
 
 import { useAttachments, type Attachment } from './useAttachments'
+import { useAttachmentSelection } from './useAttachmentSelection'
 import { emptySnapshot, noteRow, revealRow, sectionRow, useSelection } from './useSelection'
 import { useMarkdown } from './useMarkdown'
 import { useNoteDisclosure } from './useNoteDisclosure'
@@ -78,6 +79,8 @@ export type Space = {
 	sections: Section[]
 	notes: Note[]
 }
+
+export type DocumentSource = { path: string; id: string }
 
 export type StoreStatus = {
 	path: string | null
@@ -278,6 +281,15 @@ const refreshing = ref(false)
  *  become `loadState: 'error'`, and must never clear the text it belongs to. */
 const actionError = ref<ActionError | null>(null)
 const storeStatus = ref<StoreStatus>(EMPTY_STATUS)
+const source = computed<DocumentSource | null>(() => {
+	const path = storeStatus.value.path
+	const id = space.value?.id
+	return path && id ? { path, id } : null
+})
+
+function isSource(expected: DocumentSource) {
+	return source.value?.path === expected.path && source.value?.id === expected.id
+}
 const storeErrorEvent = ref<StoreErrorPayload | null>(null)
 const settings = ref<Settings | null>(null)
 /** Bumped when `space.id` changes. Ids are unique only *within* a document, so
@@ -300,6 +312,7 @@ let refreshQueued = false
 const REFRESH_RETRY_MS = 60
 
 const selection = useSelection()
+const attachmentSelection = useAttachmentSelection()
 const markdown = useMarkdown()
 const disclosure = useNoteDisclosure()
 const editor = useNoteEditor()
@@ -475,6 +488,7 @@ function applyDocument(
 	// the new document is filtered against the previous document's `done`.
 	listState.rebuild(next)
 	selection.syncDocument(next)
+	attachmentSelection.syncDocument(next)
 	selection.reconcile(snapshot)
 	markdown.pruneCache(next.notes.map((note) => note.id))
 	editor.reconcile(next, identityChanged)
@@ -953,11 +967,11 @@ function listCommand(command: string, args: Record<string, unknown>) {
 
 /** There is no singular set-done command; `set_notes_done` takes an array. Phase
  *  5 calls this with a whole selection, with no signature change. */
-async function setNotesDone(ids: string[], done: boolean) {
+async function setNotesDone(ids: string[], done: boolean, source?: DocumentSource) {
 	// Sounded here rather than at the three callers — the checkbox, Space and the
 	// context menu all funnel through this one command, and one gesture over a
 	// whole selection is still one toggle.
-	const result = await listCommand('set_notes_done', { ids, done })
+	const result = await listCommand('set_notes_done', { ids, done, ...(source ? { source } : {}) })
 	if (result) useSounds().noteToggled()
 	return result
 }
@@ -1185,9 +1199,14 @@ function errorFor(scope: ActionErrorScope) {
 async function renderNotesMarkdown(
 	selection: NoteSelection,
 	format: MarkdownFormat,
+	source?: DocumentSource,
 ): Promise<RenderedNotes | null> {
 	try {
-		return await invoke<RenderedNotes>('render_notes_markdown', { selection, format })
+		return await invoke<RenderedNotes>('render_notes_markdown', {
+			selection,
+			format,
+			...(source ? { source } : {}),
+		})
 	} catch (error) {
 		console.error('[copper] could not render the notes as Markdown', error)
 		return null
@@ -1269,6 +1288,8 @@ const readonlyViews = {
 	refreshing: readonly(refreshing),
 	actionError: readonly(actionError),
 	storeStatus: readonly(storeStatus),
+	source,
+	isSource,
 	storeErrorEvent: readonly(storeErrorEvent),
 	settings: readonly(settings),
 	epoch: readonly(epoch),

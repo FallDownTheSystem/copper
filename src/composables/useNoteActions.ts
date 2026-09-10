@@ -8,6 +8,8 @@
  * duplicates it.
  */
 
+import { errorMessage } from '@/lib/rustError'
+
 import { useAttachments } from './useAttachments'
 import { useSystemClipboard } from './useSystemClipboard'
 import { useEditorHandoff } from './useEditorHandoff'
@@ -19,7 +21,14 @@ import { noteRow, rowNoteId, rowSectionId, sectionRow, takeRow, useSelection } f
 import { useSettings } from './useSettings'
 import { useDeviceShare } from './useDeviceShare'
 import { countMessage, useStatusMessage, type StatusAction } from './useStatusMessage'
-import { useSpace, type MarkdownFormat, type NoteSelection, type Section } from './useSpace'
+import {
+	useSpace,
+	type DocumentSource,
+	type MarkdownFormat,
+	type NoteSelection,
+	type RenderedNotes,
+	type Section,
+} from './useSpace'
 
 const space = useSpace()
 const selection = useSelection()
@@ -73,6 +82,9 @@ function targetNotes() {
 }
 
 const targetCount = computed(() => targetIds().length)
+const canCopyWithAttachments = computed(() =>
+	targetNotes().some((note) => (note.attachments?.length ?? 0) > 0),
+)
 
 /** `Mark as Done` names the action it performs, so it flips only when there is
  *  nothing left to mark. */
@@ -171,14 +183,15 @@ async function writeCopy(text: string, count: number): Promise<boolean> {
  * `applyDone`: in the default view the marked rows vanish, and one of them may
  * hold focus.
  */
-function markCopiedDone(ids: string[]): Promise<boolean> {
+function markCopiedDone(ids: string[], epoch: number, source: DocumentSource): Promise<boolean> {
 	if (!settings.doneOnCopy.value) return Promise.resolve(false)
 	return serialize(async () => {
+		if (space.epoch.value !== epoch || !space.isSource(source)) return false
 		const fresh = ids.filter((id) => space.noteById(id)?.done === false)
 		if (fresh.length === 0) return false
 
 		const held = domFocusHolder() ?? selection.focusedNoteId.value
-		if (!space.applied(await space.setNotesDone(fresh, true))) return false
+		if (!space.applied(await space.setNotesDone(fresh, true, source))) return false
 
 		handFocusOnVanished(held)
 		return true
@@ -211,14 +224,22 @@ function markCopiedDone(ids: string[]): Promise<boolean> {
  * marking, because only the marking is a store step; the clipboard has no undo.
  */
 async function copy(scope: NoteSelection, format: MarkdownFormat) {
-	const rendered = await space.renderNotesMarkdown(scope, format)
+	const source = space.source.value
+	if (!source) return
+	const epoch = space.epoch.value
+	const rendered = await space.renderNotesMarkdown(scope, format, source)
 	if (!rendered) {
 		status.setError("Couldn't copy those notes.")
 		return
 	}
 	if (!(await writeCopy(rendered.text, rendered.count))) return
+	await finishCopy(rendered, epoch, source)
+}
 
-	const moved = await markCopiedDone(rendered.ids)
+async function finishCopy(rendered: RenderedNotes, epoch: number, source: DocumentSource) {
+	if (space.epoch.value !== epoch || !space.isSource(source) || rendered.count === 0) return
+	const moved = await markCopiedDone(rendered.ids, epoch, source)
+	if (space.epoch.value !== epoch || !space.isSource(source)) return
 	status.setMessage(
 		countMessage(
 			rendered.count,
@@ -242,6 +263,23 @@ function copyNotes() {
 
 function copyAsList() {
 	return copy({ kind: 'ids', ids: targetIds() }, 'list')
+}
+
+async function copyWithAttachments() {
+	const ids = targetIds()
+	if (ids.length === 0) return
+	const source = space.source.value
+	if (!source) {
+		status.setError('Open a space before copying notes.')
+		return
+	}
+	const epoch = space.epoch.value
+	try {
+		const rendered = await clipboard.copyNotesWithAttachments({ kind: 'ids', ids }, source)
+		await finishCopy(rendered, epoch, source)
+	} catch (error) {
+		if (space.epoch.value === epoch && space.isSource(source)) status.setError(errorMessage(error))
+	}
 }
 
 // --- copy as Markdown, in three scopes ---------------------------------------
@@ -1357,6 +1395,8 @@ export function useNoteActions() {
 		openAttachment,
 		isRedundantTarget,
 		copyNotes,
+		copyWithAttachments,
+		canCopyWithAttachments,
 		copyAsList,
 		copyDocumentAsMarkdown,
 		copySectionAsMarkdown,

@@ -10,12 +10,29 @@ Built with Tauri 2, Vue, and Tailwind CSS.
 - **Capture from anywhere** — grab the selected text in any app and drop it straight into a note, with an optional toast so you know the capture landed.
 - **Spaces and sections** — organize notes into spaces, each with collapsible sections. Move notes between them from the context menu or the keyboard.
 - **Markdown notes** — notes render Markdown, and links unfurl into preview cards.
-- **Attachments** — drag files onto the panel or paste them; images open in a built-in viewer.
+- **Attachments** — drag or paste files, view images, and select attachments to copy images, files, or paths.
 - **Search, filter, sort** — full-text search across a space, a done/todo filter, and sort modes. View state is remembered per list across restarts.
 - **Keyboard-first** — every row is a Tab stop, actions have chords, and the summon shortcut is recordable in settings. A built-in reference lists them all.
 - **Sharing between machines** — sync a space to another machine through an end-to-end encrypted relay.
 - **Command-line access** — a bundled `copper` CLI reads and edits spaces from a terminal; the app picks up CLI edits within about a second.
 - **Windows-native** — light/dark themes with adjustable translucency, a system tray, optional start-with-Windows, and a built-in updater.
+
+## Copy notes and attachments
+
+- Right-click a note and choose **Copy with attachments** to copy its text and local attachment paths.
+- Click an attachment to select it. Use **Ctrl+click** to toggle items or **Shift+click** to select a range.
+- Drag any selected attachment to another application to send all selected files. Keep the mouse button down while Copper prepares the files. Press **Escape** to cancel.
+- Double-click an attachment to open it. **Enter** and **Space** also open the focused attachment.
+- Press **Ctrl+C** or use the copy bar. One supported image copies as pixels; other selections copy as files.
+- Choose **Copy as file** to preserve an image's original format or animation.
+- Use **Copy paths** for terminals and applications that do not accept native file paste.
+- **Copy**, **Copy as list**, and **Copy as Markdown** on notes remain text-only.
+
+Drag-out and copied attachment paths use independent copies with their original filenames, not Copper's stored originals. Drag-out permits copying, not moving. These files require local file access; Copper does not upload them to remote sessions.
+
+Some applications accept only one file from a clipboard paste but accept multiple files through drag-and-drop. Use drag-out for those applications. A drop back into Copper does not attach duplicate files.
+
+Copper keeps these copies in `%LOCALAPPDATA%\io.github.falldownthesystem.copper\attachment-copies`. They survive app exit and note deletion. Removing this directory breaks existing copied paths. If no application needs those paths, you can remove the directory to reclaim space.
 
 ## Credits
 

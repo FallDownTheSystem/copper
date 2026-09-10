@@ -9,6 +9,7 @@
 
 pub mod clipboard;
 pub mod drop_target;
+pub mod drag_source;
 pub mod foreground;
 pub mod integrity;
 

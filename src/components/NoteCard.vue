@@ -309,6 +309,7 @@ function onDoubleClick(event: MouseEvent) {
 							<li v-for="attachment in attachments" :key="attachment.id" class="min-w-0">
 								<AttachmentCard
 									:attachment="attachment"
+									:note="note.id"
 									:tab-index="descendantTabIndex"
 									@message="setMessage"
 								/>

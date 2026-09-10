@@ -282,6 +282,7 @@ pub fn run() {
 			let shared: core_store::SharedStore =
 				Arc::new(Mutex::new(core_store::bootstrap_store(&config_dir, sink)?));
 			app.manage(Arc::clone(&shared));
+			app.manage(attachments::drag::DragExports::default());
 
 			// A watch that will not register leaves the space open and fully
 			// writable; it only means external edits go unnoticed. get_status

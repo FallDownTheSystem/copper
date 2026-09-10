@@ -50,6 +50,8 @@
 //! [`assets_dir`], [`ORPHAN_GRACE`], [`COLLECTED_DIR`] — so the invariant above
 //! is stated once even though it is applied on both sides of the boundary.
 
+pub mod export;
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

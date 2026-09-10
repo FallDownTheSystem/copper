@@ -22,23 +22,29 @@
  */
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { UnlistenFn } from '@tauri-apps/api/event'
+import { useAttachmentDrag } from '@/composables/useAttachmentDrag'
 
 const { attachPaths } = useAttachments()
 const { clearActionError, reportActionError } = useSpace()
 const { showList } = useView()
 
+const { dragging } = useAttachmentDrag()
 const over = ref(false)
 let unlisten: UnlistenFn | null = null
 
 /**
  * `onDragDropEvent` delivers enter, over, drop and leave through one
  * subscription. `over` fires continuously while the pointer moves, so it is
- * folded into the same "show the treatment" branch rather than given one of its
- * own — the flag is idempotent and re-setting it costs nothing.
+ * folded into the same "show the treatment" branch rather than given one of
+ * its own — the flag is idempotent and re-setting it costs nothing.
  */
 onMounted(async () => {
 	try {
 		unlisten = await getCurrentWebview().onDragDropEvent(async (event) => {
+			if (dragging.value) {
+				over.value = false
+				return
+			}
 			if (event.payload.type === 'enter' || event.payload.type === 'over') {
 				over.value = true
 				return
@@ -89,8 +95,8 @@ onUnmounted(() => {
 	     could swallow a click after the drag ends.
 
 	     Fade in only, with no exit counterpart. Dismissal has to be instant for
-	     the reason the listener documents: the treatment comes down *before* the
-	     ingest round trip, so anything that delayed it would put the hang it
+	     the reason the listener documents: the treatment comes down *before*
+	     the ingest round trip, so anything that delayed it would put the hang it
 	     exists to avoid back on screen. -->
 	<div
 		v-if="over"

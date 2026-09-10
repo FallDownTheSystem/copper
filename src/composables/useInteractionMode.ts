@@ -33,9 +33,22 @@ function enter(rowId: string | null) {
 	if (!rowId) return
 	interactionRowId.value = rowId
 	void nextTick(() => {
+		if (interactionRowId.value !== rowId) return
 		const row = rowElement(rowId)
 		setDescendantsTabbable(row, true)
 		if (row) focusableIn(row)[0]?.focus()
+	})
+}
+
+/** An independent control can move between rows without restarting F2 on the
+ *  first control. Tab and Escape must follow the row that now holds focus. */
+function follow(rowId: string) {
+	const previous = interactionRowId.value
+	if (!previous || previous === rowId) return
+	setDescendantsTabbable(rowElement(previous), false)
+	interactionRowId.value = rowId
+	void nextTick(() => {
+		if (interactionRowId.value === rowId) setDescendantsTabbable(rowElement(rowId), true)
 	})
 }
 
@@ -64,6 +77,7 @@ export function useInteractionMode() {
 	return {
 		interactionRowId: readonly(interactionRowId),
 		enter,
+		follow,
 		exit,
 		reconcile,
 	}

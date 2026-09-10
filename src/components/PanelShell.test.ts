@@ -7,6 +7,7 @@ import PanelShell from './PanelShell.vue'
 // `vi.resetModules()` would resolve a *second* instance of a module whose state
 // is module-scoped by design, and the component tree would not share it.
 import { useAttachments, type Attachment } from '@/composables/useAttachments'
+import { useAttachmentSelection } from '@/composables/useAttachmentSelection'
 import { useInteractionMode } from '@/composables/useInteractionMode'
 import { useNoteActions } from '@/composables/useNoteActions'
 import { useNoteDrag } from '@/composables/useNoteDrag'
@@ -21,7 +22,13 @@ import { useSettings } from '@/composables/useSettings'
 import { useSpace } from '@/composables/useSpace'
 import { useSpaces } from '@/composables/useSpaces'
 import { useStatusMessage } from '@/composables/useStatusMessage'
-import type { MarkdownFormat, NoteSelection, Space, StoreStatus } from '@/composables/useSpace'
+import type {
+	DocumentSource,
+	MarkdownFormat,
+	NoteSelection,
+	Space,
+	StoreStatus,
+} from '@/composables/useSpace'
 
 const actions = useNoteActions()
 const drag = useNoteDrag()
@@ -165,6 +172,8 @@ const STATUS: StoreStatus = {
 	canRedo: false,
 	startupNotice: null,
 }
+
+const SOURCE: DocumentSource = { path: STATUS.path ?? '', id: SPACE.id }
 
 /** `SPACE` after `merge_notes` over both of `sec_a`'s notes: one note, keeping
  *  the first id, in the section they were already in. */
@@ -403,7 +412,8 @@ afterEach(async () => {
 	// that only show up in file order.
 	settingsPayload = defaultSettings()
 	mocks.invoke.mockImplementation(baseInvoke)
-	await space.refresh()
+	// A space-switch test changes file status as well as the document.
+	await space.adopt(SPACE)
 	// `useSettings` is module-scoped too, and a test that stored a non-default
 	// preference would otherwise hand it to every test after it.
 	await settings.refresh()
@@ -449,7 +459,14 @@ async function mountPanel() {
 function renderCalls() {
 	return mocks.invoke.mock.calls
 		.filter((call) => call[0] === 'render_notes_markdown')
-		.map((call) => call[1] as { selection: NoteSelection; format: MarkdownFormat })
+		.map(
+			(call) =>
+				call[1] as {
+					selection: NoteSelection
+					format: MarkdownFormat
+					source: DocumentSource
+				},
+		)
 }
 
 function lastRender() {
@@ -1390,7 +1407,11 @@ describe('copy', () => {
 		await settle(2)
 
 		// The scope: `Ctrl+C` targets the selection, by id, as raw bodies.
-		expect(lastRender()).toEqual({ selection: { kind: 'ids', ids: ['nte_1'] }, format: 'bodies' })
+		expect(lastRender()).toEqual({
+			selection: { kind: 'ids', ids: ['nte_1'] },
+			format: 'bodies',
+			source: SOURCE,
+		})
 		// The plumbing: the answer reached the clipboard unaltered. Nothing on this
 		// side reads, trims or re-joins it.
 		expect(copied()).toBe(JSON.stringify(lastRender()))
@@ -1449,7 +1470,11 @@ describe('copy', () => {
 		await wrapper.trigger('keydown', { key: 'C', ctrlKey: true, shiftKey: true })
 		await settle(4)
 
-		expect(lastRender()).toEqual({ selection: { kind: 'ids', ids: ['nte_1'] }, format: 'list' })
+		expect(lastRender()).toEqual({
+			selection: { kind: 'ids', ids: ['nte_1'] },
+			format: 'list',
+			source: SOURCE,
+		})
 		expect(copied()).toBe(JSON.stringify(lastRender()))
 	})
 
@@ -1511,7 +1536,7 @@ describe('copy', () => {
 
 		// One request for both notes, not one per note.
 		expect(renderCalls()).toEqual([
-			{ selection: { kind: 'ids', ids: ['nte_1', 'nte_2'] }, format: 'bodies' },
+			{ selection: { kind: 'ids', ids: ['nte_1', 'nte_2'] }, format: 'bodies', source: SOURCE },
 		])
 		expect(copied()).toBe(JSON.stringify(lastRender()))
 		// Singular and plural are separate whole strings, never `note(s)` — and the
@@ -1544,6 +1569,7 @@ describe('copy', () => {
 			// undo restores nothing visible.
 			expect(mocks.invoke).toHaveBeenCalledWith('set_notes_done', {
 				ids: ['nte_1'],
+				source: { path: STATUS.path, id: SPACE.id },
 				done: true,
 			})
 			expect(wrapper.text()).toContain('Copied 2 notes and moved them to Done')
@@ -3328,6 +3354,317 @@ describe('attachments', () => {
 		attachmentOverrides = {}
 	})
 
+	describe('attachment copy', () => {
+		const files = useAttachmentSelection()
+
+		async function mountedFiles() {
+			withAttachmentCommands({
+				clipboard_copy_attachments: (args?: Record<string, unknown>) => ({
+					count: Array.isArray(args?.targets) ? args.targets.length : 0,
+					format: args?.format === 'paths' ? 'paths' : 'files',
+				}),
+			})
+			const wrapper = await mountPanel()
+			await installWithAttachments(documentWith([PNG, PDF]))
+			return wrapper
+		}
+
+		it('copies the selected attachment, not its note or its thumbnail', async () => {
+			const wrapper = await mountedFiles()
+			const card = wrapper.get('[data-attachment-open]')
+			;(card.element as HTMLElement).focus()
+			await card.trigger('click')
+			expect(document.activeElement).toBe(card.element)
+			expect(selection.selectedIds.value).toEqual([])
+			mocks.invoke.mockClear()
+			await card.trigger('keydown', { key: 'c', ctrlKey: true })
+			await settle(3)
+			expect(mocks.invoke).toHaveBeenCalledWith('clipboard_copy_attachments', {
+				targets: [{ note: 'nte_1', attachment: PNG.id }],
+				format: 'auto',
+				source: { path: STATUS.path, id: SPACE.id },
+			})
+			expect(mocks.invoke).not.toHaveBeenCalledWith('clipboard_write_text', expect.anything())
+			expect(mocks.invoke).not.toHaveBeenCalledWith('set_notes_done', expect.anything())
+		})
+
+		it('selects multiple files with Ctrl+click and offers an explicit path copy', async () => {
+			const wrapper = await mountedFiles()
+			expect(wrapper.findAll('[data-attachment-id] [role="checkbox"]')).toHaveLength(0)
+			for (const card of wrapper.findAll('[data-attachment-open]')) {
+				await card.trigger('click', { ctrlKey: true })
+			}
+			expect(files.count.value).toBe(2)
+			expect(wrapper.get('[data-attachment-actions]').text()).toContain('2 attachments')
+			const copyPaths = wrapper
+				.findAll('[data-attachment-actions] button')
+				.find((button) => button.text() === 'Copy paths')!
+			await copyPaths.trigger('click')
+			await settle(3)
+			expect(mocks.invoke).toHaveBeenCalledWith('clipboard_copy_attachments', {
+				targets: [
+					{ note: 'nte_1', attachment: PNG.id },
+					{ note: 'nte_1', attachment: PDF.id },
+				],
+				format: 'paths',
+				source: { path: STATUS.path, id: SPACE.id },
+			})
+		})
+
+		it('Escape cancels a pending drag without clearing attachment selection or focus', async () => {
+			const wrapper = await mountedFiles()
+			const cards = wrapper.findAll('[data-attachment-open]')
+			for (const card of cards) await card.trigger('click', { ctrlKey: true })
+			const card = cards[1]!
+			;(card.element as HTMLElement).focus()
+			let finish!: (id: string) => void
+			const preparing = new Promise<string>((resolve) => {
+				finish = resolve
+			})
+			const base = mocks.invoke.getMockImplementation()!
+			mocks.invoke.mockImplementation((command, args) => {
+				if (command === 'attachment_prepare_drag') return preparing
+				if (command === 'attachment_discard_drag') return Promise.resolve(null)
+				return base(command, args)
+			})
+			await card.trigger('pointerdown', {
+				button: 0,
+				buttons: 1,
+				pointerType: 'mouse',
+				pointerId: 1,
+				clientX: 10,
+				clientY: 10,
+			})
+			window.dispatchEvent(
+				new PointerEvent('pointermove', {
+					buttons: 1,
+					pointerType: 'mouse',
+					pointerId: 1,
+					clientX: 30,
+					clientY: 10,
+				}),
+			)
+			await settle(2)
+			await card.trigger('keydown', { key: 'Escape' })
+			try {
+				expect(files.count.value).toBe(2)
+				expect(document.activeElement).toBe(card.element)
+			} finally {
+				finish('cancelled-drag')
+				await settle(3)
+			}
+			expect(mocks.invoke).toHaveBeenCalledWith('attachment_discard_drag', { id: 'cancelled-drag' })
+			expect(mocks.invoke).not.toHaveBeenCalledWith('attachment_start_drag', expect.anything())
+		})
+
+		it('does not delete the containing note and Escape leaves attachment selection', async () => {
+			const wrapper = await mountedFiles()
+			const card = wrapper.get('[data-attachment-open]')
+			;(card.element as HTMLElement).focus()
+			await card.trigger('click')
+			mocks.invoke.mockClear()
+			await card.trigger('keydown', { key: 'Delete' })
+			await card.trigger('keydown', { key: 'd', ctrlKey: true })
+			await settle(2)
+			expect(mocks.invoke).not.toHaveBeenCalledWith('delete_notes', expect.anything())
+			await card.trigger('keydown', { key: 'Escape' })
+			await settle(3)
+			expect(files.active.value).toBe(false)
+			expect(document.activeElement).toBe(wrapper.get('[data-row-id="n:nte_1"]').element)
+			expect(mocks.invoke).not.toHaveBeenCalledWith('hide_panel')
+		})
+
+		it('keeps native text copy ahead of an attachment selection', async () => {
+			const wrapper = await mountedFiles()
+			files.select({ note: 'nte_1', attachment: PNG.id })
+			vi.spyOn(window, 'getSelection').mockReturnValue({
+				toString: () => 'selected prose',
+			} as Selection)
+			mocks.invoke.mockClear()
+			const event = new KeyboardEvent('keydown', {
+				key: 'c',
+				ctrlKey: true,
+				bubbles: true,
+				cancelable: true,
+			})
+			wrapper.get('[data-panel-root]').element.dispatchEvent(event)
+			await settle(2)
+			expect(event.defaultPrevented).toBe(false)
+			expect(mocks.invoke).not.toHaveBeenCalledWith('clipboard_copy_attachments', expect.anything())
+		})
+
+		it('preserves a multi-file selection through its own context menu', async () => {
+			const wrapper = await mountedFiles()
+			files.select({ note: 'nte_1', attachment: PNG.id })
+			files.toggle({ note: 'nte_1', attachment: PDF.id })
+			await wrapper.get('[data-attachment-open]').trigger('contextmenu')
+			await settle(3)
+			expect(files.count.value).toBe(2)
+			expect(selection.selectedIds.value).toEqual([])
+			const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((entry) =>
+				entry.textContent?.includes('Copy 2 attachments'),
+			)!
+			expect(item).toBeDefined()
+			item.click()
+			await settle(3)
+			expect(mocks.invoke).toHaveBeenCalledWith('clipboard_copy_attachments', {
+				targets: [
+					{ note: 'nte_1', attachment: PNG.id },
+					{ note: 'nte_1', attachment: PDF.id },
+				],
+				format: 'auto',
+				source: { path: STATUS.path, id: SPACE.id },
+			})
+		})
+
+		it('copies notes with references through a distinct action and only then marks them done', async () => {
+			const wrapper = await mountedFiles()
+			settingsPayload = { ...defaultSettings(), doneOnCopy: true }
+			await settings.refresh()
+			withAttachmentCommands({
+				clipboard_copy_notes: {
+					text: 'first note\n\nAttachments (local files):',
+					count: 1,
+					ids: ['nte_1'],
+				},
+			})
+			await wrapper.get('[data-row-id="n:nte_1"] [role="gridcell"]').trigger('contextmenu')
+			await settle(3)
+			const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+				(entry) => entry.textContent?.trim() === 'Copy with attachments',
+			)!
+			expect(item).toBeDefined()
+			item.click()
+			await settle(4)
+			expect(mocks.invoke).toHaveBeenCalledWith('clipboard_copy_notes', {
+				selection: { kind: 'ids', ids: ['nte_1'] },
+				source: { path: STATUS.path, id: SPACE.id },
+			})
+			expect(mocks.invoke).toHaveBeenCalledWith('set_notes_done', {
+				ids: ['nte_1'],
+				done: true,
+				source: SOURCE,
+			})
+			expect(mocks.invoke).not.toHaveBeenCalledWith('clipboard_write_text', expect.anything())
+		})
+
+		it('does not mark a different file with identical document and note IDs after a slow copy', async () => {
+			await mountedFiles()
+			settingsPayload = { ...defaultSettings(), doneOnCopy: true }
+			await settings.refresh()
+			let finish!: (value: { text: string; count: number; ids: string[] }) => void
+			const pending = new Promise((resolve) => {
+				finish = resolve
+			})
+			withAttachmentCommands({ clipboard_copy_notes: () => pending })
+			selection.select('nte_1')
+			const copying = actions.copyWithAttachments()
+			await settle(2)
+			withAttachmentCommands({ get_status: { ...STATUS, path: 'C:\\copies\\other.copper' } })
+			await space.adopt(documentWith([PNG, PDF]))
+			expect(space.source.value?.path).toBe('C:\\copies\\other.copper')
+			mocks.invoke.mockClear()
+			finish({ text: 'copied', count: 1, ids: ['nte_1'] })
+			await copying
+			expect(mocks.invoke).not.toHaveBeenCalledWith('set_notes_done', expect.anything())
+		})
+
+		it('reports a refused note-with-attachments copy without marking the note done', async () => {
+			const wrapper = await mountedFiles()
+			settingsPayload = { ...defaultSettings(), doneOnCopy: true }
+			await settings.refresh()
+			withAttachmentCommands({
+				clipboard_copy_notes: () => {
+					throw { kind: 'invalid', message: 'missing attachment' }
+				},
+			})
+			selection.select('nte_1')
+			await actions.copyWithAttachments()
+			await settle(3)
+			expect(wrapper.text()).toContain('missing attachment')
+			expect(mocks.invoke).not.toHaveBeenCalledWith('set_notes_done', expect.anything())
+		})
+
+		it('keeps padding gestures on the attachment rather than the containing note', async () => {
+			const wrapper = await mountedFiles()
+			const row = wrapper.get('[data-row-id="n:nte_1"]')
+			const card = wrapper.get('[data-attachment-id]')
+			;(row.element as HTMLElement).focus()
+			await card.trigger('mousedown', { button: 0 })
+			await card.trigger('click')
+			expect(document.activeElement).toBe(card.get('[data-attachment-open]').element)
+			mocks.invoke.mockClear()
+			await card.trigger('dblclick')
+			await settle(3)
+			expect(mocks.invoke).not.toHaveBeenCalledWith('clipboard_write_text', expect.anything())
+			expect(mocks.invoke).not.toHaveBeenCalledWith('set_notes_done', expect.anything())
+		})
+
+		it.each(['ctrlKey', 'shiftKey'] as const)(
+			'keeps padding mousedown from clearing the %s attachment selection',
+			async (modifier) => {
+				const wrapper = await mountedFiles()
+				await wrapper.get('[data-attachment-open]').trigger('click')
+				const card = wrapper.get('[data-attachment-id="att_2"]')
+				const down = new MouseEvent('mousedown', {
+					bubbles: true,
+					cancelable: true,
+					[modifier]: true,
+				})
+				card.element.dispatchEvent(down)
+				expect(down.defaultPrevented).toBe(true)
+				await card.trigger('click', { [modifier]: true })
+				expect(files.count.value).toBe(2)
+				const buttonDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
+				card.get('[data-attachment-open]').element.dispatchEvent(buttonDown)
+				expect(buttonDown.defaultPrevented).toBe(false)
+			},
+		)
+
+		it('returns focus to the note when an external update removes the focused attachment', async () => {
+			const wrapper = await mountedFiles()
+			const card = wrapper.get('[data-attachment-open]')
+			;(card.element as HTMLElement).focus()
+			await card.trigger('click')
+			await installWithAttachments(documentWith([PDF]))
+			expect(document.activeElement).toBe(wrapper.get('[data-row-id="n:nte_1"]').element)
+			expect(files.active.value).toBe(false)
+		})
+
+		it('moves the F2 scope with attachment focus across notes', async () => {
+			const wrapper = await mountedFiles()
+			await installWithAttachments({
+				...SPACE,
+				notes: SPACE.notes.map((note, index) => ({
+					...note,
+					attachments: index === 0 ? [PNG] : [PDF],
+				})),
+			})
+			selection.select('nte_1')
+			interaction.enter('n:nte_1')
+			await settle(2)
+			const first = wrapper.get('[data-attachment-note="nte_1"] [data-attachment-open]')
+			;(first.element as HTMLElement).focus()
+			await first.trigger('keydown', { key: 'ArrowDown' })
+			await settle(2)
+			const next = wrapper.get('[data-attachment-note="nte_2"] [data-attachment-open]')
+			expect(document.activeElement).toBe(next.element)
+			expect(interaction.interactionRowId.value).toBe('n:nte_2')
+			await next.trigger('keydown', { key: 'Escape' })
+			await settle(2)
+			expect(document.activeElement).toBe(wrapper.get('[data-row-id="n:nte_2"]').element)
+			expect(interaction.interactionRowId.value).toBeNull()
+		})
+
+		it('has accessible selection controls when attachments are present', async () => {
+			await mountedFiles()
+			const results = await axe.run(document.body, {
+				rules: { 'color-contrast': { enabled: false } },
+			})
+			expect(results.violations.map((violation) => violation.id)).toEqual([])
+		}, 30_000)
+	})
+
 	// --- the pending tray ---
 
 	/** AC1. */
@@ -3510,7 +3847,7 @@ describe('attachments', () => {
 		await mountPanel()
 		await installWithAttachments(documentWith([PNG, PDF]))
 
-		const cards = document.querySelectorAll<HTMLElement>('[data-note-row] button[aria-label*=".p"]')
+		const cards = document.querySelectorAll<HTMLElement>('[data-note-row] [data-attachment-open]')
 		expect(cards).toHaveLength(2)
 		// Task-014 split the two destinations, and the label follows: something with
 		// a picture is *viewed* in the panel, and everything else still *opens*
@@ -3679,12 +4016,9 @@ describe('attachments', () => {
 		expect(search.query.value).toBe('first')
 		expect(selection.selectedIds.value).toEqual(['nte_1'])
 		expect(mocks.invoke).not.toHaveBeenCalledWith('hide_panel')
-		// Focus goes back toward where the press came from, not to the body — and
-		// the grid's focusin rule then seats it on the card's row: outside F2
-		// interaction mode, focus never rests on a control inside a row. (A viewer
-		// opened *from* F2 keeps the card focused — interaction mode is the
-		// exemption.)
-		expect(document.activeElement).toBe(card.closest('[data-row-id]'))
+		// The attachment remains the keyboard's copy target when its viewer closes.
+		// Restoring focus must not replace the note selection behind the viewer.
+		expect(document.activeElement).toBe(card)
 	})
 
 	it('owns the keyboard while it is up, exactly as an open menu does', async () => {
@@ -5112,7 +5446,7 @@ describe('the double-click action', () => {
 		await settle(4)
 
 		expect(renderCalls()).toEqual([
-			{ selection: { kind: 'ids', ids: ['nte_1'] }, format: 'bodies' },
+			{ selection: { kind: 'ids', ids: ['nte_1'] }, format: 'bodies', source: SOURCE },
 		])
 		expect(copied()).toBe(JSON.stringify(lastRender()))
 		expect(editor.editingNoteId.value).toBeNull()
@@ -5192,7 +5526,11 @@ describe('copy as Markdown', () => {
 		// `Inbox` holds nothing and is still in scope: the panel says "the document"
 		// and the resolver keeps the empty section's heading, which is where that
 		// rule is now tested.
-		expect(lastRender()).toEqual({ selection: { kind: 'document' }, format: 'markdown' })
+		expect(lastRender()).toEqual({
+			selection: { kind: 'document' },
+			format: 'markdown',
+			source: SOURCE,
+		})
 		expect(copied()).toBe(JSON.stringify(lastRender()))
 	})
 
@@ -5209,7 +5547,11 @@ describe('copy as Markdown', () => {
 
 		// The whole document, not the one matching note — and nothing about the
 		// query travels with the request.
-		expect(lastRender()).toEqual({ selection: { kind: 'document' }, format: 'markdown' })
+		expect(lastRender()).toEqual({
+			selection: { kind: 'document' },
+			format: 'markdown',
+			source: SOURCE,
+		})
 	})
 
 	it('copies one section, whole, from the section menu', async () => {
@@ -5221,6 +5563,7 @@ describe('copy as Markdown', () => {
 		expect(lastRender()).toEqual({
 			selection: { kind: 'section', id: 'sec_a' },
 			format: 'markdown',
+			source: SOURCE,
 		})
 		expect(copied()).toBe(JSON.stringify(lastRender()))
 	})
@@ -5252,6 +5595,7 @@ describe('copy as Markdown', () => {
 		expect(lastRender()).toEqual({
 			selection: { kind: 'ids', ids: ['nte_1', 'nte_2'] },
 			format: 'markdown',
+			source: SOURCE,
 		})
 	})
 
@@ -6377,7 +6721,7 @@ describe('the status toast', () => {
 
 		// And the rows they name: the two fixed bands either side of the region, and
 		// the toast host sharing the region's cell rather than taking a row from it.
-		expect(wrapper.get('header').classes()).toContain('row-start-1')
+		expect(wrapper.get('[data-panel-header]').classes()).toContain('row-start-1')
 		expect(wrapper.get('[data-scroll-region]').classes()).toContain('row-start-2')
 		expect(wrapper.get('form').classes()).toContain('row-start-3')
 		// Through `closest` rather than a parent chain: the toast sits inside

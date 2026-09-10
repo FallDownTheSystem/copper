@@ -23,7 +23,7 @@
 
 use std::io::Cursor;
 
-use image::{DynamicImage, ImageFormat, ImageReader, Limits};
+use image::{DynamicImage, ImageDecoder, ImageError, ImageFormat, ImageReader, Limits};
 
 use copper_core::store::error::{Result, StoreError};
 
@@ -132,6 +132,19 @@ pub fn dib_to_png(dib: &[u8]) -> Result<Vec<u8>> {
 	encode_png(&decode(&bmp)?)
 }
 
+/// Original-resolution pixels, bounded by the same decoder as attachment previews.
+/// A bitmap clipboard cannot represent animation; file copy preserves that instead.
+pub fn clipboard_pixels(bytes: &[u8]) -> Result<image::RgbaImage> {
+	if !is_thumbnailable(copper_core::attachments::sniff_mime(bytes)) {
+		return Err(StoreError::Invalid("this attachment cannot be copied as an image".into()));
+	}
+	let mut decoder = decoder(bytes)?;
+	let orientation = decoder.orientation().map_err(decode_failure)?;
+	let mut image = DynamicImage::from_decoder(decoder).map_err(decode_failure)?;
+	image.apply_orientation(orientation);
+	Ok(image.into_rgba8())
+}
+
 // --- internals ---------------------------------------------------------------
 
 fn reader(bytes: &[u8]) -> Option<ImageReader<Cursor<&[u8]>>> {
@@ -162,19 +175,33 @@ fn header_reader(bytes: &[u8]) -> Option<ImageReader<Cursor<&[u8]>>> {
 /// *lies* — the readable refusal comes from the pixel-count check in
 /// [`thumbnail`], which runs first and gets to say what the size actually was.
 fn decode(bytes: &[u8]) -> Result<DynamicImage> {
+	DynamicImage::from_decoder(decoder(bytes)?).map_err(decode_failure)
+}
+
+fn decode_failure(error: ImageError) -> StoreError {
+	StoreError::Invalid(format!("the image could not be decoded: {error}"))
+}
+
+fn decoder(bytes: &[u8]) -> Result<impl ImageDecoder + '_> {
 	let mut reader =
 		reader(bytes).ok_or_else(|| StoreError::Invalid("the image could not be read".into()))?;
 	let mut limits = Limits::no_limits();
-	// A square at the pixel cap, so the per-axis bounds and the pixel bound
-	// describe the same ceiling rather than two that can disagree.
-	let edge = (MAX_DECODED_PIXELS as f64).sqrt() as u32;
-	limits.max_image_width = Some(edge);
-	limits.max_image_height = Some(edge);
+	// A one-pixel-high panorama may use the full pixel budget on a single axis.
+	// The product below, not a square-root axis limit, bounds the decoded image.
+	limits.max_image_width = Some(MAX_DECODED_PIXELS as u32);
+	limits.max_image_height = Some(MAX_DECODED_PIXELS as u32);
 	limits.max_alloc = Some(MAX_DECODE_ALLOC);
-	reader.limits(limits);
-	reader
-		.decode()
-		.map_err(|err| StoreError::Invalid(format!("the image could not be decoded: {err}")))
+	reader.limits(limits.clone());
+	let mut decoder = reader.into_decoder().map_err(decode_failure)?;
+	let (width, height) = decoder.dimensions();
+	if u64::from(width) * u64::from(height) > MAX_DECODED_PIXELS {
+		return Err(StoreError::Invalid("the image has too many pixels to decode".into()));
+	}
+	// Match ImageReader::decode's allocation reservation before granting the
+	// decoder its remaining budget; into_decoder alone does not reserve output.
+	limits.reserve(decoder.total_bytes()).map_err(decode_failure)?;
+	decoder.set_limits(limits).map_err(decode_failure)?;
+	Ok(decoder)
 }
 
 fn encode_png(image: &DynamicImage) -> Result<Vec<u8>> {
@@ -315,6 +342,30 @@ mod tests {
 
 	fn png(width: u32, height: u32) -> Vec<u8> {
 		encode_png(&DynamicImage::new_rgb8(width, height)).unwrap()
+	}
+
+	#[test]
+	fn clipboard_pixels_apply_exif_orientation() {
+		let pixels = image::RgbImage::from_fn(2, 3, |x, y| image::Rgb([(x * 100) as u8, (y * 70) as u8, 20]));
+		let mut encoded = Cursor::new(Vec::new());
+		pixels.write_to(&mut encoded, ImageFormat::Jpeg).unwrap();
+		// APP1 Exif: little-endian TIFF with one Orientation SHORT, rotate 90 degrees.
+		let exif = [b'E', b'x', b'i', b'f', 0, 0, b'I', b'I', 42, 0, 8, 0, 0, 0,
+			1, 0, 0x12, 1, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0];
+		let original = encoded.into_inner();
+		let mut jpeg = original[..2].to_vec();
+		jpeg.extend_from_slice(&[0xff, 0xe1, 0, 34]);
+		jpeg.extend_from_slice(&exif);
+		jpeg.extend_from_slice(&original[2..]);
+		let expected = image::load_from_memory(&jpeg).unwrap().rotate90().into_rgba8();
+		let copied = clipboard_pixels(&jpeg).unwrap();
+		assert_eq!(copied.dimensions(), (3, 2));
+		assert_eq!(copied.as_raw(), expected.as_raw());
+	}
+
+	#[test]
+	fn clipboard_pixels_limit_total_pixels_not_the_aspect_ratio() {
+		assert_eq!(clipboard_pixels(&png(7680, 2)).unwrap().dimensions(), (7680, 2));
 	}
 
 	#[test]

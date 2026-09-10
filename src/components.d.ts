@@ -14,6 +14,7 @@ declare module 'vue' {
     ActiveMarker: typeof import('./components/ActiveMarker.vue')['default']
     ActiveSectionChip: typeof import('./components/ActiveSectionChip.vue')['default']
     AttachmentCard: typeof import('./components/AttachmentCard.vue')['default']
+    AttachmentCopyBar: typeof import('./components/AttachmentCopyBar.vue')['default']
     AttachmentTray: typeof import('./components/AttachmentTray.vue')['default']
     CaptureNotice: typeof import('./components/CaptureNotice.vue')['default']
     Checkbox: typeof import('./components/ui/checkbox/Checkbox.vue')['default']

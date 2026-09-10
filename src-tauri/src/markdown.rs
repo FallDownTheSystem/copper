@@ -234,6 +234,11 @@ fn notes_of<'a>(
 		.collect()
 }
 
+/// The same validated, canonical note order for copies that also need attachments.
+pub(crate) fn selected_notes<'a>(space: &'a Space, selection: &NoteSelection) -> Reply<Vec<&'a Note>> {
+	Ok(resolve(space, selection)?.into_iter().flat_map(|section| section.notes).collect())
+}
+
 /// The grouping flattened, for the two body-only renderings.
 ///
 /// `Bodies` and `List` have no notion of a section, so the grouping only decides
@@ -251,7 +256,13 @@ fn bodies<'a>(sections: &[MarkdownSection<'a>]) -> Vec<&'a str> {
 pub async fn render_notes_markdown(
 	selection: NoteSelection,
 	format: MarkdownFormat,
+	source: Option<crate::store::source::DocumentSource>,
 	state: State<'_, SharedStore>,
 ) -> Reply<RenderedNotes> {
-	render_active(&lock(&state), &selection, format)
+	if let Some(source) = source {
+		let (_, space) = source.snapshot(&state)?;
+		render(&space, &selection, format)
+	} else {
+		render_active(&lock(&state), &selection, format)
+	}
 }

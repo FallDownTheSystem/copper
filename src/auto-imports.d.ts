@@ -25,6 +25,7 @@ declare global {
   const VIBRANCY_MIN: typeof import('./composables/useSettings').VIBRANCY_MIN
   const applied: typeof import('./composables/useSpace').applied
   const asyncComputed: typeof import('@vueuse/core').asyncComputed
+  const attachmentKey: typeof import('./composables/useAttachmentSelection').attachmentKey
   const autoResetRef: typeof import('@vueuse/core').autoResetRef
   const cn: typeof import('@/lib/utils').cn
   const computed: typeof import('vue').computed
@@ -164,6 +165,9 @@ declare global {
   const useArrayUnique: typeof import('@vueuse/core').useArrayUnique
   const useAsyncQueue: typeof import('@vueuse/core').useAsyncQueue
   const useAsyncState: typeof import('@vueuse/core').useAsyncState
+  const useAttachmentActions: typeof import('./composables/useAttachmentActions').useAttachmentActions
+  const useAttachmentDrag: typeof import('./composables/useAttachmentDrag').useAttachmentDrag
+  const useAttachmentSelection: typeof import('./composables/useAttachmentSelection').useAttachmentSelection
   const useAttachments: typeof import('./composables/useAttachments').useAttachments
   const useAttrs: typeof import('vue').useAttrs
   const useAutoSize: typeof import('./composables/useAutoSize').useAutoSize
@@ -409,7 +413,7 @@ declare global {
   export type { ThemePreference, MotionPreference, InsertionPoint, DoubleClickAction, EnterKeyAction, ShortcutState, ShortcutTarget, SettingsScope, PreferenceScope, Generation } from './composables/useSettings'
   import('./composables/useSettings')
   // @ts-ignore
-  export type { Note, Section, Space, StoreStatus, Settings, SpaceView, NoteView, ChangeReason, SpaceChangedPayload, StoreErrorPayload, SubmitOutcome, AddNoteResult, AddNotesResult, SubmitResult, NoteSelection, MarkdownFormat, RenderedNotes, LoadState, ActionErrorScope, ActionError, MutationResult } from './composables/useSpace'
+  export type { Note, Section, Space, DocumentSource, StoreStatus, Settings, SpaceView, NoteView, ChangeReason, SpaceChangedPayload, StoreErrorPayload, SubmitOutcome, AddNoteResult, AddNotesResult, SubmitResult, NoteSelection, MarkdownFormat, RenderedNotes, LoadState, ActionErrorScope, ActionError, MutationResult } from './composables/useSpace'
   import('./composables/useSpace')
   // @ts-ignore
   export type { UnavailableReason, Availability, RecentEntry, ActivateOutcome } from './composables/useSpaces'
@@ -417,6 +421,9 @@ declare global {
   // @ts-ignore
   export type { StatusAction, StatusSeverity } from './composables/useStatusMessage'
   import('./composables/useStatusMessage')
+  // @ts-ignore
+  export type { AttachmentTarget, AttachmentCopyFormat, CopiedAttachments } from './composables/useSystemClipboard'
+  import('./composables/useSystemClipboard')
   // @ts-ignore
   export type { UpdateStatus, UpdateInfo, UpdateProgress } from './composables/useUpdater'
   import('./composables/useUpdater')
@@ -447,6 +454,7 @@ declare module 'vue' {
     readonly VIBRANCY_MIN: UnwrapRef<typeof import('./composables/useSettings')['VIBRANCY_MIN']>
     readonly applied: UnwrapRef<typeof import('./composables/useSpace')['applied']>
     readonly asyncComputed: UnwrapRef<typeof import('@vueuse/core')['asyncComputed']>
+    readonly attachmentKey: UnwrapRef<typeof import('./composables/useAttachmentSelection')['attachmentKey']>
     readonly autoResetRef: UnwrapRef<typeof import('@vueuse/core')['autoResetRef']>
     readonly cn: UnwrapRef<typeof import('@/lib/utils')['cn']>
     readonly computed: UnwrapRef<typeof import('vue')['computed']>
@@ -586,6 +594,9 @@ declare module 'vue' {
     readonly useArrayUnique: UnwrapRef<typeof import('@vueuse/core')['useArrayUnique']>
     readonly useAsyncQueue: UnwrapRef<typeof import('@vueuse/core')['useAsyncQueue']>
     readonly useAsyncState: UnwrapRef<typeof import('@vueuse/core')['useAsyncState']>
+    readonly useAttachmentActions: UnwrapRef<typeof import('./composables/useAttachmentActions')['useAttachmentActions']>
+    readonly useAttachmentDrag: UnwrapRef<typeof import('./composables/useAttachmentDrag')['useAttachmentDrag']>
+    readonly useAttachmentSelection: UnwrapRef<typeof import('./composables/useAttachmentSelection')['useAttachmentSelection']>
     readonly useAttachments: UnwrapRef<typeof import('./composables/useAttachments')['useAttachments']>
     readonly useAttrs: UnwrapRef<typeof import('vue')['useAttrs']>
     readonly useAutoSize: UnwrapRef<typeof import('./composables/useAutoSize')['useAutoSize']>

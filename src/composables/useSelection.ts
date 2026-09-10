@@ -57,6 +57,7 @@ export function rowSectionId(key: string | null): string | null {
  *  typecheck, and an in-place mutation is precisely the thing shallowness stops
  *  anyone from seeing. */
 const selectedIds = shallowRef<readonly string[]>([])
+const selectionIntent = ref(0)
 const focusedId = ref<string | null>(null)
 const anchorId = ref<string | null>(null)
 
@@ -247,7 +248,8 @@ export type SelectionSnapshot = {
 	anchorId: string | null
 	/** The row the DOM was actually focused on, or null if focus was elsewhere. */
 	activeRowId: string | null
-	/** The node itself, not just its id.
+	/** The focused row or control itself, not just its id. A control can disappear
+	 *  while its containing row survives, and that also needs replacement focus.
 	 *
 	 *  Matching by id alone reports "still there" for a row Vue recreated under a
 	 *  different rowgroup — the id is the same but the element that held focus is
@@ -281,6 +283,13 @@ function setSelection(ids: string[]) {
 	selectedIds.value = ids
 }
 
+/** Reconciliation preserves the interaction target; a deliberate note selection
+ *  takes it back, even when the selected IDs stay identical. */
+function chooseSelection(ids: string[]) {
+	setSelection(ids)
+	selectionIntent.value++
+}
+
 // --- reads -------------------------------------------------------------------
 
 function isSelected(noteId: string) {
@@ -291,7 +300,7 @@ function isSelected(noteId: string) {
 
 /** Replaces the selection with exactly this note. */
 function select(noteId: string) {
-	setSelection([noteId])
+	chooseSelection([noteId])
 	focusedId.value = noteRow(noteId)
 	anchorId.value = noteId
 }
@@ -299,7 +308,7 @@ function select(noteId: string) {
 /** Adds or removes without disturbing the rest — the only path to a
  *  discontiguous selection, since Space is taken by mark-as-done. */
 function toggle(noteId: string) {
-	setSelection(
+	chooseSelection(
 		selectedSet.value.has(noteId)
 			? selectedIds.value.filter((id) => id !== noteId)
 			: [...selectedIds.value, noteId],
@@ -319,7 +328,7 @@ function extendTo(noteId: string) {
 	const to = notes.indexOf(noteId)
 	if (from === -1 || to === -1) return
 
-	setSelection(notes.slice(Math.min(from, to), Math.max(from, to) + 1))
+	chooseSelection(notes.slice(Math.min(from, to), Math.max(from, to) + 1))
 	// The anchor deliberately stays put: extending again must grow from the same
 	// origin, not from wherever the last extension ended.
 	focusedId.value = noteRow(noteId)
@@ -336,7 +345,7 @@ function extendTo(noteId: string) {
  * shut does not.
  */
 function selectAll() {
-	setSelection([...actionableNoteIds.value])
+	chooseSelection([...actionableNoteIds.value])
 }
 
 /**
@@ -364,7 +373,7 @@ function actionableInSection(sectionId: string): string[] {
  */
 function selectSection(sectionId: string) {
 	const ids = actionableInSection(sectionId)
-	setSelection(ids)
+	chooseSelection(ids)
 	anchorId.value = ids[0] ?? null
 
 	const key = sectionRow(sectionId)
@@ -671,7 +680,7 @@ function snapshot(): SelectionSnapshot {
 		focusedId: focusedId.value,
 		anchorId: anchorId.value,
 		activeRowId: activeRow?.dataset.rowId ?? null,
-		activeElement: activeRow,
+		activeElement: activeRow && active instanceof HTMLElement ? active : null,
 		inTextSurface,
 		scroll: captureScroll(),
 	}
@@ -1141,6 +1150,7 @@ export function useSelection() {
 		// every `.value` read, which is exactly the cost the `shallowRef` above
 		// removes.
 		selectedIds: shallowReadonly(selectedIds),
+		selectionIntent: readonly(selectionIntent),
 		focusedId: readonly(focusedId),
 		focusedNoteId,
 		anchorId: readonly(anchorId),

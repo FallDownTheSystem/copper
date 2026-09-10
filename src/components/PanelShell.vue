@@ -2,7 +2,10 @@
 import { invoke } from '@tauri-apps/api/core'
 
 import { PopoverAnchor } from '@/components/ui/popover'
+import AttachmentCopyBar from './AttachmentCopyBar.vue'
 import { rowNoteId } from '@/composables/useSelection'
+import { useAttachmentSelection } from '@/composables/useAttachmentSelection'
+import { useAttachmentActions } from '@/composables/useAttachmentActions'
 import { CHORDS, inOverlay, inTextSurface } from '@/lib/chords'
 import { splitFlatList } from '@/lib/listPaste'
 import { moveFocusOnArrow } from '@/lib/popoverFocus'
@@ -35,6 +38,8 @@ const { setOverlayHost, boundary, portalTo } = useOverlayHost()
 const { hasQuery, clearQuery, resultCount } = useNoteSearch()
 const { open: openPalette } = usePalette()
 const { selectedIds, isSelected, clear } = useSelection()
+const attachmentSelection = useAttachmentSelection()
+const attachmentActions = useAttachmentActions()
 const { editingNoteId, cancel } = useNoteEditor()
 const { isOpen: viewerOpen, close: closeViewer } = useImageViewer()
 const { interactionRowId, exit } = useInteractionMode()
@@ -198,6 +203,9 @@ function onEscape(event: KeyboardEvent) {
 	} else if (editingNoteId.value) {
 		event.preventDefault()
 		cancel()
+	} else if (attachmentSelection.active.value) {
+		event.preventDefault()
+		attachmentActions.dismiss()
 	} else if (interactionRowId.value) {
 		event.preventDefault()
 		exit()
@@ -325,7 +333,27 @@ function onShellKeydown(event: KeyboardEvent) {
 		// preventing default is what lets the native copy run.
 		if ((window.getSelection()?.toString() ?? '').length > 0) return
 		event.preventDefault()
-		void copyNotes()
+		if (attachmentSelection.active.value) void attachmentActions.copy()
+		else void copyNotes()
+		return
+	}
+
+	// File selection is not permission to mutate its containing notes.
+	if (attachmentSelection.active.value) {
+		if (
+			[
+				CHORDS.copyAsList,
+				CHORDS.merge,
+				CHORDS.openInEditor,
+				CHORDS.remove,
+				CHORDS.reorderUp,
+				CHORDS.reorderDown,
+				CHORDS.undo,
+				CHORDS.redo,
+			].some((chord) => chord.matches(event))
+		) {
+			event.preventDefault()
+		}
 		return
 	}
 
@@ -540,6 +568,15 @@ function onContextMenu(event: MouseEvent) {
 	if (target?.closest('[data-note-row], [data-section-row]')) return
 	event.preventDefault()
 }
+
+function leaveAttachmentSelection(event: Event) {
+	const target = event.target
+	if (!(target instanceof Element) || inOverlay(target) || viewerOpen.value) return
+	if (target.closest('[data-attachment-id], [data-attachment-actions]')) return
+	attachmentSelection.clear()
+}
+
+onUnmounted(() => attachmentSelection.clear())
 </script>
 
 <template>
@@ -549,6 +586,8 @@ function onContextMenu(event: MouseEvent) {
 		tabindex="-1"
 		class="relative grid h-full min-h-0 w-full grid-cols-1 grid-rows-[auto_1fr_auto] outline-none select-none font-sans text-body"
 		@keydown="onShellKeydown"
+		@pointerdown.capture="leaveAttachmentSelection"
+		@focusin="leaveAttachmentSelection"
 		@contextmenu="onContextMenu"
 	>
 		<!-- The section switcher's close-focus event, relayed from the heading in the
@@ -582,11 +621,10 @@ function onContextMenu(event: MouseEvent) {
 		     for. `grid-cols-1` on the root says out loud that the shell is one column;
 		     on its own it fixes nothing, because the no-overlap rule creates implicit
 		     tracks whatever the explicit grid says. -->
-		<PanelHeader
-			ref="header"
-			class="col-start-1 row-start-1"
-			@switcher-closed="composer?.restoreCaret($event)"
-		/>
+		<div data-panel-header class="col-start-1 row-start-1 min-w-0">
+			<PanelHeader ref="header" @switcher-closed="composer?.restoreCaret($event)" />
+			<AttachmentCopyBar />
+		</div>
 
 		<!-- The only scrollable region. `min-h-0` is load-bearing: a grid item
 		     defaults to `min-height: auto`, so without it this grows to its content

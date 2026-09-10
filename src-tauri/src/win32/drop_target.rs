@@ -198,6 +198,12 @@ impl IDropTarget_Impl for PanelDropTarget_Impl {
 		pt: &POINTL,
 		pdwEffect: *mut DROPEFFECT,
 	) -> windows::core::Result<()> {
+		if super::drag_source::active() {
+			self.enter_is_valid.set(false);
+			self.cursor_effect.set(DROPEFFECT_NONE);
+			unsafe { *pdwEffect = DROPEFFECT_NONE };
+			return Ok(());
+		}
 		let Some((paths, _hdrop)) = PanelDropTarget::paths(pDataObj) else {
 			// Not files: no events, and — mirroring wry — the effect is left as the
 			// caller initialised it, with `enter_is_valid` false silencing the rest
@@ -245,8 +251,12 @@ impl IDropTarget_Impl for PanelDropTarget_Impl {
 		pDataObj: windows::core::Ref<'_, IDataObject>,
 		_grfKeyState: MODIFIERKEYS_FLAGS,
 		pt: &POINTL,
-		_pdwEffect: *mut DROPEFFECT,
+		pdwEffect: *mut DROPEFFECT,
 	) -> windows::core::Result<()> {
+		if super::drag_source::active() {
+			unsafe { *pdwEffect = DROPEFFECT_NONE };
+			return Ok(());
+		}
 		if self.enter_is_valid.get() {
 			if let Some((paths, hdrop)) = PanelDropTarget::paths(pDataObj) {
 				(self.listener)(DropEvent::Drop {

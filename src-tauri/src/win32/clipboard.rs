@@ -1,6 +1,4 @@
-//! The only clipboard implementation in Copper (task-005 R13). Phase 5's Copy
-//! and Copy as List call [`write_text_private`]; the capture fallback calls
-//! everything else.
+//! The clipboard boundary for text, attachment copies, and capture snapshots.
 //!
 //! Three things here are load-bearing and each is catastrophic done wrong:
 //!
@@ -48,6 +46,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::foreground::pid_of_window;
+
+pub(super) mod payload;
 
 // --- tuning ------------------------------------------------------------------
 // Kept here rather than in `capture/mod.rs` with the capture constants: this
@@ -839,7 +839,7 @@ fn is_ignorable(id: u32, formats: &Registered) -> bool {
 /// the clipboard can take up to a second of retries, and anything the user
 /// copied during that window would be destroyed by the `EmptyClipboard`.
 pub fn restore(snapshot: &Snapshot, expected_seq: u32) -> Result<()> {
-	write_excluded(&snapshot.entries, Some(expected_seq))
+	write_excluded(&snapshot.entries, expected_seq)
 }
 
 // --- writing -----------------------------------------------------------------
@@ -853,25 +853,44 @@ pub fn restore(snapshot: &Snapshot, expected_seq: u32) -> Result<()> {
 /// untested for a phase is how that goes unnoticed. Phase 5 has since arrived,
 /// and `clipboard::clipboard_write_text` is the caller.
 pub fn write_text_private(text: &str) -> Result<()> {
+	write_text_private_at(text, sequence_number())
+}
+
+/// The caller captures the sequence before preparation, not after a slow export
+/// or decode. Validation occurs while the write session owns the clipboard.
+pub fn write_text_private_at(text: &str, expected: u32) -> Result<()> {
 	let mut wide: Vec<u16> = text.encode_utf16().collect();
 	wide.push(0);
 	let bytes: Vec<u8> = wide.iter().flat_map(|unit| unit.to_ne_bytes()).collect();
-	write_excluded(&[(CF_UNICODETEXT, bytes)], None)
+	write_excluded(&[(CF_UNICODETEXT, bytes)], expected)
+}
+
+/// No text fallback: an attachment paste must not turn into a path paste in
+/// applications that prefer text, including Copper itself.
+pub fn write_files_private(paths: &[PathBuf], expected: u32) -> Result<()> {
+	write_excluded(&[(CF_HDROP, payload::files(paths)?)], expected)
+}
+
+/// The V5 header carries alpha and lets Windows synthesize older bitmap formats.
+pub fn write_image_private(width: u32, height: u32, rgba: &[u8], expected: u32) -> Result<()> {
+	write_excluded(&[(CF_DIBV5, payload::image(width, height, rgba)?)], expected)
+}
+
+fn validate_sequence(expected: u32, actual: u32) -> Result<()> {
+	if actual != expected {
+		return Err(ClipboardError::Superseded { expected, actual });
+	}
+	Ok(())
 }
 
 /// The one write path: an owner window, `EmptyClipboard`, the payloads, and the
 /// three privacy formats, all inside one session.
-fn write_excluded(entries: &[(u32, Vec<u8>)], expected_seq: Option<u32>) -> Result<()> {
+fn write_excluded(entries: &[(u32, Vec<u8>)], expected_seq: u32) -> Result<()> {
 	let formats = registered();
 	let owner = OwnerWindow::create()?;
 	let session = Session::open_write(&owner)?;
 
-	if let Some(expected) = expected_seq {
-		let actual = sequence_number();
-		if actual != expected {
-			return Err(ClipboardError::Superseded { expected, actual });
-		}
-	}
+	validate_sequence(expected_seq, sequence_number())?;
 
 	// Every replacement block is allocated before `EmptyClipboard`, so a failed
 	// allocation cannot leave the clipboard emptied and unrepopulated.
@@ -932,6 +951,19 @@ fn write_excluded(entries: &[(u32, Vec<u8>)], expected_seq: Option<u32>) -> Resu
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_write_requires_the_sequence_from_before_preparation() {
+		assert!(validate_sequence(41, 41).is_ok());
+		assert!(matches!(
+			validate_sequence(41, 42),
+			Err(ClipboardError::Superseded { expected: 41, actual: 42 })
+		));
+		assert!(matches!(
+			validate_sequence(u32::MAX, 0),
+			Err(ClipboardError::Superseded { .. })
+		));
+	}
 
 	fn utf16_bytes(text: &str, nul_terminated: bool) -> Vec<u8> {
 		let mut wide: Vec<u16> = text.encode_utf16().collect();
@@ -1237,7 +1269,7 @@ mod tests {
 	#[ignore = "touches the real clipboard"]
 	fn a_capture_round_trip_restores_an_image_clipboard_byte_identically() {
 		let dib = sample_dib();
-		write_excluded(&[(CF_DIB, dib.clone())], None).expect("seed");
+		write_excluded(&[(CF_DIB, dib.clone())], sequence_number()).expect("seed");
 		let snapshot = snapshot().expect("snapshot");
 		assert!(!snapshot.is_lossy(), "a plain DIB clipboard was reported as lossy");
 
@@ -1260,7 +1292,7 @@ mod tests {
 		wide.push(0);
 		let text: Vec<u8> = wide.iter().flat_map(|unit| unit.to_ne_bytes()).collect();
 
-		write_excluded(&[(CF_UNICODETEXT, text), (CF_DIB, dib)], None).expect("seed");
+		write_excluded(&[(CF_UNICODETEXT, text), (CF_DIB, dib)], sequence_number()).expect("seed");
 
 		assert!(
 			read_attachment().expect("read").is_none(),
@@ -1281,7 +1313,7 @@ mod tests {
 	#[test]
 	#[ignore = "touches the real clipboard"]
 	fn read_attachment_returns_a_decodable_bitmap_when_there_is_no_text() {
-		write_excluded(&[(CF_DIB, sample_dib())], None).expect("seed");
+		write_excluded(&[(CF_DIB, sample_dib())], sequence_number()).expect("seed");
 
 		let Some(ClipboardAttachment::Dib(bytes)) = read_attachment().expect("read") else {
 			panic!("expected a bitmap");

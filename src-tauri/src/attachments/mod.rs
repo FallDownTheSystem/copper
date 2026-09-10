@@ -10,6 +10,8 @@
 //! always meant.
 
 pub mod commands;
+pub mod copy;
+pub mod drag;
 pub mod ingest;
 pub mod sweep;
 pub mod thumb;

@@ -30,7 +30,7 @@ const {
 } = useSelection()
 const { beginEdit } = useNoteEditor()
 const { beginConfirm } = useSectionDelete()
-const { interactionRowId, enter, reconcile } = useInteractionMode()
+const { interactionRowId, enter, follow, reconcile } = useInteractionMode()
 const { hasQuery, resultCount } = useNoteSearch()
 const { setCollapsed, toggleCollapsed, collapseEnabled } = useSections()
 const { filtersByDone } = useNoteList()
@@ -231,6 +231,8 @@ function onPointerSelect(event: MouseEvent, noteId: string) {
  * to the row closes that for every control in one place. Text surfaces are
  * exempt — the rename field and the inline editor hold focus by design — and
  * so is the row F2 promoted, whose descendants holding focus is the mode.
+ * Attachments also keep focus: they are independent copy targets, so redirecting
+ * their focus to the note would make the keyboard act on a different object.
  */
 function onFocusin(event: FocusEvent) {
 	const target = event.target as HTMLElement | null
@@ -238,6 +240,10 @@ function onFocusin(event: FocusEvent) {
 	const key = row?.dataset.rowId
 	if (!row || !key) return
 	if (key !== focusedId.value) focusRow(key)
+	if (target?.closest('[data-attachment-id]')) {
+		follow(key)
+		return
+	}
 	if (target !== row && interactionRowId.value !== key && !target?.matches('input, textarea')) {
 		row.focus()
 	}

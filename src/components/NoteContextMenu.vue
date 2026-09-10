@@ -12,6 +12,8 @@ const {
 	openAttachment,
 	everyTargetDone,
 	copyNotes,
+	copyWithAttachments,
+	canCopyWithAttachments,
 	copyAsList,
 	copySelectionAsMarkdown,
 	toggleDone,
@@ -51,6 +53,14 @@ const {
 		<ContextMenuItem class="min-h-6" @select="copyNotes">
 			Copy
 			<ContextMenuShortcut>{{ CHORDS.copy.display }}</ContextMenuShortcut>
+		</ContextMenuItem>
+
+		<ContextMenuItem
+			class="min-h-6"
+			:disabled="!canCopyWithAttachments"
+			@select="copyWithAttachments"
+		>
+			Copy with attachments
 		</ContextMenuItem>
 
 		<ContextMenuItem class="min-h-6" @select="copyAsList">

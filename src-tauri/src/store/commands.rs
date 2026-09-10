@@ -36,6 +36,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
 use copper_core::entry::{classify, Entry};
+use super::source::DocumentSource;
 
 // `store` no longer means the parent module: the pipeline these wrappers are
 // thin over is `copper_core::store`, and only this file and `events.rs` stayed
@@ -322,9 +323,29 @@ pub async fn edit_note(id: String, body: String, state: State<'_, SharedStore>) 
 pub async fn set_notes_done(
 	ids: Vec<String>,
 	done: bool,
+	source: Option<DocumentSource>,
 	state: State<'_, SharedStore>,
 ) -> Reply<Space> {
-	let (_, space) = lock(&state).mutate(|doc| ops::set_notes_done(doc, &ids, done))?;
+	set_done(&state, &ids, done, source.as_ref())
+}
+
+pub(crate) fn set_done(
+	state: &SharedStore,
+	ids: &[String],
+	done: bool,
+	source: Option<&DocumentSource>,
+) -> Reply<Space> {
+	let mut store = lock(state);
+	if let Some(source) = source {
+		source.require_path(&store)?;
+	}
+	let (_, space) = store.mutate(|doc| {
+		// The operation can run again against an external replacement after a conflict.
+		if let Some(source) = source {
+			source.require_document(doc)?;
+		}
+		ops::set_notes_done(doc, ids, done)
+	})?;
 	Ok(space)
 }
 
