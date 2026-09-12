@@ -1062,8 +1062,8 @@ pub fn append_paths_note(shared: &SharedStore, body: &str) -> Result<()> {
 
 /// One note from the user's other device, ready to be written.
 ///
-/// Its attachments are already ingested — content-addressed, sniffed and written
-/// beside the space by the time this exists. That is why the blobs and the notes
+/// Its attachments are already ingested — named, sniffed and written beside
+/// the space by the time this exists. That is why the blobs and the notes
 /// have to land in the *same* document, and why [`append_received`] re-checks
 /// which one that is under its own guard.
 #[derive(Clone, Debug, PartialEq, Eq)]

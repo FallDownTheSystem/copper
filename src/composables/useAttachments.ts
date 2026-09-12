@@ -16,12 +16,13 @@
  * draft leaves blobs nothing references, which is exactly what the Rust sweep's
  * 24-hour grace window exists to collect.
  *
- * **The thumbnail cache**, keyed on the content hash. Unlike task-004's Markdown
- * cache there is no staleness question at all: the key *is* the content, so an
- * entry can never describe different bytes than the ones it was built from. It
- * is still cleared on an epoch change, because the blobs of the previous space
- * are not in the new space's assets directory and the URLs have to be revoked
- * rather than merely forgotten.
+ * **The thumbnail cache**, keyed on the stored filename. A blob is never
+ * rewritten under its name by Copper itself, so within a session the key is as
+ * good as the content — the one way an entry goes stale is a person editing the
+ * file in place in the assets directory, and that shows the old thumbnail until
+ * the space is reopened. It is cleared on an epoch change, because the blobs of
+ * the previous space are not in the new space's assets directory and the URLs
+ * have to be revoked rather than merely forgotten.
  */
 
 import { invoke } from '@tauri-apps/api/core'
@@ -392,7 +393,7 @@ async function openAttachment(file: string): Promise<string | null> {
  * the one kind of attachment with no way to reach its own file, and this is the
  * answer to "where did my copy actually go?" for every type.
  *
- * The argument is the content-addressed `file`, not the attachment id: Rust
+ * The argument is the stored `file`, not the attachment id: Rust
  * rebuilds the path from it inside the space's sidecar and accepts no path from
  * here.
  */

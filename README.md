@@ -28,11 +28,11 @@ Built with Tauri 2, Vue, and Tailwind CSS.
 - Use **Copy paths** for terminals and applications that do not accept native file paste.
 - **Copy**, **Copy as list**, and **Copy as Markdown** on notes remain text-only.
 
-Drag-out and copied attachment paths use independent copies with their original filenames, not Copper's stored originals. Drag-out permits copying, not moving. These files require local file access; Copper does not upload them to remote sessions.
+Each attachment is one file, stored under its own name in the `.copper.assets` folder beside the space. Drag-out, **Copy paths**, and file copies all point at that stored file. Two attachments with the same name get Explorer's ` (2)` suffix. Drag-out permits copying, not moving. These files require local file access; Copper does not upload them to remote sessions.
 
-Some applications accept only one file from a clipboard paste but accept multiple files through drag-and-drop. Use drag-out for those applications. A drop back into Copper does not attach duplicate files.
+Some applications accept only one file from a clipboard paste but accept multiple files through drag-and-drop. Use drag-out for those applications. A drop back into Copper attaches a second copy.
 
-Copper keeps these copies in `%LOCALAPPDATA%\io.github.falldownthesystem.copper\attachment-copies`. They survive app exit and note deletion. Removing this directory breaks existing copied paths. If no application needs those paths, you can remove the directory to reclaim space.
+Attachments made by versions before 0.2.16 keep their older hash names. Re-attach a file to store it under its name. Versions before 0.2.16 also left a copy of every copied or dragged attachment in `%LOCALAPPDATA%\io.github.falldownthesystem.copper\attachment-copies`. Copper no longer writes there, and you can remove that directory once no application needs those paths.
 
 ## Credits
 

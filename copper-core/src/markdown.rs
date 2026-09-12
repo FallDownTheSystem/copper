@@ -16,11 +16,11 @@
 //! caller's question — this module only formats what it is handed, which is what
 //! makes the scopes byte-identical for the same input by construction.
 //!
-//! **Attachments are omitted from all three.** A note's `file` is a
-//! content-addressed name inside a sidecar directory beside the `.copper`, so a
-//! link to it means nothing on another machine, and `name` is the user's original
-//! filename and not unique. Naming them in prose would put text into the document
-//! that was never in a note.
+//! **Attachments are omitted from all three.** A note's `file` is a name inside
+//! a sidecar directory beside the `.copper`, so a link to it means nothing on
+//! another machine, and `name` is the user's original filename and not unique.
+//! Naming them in prose would put text into the document that was never in a
+//! note.
 
 /// `Copy`: the raw Markdown bodies, joined by a blank line.
 ///

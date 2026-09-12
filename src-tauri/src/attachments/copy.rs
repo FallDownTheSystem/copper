@@ -1,14 +1,16 @@
 //! Attachment copies resolve a document snapshot before they touch the clipboard.
-//! Native file copies use independent exports so a paste target cannot modify the
-//! content-addressed originals, and copied filenames remain recognizable.
+//! Every outward reference — a native file list, a pasted path, the path under a
+//! note's text — is the stored file itself, which already carries the user's
+//! name. There is no export step: one attachment is one file on disk, and a
+//! paste target that edits it edits the attachment.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::State;
 
-use copper_core::attachments::{export::export_batch, read_blob, resolve_existing, sniff_mime};
+use copper_core::attachments::{read_blob, resolve_existing, sniff_mime};
 use copper_core::store::error::{io_err, Result, StoreError};
 use copper_core::store::model::{Attachment, Space};
 use copper_core::store::{strip_verbatim_str, SharedStore};
@@ -145,13 +147,24 @@ fn attachment_path(space: &Path, attachment: &Attachment) -> Result<PathBuf> {
 	})
 }
 
+/// The stored files behind `attachments`, all of them or none.
+///
+/// Resolved before anything is written so that one missing blob refuses the
+/// whole gesture: a file list with a hole in it would paste the wrong count
+/// without saying so.
+fn attachment_paths(space: &Path, attachments: &[&Attachment]) -> Result<Vec<PathBuf>> {
+	attachments
+		.iter()
+		.map(|attachment| attachment_path(space, attachment))
+		.collect()
+}
+
 pub(super) fn prepare_files(
 	space_path: &Path,
 	space: &Space,
 	requested: &[AttachmentTarget],
-	cache: &Path,
 ) -> Result<Vec<PathBuf>> {
-	export_attachments(space_path, &targets(space, requested)?, cache)
+	attachment_paths(space_path, &targets(space, requested)?)
 }
 
 fn prepare_attachments(
@@ -159,7 +172,6 @@ fn prepare_attachments(
 	space: &Space,
 	requested: &[AttachmentTarget],
 	format: CopyFormat,
-	cache: &Path,
 ) -> Result<PreparedCopy> {
 	let attachments = targets(space, requested)?;
 	if format == CopyFormat::Image && attachments.len() != 1 {
@@ -175,49 +187,30 @@ fn prepare_attachments(
 		}
 	}
 
-	let exported = export_attachments(space_path, &attachments, cache)?;
+	let paths = attachment_paths(space_path, &attachments)?;
 	if format == CopyFormat::Paths {
-		let text = exported
+		let text = paths
 			.iter()
 			.map(|path| quoted_path(path))
 			.collect::<Result<Vec<_>>>()?
 			.join("\n");
 		Ok(PreparedCopy::Paths(text, attachments.len()))
 	} else {
-		Ok(PreparedCopy::Files(exported))
+		Ok(PreparedCopy::Files(paths))
 	}
-}
-
-fn export_attachments(
-	space: &Path,
-	attachments: &[&Attachment],
-	cache: &Path,
-) -> Result<Vec<PathBuf>> {
-	for attachment in attachments {
-		attachment_path(space, attachment)?;
-	}
-	if attachments.is_empty() {
-		return Ok(Vec::new());
-	}
-	// Both file lists and pasted paths may outlive the app and the source note.
-	// Each gesture owns its exports, so a receiving editor cannot change the next copy.
-	let dir = cache.join(uuid::Uuid::new_v4().to_string());
-	std::fs::create_dir_all(&dir).map_err(|err| io_err(&dir, "create", &err))?;
-	export_batch(space, &dir, attachments)
 }
 
 fn prepare_notes(
 	space_path: &Path,
 	space: &Space,
 	selection: &NoteSelection,
-	cache: &Path,
 ) -> Result<RenderedNotes> {
 	let notes = selected_notes(space, selection)?;
 	let attachments: Vec<_> = notes
 		.iter()
 		.flat_map(|note| note.attachments.iter())
 		.collect();
-	let paths = export_attachments(space_path, &attachments, cache)?;
+	let paths = attachment_paths(space_path, &attachments)?;
 	let mut paths = paths.iter();
 	let mut bodies = Vec::with_capacity(notes.len());
 	let mut ids = Vec::with_capacity(notes.len());
@@ -231,7 +224,7 @@ fn prepare_notes(
 			for attachment in &note.attachments {
 				let path = paths
 					.next()
-					.ok_or_else(|| StoreError::Invalid("an attachment copy is missing".into()))?;
+					.ok_or_else(|| StoreError::Invalid("an attachment path is missing".into()))?;
 				let path = quoted_path(path)?;
 				let name: String = attachment
 					.name
@@ -251,26 +244,17 @@ fn prepare_notes(
 	})
 }
 
-pub(super) fn copy_cache(app: &AppHandle) -> Result<PathBuf> {
-	app.path()
-		.app_cache_dir()
-		.map(|path| path.join("attachment-copies"))
-		.map_err(|err| StoreError::Io(format!("the copy directory could not be located: {err}")))
-}
-
 #[tauri::command]
 pub async fn clipboard_copy_attachments(
 	targets: Vec<AttachmentTarget>,
 	format: CopyFormat,
 	source: DocumentSource,
-	app: AppHandle,
 	state: State<'_, SharedStore>,
 ) -> Result<CopiedAttachments> {
 	let expected = clipboard::sequence_number();
 	let (path, space) = source.snapshot(&state)?;
-	let cache = copy_cache(&app)?;
 	tauri::async_runtime::spawn_blocking(move || {
-		prepare_attachments(&path, &space, &targets, format, &cache)?.write(expected)
+		prepare_attachments(&path, &space, &targets, format)?.write(expected)
 	})
 	.await
 	.map_err(|err| StoreError::Io(format!("the attachments could not be copied: {err}")))?
@@ -280,14 +264,12 @@ pub async fn clipboard_copy_attachments(
 pub async fn clipboard_copy_notes(
 	selection: NoteSelection,
 	source: DocumentSource,
-	app: AppHandle,
 	state: State<'_, SharedStore>,
 ) -> Result<RenderedNotes> {
 	let expected = clipboard::sequence_number();
 	let (path, space) = source.snapshot(&state)?;
-	let cache = copy_cache(&app)?;
 	tauri::async_runtime::spawn_blocking(move || {
-		let rendered = prepare_notes(&path, &space, &selection, &cache)?;
+		let rendered = prepare_notes(&path, &space, &selection)?;
 		if rendered.count > 0 {
 			clipboard::write_text_private_at(&rendered.text, expected).map_err(copy_failure)?;
 		}
@@ -347,19 +329,17 @@ mod tests {
 	}
 
 	#[test]
-	fn note_copy_preserves_body_and_associates_original_names_with_real_paths() {
-		let (dir, path, space) = fixture();
-		let cache = dir.path().join("copies");
-		let copied = prepare_notes(&path, &space, &NoteSelection::Document, &cache).unwrap();
-		let exported = PathBuf::from(copied.text.lines().last().unwrap().trim().trim_matches('"'));
-		assert!(exported.starts_with(&cache));
-		assert_eq!(exported.file_name().unwrap(), "original name.txt");
-		assert_eq!(std::fs::read(&exported).unwrap(), b"first attachment");
+	fn note_copy_preserves_body_and_lists_the_stored_files_by_name_and_path() {
+		let (_dir, path, space) = fixture();
+		let copied = prepare_notes(&path, &space, &NoteSelection::Document).unwrap();
+		let listed = PathBuf::from(copied.text.lines().last().unwrap().trim().trim_matches('"'));
+		assert_eq!(listed, assets_dir(&path).join("original name.txt"));
+		assert_eq!(std::fs::read(&listed).unwrap(), b"first attachment");
 		assert_eq!(
 			copied.text,
 			format!(
 				"Keep **this** text.\n\nAttachments (local files):\n- original name.txt\n  {}",
-				quoted_path(&exported).unwrap()
+				quoted_path(&listed).unwrap()
 			)
 		);
 		assert_eq!(copied.ids, ["note"]);
@@ -371,18 +351,14 @@ mod tests {
 		)
 		.unwrap();
 		assert_eq!(portable.text, space.notes[0].body);
-		std::fs::rename(assets_dir(&path), dir.path().join("detached originals")).unwrap();
-		assert_eq!(std::fs::read(&exported).unwrap(), b"first attachment");
 	}
 
 	#[test]
-	fn notes_without_attachments_create_no_exports() {
-		let (dir, path, mut space) = fixture();
+	fn notes_without_attachments_list_no_files() {
+		let (_dir, path, mut space) = fixture();
 		space.notes[0].attachments.clear();
-		let cache = dir.path().join("unused cache");
-		let copied = prepare_notes(&path, &space, &NoteSelection::Document, &cache).unwrap();
+		let copied = prepare_notes(&path, &space, &NoteSelection::Document).unwrap();
 		assert_eq!(copied.text, space.notes[0].body);
-		assert!(!cache.exists());
 	}
 
 	#[test]
@@ -410,175 +386,111 @@ mod tests {
 		assert!(source.snapshot(&shared).is_err());
 	}
 
+	/// The file list is the stored files themselves: the user's names, and the
+	/// same bytes a paste target would get from any other folder.
 	#[test]
-	fn file_copy_exports_original_names_without_exposing_managed_blobs() {
-		let (dir, path, mut space) = fixture();
+	fn file_copy_hands_out_the_stored_files_under_their_own_names() {
+		let (_dir, path, mut space) = fixture();
 		space.notes[0]
 			.attachments
 			.push(ingest(&path, b"second attachment", "original name.txt").unwrap());
 		let requested = selection(&space);
 		let PreparedCopy::Files(files) =
-			prepare_attachments(&path, &space, &requested, CopyFormat::Auto, dir.path()).unwrap()
+			prepare_attachments(&path, &space, &requested, CopyFormat::Auto).unwrap()
 		else {
 			panic!()
 		};
 		assert_eq!(files.len(), 2);
-		assert_eq!(files[0].file_name().unwrap(), "original name.txt");
-		assert_eq!(files[1].file_name().unwrap(), "original name (2).txt");
+		assert_eq!(files[0], assets_dir(&path).join("original name.txt"));
+		assert_eq!(files[1], assets_dir(&path).join("original name (2).txt"));
 		assert_eq!(std::fs::read(&files[0]).unwrap(), b"first attachment");
 		assert_eq!(std::fs::read(&files[1]).unwrap(), b"second attachment");
-		std::fs::write(&files[0], b"paste target edits its copy").unwrap();
-		assert_eq!(
-			read_blob(&path, &space.notes[0].attachments[0].file).unwrap(),
-			b"first attachment"
-		);
 	}
 
 	#[test]
-	fn drag_preparation_exports_all_targets_in_document_order_as_independent_files() {
-		let (dir, path, mut space) = fixture();
+	fn drag_preparation_resolves_all_targets_in_document_order() {
+		let (_dir, path, mut space) = fixture();
 		space.notes[0]
 			.attachments
 			.push(ingest(&path, b"second attachment", "original name.txt").unwrap());
 		let mut requested = selection(&space);
 		requested.reverse();
 		requested.push(requested[0].clone());
-		let cache = dir.path().join("drag exports");
-		let files = prepare_files(&path, &space, &requested, &cache).unwrap();
+		let files = prepare_files(&path, &space, &requested).unwrap();
 		assert_eq!(files.len(), 2);
-		assert!(files.iter().all(|file| file.starts_with(&cache)));
+		assert!(files.iter().all(|file| file.starts_with(assets_dir(&path))));
 		assert_eq!(files[0].file_name().unwrap(), "original name.txt");
 		assert_eq!(files[1].file_name().unwrap(), "original name (2).txt");
-		assert_eq!(std::fs::read(&files[0]).unwrap(), b"first attachment");
-		assert_eq!(std::fs::read(&files[1]).unwrap(), b"second attachment");
-		std::fs::write(&files[0], b"receiver edits the exported file").unwrap();
-		assert_eq!(
-			read_blob(&path, &space.notes[0].attachments[0].file).unwrap(),
-			b"first attachment"
-		);
 	}
 
+	/// The pasted path points at the stored file, and pasting it again points
+	/// at the same file — there is exactly one.
 	#[test]
-	fn a_large_batch_can_export_identically_named_attachments() {
-		let (dir, path, mut space) = fixture();
-		let note = space.notes[0].clone();
-		space.notes = (0..101)
-			.map(|index| {
-				let mut entry = note.clone();
-				entry.id = format!("note-{index}");
-				entry.order = index;
-				entry
-			})
-			.collect();
-		let PreparedCopy::Files(paths) = prepare_attachments(
-			&path,
-			&space,
-			&selection(&space),
-			CopyFormat::Files,
-			dir.path(),
-		)
-		.unwrap() else {
-			panic!()
-		};
-		assert_eq!(paths.len(), 101);
-		assert_eq!(paths[100].file_name().unwrap(), "original name (101).txt");
-	}
-
-	#[test]
-	fn copied_paths_protect_originals_and_later_copies_from_receiving_editors() {
-		let (dir, path, space) = fixture();
-		let cache = dir.path().join("copies");
+	fn copied_paths_name_the_stored_file_and_stay_stable_across_copies() {
+		let (_dir, path, space) = fixture();
 		let PreparedCopy::Paths(text, count) =
-			prepare_attachments(&path, &space, &selection(&space), CopyFormat::Paths, &cache)
-				.unwrap()
+			prepare_attachments(&path, &space, &selection(&space), CopyFormat::Paths).unwrap()
 		else {
 			panic!()
 		};
 		assert_eq!(count, 1);
-		let exported = PathBuf::from(text.trim_matches('"'));
-		assert!(exported.starts_with(&cache));
-		assert_eq!(exported.file_name().unwrap(), "original name.txt");
-		std::fs::write(&exported, b"receiver edits only its copy").unwrap();
-		assert_eq!(
-			read_blob(&path, &space.notes[0].attachments[0].file).unwrap(),
-			b"first attachment"
-		);
+		let pasted = PathBuf::from(text.trim_matches('"'));
+		assert_eq!(pasted, assets_dir(&path).join("original name.txt"));
 		let PreparedCopy::Paths(later, _) =
-			prepare_attachments(&path, &space, &selection(&space), CopyFormat::Paths, &cache)
-				.unwrap()
+			prepare_attachments(&path, &space, &selection(&space), CopyFormat::Paths).unwrap()
 		else {
 			panic!()
 		};
-		assert_ne!(later, text);
-		assert_eq!(
-			std::fs::read(PathBuf::from(later.trim_matches('"'))).unwrap(),
-			b"first attachment"
-		);
+		assert_eq!(later, text);
 	}
 
 	#[test]
 	fn missing_and_untrusted_attachments_refuse_the_whole_copy() {
-		let (dir, path, mut space) = fixture();
-		let cache = dir.path().join("unused cache");
+		let (_dir, path, mut space) = fixture();
 		let mut missing = space.notes[0].attachments[0].clone();
 		missing.id = "missing".into();
 		missing.file = "absent.txt".into();
 		space.notes[0].attachments.push(missing);
 		for format in [CopyFormat::Auto, CopyFormat::Files, CopyFormat::Paths] {
-			assert!(
-				prepare_attachments(&path, &space, &selection(&space), format, &cache).is_err()
-			);
+			assert!(prepare_attachments(&path, &space, &selection(&space), format).is_err());
 		}
-		assert!(prepare_notes(&path, &space, &NoteSelection::Document, &cache).is_err());
-		assert!(prepare_files(&path, &space, &selection(&space), &cache).is_err());
-		assert!(!cache.exists());
+		assert!(prepare_notes(&path, &space, &NoteSelection::Document).is_err());
+		assert!(prepare_files(&path, &space, &selection(&space)).is_err());
 		space.notes[0].attachments[1].file = "../outside.txt".into();
-		assert!(prepare_notes(&path, &space, &NoteSelection::Document, &cache).is_err());
+		assert!(prepare_notes(&path, &space, &NoteSelection::Document).is_err());
 	}
 
 	#[test]
 	fn stale_and_duplicate_targets_cannot_misreport_the_copy() {
-		let (dir, path, space) = fixture();
+		let (_dir, path, space) = fixture();
 		let mut requested = selection(&space);
 		requested.push(requested[0].clone());
 		assert_eq!(targets(&space, &requested).unwrap().len(), 1);
 		requested[0].attachment = "gone".into();
-		assert!(
-			prepare_attachments(&path, &space, &requested, CopyFormat::Files, dir.path()).is_err()
-		);
+		assert!(prepare_attachments(&path, &space, &requested, CopyFormat::Files).is_err());
 		assert!(targets(&space, &[]).is_err());
 	}
 
 	#[test]
 	fn image_copy_uses_original_pixels_and_sniffs_content_not_metadata() {
-		let (dir, path, mut space) = fixture();
+		let (_dir, path, mut space) = fixture();
 		let pixels = image::RgbaImage::from_pixel(640, 480, image::Rgba([12, 34, 56, 128]));
 		let mut png = std::io::Cursor::new(Vec::new());
 		pixels.write_to(&mut png, image::ImageFormat::Png).unwrap();
 		let mut attachment = ingest(&path, png.get_ref(), "screen.png").unwrap();
 		attachment.mime = "text/plain".into();
 		space.notes[0].attachments = vec![attachment];
-		let PreparedCopy::Image(copied) = prepare_attachments(
-			&path,
-			&space,
-			&selection(&space),
-			CopyFormat::Auto,
-			dir.path(),
-		)
-		.unwrap() else {
+		let PreparedCopy::Image(copied) =
+			prepare_attachments(&path, &space, &selection(&space), CopyFormat::Auto).unwrap()
+		else {
 			panic!()
 		};
 		assert_eq!(copied.dimensions(), (640, 480));
 		assert_eq!(copied.as_raw(), pixels.as_raw());
 		space.notes[0].attachments = vec![ingest(&path, b"not an image", "pretend.png").unwrap()];
 		space.notes[0].attachments[0].mime = "image/png".into();
-		assert!(prepare_attachments(
-			&path,
-			&space,
-			&selection(&space),
-			CopyFormat::Image,
-			dir.path()
-		)
-		.is_err());
+		assert!(
+			prepare_attachments(&path, &space, &selection(&space), CopyFormat::Image).is_err()
+		);
 	}
 }

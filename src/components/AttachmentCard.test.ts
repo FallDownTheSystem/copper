@@ -19,7 +19,7 @@ import { useSpace, type Space } from '@/composables/useSpace'
  * Three things here are worth pinning and the rest is not. The reveal entry has
  * to reach `attachment_reveal` rather than `attachment_open`, because the two
  * differ exactly in that the second one may *launch* what it is given. Each has
- * to carry the content-addressed `file` — the argument Rust rebuilds the path
+ * to carry the stored `file` — the argument Rust rebuilds the path
  * from — where the attachment's `id` would be the plausible mistake: both fields
  * are strings, so nothing but a test can tell them apart. And the OS route has to
  * be *here*: it used to be a bare `Space` on the card, which is the key a button

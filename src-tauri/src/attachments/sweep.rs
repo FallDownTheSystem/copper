@@ -49,22 +49,45 @@ type Disposed = std::result::Result<(), String>;
 /// directory, so it is the same volume by construction and the move can never
 /// degrade into a copy-and-delete across a boundary.
 ///
-/// A name already in the quarantine is overwritten, and that is safe because the
-/// names are content addresses: the same sixteen hex characters mean the same
-/// bytes, so the file being replaced is a copy of the file replacing it. The
-/// exception is a deliberately engineered 64-bit prefix collision — and there
-/// the loss is one unreferenced orphan overwriting another, both already
-/// collected, which does not justify a second directory level to prevent.
+/// A name already in the quarantine is **not** overwritten. Blobs carry the
+/// user's names, so `capture.md` collected today and `capture.md` collected
+/// last month are different bytes, and a rename over the older one would be the
+/// one deletion this module exists to never do. The orphan takes the next free
+/// ` (2)` name instead, the same convention the assets directory itself uses.
+///
+/// `std::fs::rename` replaces on Windows, so the free name is found by a
+/// metadata probe before the move. That is a check-then-act, and it is
+/// accepted: the only writer into the quarantine is this function, one sweep
+/// runs at a time within a process, and a CLI never sweeps.
 fn quarantine(path: &Path) -> Disposed {
-	let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+	let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|name| name.to_str()))
+	else {
 		return Err("it has no name inside a directory".to_string());
 	};
 	let collected = dir.join(COLLECTED_DIR);
 	// On demand rather than at startup: a space that never orphans a blob never
 	// grows the directory, and an empty one would only invite the question.
 	std::fs::create_dir_all(&collected).map_err(|err| err.to_string())?;
-	std::fs::rename(path, collected.join(name)).map_err(|err| err.to_string())
+	let (stem, extension) = match name.rfind('.') {
+		Some(at) if at > 0 => (&name[..at], &name[at..]),
+		_ => (name, ""),
+	};
+	let target = (1..=QUARANTINE_ATTEMPTS)
+		.map(|attempt| {
+			if attempt == 1 {
+				collected.join(name)
+			} else {
+				collected.join(format!("{stem} ({attempt}){extension}"))
+			}
+		})
+		.find(|candidate| std::fs::symlink_metadata(candidate).is_err())
+		.ok_or_else(|| format!("{name} and its first {QUARANTINE_ATTEMPTS} alternatives are already collected"))?;
+	std::fs::rename(path, target).map_err(|err| err.to_string())
 }
+
+/// Enough that a name would have to be orphaned a hundred times to hit it, and
+/// then the blob stays where it is for a person to look at.
+const QUARANTINE_ATTEMPTS: usize = 100;
 
 /// Moves blobs no note references, and that nothing has touched for
 /// [`ORPHAN_GRACE`], into [`COLLECTED_DIR`].
@@ -271,24 +294,29 @@ mod tests {
 		assert!(assets.join("b-orphan.png").exists(), "a blob was deleted after a failure");
 	}
 
-	/// The same content being collected twice is the ordinary case — one
-	/// screenshot attached, orphaned, re-attached and orphaned again — and it
-	/// must not fail. Content addressing is what makes overwriting safe: the
-	/// name already in the quarantine denotes these exact bytes.
+	/// The same name being collected twice is the ordinary case — `capture.md`
+	/// attached, orphaned, another `capture.md` attached and orphaned — and the
+	/// two are different bytes. The second must neither fail nor replace the
+	/// first.
 	#[test]
-	fn collecting_a_name_already_in_the_quarantine_succeeds() {
+	fn collecting_a_name_already_in_the_quarantine_keeps_both() {
 		let dir = tempfile::tempdir().unwrap();
 		let assets = dir.path().join("notes.copper.assets");
 		std::fs::create_dir_all(assets.join(COLLECTED_DIR)).unwrap();
-		std::fs::write(assets.join(COLLECTED_DIR).join("dupe.png"), b"same").unwrap();
-		std::fs::write(assets.join("dupe.png"), b"same").unwrap();
+		std::fs::write(assets.join(COLLECTED_DIR).join("dupe.png"), b"older").unwrap();
+		std::fs::write(assets.join("dupe.png"), b"newer").unwrap();
 
 		quarantine(&assets.join("dupe.png")).expect("a repeat collection must not fail");
 
 		assert!(!assets.join("dupe.png").exists());
 		assert_eq!(
 			std::fs::read(assets.join(COLLECTED_DIR).join("dupe.png")).unwrap(),
-			b"same"
+			b"older",
+			"the earlier orphan was overwritten"
+		);
+		assert_eq!(
+			std::fs::read(assets.join(COLLECTED_DIR).join("dupe (2).png")).unwrap(),
+			b"newer"
 		);
 	}
 

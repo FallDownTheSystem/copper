@@ -11,12 +11,28 @@
 //! weaken this: it enumerates the directory rather than resolving a name out of
 //! the document, so it never needs a door this module would have to open.
 //!
-//! It is enforced at both boundaries, and the **read** side is where it earns
-//! its keep: the write side cannot produce a bad name because names are content
-//! hashes, whereas a `.copper` file is hand-editable and git-writable, so a
-//! `file` of `..\..\Windows\System32\config\SAM` is a thing a reader will
-//! actually be handed. [`resolve`] is the one door, and nothing anywhere turns a
-//! document's `file` value into a path except by walking through it.
+//! It is enforced at both boundaries. The write side mints every name through
+//! [`store_blob`], which repairs the user's filename into one that passes the
+//! check and then verifies it did. The **read** side is where it earns its keep:
+//! a `.copper` file is hand-editable and git-writable, so a `file` of
+//! `..\..\Windows\System32\config\SAM` is a thing a reader will actually be
+//! handed. [`resolve`] is the one door, and nothing anywhere turns a document's
+//! `file` value into a path except by walking through it.
+//!
+//! # Why blobs keep the user's filename
+//!
+//! A blob is stored under the name the user gave it — `capture.md`, not a hash —
+//! so the assets directory reads as a folder of the user's files in Explorer,
+//! and so the one stored copy *is* the path every copy, drag and open gesture
+//! hands out. There is no export step and no second copy: a paste target that
+//! edits the file edits the attachment, which is the point.
+//!
+//! Two consequences follow and are accepted. Identical bytes attached twice are
+//! two files, because the name is no longer the content. And two files that
+//! share a name are told apart by Explorer's ` (2)` suffix, minted at write time
+//! by the filesystem refusing the first candidate, never by an `exists()` check.
+//! The digest still exists as a **fallback**: a name that repairs to nothing —
+//! `...`, `CON`, a string of separators — is stored under its hash instead.
 //!
 //! # Why the bytes are not in the JSON
 //!
@@ -46,7 +62,7 @@
 //! `ingest` and the sweep itself, which live in the `copper` crate's own
 //! `attachments` module: ingest reads an image's dimensions through the `image`
 //! crate, and the sweep logs its failures through the app's `diagnostics`. Both
-//! reach back into this module for the rules — [`resolve`], [`write_blob`],
+//! reach back into this module for the rules — [`resolve`], [`store_blob`],
 //! [`assets_dir`], [`ORPHAN_GRACE`], [`COLLECTED_DIR`] — so the invariant above
 //! is stated once even though it is applied on both sides of the boundary.
 
@@ -271,9 +287,7 @@ pub fn sniff_mime(bytes: &[u8]) -> &'static str {
 /// Where the bytes came from, for the one message the caller shows on a refusal.
 ///
 /// The limit is a parameter rather than [`ATTACHMENT_MAX_BYTES`] read from here:
-/// `occupant_matches` reads with the *existing file's* length as its bound, and
-/// naming the ingest cap in that refusal would report a limit this read never
-/// applied.
+/// the clipboard applies a different ceiling and names it in the same words.
 ///
 /// `pub` for the ingest path in the `copper` crate, which applies the same cap
 /// to bytes it has in memory rather than to a read.
@@ -300,71 +314,173 @@ pub fn human_bytes(bytes: u64) -> String {
 	}
 }
 
-/// Writes the blob through task-003's atomic helpers, treating a collision as a
-/// success.
+/// Writes `bytes` into the assets directory under the user's `name`, repaired
+/// into a bare filename, and returns the name it was stored under.
 ///
-/// A `commit_new` refusal on a content-addressed name means a file with these
-/// exact bytes is already there — attaching the same screenshot twice, or two
-/// ingests racing — so the desired end state already holds. Reporting it as an
-/// error would make the second paste of an identical image fail for no reason,
-/// and would make two concurrent ingests of the same bytes a coin flip.
+/// The returned value is the document's `file`. It is the sanitised `name`, or
+/// that name with Explorer's ` (2)` suffix if the first candidate was taken, or
+/// `fallback` — the caller's content hash — when the name repairs to nothing.
+/// Whatever it is, it passed [`is_bare_filename`]: the check is applied to the
+/// result and not only to the input, so the write side cannot mint a name the
+/// read side will refuse. That would otherwise be a blob no reader could reach.
 ///
-/// `pub` for the ingest path in the `copper` crate: the collision rule and the
-/// backoff belong to the blob layer, not to the caller that happens to decode
-/// images.
-pub fn write_blob(path: &Path, dir: &Path, bytes: &[u8]) -> Result<()> {
-	let mut held: Option<atomic::Prepared> = None;
-	atomic::with_backoff(|| {
-		let prepared = match held.take() {
-			Some(prepared) => prepared,
-			None => match atomic::prepare_bytes(dir, bytes) {
-				Ok(prepared) => prepared,
-				Err(err) => return atomic::Attempt::Failed(err),
-			},
-		};
-		match prepared.commit_new(path) {
-			Ok(()) => atomic::Attempt::Done(()),
-			Err(failure) if failure.error.kind() == std::io::ErrorKind::AlreadyExists => {
-				match occupant_matches(path, bytes) {
-					Ok(()) => atomic::Attempt::Done(()),
-					Err(err) => atomic::Attempt::Failed(err),
-				}
-			}
-			Err(failure) => atomic::classify_commit_failure(path, failure, &mut held),
-		}
-	})
+/// `pub` for the ingest path in the `copper` crate: the repair, the collision
+/// rule and the atomic write belong to the blob layer, not to the caller that
+/// happens to decode images.
+pub fn store_blob(space_path: &Path, name: &str, fallback: &str, bytes: &[u8]) -> Result<String> {
+	let candidate = bare_name(name, fallback);
+	if !is_bare_filename(&candidate) {
+		return Err(invalid_file_name(&candidate));
+	}
+	let dir = assets_dir(space_path);
+	std::fs::create_dir_all(&dir).map_err(|err| io_err(&dir, "create", &err))?;
+	let written = write_without_clobbering(&dir, &candidate, bytes, MAX_COLLISION_ATTEMPTS)?;
+	let file = written
+		.file_name()
+		.and_then(|name| name.to_str())
+		.ok_or_else(|| invalid_file_name(&candidate))?;
+	if !is_bare_filename(file) {
+		return Err(invalid_file_name(file));
+	}
+	Ok(file.to_string())
 }
 
-/// Whether the file already at `path` really is the one we were about to write.
+/// [`sanitise`], tightened to what [`is_bare_filename`] accepts.
 ///
-/// The collision is *usually* the same screenshot attached twice, and treating
-/// it as success is what makes ingestion idempotent. But "usually" is not a
-/// security property: sixteen hex characters is 64 bits, so a prefix collision
-/// is engineerable, and — far more mundanely — the occupant could be a
-/// directory, a symlink, or a file some other program happened to leave there.
-/// Accepting any of those on the strength of the name alone would let a note
-/// reference bytes nobody checked.
-///
-/// So the occupant is verified: a regular file, the right length, the right
-/// bytes. Anything else fails the ingest rather than silently adopting it.
-fn occupant_matches(path: &Path, bytes: &[u8]) -> Result<()> {
-	let metadata = std::fs::symlink_metadata(path).map_err(|err| io_err(path, "read", &err))?;
-	let mismatch = || {
-		StoreError::Io(format!(
-			"{} already exists and is not the file being attached",
-			path.display()
-		))
-	};
-	if !metadata.is_file() || metadata.len() != bytes.len() as u64 {
-		return Err(mismatch());
-	}
-	// Compared in full rather than trusting the length: the length agreeing is
-	// what a deliberate collision would arrange first.
-	let existing = read_capped(path, bytes.len() as u64, "the existing attachment")?;
-	if existing == bytes {
-		Ok(())
+/// The one rule a destination directory tolerates and the assets directory does
+/// not is a leading dot: `.env` is an ordinary file to export, but inside the
+/// sidecar a dotted name is how [`COLLECTED_DIR`] stays unreachable from every
+/// reader, so the dot goes. A name that was only dots falls back to the hash.
+fn bare_name(name: &str, fallback: &str) -> String {
+	let cleaned = sanitise(name, fallback);
+	let bare = cleaned.trim_start_matches(['.', ' ']);
+	if bare.is_empty() || is_reserved_device_name(bare) {
+		fallback.to_string()
 	} else {
-		Err(mismatch())
+		bare.to_string()
+	}
+}
+
+/// A user's original filename, made safe for a directory on this machine.
+///
+/// This repairs an arbitrary string a user typed on another machine, possibly
+/// years ago, into something this filesystem will accept — rejecting would mean
+/// refusing to store a file over a colon in its name.
+///
+/// Falls back to `fallback` when sanitising leaves nothing, so an attachment
+/// named `...` still comes out with its bytes intact under a name that is at
+/// least unique.
+fn sanitise(name: &str, fallback: &str) -> String {
+	let cleaned: String = name
+		.chars()
+		.map(|ch| {
+			if ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+				'_'
+			} else {
+				ch
+			}
+		})
+		.collect();
+
+	// Cut before the trim, so a cut that lands on a dot cannot leave a trailing
+	// one behind for Windows to strip silently.
+	let shortened = shorten(&cleaned);
+	// Windows drops trailing dots and spaces silently, so a name ending in one
+	// would be created under a *different* name than the one reported.
+	let trimmed = shortened.trim().trim_end_matches(['.', ' ']).trim();
+	// The store's own table, asked about a name a user typed rather than one the
+	// store minted — the same thirty device names, the same segment before the
+	// first dot. `is_bare_filename` refuses; this falls back so the bytes still
+	// come out.
+	if trimmed.is_empty() || is_reserved_device_name(trimmed) {
+		return fallback.to_string();
+	}
+	trimmed.to_string()
+}
+
+/// NTFS caps a component at 255 characters, and [`is_bare_filename`] at 255
+/// bytes. A user's name is cut well under that so the ` (N)` suffix the
+/// collision search appends can never push the result over the line.
+const MAX_NAME_BYTES: usize = 200;
+
+/// The longest extension worth keeping through a cut. Past this it is not an
+/// extension but the tail of a name that happens to contain a dot.
+const MAX_EXTENSION_BYTES: usize = 32;
+
+/// Cuts the stem, never the extension, on a character boundary.
+fn shorten(name: &str) -> String {
+	if name.len() <= MAX_NAME_BYTES {
+		return name.to_string();
+	}
+	let (stem, extension) = split_extension(name);
+	let extension = if extension.len() > MAX_EXTENSION_BYTES { "" } else { extension };
+	let mut cut = (MAX_NAME_BYTES - extension.len()).min(stem.len());
+	while !stem.is_char_boundary(cut) {
+		cut -= 1;
+	}
+	format!("{}{extension}", &stem[..cut])
+}
+
+/// Writes `bytes` as `name`, or as `name (2)`, `name (3)`, … if that is taken.
+///
+/// `commit_new` at every step rather than an `exists()` check followed by a
+/// replacing write: the filesystem is what refuses, so a file that appears
+/// between the check and the write has no window in which to be destroyed. That
+/// matters most for the export path, where the destination is a directory of the
+/// user's choosing full of files Copper knows nothing about, and it is what
+/// makes two attachments called `capture.md` two files rather than one.
+///
+/// The ` (2)` convention is Windows Explorer's, and goes before the extension so
+/// the file still opens in the same application.
+fn write_without_clobbering(
+	dir: &Path,
+	name: &str,
+	bytes: &[u8],
+	attempts: usize,
+) -> Result<PathBuf> {
+	let (stem, extension) = split_extension(name);
+	// `CommitFailure` hands the prepared file back so a further attempt does not
+	// serialise and fsync the same bytes again. Only the *name* changes between
+	// attempts, so a directory full of collisions costs one blob write, not a
+	// hundred.
+	let mut held: Option<atomic::Prepared> = None;
+
+	for attempt in 1..=attempts {
+		let candidate = if attempt == 1 {
+			name.to_string()
+		} else {
+			format!("{stem} ({attempt}){extension}")
+		};
+		let path = dir.join(&candidate);
+
+		let prepared = match held.take() {
+			Some(prepared) => prepared,
+			None => atomic::prepare_bytes(dir, bytes)?,
+		};
+		match prepared.commit_new(&path) {
+			Ok(()) => return Ok(path),
+			Err(failure) if failure.error.kind() == std::io::ErrorKind::AlreadyExists => {
+				held = Some(failure.prepared);
+			}
+			Err(failure) => return Err(io_err(&path, "write", &failure.error)),
+		}
+	}
+
+	Err(StoreError::Io(format!(
+		"{name} and its first {attempts} alternatives already exist in {}",
+		dir.display()
+	)))
+}
+
+/// Enough that an ordinary directory never reaches it, few enough that a
+/// pathological one fails in a moment instead of spinning.
+const MAX_COLLISION_ATTEMPTS: usize = 100;
+
+fn split_extension(name: &str) -> (&str, &str) {
+	match name.rfind('.') {
+		// A leading dot is the whole name of a dotfile, not an extension.
+		Some(at) if at > 0 => (&name[..at], &name[at..]),
+		_ => (name, ""),
 	}
 }
 
@@ -517,5 +633,103 @@ mod tests {
 		assert!(resolve_existing(&space, "absent.png").is_err());
 		// Refused before the filesystem is ever consulted.
 		assert!(resolve_existing(&space, r"..\..\Windows\System32\config\SAM").is_err());
+	}
+
+	#[test]
+	fn illegal_characters_become_underscores() {
+		assert_eq!(sanitise("a/b:c?.png", "abc.png"), "a_b_c_.png");
+		assert_eq!(sanitise("bell\u{7}.png", "abc.png"), "bell_.png");
+	}
+
+	#[test]
+	fn a_name_that_sanitises_to_nothing_falls_back_to_the_given_name() {
+		assert_eq!(sanitise("   ", "0123456789abcdef.png"), "0123456789abcdef.png");
+		assert_eq!(sanitise("...", "0123456789abcdef.png"), "0123456789abcdef.png");
+	}
+
+	/// Windows would create `report` and report `report.`, so the two names the
+	/// user sees would disagree.
+	#[test]
+	fn trailing_dots_and_spaces_go() {
+		assert_eq!(sanitise("report. ", "x.png"), "report");
+	}
+
+	#[test]
+	fn a_device_name_falls_back_rather_than_failing_at_the_filesystem() {
+		assert_eq!(sanitise("CON.txt", "beef.txt"), "beef.txt");
+		assert_eq!(sanitise("con", "beef.txt"), "beef.txt");
+		// The segment before the *first* dot, or this one escapes.
+		assert_eq!(sanitise("COM1.foo.bar", "beef.txt"), "beef.txt");
+		assert_eq!(sanitise("CONIN$", "beef.txt"), "beef.txt");
+		assert_eq!(sanitise("LPT¹.png", "beef.txt"), "beef.txt");
+		// A name that merely starts with one is an ordinary name.
+		assert_eq!(sanitise("console.txt", "beef.txt"), "console.txt");
+		assert_eq!(sanitise("COM10.txt", "beef.txt"), "COM10.txt");
+	}
+
+	#[test]
+	fn a_long_name_is_cut_at_the_stem_on_a_character_boundary() {
+		let long = format!("{}.png", "ä".repeat(150));
+		let cut = sanitise(&long, "x");
+		assert!(cut.len() <= MAX_NAME_BYTES, "{}", cut.len());
+		assert!(cut.ends_with(".png"));
+		assert!(cut.starts_with("ää"));
+		assert!(is_bare_filename(&cut));
+		// A cut that lands on a dot must not leave a trailing one behind.
+		let dotted = format!("{}{}.png", "a".repeat(195), ".".repeat(20));
+		assert!(!sanitise(&dotted, "x").ends_with('.'));
+	}
+
+	#[test]
+	fn the_collision_suffix_goes_before_the_extension() {
+		assert_eq!(split_extension("report.pdf"), ("report", ".pdf"));
+		assert_eq!(split_extension("report"), ("report", ""));
+		assert_eq!(split_extension(".gitignore"), (".gitignore", ""));
+	}
+
+	/// The assets directory is stricter than an export directory by exactly one
+	/// rule: no leading dot, because that is how the quarantine stays unreachable.
+	#[test]
+	fn a_stored_name_never_starts_with_a_dot() {
+		assert_eq!(bare_name(".env", "beef"), "env");
+		assert_eq!(bare_name(" . .gitignore", "beef"), "gitignore");
+		assert_eq!(bare_name("...", "beef"), "beef");
+		assert_eq!(sanitise(".env", "beef"), ".env", "an export may keep the dot");
+	}
+
+	#[test]
+	fn store_blob_keeps_the_users_name_and_suffixes_a_collision() {
+		let dir = tempfile::tempdir().unwrap();
+		let space = dir.path().join("notes.copper");
+
+		let first = store_blob(&space, "capture.md", "beef", b"one").unwrap();
+		let second = store_blob(&space, "capture.md", "beef", b"two").unwrap();
+		let third = store_blob(&space, "capture.md", "beef", b"one").unwrap();
+
+		assert_eq!(first, "capture.md");
+		assert_eq!(second, "capture (2).md");
+		assert_eq!(third, "capture (3).md", "identical bytes are still a new file");
+		assert_eq!(read_blob(&space, &first).unwrap(), b"one");
+		assert_eq!(read_blob(&space, &second).unwrap(), b"two");
+		for file in [&first, &second, &third] {
+			assert!(is_bare_filename(file));
+			assert_eq!(resolve_existing(&space, file).unwrap(), assets_dir(&space).join(file));
+		}
+	}
+
+	#[test]
+	fn store_blob_repairs_or_replaces_a_name_the_directory_cannot_hold() {
+		let dir = tempfile::tempdir().unwrap();
+		let space = dir.path().join("notes.copper");
+		let fallback = "0123456789abcdef";
+
+		assert_eq!(store_blob(&space, "a/b:c.txt", fallback, b"x").unwrap(), "a_b_c.txt");
+		assert_eq!(store_blob(&space, "NUL.txt", fallback, b"x").unwrap(), fallback);
+		assert_eq!(store_blob(&space, ".hidden", fallback, b"x").unwrap(), "hidden");
+		assert_eq!(
+			store_blob(&space, "", fallback, b"x").unwrap(),
+			format!("{fallback} (2)"),
+			"a second fallback collides with the first and takes the suffix"
+		);
 	}
 }

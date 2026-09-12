@@ -9,7 +9,7 @@
 //!
 //! `file` rather than an attachment id is what [`attachment_thumb`],
 //! [`attachment_open`] and [`attachment_reveal`] take, and the choice is
-//! deliberate. The content-addressed
+//! deliberate. The stored
 //! name is the one identifier a *pending* attachment and a committed one share —
 //! the tray's items are not in the document yet — so an id-keyed command would
 //! need a second path for the tray. It is also exactly the value

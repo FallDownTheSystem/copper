@@ -69,12 +69,14 @@ pub struct Note {
 #[serde(rename_all = "camelCase")]
 pub struct Attachment {
 	pub id: String,
-	/// The content-addressed **bare filename** inside the assets directory.
-	/// Never a path, and never trusted to be one.
+	/// The **bare filename** inside the assets directory: the user's name,
+	/// repaired and suffixed against a collision at ingest, or a content hash
+	/// when the name repaired to nothing. Never a path, and never trusted to be
+	/// one — a reader validates it again before joining it to anything.
 	pub file: String,
-	/// What the user's copy was called. Display only — it is never a storage
-	/// name, which is what makes traversal, collision and Windows reserved
-	/// device names structurally impossible rather than sanitised away.
+	/// What the user's copy was called, exactly as given. `file` is derived
+	/// from it but is not it: a colon, a trailing dot or a reserved device name
+	/// is repaired there and preserved here.
 	pub name: String,
 	pub mime: String,
 	pub bytes: u64,

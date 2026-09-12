@@ -1,4 +1,7 @@
-//! A drag ticket owns exported files, never paths supplied by the webview.
+//! A drag ticket owns a file list Rust resolved, never paths supplied by the
+//! webview. The list names the stored files themselves, and the drag source
+//! permits copy only, so a receiver can never move an attachment out of its
+//! space.
 
 use std::sync::Mutex;
 
@@ -7,7 +10,7 @@ use tauri::{AppHandle, Manager, State};
 use copper_core::store::error::{Result, StoreError};
 use copper_core::store::SharedStore;
 
-use super::copy::{copy_cache, prepare_files, AttachmentTarget};
+use super::copy::{prepare_files, AttachmentTarget};
 use crate::store::source::DocumentSource;
 use crate::win32::drag_source;
 
@@ -57,9 +60,8 @@ pub async fn attachment_prepare_drag(
 	state: State<'_, SharedStore>,
 ) -> Result<String> {
 	let (path, space) = source.snapshot(&state)?;
-	let cache = copy_cache(&app)?;
 	let payload = tauri::async_runtime::spawn_blocking(move || {
-		let paths = prepare_files(&path, &space, &targets, &cache)?;
+		let paths = prepare_files(&path, &space, &targets)?;
 		drag_source::file_payload(&paths)
 	})
 	.await

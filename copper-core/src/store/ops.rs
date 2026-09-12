@@ -458,16 +458,15 @@ pub fn merge_notes(space: &mut Space, ids: &[String]) -> Result<()> {
 	let done = positions.iter().all(|&position| space.notes[position].done);
 
 	// Survivor first, then the others in canonical order, de-duplicated by the
-	// content hash — so merging two notes that both hold the same screenshot
-	// produces one entry, matching what attaching it twice to one note would.
+	// stored file — so merging two notes whose entries name the same blob, which
+	// a duplicated or hand-edited document can hold, produces one entry.
 	// Deliberately **not** capped at `ATTACHMENT_MAX_PER_NOTE`: the cap governs
 	// what may be attached, and applying it here would make a merge either fail or
 	// silently drop files the user still has, which is worse than a long list.
 	//
-	// Compared case-insensitively: `hex16` only ever emits lowercase, so two
-	// entries differing in case name the same file on Windows — which a
-	// hand-edited document can easily contain, and which a case-sensitive
-	// comparison would let through as two copies of one screenshot.
+	// Compared case-insensitively: two entries differing only in case name the
+	// same file on Windows, and a case-sensitive comparison would let them
+	// through as two copies of one blob.
 	let mut attachments: Vec<Attachment> = Vec::new();
 	let mut seen: HashSet<String> = HashSet::new();
 	for &position in &positions {
